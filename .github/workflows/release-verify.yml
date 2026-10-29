@@ -7,18 +7,32 @@ on:
         description: Commit SHA, branch, or tag to verify
         required: true
         type: string
+      runner_binaries_only:
+        description: Build exact-source release daemons without publishing or provider calls
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      runner_artifact_prefix:
+        value: ${{ jobs.runner_binaries.outputs.artifact_prefix }}
+      provider_pack_artifact_prefix:
+        value: ${{ jobs.runner_binaries.outputs.provider_pack_artifact_prefix }}
+      native_consumer_matrix:
+        value: ${{ jobs.runner_binary_targets.outputs.native_consumers }}
 
 # Caller-provided refs may name unmerged PR code. AWS is eligible only when
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
 jobs:
   runner_chaos_evals:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Pre-release Runner chaos evals
     uses: ./.github/workflows/runner-chaos-evals.yml
     with:
       ref: ${{ inputs.ref }}
 
   typecheck:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Typecheck
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -40,7 +54,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
 
       # rust-cache hashes its absolute cache paths into the entry's version,
       # and GitHub only serves an entry whose key and version both match. The
@@ -90,13 +104,21 @@ jobs:
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+        with:
+          save-cache: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+
       - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
         run: pnpm install --no-frozen-lockfile
 
       - name: Typecheck
         run: pnpm -r typecheck
 
   general_tests:
+    if: ${{ !inputs.runner_binaries_only }}
     name: General tests (${{ matrix.group_label }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -208,6 +230,7 @@ jobs:
           fi
 
   serialized_tests:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Serialized tests (${{ matrix.shard_label }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -257,6 +280,7 @@ jobs:
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
 
   runner_workflow_evals:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Runner workflow eval scorer contract
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -287,6 +311,7 @@ jobs:
         run: pnpm test:runner-workflow-evals
 
   verify_paperclip_runner:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Verify Paperclip Runner (${{ matrix.lane }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -446,7 +471,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Build the Runner release crate for its cache
         if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' }}
@@ -467,9 +492,10 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
   build:
+    if: ${{ !inputs.runner_binaries_only }}
     name: Build
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -498,3 +524,211 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  runner_binary_targets:
+    if: inputs.runner_binaries_only
+    name: Read exact-source daemon targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      native_consumers: ${{ steps.targets.outputs.native_consumers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Preserve the immutable source's platform contract
+        id: targets
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          const source = process.env.SOURCE_SHA;
+          const readBlob = file => {
+            const entries = execFileSync('git', ['ls-tree', '-z', source, '--', file], {
+              encoding: 'utf8', maxBuffer: 4096,
+            }).split('\0').filter(Boolean);
+            if (!entries.length) return undefined;
+            assert.equal(entries.length, 1, 'Ambiguous exact-source target contract');
+            assert.ok(entries[0].startsWith('100644 blob ') && entries[0].endsWith('\t' + file), 'Target contract must be a regular source file');
+            return execFileSync('git', ['show', source + ':' + file], { encoding: 'utf8', maxBuffer: 64 * 1024 });
+          };
+          const data = readBlob('packages/paperclip-runner/release-runner-targets.json');
+          let declared;
+          if (data !== undefined) {
+            const contract = JSON.parse(data);
+            assert.ok(contract && contract.schema === 'paperclip.runner.release-targets.v1'
+              && Object.keys(contract).sort().join() === 'schema,targets', 'Unknown exact-source daemon platform contract');
+            declared = contract.targets;
+          } else {
+            const legacy = readBlob('packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs');
+            const declarations = [...(legacy ?? '').matchAll(/^[ \t]*export const RELEASE_RUNNER_TARGETS = (?:Object\.freeze\()?(\[[^\r\n]*\])\)?;[ \t]*$/gm)];
+            assert.equal(declarations.length, 1, 'Unknown exact-source daemon platform contract');
+            declared = JSON.parse(declarations[0][1]);
+          }
+          const historical = ['darwin-arm64', 'darwin-x64', 'linux-x64'];
+          const current = [...historical, 'linux-arm64'];
+          assert.ok(Array.isArray(declared), 'Unknown exact-source daemon platform contract');
+          const matches = expected => JSON.stringify([...declared].sort()) === JSON.stringify([...expected].sort());
+          assert.ok(matches(historical) || matches(current), 'Unknown exact-source daemon platform contract');
+          const targets = matches(current) ? current : historical;
+          const hosts = { 'linux-x64': targets.length === current.length ? 'ubuntu-24.04' : 'ubuntu-latest', 'linux-arm64': 'ubuntu-24.04-arm', 'darwin-arm64': 'macos-15', 'darwin-x64': 'macos-15-intel' };
+          const include = targets.map(target => ({ target, host: hosts[target] }));
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\nnative_consumers=${JSON.stringify({ include: include.filter(row => row.target !== 'linux-x64') })}\n`);
+          NODE
+
+  runner_binaries:
+    if: inputs.runner_binaries_only
+    needs: runner_binary_targets
+    name: Release daemon (${{ matrix.target }})
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.runner_binary_targets.outputs.matrix) }}
+    outputs:
+      artifact_prefix: ${{ steps.identity.outputs.artifact_prefix }}
+      provider_pack_artifact_prefix: ${{ steps.identity.outputs.provider_pack_artifact_prefix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.21.0
+      - name: Bind immutable producer source and target
+        id: identity
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$(node -p 'process.platform + "-" + process.arch')" == "$TARGET" ]] || exit 1
+          echo "artifact_prefix=runner-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          if node --input-type=module -e 'const m = await import("./packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs"); process.exit(m.RELEASE_PROVIDER_PACK_TARGETS ? 0 : 1)'; then
+            echo "provider_pack_artifact_prefix=runner-provider-packs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pin native Cargo workspace and toolchain
+        id: native_rust_workspace
+        working-directory: packages/paperclip-runner
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          if [[ -e "$pinned" && ! -L "$pinned" ]]; then
+            echo '::error::Native Cargo cache path must not replace a real directory'
+            exit 1
+          fi
+          rm -f "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [[ -n "$extra_toolchains" ]]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Native Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+      - name: Cache native Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: ${{ steps.native_rust_workspace.outputs.path }} -> target
+          shared-key: release-native-v2-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}
+          cache-workspace-crates: false
+          cache-bin: false
+          cache-on-failure: false
+          save-if: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Build TypeScript contract and host daemon concurrently
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { startPrefetch, stopPrefetches } from './scripts/prefetch-child.mjs';
+          const root = process.cwd(), logs = join(process.env.RUNNER_TEMP, 'native-build-preparation');
+          mkdirSync(logs, { recursive: true });
+          const builds = [];
+          let failure;
+          try {
+            for (const [name, args, cwd] of [
+              ['typescript', ['--filter', '@paperclipai/paperclip-runner', 'build:typescript'], root],
+              ['native', ['build:binary'], join(root, 'packages/paperclip-runner')],
+            ]) {
+              builds.push(startPrefetch({ name, cmd: 'pnpm', args, cwd, env: process.env, logPath: join(logs, name + '.log') }));
+            }
+            await Promise.all(builds.map(build => build.done));
+          } catch (error) { failure = error; }
+          finally {
+            await stopPrefetches(builds);
+            const results = await Promise.allSettled(builds.map(build => build.done));
+            builds.forEach((build, index) => {
+              console.log('::group::' + build.name + ' build');
+              process.stdout.write(readFileSync(join(logs, build.name + '.log'), 'utf8'));
+              console.log('::endgroup::');
+              console.log(JSON.stringify({ build: build.name, status: results[index].status,
+                exitCode: build.child.exitCode, signal: build.child.signalCode, durationMs: build.durationMs }));
+            });
+          }
+          if (failure) throw failure;
+          NODE
+      - name: Record actual daemon metadata and immutable bytes
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs record "$SOURCE_SHA" "$TARGET" \
+            packages/paperclip-runner/dist/bin/paperclip-runnerd "$RUNNER_TEMP/runner-release/$TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.identity.outputs.artifact_prefix }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/runner-release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build target-owned Linux provider pack
+        id: provider_pack
+        if: startsWith(matrix.target, 'linux-') && steps.identity.outputs.provider_pack_artifact_prefix != ''
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          pack="$RUNNER_TEMP/provider-pack"
+          PAPERCLIP_RUNNER_SOURCE_REVISION="$SOURCE_SHA" node packages/paperclip-runner/scripts/build-provider-pack.mjs "$pack"
+          node --input-type=module - "$pack/provider-pack.json" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { verifyReleaseProviderPack } from './packages/paperclip-runner/scripts/release-provider-pack.mjs';
+          verifyReleaseProviderPack(JSON.parse(readFileSync(process.argv[2], 'utf8')), process.env.SOURCE_SHA, process.env.TARGET);
+          NODE
+          mkdir -p "$RUNNER_TEMP/release-provider-packs/$TARGET"
+          cp "$pack/provider-pack.json" "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.json"
+          tar -C "$pack" -czf "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.tar.gz" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: startsWith(matrix.target, 'linux-') && steps.identity.outputs.provider_pack_artifact_prefix != ''
+        with:
+          name: ${{ steps.identity.outputs.provider_pack_artifact_prefix }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-provider-packs/
+          if-no-files-found: error
+          retention-days: 14

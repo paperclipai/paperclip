@@ -1,91 +1,119 @@
 # Storybook map
 
-The [feature index](INDEX.md) connects the existing Storybook to stable capability
-IDs from the upstream [feature map](../feature-map/README.md). Story files remain
-in `ui/storybook/`. The feature map and its maintenance skill do not depend on
-this catalog. New capabilities or upstream recipe drift are reported to their
-maintainer; this catalog does not redefine product behavior or permissions.
+Browse the [published feature guide](https://d1p6rlowie26tp.cloudfront.net/storybook/branches/master/?path=/story/overview-storybook-guide--coverage-guide),
+or run `pnpm storybook` for the current checkout. The feature and capability IDs
+come from the [feature recipes](../feature-map/README.md). Product behavior and
+permissions remain governed by the implementation spec and access companions.
 
-## Ownership
+## Authored sources
 
-- [maintain-storybook](../../.agents/skills/maintain-storybook/SKILL.md) owns story
-  alignment, fixture corrections, classification, and this catalog.
-- [review-storybook](../../.agents/skills/review-storybook/SKILL.md) consumes it to
-  select and exercise examples, then reports evidence and drift.
-- [DESIGN.md](../../DESIGN.md) governs design. Production verification remains
-  with the existing product recipes and verification tools.
+Each story owns its small `parameters.paperclip` annotation. There is no authored
+central catalog, review ledger, date stamp, source list or fingerprint to update.
+Storybook's CSF parser supplies filenames, titles, explicit meta IDs, exports,
+play-function counts and story IDs without executing story modules.
 
-## Catalog contract
-
-`catalog.json` is the maintained inventory, with one entry per story file.
-`INDEX.md` is generated from it and the installed Storybook CSF parser. Titles,
-export filtering, story counts and IDs come from source, not filename guesses.
-All examples are retained, including historical suites. A file's first capability
-is its primary home; remaining capabilities are lookup references, not copies.
-Foundations/guides and proposals without a mapped capability need an exception
-reason. An absent story is not automatically a feature gap.
-
-## Folders and sidebar
-
-Story files live in `ui/storybook/stories/<primary-feature-area>/`, using the first
-capability's area slug. Related capabilities still point to the same story. Shared
-fixture modules and assets live in `ui/storybook/support/`; production wrappers in
-`ui/storybook/prototypes/` retain their existing ownership.
-
-The sidebar follows the section and feature names in the feature-map README, then
-retains each suite's useful scenario grouping. Foundations contains shared component
-examples with no primary product capability. Overview contains the catalog guide.
-Areas with no stories do not get empty sidebar folders.
-
-Each suite declares an explicit CSF `id`, recorded as `stableId` in the catalog.
-The `sidebarTitle` can change without changing that identity. Existing story and
-autodocs URLs and screenshot names remain valid. Do not derive a replacement ID
-from a newly organized title. The checker rejects missing or changed explicit IDs,
-incorrect feature folders, and sidebar titles outside their primary feature home.
-
-Each entry records purpose, capability references, review sources/date/fingerprint,
-notes, and three independent dimensions:
-
-| Dimension | Values |
-| --- | --- |
-| Product status | `current`: source comparison supports the named subject; `proposed`: intentional alternate design; `historical`: superseded reference retained for its original purpose; `mixed`: suite combines these; `unreviewed`: parity has not been established |
-| Implementation | `production`: shipped subject with fixture/layout wrappers; `prototype`: locally implemented subject, even if it uses shared primitives; `mixed`: both subjects; `guide`: explanatory documentation |
-| Data boundary | `fixtures`: props, callbacks, caches or API responses are simulated; `fixture-server`: requires a separately owned local API/database fixture with simulated upstream providers; `static`: explanatory/static examples |
-
-`current` is a source-review classification, not a promise that every state renders
-or that APIs, gates, persistence and providers passed live tests. `unreviewed`
-entries still have an inventory/classification review; notes explain the deeper
-parity work outstanding. Mixed files retain a note naming the important split.
-Production components can legitimately use mock data. A prototype directory name
-does not establish implementation: some wrappers there re-export shipped UI.
-
-Review sources include the story, relevant local support and production subjects.
-Include directly rendered subjects regardless of import spelling, and primitives
-when the suite demonstrates them. Do not truncate the list to a fixed source count.
-Fingerprints make changes to those declared dependencies visible. They do not
-follow every transitive production import or infer semantic correctness. Shared
-preview/config/fixture changes have a separate fingerprint and require reviewing
-affected callers. Update fingerprints only after reviewing the change, and add
-missing dependencies when discovered. Date/revision context for the initial pass
-and executed evidence belong in [REVIEW.md](REVIEW.md).
-
-## Maintenance commands
-
-After installing workspace dependencies:
-
-```sh
-node scripts/storybook-catalog.mjs
-node scripts/storybook-catalog.mjs --write
-node --test scripts/storybook-catalog.test.mjs
+```ts
+const meta = {
+  id: "tasks-create",
+  title: "Tasks and conversations/Task creation and lifecycle/Create",
+  parameters: {
+    paperclip: {
+      capabilities: ["tasks/create"],
+      implementation: "production",
+      boundary: "fixtures",
+      notes: "Uses the shipped composer; submission is simulated.",
+    },
+  },
+};
 ```
 
-The checker rejects unaccounted or deleted stories, invalid capability references,
-duplicate entries/IDs, missing review sources, changed fingerprints and a stale
-generated index. `--write` only regenerates the index; it never refreshes review
-fingerprints or blesses drift. Preserve IDs when changing titles or moving files;
-compare the existing built Storybook index before and after such changes.
+`capabilities` is an array of stable `area/capability` IDs. Its first entry is the
+primary home; others cross-list the same suite. An empty array requires an
+`exception` explaining the intentional scope. Shared foundations may use
+`home: "foundations"` with an exception to keep their existing location and links.
+Staged design work may use `home: "design-proposals"`, with `status: "proposed"`
+and an exception explaining why it is staged separately from production references.
+The metadata must be literal; place it after any other parameter spreads.
 
-Use the existing [Storybook workflow](../../doc/DEVELOPING.md#storybook) for builds,
-browser review, and visual tests. Report source inspection, rendering, `play`
-assertions, visual comparisons and production acceptance separately. Do not publish
-new visual baselines just to make catalog maintenance pass.
+| Field | Values and purpose |
+| --- | --- |
+| `status` | `current`, `proposed`, `historical`, `mixed`, `unreviewed` (default). Authored product alignment intent, not a live review certificate. |
+| `implementation` | `production`, `prototype`, `mixed`, `guide`, `unreviewed` (default). What actually renders. |
+| `boundary` | `fixtures`, `fixture-server`, `static`, `unreviewed` (default). What is simulated or requires an owned fixture. |
+| `notes` | Optional durable scenario limits and rationale. Do not append a history of unrelated changes. |
+| `replacement` | Optional repository-relative path of an existing replacement story. |
+
+A production component can use fixtures. A prototype that imports production
+primitives remains a prototype of its outer subject. Use `unreviewed` when intent
+or parity is unclear. Preserve useful historical examples and their explanations.
+Historical examples, proposals and guides do not remove missing-example gaps.
+No annotation or story count proves permissions, persistence, provider behavior,
+full recipe coverage or passing tests.
+
+## Navigation and outputs
+
+Stories live in `ui/storybook/stories/<primary-feature-area>/`. Sidebar titles use
+the recipe's section and H1 title, followed by the suite name. `/` in feature
+labels becomes `, ` in the sidebar. Preserve explicit CSF IDs across title/folder
+changes. Compare the built `index.json` when changing navigation.
+
+**Design proposals** is a separate top-level review section. Its stories live in
+`ui/storybook/stories/design-proposals/`, with titles beginning `Design proposals/`.
+Group these titles by **Foundations** (tokens), **Components** (reusable UI),
+**Layouts** (page structures), **Pages** (complete screens), **Patterns** (shared
+behavior) and **Guidelines** (usage and contribution rules), in that order.
+Create a group when there are stories for it; do not add empty placeholders.
+For example, color tokens belong in `Design proposals/Foundations/Colors (dark mode)`,
+the task table in `Design proposals/Components/Task list`, and its complete page
+in `Design proposals/Pages/Tasks`. Preserve explicit story IDs and exports when
+reorganizing so links and browser tests remain valid.
+Retain capability references so proposals remain discoverable from the feature
+guide, but never count them as current production examples. Keep using shared
+components and tokens rather than creating a parallel design implementation.
+When a proposal is reviewed and adopted in the app, move its story into the usual
+feature or Foundations home, update its classification and staging metadata, and
+preserve the explicit CSF ID and exports so review links remain valid.
+
+The generator discovers feature recipes and story annotations. It assembles:
+
+- `ui/storybook/generated/catalog.json` and `feature-index.json`.
+- A generated Overview story per feature, retaining `feature-map-<area>--overview`.
+- `ui/storybook/.storybook/preview.tsx`, with the literal sidebar order required
+  by Storybook and the authored decorators/fixtures from `preview-base.tsx`.
+- Markdown feature, access, Storybook and verification indexes, plus the current
+  page inventory, under `maps/generated/`.
+
+All these outputs are ignored. Storybook start/build and UI typechecking generate
+from a fresh checkout. The published Storybook includes the guide and each feature's
+verification scope. After edits during a dev session, rerun the generator (restart
+Storybook after navigation changes). Obsolete generated Overview files are removed.
+Never edit generated outputs or commit them to resolve a merge conflict.
+
+## Checks and review
+
+```sh
+node scripts/check-maps.mjs
+node scripts/storybook-catalog.mjs
+node scripts/storybook-catalog.mjs --check
+node --test scripts/check-maps.test.mjs scripts/storybook-catalog.test.mjs scripts/storybook-feature-index.test.mjs
+```
+
+`--write` is a compatibility alias for the default generation command. `--check`
+validates authored inputs without requiring existing outputs or writing files.
+Checks reject malformed annotations, unknown capabilities, duplicate IDs, broken
+map references, missing companions and invalid navigation. CI runs the map tests
+through the UI Vitest suite and validates/generates inputs during UI typechecking.
+
+Use Git diffs to select changed stories, rendered subjects, fixtures, and recipes
+for review. A changed source is a review candidate, not an instruction to refresh
+metadata on every dependent example. Inspect actual imports and contracts; shared
+fixture changes can require broad review without broad acknowledgement edits.
+Keep revision-specific findings and executed evidence in the PR, issue or CI
+artifact. Move only durable limitations into the affected source annotation or
+recipe. Past review history remains available through Git.
+
+`maintain-storybook` owns stories and their annotations; `review-storybook` exercises
+them. Product/access maintenance owns the recipes, including optional capability
+verification scope. Use the [existing Storybook browser workflow](../../doc/DEVELOPING.md#storybook).
+Report source inspection, rendering, play assertions, visual comparison and
+production acceptance separately. Do not publish new baselines to pass a map cleanup.

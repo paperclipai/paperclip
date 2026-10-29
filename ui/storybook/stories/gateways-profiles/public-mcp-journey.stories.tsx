@@ -27,6 +27,13 @@ const meta = {
   parameters: {
     layout: "fullscreen", initialEntries: ["/PAP/apps"], fixture: { enabled: false, empty: true },
     docs: { description: { component: "Begin inside Paperclip. Open Assistant Connection (MCP), follow its Experimental settings link if needed, then choose your assistant. These are production pages in the real app shell; API responses are fixtures. Follow the displayed commands in a live instance to launch browser sign-in and consent. Storybook does not run a terminal, grant access, or simulate a successful OpenCode conversation. Consent states have their own stories. The Connected checkpoint represents returning after a real grant, not clicking a mock connect button." } },
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/client-connect"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   beforeEach: ({ parameters }) => installPublicMcpFixture(parameters.fixture),
 } satisfies Meta<typeof ConnectionJourney>;

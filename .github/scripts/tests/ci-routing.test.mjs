@@ -29,7 +29,7 @@ test("routing exports both placement and stack scope to callers", () => {
   assert.match(jobs, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
 });
 
-const githubStub = "#!/usr/bin/env bash\nset -Eeuo pipefail\n\nendpoint=\"${*: -1}\"\ncase \"$endpoint\" in\n  */pulls/*)\n    jq -cn \\\n      --argjson author_id \"${TEST_PR_AUTHOR_ID:-34892728}\" \\\n      --argjson repository_id \"${TEST_REPOSITORY_ID:-1170821064}\" \\\n      --arg base_ref \"${TEST_BASE_REF:-master}\" \\\n      --arg base_sha \"${TEST_PR_BASE_SHA:-$EVENT_BASE_SHA}\" \\\n      --arg head_sha \"${TEST_PR_HEAD_SHA:-1111111111111111111111111111111111111111}\" \\\n      --arg merge_sha \"${TEST_PR_MERGE_SHA:-4444444444444444444444444444444444444444}\" '{\n        state: \"open\",\n        user: {id: $author_id},\n        base: {repo: {id: $repository_id}, ref: $base_ref, sha: $base_sha},\n        head: {sha: $head_sha},\n        merge_commit_sha: $merge_sha\n      }'\n    ;;\n  */git/ref/heads/*)\n    jq -cn \\\n      --arg sha \"${TEST_LIVE_BASE_REF_SHA:-$EVENT_BASE_SHA}\" '{object: {sha: $sha}}'\n    ;;\n  */compare/*)\n    jq -cn \\\n      --arg merge_base_sha \"${TEST_BASE_COMPARISON_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\" \\\n      --arg status \"${TEST_BASE_COMPARISON_STATUS:-ahead}\" '{\n        merge_base_commit: {sha: $merge_base_sha},\n        status: $status\n      }'\n    ;;\n  */git/commits/*)\n    requested_sha=\"${endpoint##*/}\"\n    live_merge_sha=\"${TEST_PR_MERGE_SHA:-4444444444444444444444444444444444444444}\"\n    synthetic_base_merge_sha=\"${TEST_SYNTHETIC_BASE_MERGE_SHA:-}\"\n    if [[ \"$requested_sha\" == \"$EVENT_MERGE_SHA\" ]]; then\n      tree_sha=\"${TEST_EVENT_MERGE_TREE_SHA:-5555555555555555555555555555555555555555}\"\n      base_sha=\"${TEST_EVENT_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\"\n      head_sha=\"${TEST_EVENT_MERGE_HEAD_SHA:-$EVENT_HEAD_SHA}\"\n    elif [[ \"$requested_sha\" == \"$live_merge_sha\" ]]; then\n      tree_sha=\"${TEST_LIVE_MERGE_TREE_SHA:-5555555555555555555555555555555555555555}\"\n      base_sha=\"${TEST_LIVE_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\"\n      head_sha=\"${TEST_LIVE_MERGE_HEAD_SHA:-$EVENT_HEAD_SHA}\"\n    elif [[ -n \"$synthetic_base_merge_sha\" && \"$requested_sha\" == \"$synthetic_base_merge_sha\" ]]; then\n      tree_sha=\"${TEST_SYNTHETIC_BASE_MERGE_TREE_SHA:-8888888888888888888888888888888888888888}\"\n      base_sha=\"${TEST_SYNTHETIC_MASTER_PARENT_SHA:-9999999999999999999999999999999999999999}\"\n      head_sha=\"${TEST_SYNTHETIC_BASE_REF_PARENT_SHA:-${TEST_LIVE_BASE_REF_SHA:-$EVENT_BASE_SHA}}\"\n    else\n      echo \"unexpected merge commit: $requested_sha\" >&2\n      exit 1\n    fi\n    jq -cn \\\n      --arg sha \"$requested_sha\" \\\n      --arg tree_sha \"$tree_sha\" \\\n      --arg base_sha \"$base_sha\" \\\n      --arg head_sha \"$head_sha\" '{\n        sha: $sha,\n        tree: {sha: $tree_sha},\n        parents: [{sha: $base_sha}, {sha: $head_sha}]\n      }'\n    ;;\n  */actions/runs/*)\n    jq -cn \\\n      --argjson actor_id \"${TEST_TRIGGERING_ACTOR_ID:-34892728}\" \\\n      --argjson repository_id \"${TEST_REPOSITORY_ID:-1170821064}\" \\\n      --arg event_name \"${TEST_EVENT_NAME:-pull_request}\" '{\n        triggering_actor: {id: $actor_id},\n        repository: {id: $repository_id},\n        event: $event_name\n      }'\n    ;;\n  *)\n    echo \"unexpected gh endpoint: $endpoint\" >&2\n    exit 1\n    ;;\nesac";
+const githubStub = "#!/usr/bin/env bash\nset -Eeuo pipefail\n\nendpoint=\"${*: -1}\"\ncase \"$endpoint\" in\n  */pulls/*)\n    jq -cn \\\n      --argjson author_id \"${TEST_PR_AUTHOR_ID:-34892728}\" \\\n      --argjson repository_id \"${TEST_REPOSITORY_ID:-1170821064}\" \\\n      --arg base_ref \"${TEST_BASE_REF:-master}\" \\\n      --arg base_sha \"${TEST_PR_BASE_SHA:-$EVENT_BASE_SHA}\" \\\n      --arg head_sha \"${TEST_PR_HEAD_SHA:-1111111111111111111111111111111111111111}\" \\\n      --arg merge_sha \"${TEST_PR_MERGE_SHA:-4444444444444444444444444444444444444444}\" '{\n        state: \"open\",\n        user: {id: $author_id},\n        base: {repo: {id: $repository_id}, ref: $base_ref, sha: $base_sha},\n        head: {sha: $head_sha},\n        merge_commit_sha: $merge_sha\n      }'\n    ;;\n  */git/ref/heads/*)\n    jq -cn \\\n      --arg sha \"${TEST_LIVE_BASE_REF_SHA:-$EVENT_BASE_SHA}\" '{object: {sha: $sha}}'\n    ;;\n  */compare/*)\n    [[ -z \"${TEST_COMPARE_FAIL:-}\" ]] || exit 1\n    default_files='[{\"filename\":\"server/src/index.ts\"}]'\n    jq -cn \\\n      --arg merge_base_sha \"${TEST_BASE_COMPARISON_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\" \\\n      --arg status \"${TEST_BASE_COMPARISON_STATUS:-ahead}\" \\\n      --argjson files \"${TEST_COMPARE_FILES:-$default_files}\" '{\n        merge_base_commit: {sha: $merge_base_sha},\n        status: $status,\n        files: $files\n      }'\n    ;;\n  */git/commits/*)\n    requested_sha=\"${endpoint##*/}\"\n    live_merge_sha=\"${TEST_PR_MERGE_SHA:-4444444444444444444444444444444444444444}\"\n    synthetic_base_merge_sha=\"${TEST_SYNTHETIC_BASE_MERGE_SHA:-}\"\n    if [[ \"$requested_sha\" == \"$EVENT_MERGE_SHA\" ]]; then\n      tree_sha=\"${TEST_EVENT_MERGE_TREE_SHA:-5555555555555555555555555555555555555555}\"\n      base_sha=\"${TEST_EVENT_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\"\n      head_sha=\"${TEST_EVENT_MERGE_HEAD_SHA:-$EVENT_HEAD_SHA}\"\n    elif [[ \"$requested_sha\" == \"$live_merge_sha\" ]]; then\n      tree_sha=\"${TEST_LIVE_MERGE_TREE_SHA:-5555555555555555555555555555555555555555}\"\n      base_sha=\"${TEST_LIVE_MERGE_BASE_SHA:-$EVENT_BASE_SHA}\"\n      head_sha=\"${TEST_LIVE_MERGE_HEAD_SHA:-$EVENT_HEAD_SHA}\"\n    elif [[ -n \"$synthetic_base_merge_sha\" && \"$requested_sha\" == \"$synthetic_base_merge_sha\" ]]; then\n      tree_sha=\"${TEST_SYNTHETIC_BASE_MERGE_TREE_SHA:-8888888888888888888888888888888888888888}\"\n      base_sha=\"${TEST_SYNTHETIC_MASTER_PARENT_SHA:-9999999999999999999999999999999999999999}\"\n      head_sha=\"${TEST_SYNTHETIC_BASE_REF_PARENT_SHA:-${TEST_LIVE_BASE_REF_SHA:-$EVENT_BASE_SHA}}\"\n    else\n      echo \"unexpected merge commit: $requested_sha\" >&2\n      exit 1\n    fi\n    jq -cn \\\n      --arg sha \"$requested_sha\" \\\n      --arg tree_sha \"$tree_sha\" \\\n      --arg base_sha \"$base_sha\" \\\n      --arg head_sha \"$head_sha\" '{\n        sha: $sha,\n        tree: {sha: $tree_sha},\n        parents: [{sha: $base_sha}, {sha: $head_sha}]\n      }'\n    ;;\n  */actions/runs/*)\n    jq -cn \\\n      --argjson actor_id \"${TEST_TRIGGERING_ACTOR_ID:-34892728}\" \\\n      --argjson repository_id \"${TEST_REPOSITORY_ID:-1170821064}\" \\\n      --arg event_name \"${TEST_EVENT_NAME:-pull_request}\" '{\n        triggering_actor: {id: $actor_id},\n        repository: {id: $repository_id},\n        event: $event_name\n      }'\n    ;;\n  *)\n    echo \"unexpected gh endpoint: $endpoint\" >&2\n    exit 1\n    ;;\nesac";
 
 function stepScript(name) {
   const start = workflow.indexOf(`      - name: ${name}\n`);
@@ -97,6 +97,8 @@ const stackedBase = {
 
 const routeCases = [
   ["allowlisted PR", {}, awsRunner],
+  ["allowlisted profile label", { EVENT_ACTION: "labeled", EVENT_LABEL_NAME: "profile-ci" }, awsRunner],
+  ["unrelated label", { EVENT_ACTION: "labeled", EVENT_LABEL_NAME: "documentation" }],
   ["validated stacked base", stackedBase, awsRunner],
   ["lagging PR API base snapshot", { TEST_PR_BASE_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, awsRunner],
   ["disabled AWS", { AWS_CI_ENABLED: "false" }],
@@ -137,11 +139,91 @@ const scopeCases = [
 
 for (const [name, stack, base, expected] of scopeCases) {
   test(`scope decision: ${name}`, () => {
-    assert.equal(executeStep("Select stacked PR CI scope", {
+    assert.equal(executeStep("Select PR CI scope", {
       STACK_JSON: JSON.stringify(stack), PR_BASE_REF: base,
     }).full_ci, expected);
   });
 }
+
+const files = (...paths) => JSON.stringify(paths.map((filename) => ({ filename })));
+
+test("profile-ci overrides both middle-stack and release-notes-only skips", () => {
+  for (const overrides of [
+    { STACK_JSON: JSON.stringify({ position: 2, size: 3, base: { ref: "master" } }), PR_BASE_REF: "stack-1" },
+    { STACK_JSON: "null", PR_BASE_REF: "master", TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") },
+  ]) {
+    assert.equal(executeStep("Select PR CI scope", { ...overrides, PROFILE_CI: "false" }).full_ci, "false");
+    assert.equal(executeStep("Select PR CI scope", { ...overrides, PROFILE_CI: "true" }).full_ci, "true");
+  }
+});
+const manyReleaseNotes = JSON.stringify(Array.from({ length: 300 }, (_, index) => ({
+  filename: `releases/beta/v2026.1012.${index}-beta.0.md`,
+})));
+
+const pathScopeCases = [
+  ["stable release notes", { TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") }, "false"],
+  ["beta release notes draft", { TEST_COMPARE_FILES: files("releases/beta/v2026.1012.1-beta.0.md") }, "false"],
+  ["stable and beta notes", { TEST_COMPARE_FILES: files("releases/v2026.1015.0.md", "releases/beta/v2026.1012.1-beta.0.md") }, "false"],
+  ["removed release notes", { TEST_COMPARE_FILES: JSON.stringify([{ filename: "releases/beta/v2026.1006.0-beta.0.md", status: "removed" }]) }, "false"],
+  ["release notes and code", { TEST_COMPARE_FILES: files("releases/v2026.1015.0.md", "server/src/index.ts") }, "true"],
+  ["code renamed into releases", { TEST_COMPARE_FILES: JSON.stringify([{ filename: "releases/v2026.1015.0.md", previous_filename: "scripts/release.sh" }]) }, "true"],
+  ["non-markdown file in releases", { TEST_COMPARE_FILES: files("releases/beta/v2026.1012.1-beta.0.json") }, "true"],
+  ["nested releases directory", { TEST_COMPARE_FILES: files("releases/beta/drafts/v2026.1012.1-beta.0.md") }, "true"],
+  ["markdown outside releases", { TEST_COMPARE_FILES: files("doc/RELEASING.md") }, "true"],
+  ["file entry without a name", { TEST_COMPARE_FILES: JSON.stringify([{ status: "modified" }]) }, "true"],
+  ["empty diff", { TEST_COMPARE_FILES: "[]" }, "true"],
+  ["possibly truncated file list", { TEST_COMPARE_FILES: manyReleaseNotes }, "true"],
+  ["compare lookup failure", { TEST_COMPARE_FAIL: "1", TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") }, "true"],
+  ["non-PR event", { EVENT_NAME: "workflow_dispatch", TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") }, "true"],
+  ["malformed head SHA", { EVENT_HEAD_SHA: "invalid", TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") }, "true"],
+];
+
+for (const [name, env, expected] of pathScopeCases) {
+  test(`path scope decision: ${name}`, () => {
+    assert.equal(executeStep("Select PR CI scope", {
+      STACK_JSON: "null", PR_BASE_REF: "master", ...env,
+    }).full_ci, expected);
+  });
+}
+
+test("path scope keeps full CI for the top PR in a stack that touches code", () => {
+  assert.equal(executeStep("Select PR CI scope", {
+    STACK_JSON: JSON.stringify({ position: 11, size: 11, base: { ref: "master" } }),
+    PR_BASE_REF: "stack-10",
+  }).full_ci, "true");
+});
+
+test("path scope keeps full CI for release notes on top of code-changing stacked PRs", () => {
+  assert.equal(executeStep("Select PR CI scope", {
+    STACK_JSON: JSON.stringify({ position: 11, size: 11, base: { ref: "master" } }),
+    PR_BASE_REF: "stack-10",
+    TEST_COMPARE_FILES: files("releases/v2026.1015.0.md"),
+  }).full_ci, "true");
+});
+
+test("path scope keeps full CI for release notes with malformed stack metadata", () => {
+  assert.equal(executeStep("Select PR CI scope", {
+    STACK_JSON: JSON.stringify({ position: 0, size: 2, base: { ref: "master" } }),
+    PR_BASE_REF: "master",
+    TEST_COMPARE_FILES: files("releases/v2026.1015.0.md"),
+  }).full_ci, "true");
+});
+
+test("path scope skips full CI for the lowest PR in a stack that only touches release notes", () => {
+  assert.equal(executeStep("Select PR CI scope", {
+    STACK_JSON: JSON.stringify({ position: 1, size: 3, base: { ref: "master" } }),
+    PR_BASE_REF: "master",
+    TEST_COMPARE_FILES: files("releases/v2026.1015.0.md"),
+  }).full_ci, "false");
+});
+
+test("path scope skips full CI for a single-PR stack that only touches release notes", () => {
+  assert.equal(executeStep("Select PR CI scope", {
+    STACK_JSON: JSON.stringify({ position: 1, size: 1, base: { ref: "master" } }),
+    PR_BASE_REF: "master",
+    TEST_COMPARE_FILES: files("releases/v2026.1015.0.md"),
+  }).full_ci, "false");
+});
 
 
 function routingPlacement(vars = {}, github = {}) {

@@ -55,7 +55,18 @@ const meta = {
   title: "Getting started and access/Login, invitations, and access/Private tasks/06 Full product pages",
   excludeStories: ["PrivacyPage"],
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, waitForViewport: true },
+  parameters: { ...privacyParameters, waitForViewport: true,
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties",
+        "projects/lifecycle"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <PrivacyPage />,
 } satisfies Meta;
 export default meta;

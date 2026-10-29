@@ -5,7 +5,16 @@ import { installPublicMcpFixture } from "../../fixtures/publicMcp";
 const meta = {
   id: "assistant-connections-manage-connections",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Assistant connections/Manage connections", component: AssistantConnectionsPage,
-  parameters: { layout: "padded", initialEntries: ["/assistant-connections"], docs: { description: { component: "Production /assistant-connections page. Revocation changes only the in-memory story fixture." } } },
+  parameters: { layout: "padded", initialEntries: ["/assistant-connections"], docs: { description: { component: "Production /assistant-connections page. Revocation changes only the in-memory story fixture." } },
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/client-connect"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   beforeEach: ({ parameters }) => installPublicMcpFixture(parameters.fixture),
 } satisfies Meta<typeof AssistantConnectionsPage>;
 export default meta;

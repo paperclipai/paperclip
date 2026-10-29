@@ -1,6 +1,7 @@
 const SILENCED_SUCCESS_METHODS = new Set(["GET", "HEAD"]);
 
 const SILENCED_SUCCESS_API_PATHS = [
+  /^\/api\/muse\/v1\/signal$/i,
   /^\/api\/health(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/activity(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/dashboard(?:\/|$)/,
@@ -53,6 +54,24 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
 }
 
+/** Destination credentials stay private even on malformed settings requests. */
+export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/companies\/[^/]+\/observability(?:\/|$)/i.test(pathname);
+}
+
+/** Muse OAuth and worker payloads stay private even on malformed/rejected paths. */
+export function isPrivateMuseHttpRequest(url:string|undefined):boolean {
+  if(!url)return false;
+  let pathname=normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  for(let depth=0;depth<4;depth++) {
+    if(/^\/api\/muse(?:\/|$)/i.test(pathname) || /^\/api\/companies\/[^/]+\/(?:muse-invitations|agents\/[^/]+\/muse-binding)(?:\/|$)/i.test(pathname))return true;
+    try {const decoded=decodeURIComponent(pathname);if(decoded===pathname)break;pathname=decoded;} catch {break;}
+  }
+  return false;
+}
+
 /** Provider payloads are private even when a method/signature is rejected. */
 export function isPrivateWebhookHttpRequest(
   method: string | undefined,
@@ -87,9 +106,12 @@ export function isSecretSensitiveHttpRequest(
   method: string | undefined,
   url: string | undefined,
 ): boolean {
-  if (isPrivateWebhookHttpRequest(method, url)) return true;
+  if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
   if (isPrivateAgentCommentaryHttpRequest(url)) return true;
+  // Custom OTLP header values are arbitrary credentials, including on rejected
+  // methods or malformed subpaths. Named-field redaction cannot identify them.
+  if (isPrivateAgentObservabilityHttpRequest(url)) return true;
   // Avatar uploads and dedicated Dot MCP calls may contain private image bytes.
   if (url && /^(?:\/mcp\/runner(?:\/|$)|\/api\/companies\/[^/]+\/agents\/[^/]+\/avatar(?:\/|$))/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (!method || !url) return false;

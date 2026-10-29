@@ -65,13 +65,16 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          enableRoutineVisibilityFilter
+          enableAgentCreatedVisibilityFilter
         />,
       );
     });
 
     const popoverContent = container.querySelector("[data-testid='popover-content']");
     expect(popoverContent).not.toBeNull();
+
+    expect(popoverContent?.textContent).toContain("Status");
+    expect(popoverContent?.textContent).not.toContain("Priority");
     expect(popoverContent?.querySelector('[data-filter-options="workspaces"]')).toBeNull();
     expect(popoverContent?.textContent).not.toContain("Workspace");
     expect(popoverContent?.className).toContain("overflow-y-auto");
@@ -83,31 +86,9 @@ describe("IssueFiltersPopover", () => {
     );
     expect(layoutGrid?.className).toContain("grid-cols-1");
     expect(popoverContent?.textContent).toContain("Live runs only");
-  });
-
-  it("hides the Priority filter section while priority UI is off (PAP-411)", () => {
-    const root = createRoot(container);
-
-    act(() => {
-      root.render(
-        <IssueFiltersPopover
-          presentation="streamlined"
-          state={defaultIssueFilterState}
-          onChange={vi.fn()}
-          activeFilterCount={0}
-          agents={[{ id: "agent-1", name: "Agent One" }]}
-          projects={[{ id: "project-1", name: "Project One" }]}
-          labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          enableRoutineVisibilityFilter
-        />,
-      );
-    });
-
-    const popoverContent = container.querySelector("[data-testid='popover-content']");
-    expect(popoverContent).not.toBeNull();
-    // Status section still renders, Priority section is gated off (PAP-411).
-    expect(popoverContent?.textContent).toContain("Status");
-    expect(popoverContent?.textContent).not.toContain("Priority");
+    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("show agent-created tasks"));
+    expect(creationToggle?.textContent).toBe("show agent-created tasks");
+    expect(creationToggle?.querySelector("input")?.checked).toBe(false);
   });
 
   it("searches long option lists while the popover remains the only scroll owner", () => {

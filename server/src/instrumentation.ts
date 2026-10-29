@@ -39,7 +39,7 @@ import { checkExactPeerVersions } from "./peer-version-check.js";
 
 export { checkExactPeerVersions } from "./peer-version-check.js";
 
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
 
 let sdkShutdown: (() => Promise<void>) | null = null;
 let shutdownPromise: Promise<void> | null = null;
@@ -96,6 +96,7 @@ let tracerApiLoadFailed = false;
  * local no-op tracer (fail open).
  */
 export function getStartupTracer(name = "paperclip.startup"): StartupTracerHandle {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return NOOP_TRACER;
   try {
     const require = createRequire(import.meta.url);
     const api = require("@opentelemetry/api") as {
@@ -151,6 +152,7 @@ let traceContextApiLoadFailed = false;
  * local no-op trace context (fail open).
  */
 export function getStartupTraceContext(name = "paperclip.startup"): StartupTraceContextHandle {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return NOOP_TRACE_CONTEXT;
   try {
     const require = createRequire(import.meta.url);
     const api = require("@opentelemetry/api") as {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { grokProfileIdentity, GROK_PROFILE_VERSION } from "./grok-profile-identity.mjs";
 
 const root = new URL("../", import.meta.url);
 const readJson = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -11,6 +12,11 @@ const contract = await readJson("cursor-contract.json");
 const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
+const grokIdentity = grokProfileIdentity();
+assert.deepEqual(await readJson(`test/fixtures/grok-profile-v${GROK_PROFILE_VERSION}-identity.json`), grokIdentity, "Grok source identity is stale; advance the profile and regenerate its identity");
+assert.equal(manifest.profiles.grok.agentProfileVersion, GROK_PROFILE_VERSION);
+assert.equal(manifest.profiles.grok.commandDigest, grokIdentity.commandDigest);
+assert.equal(`sha256:${createHash("sha256").update(await readFile(new URL("src/providers/grok/launcher.cjs", root))).digest("hex")}`, grokIdentity.commandDigest, "Grok launcher source stamp is stale");
 const entries = Object.entries(manifest.profiles);
 for (const [agent, profile] of entries) {
   assert.match(agent, /^[a-z]+$/);
@@ -39,7 +45,7 @@ const { commandDigest, ...attestation } = contract;
 assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
 assert.equal(contract.acpxPatchSha256, createHash("sha256")
   .update(await readFile(new URL("../../patches/acpx@0.13.1.patch", root))).digest("hex"));
-for (const [agent, path] of [["pi", "test-fixtures/pi-acp/profile-v22-identity.json"], ["copilot", "test/fixtures/copilot-profile-v17-identity.json"]]) {
+for (const [agent, path] of [["pi", `test-fixtures/pi-acp/profile-v${manifest.profiles.pi.agentProfileVersion}-identity.json`], ["copilot", `test/fixtures/copilot-profile-v${manifest.profiles.copilot.agentProfileVersion}-identity.json`]]) {
   const identity = await readJson(path);
   assert.equal(manifest.profiles[agent].agentProfileVersion, identity.declaration.agentProfileVersion);
   assert.equal(manifest.profiles[agent].commandDigest, identity.commandDigest);

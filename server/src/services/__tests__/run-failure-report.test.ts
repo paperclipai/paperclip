@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, applyPendingMigrations, authUsers, closeRegisteredClients, companies, companySecrets, createDb, dotAgentBindings,
+  dotRunnerAssignments, grokBotDispatches, grokBotRoutines, heartbeatRuns, issues, mcpOauthClients, mcpOauthGrants, nativeRunFinalizations,
+  type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,7 +29,8 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
   return { ...actual, redactCurrentUserText: mockRedactCurrentUserText };
 });
 
-import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { controllerLeaseLossCancellation } from "../run-cancellation.js";
 import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
 const testDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
@@ -60,15 +63,22 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
         .flatMap((key) => inheritedEnv[key] === undefined ? [] : [[key, inheritedEnv[key]]]),
     );
+    process.env.PAPERCLIP_SENTRY_RUN_FAILURES = "unexpected";
   });
 
   afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     process.env = inheritedEnv;
+    await db.delete(grokBotRoutines);
+    await db.delete(companySecrets);
+    await db.delete(nativeRunFinalizations);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(mcpOauthClients);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -116,6 +126,55 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       ...overrides,
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
+
+  it.each([undefined, "", "off", "true", "invalid"])("does no reporting work without an explicit valid mode: %s", async mode => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
+    if (mode === undefined) delete process.env.PAPERCLIP_SENTRY_RUN_FAILURES;
+    const select = vi.fn();
+    await reportRunFailure({ select } as unknown as Db, buildRun());
+    expect(select).not.toHaveBeenCalled();
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(["quota", "git", "secret", "selection", "workspace", "hermes"])("reports known %s failures in all mode", async kind => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await seedCompanyAndAgent(kind === "hermes" ? { adapterType: "hermes_gateway" } : {});
+    const fixtures = {
+      quota: providerQuotaRun,
+      git: gitConnectionRun,
+      secret: missingSecretRun,
+      selection: aiSelectionRun,
+      workspace: localPathConfigurationRun,
+      hermes: hermesConnectionRun,
+    };
+    const fixture = fixtures[kind as keyof typeof fixtures]();
+    const phase = ["git", "secret", "selection", "workspace"].includes(kind) ? "setup" : "execute";
+    const before = structuredClone(fixture);
+    await reportRunFailure(db, fixture, { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, runId: fixture.id, runStatus: "failed", errorCode: fixture.errorCode,
+    }));
+    expect(fixture).toEqual(before);
+  });
+
+  it("reports company-scoped runs that have no task", async () => {
+    await seedCompanyAndAgent();
+    const fixture = buildRun({ nativeIssueId: null, contextSnapshot: null });
+    await reportRunFailure(db, fixture);
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, taskId: null, runId: fixture.id,
+    }));
+  });
+
+  it.each(["succeeded", "queued", "running", "interrupted", "cancelled"])("all mode excludes %s runs and expected operator stops", async status => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    const select = vi.fn();
+    await reportRunFailure({ select } as unknown as Db, buildRun({ status, startedAt: new Date(), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stopped", recordedAt: new Date().toISOString() },
+    } }));
+    expect(select).not.toHaveBeenCalled();
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
 
   it.each(["fresh", "resume", "provider_started"] as const)("keeps workspace base-ref observations reportable: %s", async mode => {
     await seedCompanyAndAgent();
@@ -334,6 +393,208 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
   });
 
+  function codexModelCapacityRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal service failure.\nSelected model is at capacity. Please try a different model.",
+      errorCode: "codex_transient_upstream", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        errorFamily: "transient_upstream", stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "service", title: "Selected model is at capacity. Please try a different model." },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a classified Codex ACP model capacity retry local", async () => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, codexModelCapacityRun(), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" },
+    { resultJson: { errorFamily: "transient_upstream" } },
+    { resultJson: { errorFamily: "provider_quota", terminalSessionFailure: { category: "service" } } },
+    { resultJson: { errorFamily: "transient_upstream", terminalSessionFailure: { category: "connection" } } },
+  ])("reports a Codex transient outcome without typed capacity evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    await reportRunFailure(db, codexModelCapacityRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a Codex ACP model capacity failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    await reportRunFailure(db, codexModelCapacityRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, codexModelCapacityRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
+  function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",
+      errorCode: "claude_auth_required", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "access", title: "Invalid API key · Fix external API key" },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["claude_auth_required", "acpx_auth_required"])("keeps a typed ACP provider access failure (%s) local", async (errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, providerAccessRun({ errorCode }), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" }, { errorCode: "adapter_failed" },
+    { resultJson: {} }, { resultJson: null }, { resultJson: { terminalSessionFailure: { category: "service" } } },
+    { resultJson: { terminalSessionFailure: "access" } },
+  ])("reports a provider auth outcome without typed ACP access evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a typed ACP provider access failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, providerAccessRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
+  function restartInterruptedSetupRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "Process lost -- server may have restarted; retrying once",
+      runtimeMode: "legacy", executionStage: "preparing", processPid: null, processGroupId: null,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: {
+          pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: true, runPredatesObserver: true,
+        },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a retried restart interruption of legacy setup local", async () => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun());
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports a retried restart interruption of legacy setup in all mode", async () => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun());
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { executionStage: "dispatching" }, { runtimeMode: "native" }, { processPid: 4242 },
+    { errorCode: "adapter_failed" },
+    { resultJson: { processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true, runPredatesObserver: true } } },
+    { resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: false, runPredatesObserver: true },
+    } },
+    { resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true, runPredatesObserver: false },
+    } },
+  ])("reports process loss without restart-before-dispatch evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun(overrides));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  async function expiredGrokOffer(input: {
+    wakes: Array<{ status: "rejected" | "accepted" | "acknowledged" | "unknown"; httpStatus: number | null }>;
+    acceptedAt?: Date | null;
+    originalFailureCode?: string;
+    finalization?: boolean;
+    offers?: number;
+  }) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "grok_bot" } });
+    const userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(mcpOauthClients).values({ id: userId, name: "Grok", redirectUris: ["https://client.example/callback"] });
+    const [grant] = await db.insert(mcpOauthGrants).values({ companyId, userId, clientId: userId, resource: "https://paperclip.example/mcp/runner",
+      purpose: "agent", agentId, scopes: ["paperclip:agent"] }).returning();
+    const [binding] = await db.insert(dotAgentBindings).values({ companyId, agentId, operatorId: userId, grantId: grant!.id,
+      providerKind: "grok_bot", status: "ready" }).returning();
+    const [secret] = await db.insert(companySecrets).values({ companyId, key: `grok-${binding!.id}`, name: "Grok routine" }).returning();
+    const [routine] = await db.insert(grokBotRoutines).values({ companyId, agentId, bindingId: binding!.id, bindingGeneration: 1,
+      botName: "Grok", secretId: secret!.id, secretVersion: 1 }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Grok task", assigneeAgentId: agentId, status: "in_progress" }).returning();
+    const run = buildRun({ errorCode: "native_provider_terminal_failed", error: "Dot assignment acceptance or execution authority expired.",
+      nativeIssueId: issue!.id, runtimeMode: "native", executionStage: "preparing", nativePhase: "terminal_failure", exitCode: null, signal: null });
+    await db.insert(heartbeatRuns).values(run);
+    if (input.finalization !== false) {
+      await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId, issueId: run.nativeIssueId!, phase: "terminal_failure",
+        failureCode: "native_provider_terminal_failed", failureDetail: { originalFailureCode: input.originalFailureCode ?? "dot_assignment_expired" } });
+    }
+    const offers = await db.insert(dotRunnerAssignments).values(Array.from({ length: input.offers ?? 1 }, () => ({ companyId, agentId,
+      bindingId: binding!.id, bindingGeneration: 1, runId: run.id, normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "fixture", projection: {}, status: "fenced" as const, acceptBy: new Date(Date.now() - 1000),
+      expiresAt: new Date(Date.now() + 3_600_000), acceptedAt: input.acceptedAt ?? null }))).returning();
+    const assignment = offers[0];
+    for (const wake of input.wakes) {
+      await db.insert(grokBotDispatches).values({ companyId, routineId: routine!.id, bindingId: binding!.id, bindingGeneration: 1,
+        grantId: grant!.id, routineRevision: 1, assignmentId: assignment!.id, sourceEventId: randomUUID(), kind: "mailbox_updated",
+        payload: {}, status: wake.status, httpStatus: wake.httpStatus, expiresAt: new Date(Date.now() + 600_000) });
+    }
+    return run;
+  }
+
+  it("keeps a Grok offer local when the endpoint rejected every work wake with HTTP 4xx", async () => {
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }, { status: "rejected", httpStatus: 400 }] });
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected Grok wake in all mode", async () => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }] });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, runId: run.id, errorCode: "native_provider_terminal_failed",
+    }));
+  });
+
+  it.each([
+    ["no wake was sent", { wakes: [] }],
+    ["a wake was rejected locally without HTTP evidence", { wakes: [{ status: "rejected", httpStatus: 400 }, { status: "rejected", httpStatus: null }] }],
+    ["the endpoint accepted a wake", { wakes: [{ status: "rejected", httpStatus: 400 }, { status: "acknowledged", httpStatus: 200 }] }],
+    ["delivery is uncertain", { wakes: [{ status: "unknown", httpStatus: 503 }] }],
+    ["the bot accepted the work", { wakes: [{ status: "rejected", httpStatus: 400 }], acceptedAt: new Date() }],
+    ["the run failed for another provider reason", { wakes: [{ status: "rejected", httpStatus: 400 }], originalFailureCode: "provider_failed" }],
+    ["the run has no finalization", { wakes: [{ status: "rejected", httpStatus: 400 }], finalization: false }],
+    ["the run has more than one offer", { wakes: [{ status: "rejected", httpStatus: 400 }], offers: 2 }],
+  ] as const)("keeps an expired Grok offer reportable when %s", async (_label, input) => {
+    const run = await expiredGrokOffer({ ...input, wakes: [...input.wakes] });
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an expired Grok offer reportable when its receipts cannot be read", async () => {
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }] });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the receipt reads fail.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture receipt read failed"); });
+    try {
+      await reportRunFailure(db, run, { phase: "execute" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
   function aiSelectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "configuration_incomplete",
@@ -510,6 +771,40 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     await reportRunFailure(db, run);
 
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function restrictedWorkspaceSourceRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "workspace_source_restricted", issueId: randomUUID() },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a restricted shared workspace source actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" }, { exitCode: 1 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" } } },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports restricted-source markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports restricted-source markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase });
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
@@ -722,6 +1017,26 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
   });
 
+  it("waits for the terminal write when a native run is failed pending a same-run retry", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "retryable_failure" }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "terminal_failure" }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("treats leaving a pending native retry as a new terminal failure", () => {
+    const pending = { status: "failed", runtimeMode: "native", nativePhase: "retryable_failure" } as const;
+    expect(isNewTerminalRunFailure({ ...pending, status: "running", nativePhase: "observed" }, pending)).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "terminal_failure" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "committed" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, pending)).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, nativePhase: null }, { ...pending, nativePhase: "terminal_failure" })).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, runtimeMode: "legacy" }, { ...pending, runtimeMode: "legacy", nativePhase: null }))
+      .toBe(false);
+  });
+
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {
     await seedCompanyAndAgent();
     for (const status of ["succeeded", "cancelled", "interrupted"] as const) {
@@ -741,6 +1056,36 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
       diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
     expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("labels a host controller lease loss with its closed cause", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: controllerLeaseLossCancellation("renewal_deadline") } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ diagnostics: { execution: {
+      cancellationSource: "controller_lease", cancellationExpected: false, controllerLeaseLossCause: "renewal_deadline" } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/Legacy controller lease lost/);
+  });
+  it("reports bounded lease-loss timings for a setup failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "failed", errorCode: "setup_failed", startedAt: new Date(0),
+      finishedAt: new Date(1000), resultJson: { controllerLeaseLoss: { cause: "renewal_deadline",
+        sinceRenewalMs: 61_000.4, renewalPendingMs: 59_000, deadlineLateMs: 1e12, renewalCount: -1, note: "private-note" } } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const execution = mockCaptureRunFailure.mock.calls[0][0].diagnostics.execution;
+    expect(execution).toMatchObject({ controllerLeaseLossCause: "renewal_deadline", controllerLeaseSinceRenewalMs: 61_000,
+      controllerLeaseRenewalPendingMs: 59_000, controllerLeaseDeadlineLateMs: 86_400_000 });
+    expect(execution).not.toHaveProperty("controllerLeaseRenewalCount");
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-note/);
+  });
+  it("drops lease-loss timings without a closed cause", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "failed", errorCode: "setup_failed", startedAt: new Date(0),
+      finishedAt: new Date(1000), resultJson: { controllerLeaseLoss: { cause: "forged", sinceRenewalMs: 1 } } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const execution = mockCaptureRunFailure.mock.calls[0][0].diagnostics.execution;
+    expect(execution).not.toHaveProperty("controllerLeaseLossCause");
+    expect(execution).not.toHaveProperty("controllerLeaseSinceRenewalMs");
   });
   it("does not report an operator's Stop as a failure", async () => {
     await seedCompanyAndAgent();

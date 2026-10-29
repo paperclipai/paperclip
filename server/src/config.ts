@@ -79,7 +79,33 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  gitCacheExpirationEnabled: boolean;
+  gitBaseExpirationEnabled: boolean;
+  gitCacheExpirationDryRun: boolean;
+  isolatedSourceRehomeEnabled: boolean;
+  isolatedSourceRehomeDryRun: boolean;
+  nestedCloneMigrationEnabled: boolean;
+  nestedCloneMigrationDryRun: boolean;
   workspaceReaperCooldownDays: number;
+  workspaceCompactionDelayHours: number | null;
+  skillVersionRetentionEnabled: boolean;
+  skillVersionRetentionDryRun: boolean;
+  skillVersionRetentionKeepNewest: number;
+  skillVersionRetentionGraceMinutes: number;
+  nativeHarnessBackupExpirationEnabled: boolean;
+  nativeHarnessBackupExpirationDryRun: boolean;
+  nativeHarnessBackupExpirationDays: number;
+  nativeRunnerEvidenceRetentionDays: number;
+  nativeWorkspaceSyncRetentionEnabled: boolean;
+  nativeWorkspaceSyncRetentionDryRun: boolean;
+  nativeWorkspaceSyncRetentionDays: number;
+  gitRestorePointRetentionDays: number;
+  gitRestorePointsEnabled: boolean;
+  gitRestorePointTerminalDelayDays: number;
+  gitRestorePointIdleDays: number;
+  taskDirectoryRetentionEnabled: boolean;
+  taskDirectoryRetentionDryRun: boolean;
+  taskDirectoryOrphanGraceDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -281,8 +307,10 @@ export function loadConfig(): Config {
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
   // immediate reaping. A negative or non-numeric value falls back to the
-  // default. The day granularity and the default of 7 obey the
-  // PAPERCLIP_DB_BACKUP_RETENTION_DAYS precedent above.
+  // default. The day granularity obeys the PAPERCLIP_DB_BACKUP_RETENTION_DAYS
+  // precedent above. The default is 1 day: regenerable files are compacted
+  // after a few hours anyway, so a longer hold only keeps source checkouts of
+  // delivered work, and a recurring task produces one workspace per run.
   const workspaceReaperCooldownDaysEnv =
     process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS?.trim();
   const workspaceReaperCooldownDaysRaw = Number(workspaceReaperCooldownDaysEnv);
@@ -291,7 +319,45 @@ export function loadConfig(): Config {
       && Number.isFinite(workspaceReaperCooldownDaysRaw)
       && workspaceReaperCooldownDaysRaw >= 0
       ? workspaceReaperCooldownDaysRaw
-      : 7;
+      : 1;
+  // The terminal-workspace reaper removes regenerable files (installed
+  // dependencies, build output, tool caches) from a terminal workspace this
+  // many hours after its issue tree becomes terminal. The worktree and every
+  // source file stay; a resumed task regenerates the files when its workspace
+  // is provisioned again. 0 compacts on the next sweep. A negative, empty, or
+  // non-numeric value falls back to the default of 1 hour.
+  // PAPERCLIP_WORKSPACE_COMPACTION_ENABLED=false turns compaction off.
+  const workspaceCompactionDelayHoursEnv =
+    process.env.PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS?.trim();
+  const workspaceCompactionDelayHoursRaw = Number(workspaceCompactionDelayHoursEnv);
+  const workspaceCompactionDelayHours =
+    process.env.PAPERCLIP_WORKSPACE_COMPACTION_ENABLED?.trim().toLowerCase() === "false"
+      ? null
+      : workspaceCompactionDelayHoursEnv
+          && Number.isFinite(workspaceCompactionDelayHoursRaw)
+          && workspaceCompactionDelayHoursRaw >= 0
+        ? workspaceCompactionDelayHoursRaw
+        : 1;
+  // Skill version retention removes materialized version directories under
+  // `skills/<companyId>/__versions__/` that no current version, agent pin, or
+  // live run uses. It keeps this many newest versions per skill as a warm
+  // cache. A version directory used within the grace window also stays. A
+  // removed directory is written again from its version row on next use.
+  // Negative, empty, or non-numeric values fall back to the defaults.
+  const nonNegativeIntegerEnv = (name: string, fallback: number) => {
+    const raw = process.env[name]?.trim();
+    const value = Number(raw);
+    return raw && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+  };
+  const skillVersionRetentionKeepNewest = nonNegativeIntegerEnv("PAPERCLIP_SKILL_VERSION_RETENTION_KEEP", 0);
+  const skillVersionRetentionGraceMinutes = nonNegativeIntegerEnv("PAPERCLIP_SKILL_VERSION_RETENTION_GRACE_MINUTES", 60);
+  const nativeHarnessBackupExpirationDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DAYS", 7));
+  const nativeRunnerEvidenceRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", 7));
+  const nativeWorkspaceSyncRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DAYS", 7));
+  const gitRestorePointRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS", 90));
+  const gitRestorePointTerminalDelayDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS", 3);
+  const gitRestorePointIdleDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS", 7);
+  const taskDirectoryOrphanGraceDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_TASK_DIRECTORY_ORPHAN_GRACE_DAYS", 7));
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -337,7 +403,33 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    gitCacheExpirationEnabled: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_ENABLED === "true",
+    gitBaseExpirationEnabled: process.env.PAPERCLIP_GIT_BASE_EXPIRATION_ENABLED === "true",
+    gitCacheExpirationDryRun: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_DRY_RUN !== "false",
+    isolatedSourceRehomeEnabled: process.env.PAPERCLIP_ISOLATED_SOURCE_REHOME_ENABLED === "true",
+    isolatedSourceRehomeDryRun: process.env.PAPERCLIP_ISOLATED_SOURCE_REHOME_DRY_RUN === "true",
+    nestedCloneMigrationEnabled: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED === "true",
+    nestedCloneMigrationDryRun: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN === "true",
     workspaceReaperCooldownDays,
+    workspaceCompactionDelayHours,
+    skillVersionRetentionEnabled: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_ENABLED !== "false",
+    skillVersionRetentionDryRun: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_DRY_RUN === "true",
+    skillVersionRetentionKeepNewest,
+    skillVersionRetentionGraceMinutes,
+    nativeHarnessBackupExpirationEnabled: process.env.PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED !== "false",
+    nativeHarnessBackupExpirationDryRun: process.env.PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN === "true",
+    nativeHarnessBackupExpirationDays,
+    nativeRunnerEvidenceRetentionDays,
+    nativeWorkspaceSyncRetentionEnabled: process.env.PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_ENABLED !== "false",
+    nativeWorkspaceSyncRetentionDryRun: process.env.PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DRY_RUN === "true",
+    nativeWorkspaceSyncRetentionDays,
+    gitRestorePointRetentionDays,
+    gitRestorePointsEnabled: process.env.PAPERCLIP_GIT_RESTORE_POINTS_ENABLED === "true",
+    gitRestorePointTerminalDelayDays,
+    gitRestorePointIdleDays,
+    taskDirectoryRetentionEnabled: process.env.PAPERCLIP_TASK_DIRECTORY_RETENTION_ENABLED === "true",
+    taskDirectoryRetentionDryRun: process.env.PAPERCLIP_TASK_DIRECTORY_RETENTION_DRY_RUN !== "false",
+    taskDirectoryOrphanGraceDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

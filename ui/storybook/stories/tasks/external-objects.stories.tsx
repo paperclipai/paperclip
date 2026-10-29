@@ -647,7 +647,7 @@ function FilterPopoverWithExternalChecked() {
           projects={storybookProjects.map((project) => ({ id: project.id, name: project.name }))}
           labels={storybookIssueLabels.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
           currentUserId="user-board"
-          enableRoutineVisibilityFilter
+          enableAgentCreatedVisibilityFilter
           buttonVariant="outline"
           creators={[
             { id: "user:user-board", label: "Riley Board", kind: "user", searchText: "board user human" },
@@ -681,6 +681,14 @@ const meta = {
         component:
           "External-object surface gallery: the §6 state matrix, the inline markdown decoration, the related-work section, and the project-rollup sidebar marker. Mirrors the Phase 6 acceptance set from the UX spec.",
       },
+    },
+    paperclip: {
+      "capabilities": [
+        "tasks/properties"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
 } satisfies Meta<typeof StateMatrixStory>;

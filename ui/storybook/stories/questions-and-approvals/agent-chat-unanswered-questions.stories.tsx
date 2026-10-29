@@ -3,7 +3,16 @@ import { expect, userEvent, within, waitFor } from "storybook/test";
 import { QuestionChat, question } from "../../fixtures/unansweredQuestionChat";
 
 const meta = { id: "chat-comments-agent-chat-unanswered-questions",
-  title: "Tasks and conversations/Questions and approvals/Chat & Comments/Agent Chat Unanswered Questions", parameters: { layout: "fullscreen" }, component: QuestionChat,
+  title: "Tasks and conversations/Questions and approvals/Chat & Comments/Agent Chat Unanswered Questions", parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/dismiss-and-reopen",
+        "agent-chat/history"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  }, component: QuestionChat,
   beforeEach: () => {
     localStorage.removeItem(`paperclip:task-question-dismissals:user-board:${question.issueId}`);
     for (const key of Object.keys(localStorage)) {

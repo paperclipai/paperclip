@@ -16,6 +16,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("retains an optional nonnegative integer version for prepared-task promotion", () => {
+    expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
+    expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();
+    for (const version of [-1, 0.5, null, "0"]) {
+      expect(updateIssueSchema.safeParse({ status: "todo", expectedStatusVersion: version }).success).toBe(false);
+    }
+  });
   it("preserves the exact expected execution policy snapshot without defaults", () => {
     const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
     expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);
@@ -650,6 +657,18 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it.each(["preconfigured", "isolated"])("rejects task-level homeMode %s on create and update", homeMode => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { homeMode } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
+  it.each(["PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "paperclip_runner_prepared_harness_home"])("rejects task-level prepared storage via %s", key => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { env: { [key]: "/home/agent/.claude", TASK_FLAG: "kept" } } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
   });
 
   it("rejects retired model profiles in agent runtime config", () => {

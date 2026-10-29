@@ -441,6 +441,18 @@ const meta = {
           "Interaction cards for `suggest_tasks`, `ask_user_questions`, `request_confirmation`, and `request_checkbox_confirmation`, shown both in isolation and inside the real `IssueChatThread` feed.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/questions",
+        "questions-and-approvals/confirmations",
+        "questions-and-approvals/audience",
+        "questions-and-approvals/plan-review",
+        "questions-and-approvals/continuation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Plan approval Pending, Confirmed, ExpiredByTargetChange and ResumeFailed states use shipped interaction cards. The continuation association covers accepted-but-resume-failed presentation only; no successful resumption, retry or duplicate-suppression proof."
+    },
   },
 } satisfies Meta;
 

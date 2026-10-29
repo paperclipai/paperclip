@@ -10,6 +10,8 @@ vi.mock("@/api/instanceSettings", () => ({
     getExperimental: async () => ({ enableNativeRunner: true }),
   },
 }));
+const agents = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), get: vi.fn(), list: vi.fn() }));
+vi.mock("@/api/agents", () => ({ agentsApi: agents }));
 const invites = vi.hoisted(() => ({ createCompanyInvite: vi.fn(), getInviteOnboarding: vi.fn(), copy: vi.fn() }));
 vi.mock("../api/access", () => ({ accessApi: invites }));
 vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: invites.copy }));
@@ -42,6 +44,20 @@ async function click(label: string) {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  const rows = new Map();
+  Object.values(agents).forEach(mock => mock.mockReset());
+  agents.list.mockResolvedValue([]);
+  agents.create.mockImplementation(async (_company, input) => {
+    const record = { ...input, id: input.setupId, pauseReason: "setup" };
+    rows.set(record.id, record);
+    return record;
+  });
+  agents.get.mockImplementation(async id => rows.get(id));
+  agents.update.mockImplementation(async (id, input) => {
+    const record = { ...rows.get(id), ...input, id };
+    rows.set(id, record);
+    return record;
+  });
   Object.values(dotApi).forEach(mock => mock.mockReset());
   invites.createCompanyInvite.mockResolvedValue({ token: "one-time-token", onboardingTextPath: "/api/invites/one-time-token/onboarding.txt" });
   invites.getInviteOnboarding.mockResolvedValue({ onboarding: { connectivity: {} } });
@@ -71,13 +87,13 @@ afterEach(async () => {
   cache.clear();
   container.remove();
 });
-async function name() {
+async function name(value = "Ada & Co") {
   const input = document.querySelector("input")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "value",
-    )!.set!.call(input, "Ada & Co");
+    )!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await click("Choose adapter");
@@ -101,77 +117,142 @@ it("requires a name and an enabled adapter before navigating", async () => {
   expect(query.get("name")).toBe("Ada & Co");
   expect(query.get("adapterType")).toBe("codex_local");
 });
-it("offers native Codex, Claude ACPX, and OpenCode runners", async () => {
+it("saves identity on name submission before an adapter is selected", async () => {
+  expect(agents.create).not.toHaveBeenCalled();
   await name();
-  await act(async () =>
-    (
-      document.querySelector(
-        'input[value="paperclip_runner"]',
-      ) as HTMLInputElement
-    ).click(),
-  );
-  const options = [...document.querySelectorAll("option")].map(
-    (option) => option.textContent,
-  );
-  expect(options).toContain("Codex (app server)");
-  expect(options).toContain("Claude (ACPX)");
-  expect(options).toContain("OpenCode");
-  expect(options.join(" ")).not.toContain("ACPX Codex");
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  const input = agents.create.mock.calls[0][1];
+  expect(input).toMatchObject({ name: "Ada & Co", adapterType: "process", metadata: { setupAdapterPending: true }, runtimeConfig: { heartbeat: { enabled: false } } });
+  expect(document.body.textContent).toContain("Choose an adapter");
+  expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
+  expect(state.navigate).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  await click("Configure agent");
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(agents.update).toHaveBeenCalledWith(input.setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("setupAgentId")).toBe(input.setupId);
+  expect(query.get("runner")).toBe("auto");
 });
-
-it.each([false, undefined])(
-  "hides the runner unless explicitly enabled (%s)",
-  async (enableNativeRunner) => {
-    await act(async () => {
-      cache.setQueryData(queryKeys.instance.experimentalSettings, {
-        enableNativeRunner,
-      });
-    });
-    await name();
-    expect(
-      document.querySelector('input[value="paperclip_runner"]'),
-    ).toBeNull();
-    expect(document.querySelector('input[value="codex_local"]')).not.toBeNull();
-  },
-);
-
-it.each([true, false, undefined])("gates the Cloud native runner on explicit enablement (%s)", async (enableNativeRunner) => {
-  await act(async () => {
-    cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner });
-    cache.setQueryData(queryKeys.health, {
-      status: "ok",
-      cloud: { managed: true },
-    });
-    cache.setQueryData(
-      queryKeys.adapters.all,
-      [
-        "claude_local",
-        "codex_local",
-        "opencode_local",
-        "cursor",
-        "cursor_cloud",
-        "gemini_local",
-        "grok_local",
-        "kimi_local",
-        "pi_local",
-        "hermes_local",
-        "paperclip_runner",
-      ].map((type) => ({ type, loaded: true })),
-    );
-  });
+it("retries a failed name save with the same identity", async () => {
+  agents.create.mockRejectedValueOnce(new Error("Creation unavailable"));
   await name();
-  expect(
-    [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map(
-      (input) => input.value,
-    ),
-  ).toEqual(["claude_local", "codex_local", "opencode_local", "grok_local", ...(enableNativeRunner ? ["paperclip_runner"] : [])]);
-  await act(async () =>
-    document.querySelector<HTMLInputElement>('input[value="grok_local"]')!.click(),
-  );
+  expect(document.body.textContent).toContain("Creation unavailable");
+  expect(document.body.textContent).not.toContain("Choose an adapter");
+  await click("Choose adapter");
+  expect(agents.create).toHaveBeenCalledTimes(2);
+  expect(agents.create.mock.calls[1][1].setupId).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(document.body.textContent).toContain("Choose an adapter");
+});
+it("keeps the draft on adapter save failure and updates it on retry", async () => {
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  agents.update.mockRejectedValueOnce(new Error("Save unavailable"));
+  await click("Configure agent");
+  expect(document.body.textContent).toContain("Save unavailable");
+  expect(state.navigate).not.toHaveBeenCalled();
+  await click("Configure agent");
+  expect(agents.update.mock.calls[1][0]).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(state.navigate).toHaveBeenCalledTimes(1);
+});
+it("keeps the same record after returning to the name step", async () => {
+  await name();
+  await click("Back");
+  await name();
+  expect(agents.create).toHaveBeenCalledTimes(1);
+});
+it("ignores repeated name submission while the record is being saved", async () => {
+  let finish!: (value: object) => void;
+  agents.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await name();
+  const input = agents.create.mock.calls[0][1];
+  await act(async () => {
+    const form = document.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ ...input, id: input.setupId }));
+  expect(document.body.textContent).toContain("Choose an adapter");
+});
+it("does not navigate after closing while an adapter save is pending", async () => {
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  let finish!: (value: object) => void;
+  agents.update.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await click("Configure agent");
+  await act(async () => root.render(null));
+  await act(async () => finish({ id: agents.create.mock.calls[0][1].setupId, name: "Ada & Co" }));
+  expect(state.navigate).not.toHaveBeenCalled();
+});
+it("can save the name when the process adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.all, [...state.adapters, { type: "process", loaded: true, disabled: true }]));
+  await name();
+  expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", metadata: { setupAdapterPending: true } });
+  expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
+});
+it("keeps the server-assigned name when a duplicate is numbered", async () => {
+  agents.create.mockImplementationOnce(async (_company, input) => ({ ...input, id: input.setupId, name: "Ada & Co 2" }));
+  await name();
+  expect(document.body.textContent).toContain("How should Ada & Co 2 work?");
+  expect(agents.update).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  await click("Configure agent");
+  expect(agents.update.mock.calls[0][1].name).toBe("Ada & Co 2");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("name")).toBe("Ada & Co 2");
+});
+it("renames a numbered draft only after the user edits its name", async () => {
+  agents.create.mockImplementationOnce(async (_company, input) => ({ ...input, id: input.setupId, name: "Ada & Co 2" }));
+  await name();
+  expect(agents.update).not.toHaveBeenCalled();
+  await click("Back");
+  await name("Grace");
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, { name: "Grace" }, "company-1");
+  expect(document.body.textContent).toContain("How should Grace work?");
+});
+it("offers one Codex harness without a runner/provider tile", async () => {
+  await name();
+  expect(document.querySelector('input[value="paperclip_runner"]')).toBeNull();
+  expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
+  expect(document.querySelector("select")).toBeNull();
+});
+it.each([true, false, undefined])("opens saved-token Copilot setup without an experimental override (%s)", async enableNativeRunner => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="copilot_runtime"]')!.click());
   await click("Configure agent");
   const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
-  expect(query.get("adapterType")).toBe("grok_local");
-  expect(query.get("name")).toBe("Ada & Co");
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("copilot");
+});
+it("hides Copilot when its runtime adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await name();
+  expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+});
+it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
+  await name();
+  await act(async () => (document.querySelector("summary") as HTMLElement).click());
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Experimental harness"]')!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>(`[role="option"][data-value="${provider}"]`)!.click());
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe(provider);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
+    adapterType: "paperclip_runner", adapterConfig: provider === "grok" ? { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" } : { provider: "opencode" },
+  }), "company-1");
+});
+it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {
+  await act(async () => {
+    if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
+    else cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
+  });
+  await name();
+  expect(document.querySelector('[aria-label="Experimental harness"]')).toBeNull();
+  expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
 });
 
 it("moves Dot out of the harness picker into experimental external invitations", async () => {

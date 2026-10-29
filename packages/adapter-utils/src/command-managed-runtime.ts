@@ -1,3 +1,4 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -544,11 +545,17 @@ export async function prepareCommandManagedRuntime(input: {
   runtimeRootDir?: string;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceSnapshotIsolation?: "worker";
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
-  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
   workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -614,9 +621,16 @@ export async function prepareCommandManagedRuntime(input: {
           runtimeRootDir: input.runtimeRootDir,
           syncWorkspace: input.syncWorkspace,
           workspaceInboundMode: input.workspaceInboundMode,
+          workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
           workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceCheckpoint: input.workspaceCheckpoint,
+          onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+          workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+          workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+          workspaceSeedCacheScope: input.workspaceSeedCacheScope,
           workspaceBaseline: input.workspaceBaseline,
           workspaceGitSnapshot: input.workspaceGitSnapshot,
+          workspaceRepositories: input.workspaceRepositories,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           workspaceFileMode: input.workspaceFileMode,
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
@@ -660,9 +674,16 @@ export async function prepareCommandManagedRuntime(input: {
     runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
+    workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
     workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,

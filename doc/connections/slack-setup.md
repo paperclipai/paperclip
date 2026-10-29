@@ -94,6 +94,11 @@ owns credential binding, personal linking, welcome messages, and verification.
 Removal cleanup stays independently callable. Slack wizard components and stage
 selection live in `ui/src/pages/apps/chat/slack/`.
 
+Inbound workspace checks and authenticated setup evidence resolve only the current
+signing secret. They do not read bot or app tokens for signature checks. Runtime
+setup still resolves its full credential set. Each check uses the saved company
+and connection, current secret version, and normal secret access audit path.
+
 Production Storybook journeys: **Connections / Slack / Managed setup** and
 **Connections / Slack / Automatic setup** (the persisted own-app automatic path).
 Server integration cases cover personal grants, duplicate requests, uncertain

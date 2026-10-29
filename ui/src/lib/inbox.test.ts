@@ -3,7 +3,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type {
   Approval,
-  DashboardSummary,
   ExecutionWorkspace,
   ExternalObjectSummary,
   HeartbeatRun,
@@ -17,8 +16,6 @@ import {
   buildInboxIssueGroupCreateDefaults,
   buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
-  computeInboxBadgeData,
-  filterInboxIssues,
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
   getInboxWorkItemKey,
@@ -284,128 +281,9 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
   };
 }
 
-const dashboard: DashboardSummary = {
-  companyId: "company-1",
-  agents: {
-    active: 1,
-    running: 0,
-    paused: 0,
-    error: 1,
-  },
-  tasks: {
-    open: 1,
-    inProgress: 0,
-    blocked: 0,
-    done: 0,
-  },
-  costs: {
-    monthSpendCents: 900,
-    monthBudgetCents: 1000,
-    monthUtilizationPercent: 90,
-  },
-  pendingApprovals: 1,
-  budgets: {
-    activeIncidents: 0,
-    pendingApprovals: 0,
-    pausedAgents: 0,
-    pausedProjects: 0,
-  },
-  runActivity: [],
-};
-
 describe("inbox helpers", () => {
   beforeEach(() => {
     storage.clear();
-  });
-
-  it.each([
-    { currentUserId: "user-1", expected: 1 },
-    { currentUserId: "user-2", expected: 1 },
-    { currentUserId: "local-board", expected: 1 },
-    { currentUserId: null, expected: 0 },
-  ])("counts only personal failed runs for $currentUserId", ({ currentUserId, expected }) => {
-    const result = computeInboxBadgeData({
-      approvals: [], joinRequests: [], dashboard, mineIssues: [],
-      dismissedAlerts: new Set(), dismissedAtByKey: new Map(), currentUserId,
-      heartbeatRuns: [
-        { ...makeRun("own", "failed", "2026-03-11T01:00:00Z"), responsibleUserId: "user-1" },
-        { ...makeRun("other", "timed_out", "2026-03-11T01:00:00Z", "agent-2"), responsibleUserId: "user-2" },
-        { ...makeRun("unowned", "failed", "2026-03-11T01:00:00Z", "agent-3"), responsibleUserId: null },
-        { ...makeRun("old-own", "failed", "2026-03-11T01:00:00Z", "shared-agent"), responsibleUserId: "user-1" },
-        { ...makeRun("new-other", "succeeded", "2026-03-11T02:00:00Z", "shared-agent"), responsibleUserId: "user-2" },
-      ],
-    });
-    expect(result.failedRuns).toBe(expected);
-    expect(result.inbox).toBe(expected);
-    expect(result.alerts).toBe(1); // The budget alert; run failures already describe agent errors in All.
-  });
-
-  it("counts the same inbox sources the badge uses", () => {
-    const result = computeInboxBadgeData({
-      approvals: [
-        { ...makeApproval("pending"), requestedByUserId: "user-1" },
-        { ...makeApproval("approved"), requestedByUserId: "user-2" },
-      ],
-      joinRequests: [makeJoinRequest("join-1")],
-      dashboard,
-      heartbeatRuns: [
-        makeRun("run-old", "failed", "2026-03-11T00:00:00.000Z"),
-        makeRun("run-latest", "timed_out", "2026-03-11T01:00:00.000Z"),
-        makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
-      ],
-      mineIssues: [makeIssue("1", true)],
-      dismissedAlerts: new Set<string>(),
-      dismissedAtByKey: new Map<string, number>(),
-      currentUserId: "user-1",
-    });
-
-    expect(result).toEqual({
-      inbox: 5,
-      approvals: 1,
-      failedRuns: 2,
-      joinRequests: 1,
-      mineIssues: 1,
-      alerts: 1,
-    });
-  });
-
-  it("drops dismissed runs and alerts from the computed badge", () => {
-    const result = computeInboxBadgeData({
-      approvals: [],
-      joinRequests: [],
-      dashboard,
-      heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
-      mineIssues: [],
-      dismissedAlerts: new Set<string>(["alert:budget", "alert:agent-errors"]),
-      dismissedAtByKey: new Map<string, number>([["run:run-1", new Date("2026-03-11T00:00:00.000Z").getTime()]]),
-      currentUserId: "user-1",
-    });
-
-    expect(result).toEqual({
-      inbox: 0,
-      approvals: 0,
-      failedRuns: 0,
-      joinRequests: 0,
-      mineIssues: 0,
-      alerts: 0,
-    });
-  });
-
-  it("excludes read mine issues from the inbox badge count", () => {
-    const result = computeInboxBadgeData({
-      approvals: [],
-      joinRequests: [],
-      dashboard,
-      heartbeatRuns: [],
-      mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
-      dismissedAlerts: new Set<string>(),
-      dismissedAtByKey: new Map(),
-      currentUserId: "user-1",
-    });
-
-    expect(result.mineIssues).toBe(1);
-    expect(result.inbox).toBe(1);
-    expect(result.alerts).toBe(2);
   });
 
   it("resurfaces non-issue items when they change after dismissal", () => {
@@ -481,7 +359,7 @@ describe("inbox helpers", () => {
     ]);
   });
 
-  it("surfaces agent-requested actionable approvals in mine and the badge", () => {
+  it("surfaces agent-requested actionable approvals in mine", () => {
     const approvals = [
       {
         ...makeApprovalWithTimestamps("approval-agent-requested", "pending", "2026-03-11T02:00:00.000Z"),
@@ -497,34 +375,6 @@ describe("inbox helpers", () => {
       "approval-agent-requested",
     ]);
 
-    const result = computeInboxBadgeData({
-      approvals,
-      joinRequests: [],
-      dashboard,
-      heartbeatRuns: [],
-      mineIssues: [],
-      dismissedAlerts: new Set<string>(),
-      dismissedAtByKey: new Map(),
-      currentUserId: "user-1",
-    });
-
-    expect(result.approvals).toBe(1);
-  });
-
-  it("does not count company-wide alerts in the personal inbox badge", () => {
-    const result = computeInboxBadgeData({
-      approvals: [],
-      joinRequests: [],
-      dashboard,
-      heartbeatRuns: [],
-      mineIssues: [],
-      dismissedAlerts: new Set<string>(),
-      dismissedAtByKey: new Map(),
-      currentUserId: "user-1",
-    });
-
-    expect(result.alerts).toBe(2);
-    expect(result.inbox).toBe(0);
   });
 
   it("mixes approvals into the inbox feed by most recent activity", () => {
@@ -943,7 +793,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -964,7 +814,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }),
     ).toEqual([]);
@@ -985,7 +835,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }),
     ).toEqual([]);
@@ -1033,7 +883,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: ["failed"],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
         issueFilterContext: {
           externalObjectSummaryByIssueId: summaries,
@@ -1129,7 +979,7 @@ describe("inbox helpers", () => {
         workspaces: ["workspace-1"],
         liveOnly: true,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: true,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -1145,7 +995,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: true,
+        showAgentCreatedTasks: false,
       },
     });
 
@@ -1162,7 +1012,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: true,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: true,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -1178,7 +1028,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: true,
+        showAgentCreatedTasks: false,
       },
     });
   });
@@ -1196,7 +1046,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1", false],
         liveOnly: "yes",
-        hideRoutineExecutions: "yes",
+        showAgentCreatedTasks: "yes",
       },
     }));
 
@@ -1213,7 +1063,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: false,
       },
     });
   });
@@ -1377,13 +1227,6 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 
-  it("hides routine execution issues when the hide toggle is enabled", () => {
-    const manualIssue = { ...makeIssue("manual", true), originKind: "manual" as const };
-    const routineIssue = { ...makeIssue("routine", true), originKind: "routine_execution" as const };
-
-    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue, routineIssue]);
-    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue]);
-  });
 
   it("groups mixed inbox items by type while preserving item order within each group", () => {
     const items: InboxWorkItem[] = [

@@ -27,10 +27,23 @@ afterEach(async () => {
 
 describe("ACPX recovery identity", () => {
   it.each([
+    ["copilot", "../../../test/fixtures/copilot-profile-v74-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v75-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v76-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v77-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v78-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v79-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v80-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v32-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v33-identity.json"],
+    ["grok", "../../../test/fixtures/grok-profile-v10-identity.json"],
+    ["grok", "../../../test/fixtures/grok-profile-v11-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v10-identity.json"],
     ["copilot", "../../../test/fixtures/copilot-profile-v14-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v13-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v14-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v22-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v23-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v7-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v8-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v9-identity.json"],
@@ -75,6 +88,48 @@ describe("ACPX recovery identity", () => {
     expect(customMode.mode).toBe("provider-custom-mode");
   });
 
+  it("binds Claude effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, claudeEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, claudeEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, claudeEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).claudeEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, claudeEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, claudeEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+  it("binds Grok effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, grokEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, grokEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, grokEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).grokEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, grokEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, grokEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+
+  it("fences changed or omitted Grok search policy across recovery", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: "grok-4.7", grokDisableWebSearch: true };
+    const disabled = await createAcpxRecoveryBinding(input);
+    const enabled = await createAcpxRecoveryBinding({ ...input, grokDisableWebSearch: false });
+    expect(enabled.profileSessionKey).not.toBe(disabled.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: disabled.commandDigest, requestedModel: "grok-4.7", effectiveModel: "grok-4.7", grokDisableWebSearch: true };
+    const saved = createAcpxIdentityRecord(expected, disabled);
+    expect(() => verifyExpectedAcpxIdentity(expected, disabled, { ...saved, grokDisableWebSearch: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, enabled, saved)).toThrow("immutable");
+  });
+
   it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {
     const fixture = await recoveryFixture();
     const profile = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
@@ -89,6 +144,21 @@ describe("ACPX recovery identity", () => {
     expect(() => verifyExpectedAcpxIdentity(expected, low, { ...persisted, piThinkingLevel: undefined })).toThrow(/persisted/);
     expect(() => verifyExpectedAcpxIdentity(expected, high, persisted)).toThrow(/immutable/);
     await expect(createAcpxRecoveryBinding({ ...input, piThinkingLevel: undefined })).rejects.toThrow(/explicit/);
+  });
+
+  it("fences changes to home mode or provider home without binding ownership to that home", async () => {
+    const fixture = await recoveryFixture();
+    const common = { runtimeDirectory: join(temporaryDirectories.at(-1)!, "runtime"), normalizedSessionId: "session-1",
+      workingDirectory: fixture.workspace, profile: resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"),
+      requestedModel: "gpt-5.6-sol", permissionMode: "approve-reads" as const };
+    const isolated = await createAcpxRecoveryBinding(common);
+    const first = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/one" } });
+    const same = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/one" } });
+    const other = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/two" } });
+    expect(first.profileSessionKey).toBe(same.profileSessionKey);
+    expect(first.profileSessionKey).not.toBe(isolated.profileSessionKey);
+    expect(first.profileSessionKey).not.toBe(other.profileSessionKey);
+    expect(first.runtimeRoot).toBe(isolated.runtimeRoot);
   });
 
   it("derives one stable, filesystem-safe runtime directory name", () => {

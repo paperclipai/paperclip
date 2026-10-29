@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, and } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, heartbeatRuns, issues, issueComments } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues, issueComments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -47,6 +47,24 @@ describe("runner task reassignment", () => {
     expect(f.enqueueWakeup.mock.calls[0]![1].idempotencyKey).toEqual(f.enqueueWakeup.mock.calls[1]![1].idempotencyKey);
     expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "issue.reassigned")))).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.targetId))).toHaveLength(1);
+  });
+
+  it("records human assignment fields for native creation and reassignment", async () => {
+    const f = await fixture();
+    const person = randomUUID();
+    await db.insert(authUsers).values({ id: person, name: "Reviewer", email: `${person}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: person, status: "active", membershipRole: "operator" });
+    await f.authority.execute({ ...f.call, arguments: { ...f.call.arguments, assigneeActorId: null, assigneeUserId: person } });
+    const [reassigned] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.targetId), eq(activityLog.action, "issue.reassigned")));
+    expect(reassigned).toMatchObject({ actorType: "agent", actorId: f.agentId, details: {
+      previousAssigneeAgentId: f.agentId, previousAssigneeUserId: null,
+      assigneeAgentId: null, assigneeUserId: person, changed: true,
+    } });
+    const created = await f.authority.execute({ tool: "create_task", callId: "human-child", arguments: {
+      title: "Review result", assigneeUserId: person, idempotencyKey: "human-child",
+    } }) as { task: { id: string } };
+    const [creation] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, created.task.id), eq(activityLog.action, "issue.created")));
+    expect(creation).toMatchObject({ actorType: "agent", actorId: f.agentId, details: { assigneeAgentId: null, assigneeUserId: person } });
   });
 
   it.each(["blocked", "backlog"])("preserves %s and does not wake work prematurely", async status => {

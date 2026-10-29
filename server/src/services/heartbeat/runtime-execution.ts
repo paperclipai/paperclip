@@ -1,3 +1,8 @@
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { writeExecutionControl } from "../execution-control-notifications.js";
+import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
@@ -131,6 +136,7 @@ export interface HeartbeatRuntimeExecutionInput {
     configuredTaskEnvironment: Parameters<typeof configuredEnvironmentProjection>[0];
     adapterEnv: Parameters<typeof buildNativeProviderEnvironment>[0];
     agentIdentity: AdapterExecutionContext["agentIdentity"];
+    observability?: AdapterExecutionContext["observability"];
     runtimeEnv: Selection["runtimeEnv"];
     useHostGitHub: boolean;
     githubSelection: { configured: boolean };
@@ -175,7 +181,7 @@ export interface HeartbeatRuntimeExecutionInput {
     Pick<Lifecycle, "persistRunProcessMetadata" | "recordCurrentHeartbeatRunRuntimeProgress"> &
     Pick<ReturnType<typeof createHeartbeatRunControl>, "cancelRunInternal"> &
     Pick<ReturnType<typeof createHeartbeatQueue>, "enqueueWakeup" | "dispatchPendingNativeStatusWakeups"> & {
-    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getById">;
+    executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getStoredById">;
     instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
     envOrchestrator: Pick<ReturnType<typeof environmentRunOrchestrator>, "releaseForRun">;
   };
@@ -225,11 +231,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
-  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
+  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
   const { executionControl, executionPhaseContext, dispatchResolvedInteractionContinuationWithAtomicGate } = input.control;
+  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = dispatch => {
+    const providerDispatch = AsyncLocalStorage.bind(dispatch);
+    return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
+  };
   const { identityRedactor, appendIdentityRedactedLog, onLog, onAdapterEvent, onAdapterMeta } = input.output;
   const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, dispatchPendingNativeStatusWakeups } = input.services;
   const localAgentJwtScope =
@@ -264,13 +274,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     );
   }
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
+  let preserveRunGatewayTokens = false;
+  let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
   const inspectFinalizeWorkspaceBranch = async () => {
     const workspaceRecord = persistedExecutionWorkspace?.id
-      ? await executionWorkspacesSvc.getById(
+      ? await executionWorkspacesSvc.getStoredById(
+          agent.companyId,
           persistedExecutionWorkspace.id,
         )
       : persistedExecutionWorkspace;
-    if (workspaceRecord?.strategyType !== "git_worktree") return null;
+    pluginWorkspaceFinalization = workspaceRecord
+      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
+      : null;
+    if (pluginWorkspaceFinalization || workspaceRecord?.strategyType !== "git_worktree") return null;
 
     const worktreePath =
       readNonEmptyString(workspaceRecord.providerRef) ??
@@ -291,192 +307,187 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const recordWorkspaceFinalize = async (
     status: "succeeded" | "failed",
     metadata?: Record<string, unknown>,
+    restore?: () => Promise<void>,
   ) => {
     if (adapterFinalizeOutcome) return;
-    let finalizeBranchMetadata: Record<string, unknown> | null = null;
-    let finalizeBranchRepairMetadata: Record<string, unknown> | null =
-      null;
-    if (status === "succeeded") {
-      const branchInspection = await inspectFinalizeWorkspaceBranch();
-      if (branchInspection) {
-        let inspection = branchInspection.inspection;
-        const initialManagedGitWorktreeBranch =
-          formatManagedGitWorktreeBranchInspection(inspection);
-        if (
-          !inspection.valid &&
-          inspection.reasonCode === "branch_mismatch" &&
-          inspection.repoRoot
-        ) {
-          let repairedExpectedBranchName = inspection.expectedBranchName;
-          try {
-            const coherence = await ensureGitWorktreeBranchCoherent({
-              db,
-              repoRoot: inspection.repoRoot,
-              worktreePath: inspection.worktreePath,
-              expectedBranchName: inspection.expectedBranchName,
-              actualBranchName: inspection.actualBranchName,
-              sourceIssue: issueRef
-                ? {
-                    id: issueRef.id,
-                    identifier: issueRef.identifier,
-                    title: issueRef.title,
-                    workMode: issueRef.workMode,
-                  }
-                : null,
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              heartbeatRunId: run.id,
-              enableWorkspaceBranchReconcileForward:
-                resolvedInstanceSettings.experimental
-                  .enableWorkspaceBranchReconcileForward,
-              enableWorkspaceDirtyQuarantineRepair:
-                resolvedInstanceSettings.experimental
-                  .enableWorkspaceDirtyQuarantineRepair,
-              persistForwardReconcile: false,
-              reconcileOperationPhase: "workspace_finalize",
-              recorder: workspaceOperationRecorder,
-            });
+    await workspaceOperationRecorder.recordOperation({
+      phase: "workspace_finalize", cwd: executionWorkspace.cwd,
+      metadata: { adapterType: agent.adapterType, executionTargetKind: executionTarget?.kind ?? "local",
+        ...(restore ? { owningService: "native_workspace_finalizer" } : {}), ...metadata },
+      run: async () => {
+        await restore?.();
+        let finalizeBranchMetadata: Record<string, unknown> | null = null;
+        let finalizeBranchRepairMetadata: Record<string, unknown> | null =
+          null;
+        if (status === "succeeded") {
+          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          if (branchInspection) {
+            let inspection = branchInspection.inspection;
+            const initialManagedGitWorktreeBranch =
+              formatManagedGitWorktreeBranchInspection(inspection);
             if (
-              coherence.branchName &&
-              coherence.branchName !==
-                branchInspection.workspaceRecord.branchName
+              !inspection.valid &&
+              inspection.reasonCode === "branch_mismatch" &&
+              inspection.repoRoot
             ) {
-              repairedExpectedBranchName = coherence.branchName;
-              executionWorkspace.branchName = coherence.branchName;
-              executionWorkspace.warnings.push(...coherence.warnings);
-            }
-          } catch (repairErr) {
-            const workspaceValidationFailure =
-              isWorkspaceValidationFailure(repairErr) ? repairErr : null;
-            finalizeBranchMetadata = {
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              ...initialManagedGitWorktreeBranch,
-            };
-            finalizeBranchRepairMetadata = {
-              attempted: true,
-              succeeded: false,
-              initial: initialManagedGitWorktreeBranch,
-              reason:
-                repairErr instanceof Error
-                  ? repairErr.message
-                  : String(repairErr),
-            };
-            await workspaceOperationRecorder.recordOperation({
-              phase: "workspace_finalize",
-              cwd: executionWorkspace.cwd,
-              metadata: {
-                adapterType: agent.adapterType,
-                executionTargetKind: executionTarget?.kind ?? "local",
-                ...metadata,
-                managedGitWorktreeBranch: finalizeBranchMetadata,
-                managedGitWorktreeBranchRepair:
-                  finalizeBranchRepairMetadata,
-                ...(workspaceValidationFailure?.resultJson
-                  ? {
-                      workspaceValidation:
-                        workspaceValidationFailure.resultJson
-                          .workspaceValidation ??
-                        workspaceValidationFailure.resultJson,
-                    }
-                  : {}),
-              },
-              run: async () => ({
-                status: "failed",
-                stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
-              }),
-            });
-            adapterFinalizeOutcome = "failed";
-            throw repairErr;
-          }
-
-          const repairedInspection =
-            await inspectManagedGitWorktreeBranch({
-              worktreePath: inspection.worktreePath,
-              expectedBranchName: repairedExpectedBranchName,
-              repoRoot: inspection.repoRoot,
-            });
-          finalizeBranchRepairMetadata = {
-            attempted: true,
-            succeeded: repairedInspection.valid,
-            initial: initialManagedGitWorktreeBranch,
-            repaired:
-              formatManagedGitWorktreeBranchInspection(
-                repairedInspection,
-              ),
-          };
-          inspection = repairedInspection;
-        }
-
-        const managedGitWorktreeBranch =
-          formatManagedGitWorktreeBranchInspection(inspection);
-        finalizeBranchMetadata = {
-          executionWorkspaceId: branchInspection.workspaceRecord.id,
-          ...managedGitWorktreeBranch,
-        };
-        if (!inspection.valid) {
-          const workspaceValidationFingerprint =
-            fingerprintFinalizeWorkspaceBranchValidation({
-              issueId: issueRef?.id ?? null,
-              executionWorkspaceId: branchInspection.workspaceRecord.id,
-              inspection: managedGitWorktreeBranch,
-            });
-          await workspaceOperationRecorder.recordOperation({
-            phase: "workspace_finalize",
-            cwd: executionWorkspace.cwd,
-            metadata: {
-              adapterType: agent.adapterType,
-              executionTargetKind: executionTarget?.kind ?? "local",
-              ...metadata,
-              managedGitWorktreeBranch: finalizeBranchMetadata,
-              ...(finalizeBranchRepairMetadata
-                ? {
+              let repairedExpectedBranchName = inspection.expectedBranchName;
+              try {
+                const coherence = await ensureGitWorktreeBranchCoherent({
+                  db,
+                  repoRoot: inspection.repoRoot,
+                  worktreePath: inspection.worktreePath,
+                  expectedBranchName: inspection.expectedBranchName,
+                  actualBranchName: inspection.actualBranchName,
+                  sourceIssue: issueRef
+                    ? {
+                        id: issueRef.id,
+                        identifier: issueRef.identifier,
+                        title: issueRef.title,
+                        workMode: issueRef.workMode,
+                      }
+                    : null,
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  heartbeatRunId: run.id,
+                  enableWorkspaceBranchReconcileForward:
+                    resolvedInstanceSettings.experimental
+                      .enableWorkspaceBranchReconcileForward,
+                  enableWorkspaceDirtyQuarantineRepair:
+                    resolvedInstanceSettings.experimental
+                      .enableWorkspaceDirtyQuarantineRepair,
+                  persistForwardReconcile: false,
+                  reconcileOperationPhase: "workspace_finalize",
+                  recorder: workspaceOperationRecorder,
+                });
+                if (
+                  coherence.branchName &&
+                  coherence.branchName !==
+                    branchInspection.workspaceRecord.branchName
+                ) {
+                  repairedExpectedBranchName = coherence.branchName;
+                  executionWorkspace.branchName = coherence.branchName;
+                  executionWorkspace.warnings.push(...coherence.warnings);
+                }
+              } catch (repairErr) {
+                const workspaceValidationFailure =
+                  isWorkspaceValidationFailure(repairErr) ? repairErr : null;
+                finalizeBranchMetadata = {
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  ...initialManagedGitWorktreeBranch,
+                };
+                finalizeBranchRepairMetadata = {
+                  attempted: true,
+                  succeeded: false,
+                  initial: initialManagedGitWorktreeBranch,
+                  reason:
+                    repairErr instanceof Error
+                      ? repairErr.message
+                      : String(repairErr),
+                };
+                await workspaceOperationRecorder.recordOperation({
+                  phase: "workspace_finalize",
+                  cwd: executionWorkspace.cwd,
+                  metadata: {
+                    adapterType: agent.adapterType,
+                    executionTargetKind: executionTarget?.kind ?? "local",
+                    ...metadata,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
                     managedGitWorktreeBranchRepair:
                       finalizeBranchRepairMetadata,
-                  }
-                : {}),
-            },
-            run: async () => ({
-              status: "failed",
-              stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
-            }),
-          });
-          adapterFinalizeOutcome = "failed";
-          throw new WorkspaceValidationFailure(
-            `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
-            {
-              workspaceValidation: {
-                reason: "git_worktree_branch_incoherence",
-                fingerprint: workspaceValidationFingerprint,
-                adapterType: agent.adapterType,
-                issueId: issueRef?.id ?? null,
-                issueIdentifier: issueRef?.identifier ?? null,
-                persistedExecutionWorkspaceId:
-                  branchInspection.workspaceRecord.id,
-                executionWorkspaceCwd: executionWorkspace.cwd,
-                managedGitWorktreeBranch: finalizeBranchMetadata,
-              },
-            },
-          );
-        }
-      }
-    }
-    await workspaceOperationRecorder.recordOperation({
-      phase: "workspace_finalize",
-      cwd: executionWorkspace.cwd,
-      metadata: {
-        adapterType: agent.adapterType,
-        executionTargetKind: executionTarget?.kind ?? "local",
-        ...metadata,
-        ...(finalizeBranchMetadata
-          ? { managedGitWorktreeBranch: finalizeBranchMetadata }
-          : {}),
-        ...(finalizeBranchRepairMetadata
-          ? {
-              managedGitWorktreeBranchRepair:
-                finalizeBranchRepairMetadata,
+                    ...(workspaceValidationFailure?.resultJson
+                      ? {
+                          workspaceValidation:
+                            workspaceValidationFailure.resultJson
+                              .workspaceValidation ??
+                            workspaceValidationFailure.resultJson,
+                        }
+                      : {}),
+                  },
+                  run: async () => ({
+                    status: "failed",
+                    stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
+                  }),
+                });
+                adapterFinalizeOutcome = "failed";
+                throw repairErr;
+              }
+
+              const repairedInspection =
+                await inspectManagedGitWorktreeBranch({
+                  worktreePath: inspection.worktreePath,
+                  expectedBranchName: repairedExpectedBranchName,
+                  repoRoot: inspection.repoRoot,
+                });
+              finalizeBranchRepairMetadata = {
+                attempted: true,
+                succeeded: repairedInspection.valid,
+                initial: initialManagedGitWorktreeBranch,
+                repaired:
+                  formatManagedGitWorktreeBranchInspection(
+                    repairedInspection,
+                  ),
+              };
+              inspection = repairedInspection;
             }
-          : {}),
+
+            const managedGitWorktreeBranch =
+              formatManagedGitWorktreeBranchInspection(inspection);
+            finalizeBranchMetadata = {
+              executionWorkspaceId: branchInspection.workspaceRecord.id,
+              ...managedGitWorktreeBranch,
+            };
+            if (!inspection.valid) {
+              const workspaceValidationFingerprint =
+                fingerprintFinalizeWorkspaceBranchValidation({
+                  issueId: issueRef?.id ?? null,
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  inspection: managedGitWorktreeBranch,
+                });
+              await workspaceOperationRecorder.recordOperation({
+                phase: "workspace_finalize",
+                cwd: executionWorkspace.cwd,
+                metadata: {
+                  adapterType: agent.adapterType,
+                  executionTargetKind: executionTarget?.kind ?? "local",
+                  ...metadata,
+                  managedGitWorktreeBranch: finalizeBranchMetadata,
+                  ...(finalizeBranchRepairMetadata
+                    ? {
+                        managedGitWorktreeBranchRepair:
+                          finalizeBranchRepairMetadata,
+                      }
+                    : {}),
+                },
+                run: async () => ({
+                  status: "failed",
+                  stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
+                }),
+              });
+              adapterFinalizeOutcome = "failed";
+              throw new WorkspaceValidationFailure(
+                `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
+                {
+                  workspaceValidation: {
+                    reason: "git_worktree_branch_incoherence",
+                    fingerprint: workspaceValidationFingerprint,
+                    adapterType: agent.adapterType,
+                    issueId: issueRef?.id ?? null,
+                    issueIdentifier: issueRef?.identifier ?? null,
+                    persistedExecutionWorkspaceId:
+                      branchInspection.workspaceRecord.id,
+                    executionWorkspaceCwd: executionWorkspace.cwd,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
+                  },
+                },
+              );
+            }
+          }
+        }
+        return { status, metadata: {
+          ...(pluginWorkspaceFinalization ? { pluginWorkspace: pluginWorkspaceFinalization } : {}),
+          ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
+          ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
+        } };
       },
-      run: async () => ({ status }),
     });
     // Only mark the outcome after the row landed, so a transient write
     // failure on the succeeded path can still be recovered by recording
@@ -484,7 +495,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     adapterFinalizeOutcome = status;
   };
 
-  const usageRecorder = await createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType });
+  const usageRecorder = await measureRunPhase("execution.usage_startup", () =>
+    createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType }));
   input.effects.onUsageCaptureReady(usageRecorder.persistFailure);
   let adapterResult: AdapterExecutionResult;
   const runGoalControlRequestId = readNonEmptyString(
@@ -499,12 +511,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         nativeExecution.runtimeContext.mcp.bindingId
           ? nativeExecution.runtimeContext.mcp.digest
           : null;
-      const nativeMcpServers = await buildPaperclipRuntimeMcpServers({
+      const nativeMcpServers = "homeMode" in nativeExecution && nativeExecution.homeMode === "preconfigured" ? [] : await measureRunPhase("execution.mcp_handoff", () => buildPaperclipRuntimeMcpServers({
         db,
         agent,
         runId: run.id,
         expectedAssignmentDigest: expectedNativeMcpDigest,
-      });
+      }));
       if ("runtimeContext" in nativeExecution) {
         if (nativeMcpServers.length > 1)
           throw new Error(
@@ -567,11 +579,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }),
       );
       const guardedDispatch =
-        await dispatchResolvedInteractionContinuationWithAtomicGate(
+        await dispatchWithTiming(
           (markDispatchStarted) => {
             return executePaperclipNativeSession({
+              casesEnabled: context.paperclipCasesEnabled === true,
               db,
               execution: nativeExecution,
+              observability,
               getFreshSessionHandoff: getNativeFreshSessionHandoff,
               refreshTools: context.refreshTools === true,
               conversationMode: isConversation(issueContext),
@@ -579,6 +593,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               runnerInstanceId: nativeRunnerInstanceId,
               leaseOwner: runOptions.nativeLeaseOwner,
               restartRecovery: runOptions.nativeRestartRecovery,
+              onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
                 options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",
@@ -625,6 +640,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedGitHub: !useHostGitHub && githubSelection.configured,
               billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
+              managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
+              managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
@@ -653,6 +670,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                     }
                   : {}),
               },
+              onTaskDispatched: markDispatchStarted,
               runnerExecutionTarget: executionTarget,
               runnerIngressAuthorized: isRunnerIngressAuthorized(
                 nativeRuntimeResolution,
@@ -775,24 +793,25 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (runtimeTools && runtimeToolDelivery === "invocation_context") {
         adapterContext.paperclipRuntimeTools = runtimeTools;
       }
-      const managedMcpConfig = await createManagedMcpRunConfig({
+      const managedMcpConfig = await measureRunPhase("execution.mcp_handoff", () => createManagedMcpRunConfig({
         db,
         agent,
         runId: run.id,
         config: runtimeConfig,
         projectId: issueRef?.projectId ?? null,
         issueId: issueRef?.id ?? null,
-      });
+      }));
       if (managedMcpConfig) {
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
       const guardedDispatch =
-        await dispatchResolvedInteractionContinuationWithAtomicGate(
+        await dispatchWithTiming(
           (markDispatchStarted) => {
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
               agentIdentity,
+              observability,
               runId: run.id,
               agent,
               runtime: runtimeForAdapter,
@@ -894,7 +913,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
 
     if (parseObject(adapterResult.executionRecovery).providerWorkStarted !== false) {
-      const captured = await usageRecorder.complete(adapterResult);
+      const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
       adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
     } else {
       // Stop may already own the terminal result. Preserve its metadata
@@ -919,13 +938,14 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             eq(workspaceOperations.status, "succeeded"),
           )).limit(1);
           if (exported.length) adapterFinalizeOutcome = "succeeded";
-          else await restoreNativeWorkspaceBestEffort({
-            db, runId: run.id, assertOwnership: ownership?.assertHeld,
-            restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
-          });
+          else await recordWorkspaceFinalize(hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded", undefined,
+            async () => { await measureRunPhase("execution.workspace_finalize", () => restoreNativeWorkspaceBestEffort({
+              db, runId: run.id, assertOwnership: ownership?.assertHeld,
+              restore: () => nativeWorkspaceSync!.restoreWorkspace(ownership?.assertHeld),
+            })); });
         }
         await ownership?.assertHeld();
-        await db
+        await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
           .update(heartbeatRuns)
           .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
           .where(
@@ -933,19 +953,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          );
+          ));
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
           adapterResult.nativeFinalization.workspaceFinalizeStatus =
             workspaceFinalizeStatus;
           try {
-            const finalized = await finalizeNativeRun({
+            const finalized = await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
               db,
               runId: run.id,
               workspaceFinalizeStatus,
               preserveProviderAttempt: Boolean(nativeWorkspaceSync),
-            });
+            }));
             await dispatchPendingNativeStatusWakeups({
               companyId: run.companyId,
             });
@@ -968,9 +988,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       }
     };
     if (nativeWorkspaceSync) {
-      const owned = await withNativeWorkspaceFinalizationOwnership({
+      const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
         db, companyId: run.companyId, runId: run.id,
-      }, completeWorkspace);
+      }, completeWorkspace));
       if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
     } else {
       await completeWorkspace();
@@ -990,13 +1010,18 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       // Preserve the provider and its run for the new controller. This
       // also keeps generic teardown from terminalizing/releasing its lease.
       input.effects.onNativeSessionResumeScheduled();
+      preserveRunGatewayTokens = true;
       throw adapterErr;
     }
     if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
       input.effects.onNativeOwnershipHeld();
       throw adapterErr;
     }
-    await db
+    if (nativeRuntimeResolution.kind === "native" && nativeWorkspaceSync?.reference.state === "prepared"
+      && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
+      input.effects.onProviderResourceDisposition("stop_and_retain");
+    }
+    await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
       .update(heartbeatRuns)
       .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
       .where(
@@ -1004,7 +1029,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
         ),
-      );
+      ));
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&
@@ -1114,11 +1139,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         );
       }
       try {
-        await finalizeNativeRun({
+        await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
           db,
           runId: run.id,
           workspaceFinalizeStatus: "failed",
-        });
+        }));
         await dispatchPendingNativeStatusWakeups({
           companyId: run.companyId,
         });
@@ -1132,7 +1157,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     throw adapterErr;
   } finally {
     try {
-      await revokeHeartbeatRunGatewayTokens({
+      if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,
         companyId: agent.companyId,
         runId: run.id,

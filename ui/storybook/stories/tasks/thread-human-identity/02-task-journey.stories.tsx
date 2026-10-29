@@ -46,7 +46,16 @@ const meta = {
   id: "chat-comments-human-identity-02-mixed-author-journey",
   title: "Tasks and conversations/Task creation and lifecycle/Chat & Comments/Human identity/02 Mixed-author journey", component: Journey,
   args: { viewer: alexId, fullHistory: false },
-  parameters: { layout: "fullscreen", initialEntries: ["/PAP/issues/human-identity-example"], docs: { story: { inline: false }, description: { component: "Representative turns from two humans and an agent in the production app shell and TaskChatThread, including its composer. Photos remain null so the shared initials fallback is visible. Swap the viewer: identity follows authorUserId. The default excerpt fits all three speakers in one view; Full Conversation includes all fixture messages. Sending is local to this preview." } } },
+  parameters: { layout: "fullscreen", initialEntries: ["/PAP/issues/human-identity-example"], docs: { story: { inline: false }, description: { component: "Representative turns from two humans and an agent in the production app shell and TaskChatThread, including its composer. Photos remain null so the shared initials fallback is visible. Swap the viewer: identity follows authorUserId. The default excerpt fits all three speakers in one view; Full Conversation includes all fixture messages. Sending is local to this preview." } },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 } satisfies Meta<typeof Journey>;
 export default meta;
 type Story = StoryObj<typeof meta>;

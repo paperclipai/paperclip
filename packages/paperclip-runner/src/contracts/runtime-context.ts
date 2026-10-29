@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
+import {
+  PAPERCLIP_AGENT_DIRECTORY_PROMPT,
+  PAPERCLIP_EDITABLE_INSTRUCTIONS_PROMPT,
+  PAPERCLIP_EXECUTION_PROMPT,
+  PAPERCLIP_INSTRUCTION_SIBLING_ROOT_PROMPT,
+} from "./runtime-context-prompts.js";
+
+export { PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION } from "./runtime-context-prompts.js";
 
 export const NATIVE_RUNTIME_ASSET_SCHEMA = "paperclip.runtime-asset.v1" as const;
-export const PAPERCLIP_EXECUTION_PROMPT_REVISION = "paperclip-execution.v6" as const;
-export const PAPERCLIP_EXECUTION_PROMPT = "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. To hire or reuse a persistent teammate, use list_agents, then search_api for agent-hires and call_api if a hire is needed. Provider helper threads do not create Paperclip agents. When the user assigns work or a revision to a teammate, use create_task with that agent's ID; review their result rather than doing their assigned work yourself. When remaining work depends on a child task, use set_dependencies to add its ID while preserving existing blocker IDs. Complete independent work, then call paperclip_block with the child agent as owner and child completion as the unblock action. End the turn so the child can use the workspace. Do not sleep or poll for child results while holding the workspace. Paperclip resumes the parent when the dependency completes. When the user asks to connect a service, call connections_search before any service tool, even when that tool is already installed. Follow the returned instruction and wait for any required user choice before executing. For other tasks needing a service, use installed tools if available; otherwise use connections_search and follow its instruction. The request appears as a card in the task. Finish independent work before yielding for access; do not poll or request the same connection repeatedly. Paperclip will continue automatically with updated tools after resolution. After a decline, pursue alternatives unless the user explicitly asks to retry. For a deferred check you own, call set_task_monitor with a future nextCheckAt and notes. Confirm the persisted schedule on the current task, then call paperclip_finish with reportedWorkDisposition yielded and continuation.kind monitor. End the turn; the one-shot monitor wakes you with issue_monitor_due. Re-arm explicitly only if another check is needed. Do not claim a monitor exists without its receipt. Finish exactly once with `paperclip_finish` or `paperclip_block`." as const;
 
 export interface NativeRuntimeAssetReference {
   schema: typeof NATIVE_RUNTIME_ASSET_SCHEMA;
@@ -25,6 +31,12 @@ export interface NativeRuntimeContextSnapshot {
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
   connectionInstructions?: { text: string; digest: string };
   aggregateDigest: string;
+}
+
+/** Authenticated current-run grants; immutable session policy is verified separately. */
+export interface NativeRunRuntimeGrant {
+  runtimeContext: NativeRuntimeContextSnapshot | null;
+  instructions: string;
 }
 
 export class NativeRuntimeContextError extends Error {
@@ -167,19 +179,44 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
   return { ...parsed, aggregateDigest };
 }
 
+function renderInstructionPaths(prompt: string, paths: { rootPath: string; entryPath: string }): string {
+  return prompt.replace(/\{(rootPath|entryPath)\}/g, (_placeholder, key: "rootPath" | "entryPath") => paths[key]);
+}
+
 export function composeNativeSystemInstructions(context: NativeRuntimeContextSnapshot, entryContent: string): string {
   return [
     context.prompt.text,
     entryContent.trim(),
     context.connectionInstructions?.text,
     context.instructions.workingCopy?.kind === "agent_files"
-      ? `Your persistent agent directory (AGENT_HOME) is ${context.instructions.workingCopy.rootPath}. This is the current turn's copy; its absolute path may change between turns. In shell commands, use the current $AGENT_HOME environment variable instead of an absolute agent-directory path from an earlier turn. Your instruction entry is ${context.instructions.workingCopy.entryPath}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.`
+      ? renderInstructionPaths(PAPERCLIP_AGENT_DIRECTORY_PROMPT, context.instructions.workingCopy)
       : context.instructions.workingCopy
-      ? `Your editable agent instruction file is ${context.instructions.workingCopy.rootPath}/${context.instructions.workingCopy.entryPath}. Edit this registered private copy normally. After this run stops, Paperclip saves changed content as a persistent revision if your responsible user still has permission and the baseline has not changed. Check the run's instruction-save receipt before claiming persistence. Conflicts are preserved for explicit resolution. Repository instruction files, skills, and this run's loaded prompt are separate and are not collected.`
+      ? renderInstructionPaths(PAPERCLIP_EDITABLE_INSTRUCTIONS_PROMPT, context.instructions.workingCopy)
       : null,
     // Keep this canonical suffix intact for provider-specific asset remapping.
-    `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
+    PAPERCLIP_INSTRUCTION_SIBLING_ROOT_PROMPT + context.instructions.bundle.rootPath,
   ].filter(Boolean).join("\n\n");
+}
+
+export function retargetNativeSystemInstructions(
+  instructions: string,
+  prior: NativeRuntimeContextSnapshot,
+  current: NativeRuntimeContextSnapshot | null,
+): string {
+  const priorPrefix = prior.prompt.text;
+  const priorSuffix = composeNativeSystemInstructions(prior, "").slice(priorPrefix.length);
+  // Legacy callers can supply opaque system instructions. Only the composer's
+  // exact framing identifies a trusted asset block; never rewrite their text.
+  if (!instructions.startsWith(priorPrefix) || !instructions.endsWith(priorSuffix)) {
+    return instructions;
+  }
+  const custom = instructions.slice(priorPrefix.length, -priorSuffix.length);
+  if (custom && !custom.startsWith("\n\n")) return instructions;
+  // Keep custom entry bytes intact, including historical path examples or an
+  // identical paragraph quoted inside the entry. Only replace the final block.
+  return (current?.prompt.text ?? priorPrefix) + custom + (current
+    ? composeNativeSystemInstructions(current, "").slice(current.prompt.text.length)
+    : "");
 }
 
 /** Explicit per-turn selection; availability alone never invokes a skill. */

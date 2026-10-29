@@ -2,6 +2,8 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import type { AttentionSortMode } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
+import { decisionHistoryService } from "../services/decision-history.js";
+import { z } from "zod";
 import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
@@ -14,6 +16,21 @@ function optionalQueryString(value: unknown, field: string) {
 export function attentionRoutes(db: Db) {
   const router = Router();
   const svc = attentionService(db);
+
+  router.get("/companies/:companyId/attention/history", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
+    const query = z.object({
+      cursor: z.string().max(1000).optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
+      search: z.string().trim().max(200).optional(), outcome: z.string().max(40).optional(),
+      agentId: z.string().uuid().optional(), projectId: z.string().uuid().optional(),
+      sort: z.enum(["newest", "oldest"]).optional(), since: z.string().datetime().optional(),
+    }).strict().safeParse(req.query);
+    if (!query.success) throw badRequest("Invalid decision history filters");
+    res.json(await decisionHistoryService(db).list(companyId, { ...query.data, actor: req.actor, userId: req.actor.userId }));
+  });
 
   router.get("/companies/:companyId/attention", async (req, res) => {
     const companyId = req.params.companyId as string;

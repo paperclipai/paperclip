@@ -6,7 +6,16 @@ const meta = {
   id: "onboarding-external-agent-invitation-components",
   title: "Agents and reusable capabilities/Hiring, configuration, and organization/Onboarding/External agent invitation/Components",
   component: DotConnectionChecks,
-  parameters: { layout: "centered", docs: { description: { component: "Controlled presentation states. Connection checks must be driven by server evidence. Subscription verification alone must never mark the connection ready." } } },
+  parameters: { layout: "centered", docs: { description: { component: "Controlled presentation states. Connection checks must be driven by server evidence. Subscription verification alone must never mark the connection ready." } },
+    paperclip: {
+      "capabilities": [
+        "agents/hire",
+        "access/invitations"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   decorators: [Story => <div className="w-full max-w-md p-6"><Story /></div>],
 } satisfies Meta<typeof DotConnectionChecks>;
 export default meta;

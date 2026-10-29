@@ -277,6 +277,15 @@ const meta = {
           "Stopped-work triage Inbox tab. Rows group by reason variant and sort by severity → stoppedSinceAt. The reason chip + owner + action combo sits next to the issue title. No quick archive on this tab.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "inbox-search/triage",
+        "recovery/diagnosis"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof BlockedTabSurface>;
 

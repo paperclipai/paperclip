@@ -1,6 +1,6 @@
 import { type BudgetServiceHooks } from "./budgets.js";
 
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, agentConfigRevisions, agentApiKeys, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type AgentApiKeyScope } from "@paperclipai/shared";
@@ -31,14 +31,10 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     createAgentLifecycle(db, budgetHooks).updateConfiguration(...args);
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
-      const conditions = [eq(agents.companyId, companyId)];
-      if (!options?.includeTerminated) {
-        conditions.push(ne(agents.status, "terminated"));
-      }
-      const [rows, allCompanyRows] = await Promise.all([
-        db.select().from(agents).where(and(...conditions)),
-        listCompanyAgentRows(companyId),
-      ]);
+      const allCompanyRows = await listCompanyAgentRows(companyId);
+      const rows = options?.includeTerminated
+        ? allCompanyRows
+        : allCompanyRows.filter((row) => row.status !== "terminated");
       const hydrated = await hydrateAgentSpend(rows);
       return normalizeAgentRows(hydrated, allCompanyRows);
     },
@@ -117,6 +113,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
+      if (existing.lifecycleHolds?.includes("setup")) {
+        throw conflict("Finish agent setup before creating keys");
+      }
       if (existing.status === "pending_approval") {
         throw conflict("Cannot create keys for pending approval agents");
       }

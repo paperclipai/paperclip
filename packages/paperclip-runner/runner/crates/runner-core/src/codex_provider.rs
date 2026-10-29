@@ -23,6 +23,52 @@ use crate::provider_events::normalized_codex_terminal_event_type;
 use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
+#[cfg(unix)]
+pub(crate) fn runtime_notification_codex_args(
+    args: &[String],
+    profile: &str,
+    paths: &[PathBuf; 4],
+) -> Vec<String> {
+    let prefix = "shell_environment_policy.include_only=";
+    let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
+        return vec![];
+    };
+    let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
+        return vec![];
+    };
+    for key in [
+        crate::runtime_notifications::CONTEXT_ENV,
+        crate::runtime_notifications::HELPER_ENV,
+    ] {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.into());
+        }
+    }
+    let mut extra = vec![
+        "-c".into(),
+        format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
+        "-c".into(),
+        "shell_environment_policy.inherit=\"all\"".into(),
+    ];
+    for profile in BTreeSet::from([profile, "paperclip-runner-workspace-read-only"]) {
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Ok(mut config) = format!("filesystem={value}").parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
+            continue;
+        };
+        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
+            filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
+        }
+        extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
+    }
+    extra
+}
+
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -32,6 +78,14 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AI_PROVIDER_URL",
     "PAPERCLIP_AGENT_KEY_ID",
@@ -43,6 +97,7 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -367,6 +422,8 @@ pub struct CodexProviderConfig {
     pub approval_policy: String,
     #[serde(default)]
     pub externally_sandboxed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
@@ -540,6 +597,10 @@ pub enum CodexProviderEvent {
         request_id: String,
         question_set: Value,
     },
+    McpPermissionRequest {
+        request_id: String,
+        params: Value,
+    },
     Exited {
         exit_code: Option<i32>,
         success: bool,
@@ -663,12 +724,14 @@ enum AmbiguousTurnMessage {
 
 pub struct CodexProvider {
     process: SupervisedProcess,
+    _stdio_mcp: Option<crate::stdio_mcp::StdioMcpSession>,
     stderr_tail: BoundedLogBuffer,
     config: CodexProviderConfig,
     authorized_tools: Vec<AuthorizedTool>,
     next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
+    observed_model: Option<String>,
     active_provider_turn_id: Option<String>,
     pending_messages: VecDeque<BufferedProviderMessage>,
     deferred_ambiguous_messages: VecDeque<BufferedProviderMessage>,
@@ -813,10 +876,18 @@ const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AGENT_KEY_ID",
     "PAPERCLIP_AGENT_PUBLIC_KEY",
     "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PAPERCLIP_RUNNER_HOME_MODE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
     "CODEX_HOME",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
@@ -829,6 +900,10 @@ fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static 
     } else {
         "paperclip-runner-workspace-only"
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl CodexProvider {
@@ -890,7 +965,9 @@ impl CodexProvider {
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
-        if config.provider == "codex" {
+        if config.provider == "codex"
+            && std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() != Ok("preconfigured")
+        {
             if let Some(home) = std::env::var_os("CODEX_HOME") {
                 crate::codex_startup_trust::trust_startup_root(
                     Path::new(&home),
@@ -904,11 +981,15 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
-        let permission_profile = codex_permission_profile(
-            &config.provider,
-            config.externally_sandboxed
-                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
-        );
+        let permission_profile = if config.read_only {
+            "paperclip-runner-workspace-read-only"
+        } else {
+            codex_permission_profile(
+                &config.provider,
+                config.externally_sandboxed
+                    || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+            )
+        };
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -938,6 +1019,37 @@ impl CodexProvider {
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;
+        let stdio_mcp = if config.provider == "codex" && !config.read_only {
+            crate::stdio_mcp::StdioMcpSession::create()
+                .map_err(|e| LocalRunnerError::invalid(e.to_string()))?
+        } else {
+            None
+        };
+        let mut launch_args = config.args.clone();
+        if let Some(session) = &stdio_mcp {
+            let position = launch_args
+                .iter()
+                .position(|arg| arg == "app-server")
+                .unwrap_or(launch_args.len());
+            launch_args.splice(
+                position..position,
+                session
+                    .codex_args()
+                    .map_err(|e| LocalRunnerError::invalid(e.to_string()))?,
+            );
+        }
+        #[cfg(unix)]
+        if config.provider == "codex" {
+            if let Some(paths) = crate::runtime_notifications::access_paths() {
+                let extra =
+                    runtime_notification_codex_args(&launch_args, &permission_profile, &paths);
+                let position = launch_args
+                    .iter()
+                    .position(|arg| arg == "app-server")
+                    .unwrap_or(launch_args.len());
+                launch_args.splice(position..position, extra);
+            }
+        }
         let spawn = (|| {
             if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
@@ -963,7 +1075,7 @@ impl CodexProvider {
             } else {
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
-                    &config.args,
+                    &launch_args,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
@@ -994,6 +1106,7 @@ impl CodexProvider {
         }
         let mut provider = Self {
             process,
+            _stdio_mcp: stdio_mcp,
             stderr_tail: BoundedLogBuffer::new(
                 MAX_PROVIDER_STDERR_LINES,
                 MAX_PROVIDER_STDERR_BYTES,
@@ -1003,6 +1116,7 @@ impl CodexProvider {
             next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
+            observed_model: None,
             active_provider_turn_id: None,
             pending_messages: VecDeque::new(),
             deferred_ambiguous_messages: VecDeque::new(),
@@ -1061,7 +1175,7 @@ impl CodexProvider {
             let mut params = json!({
                 "cwd": config.cwd,
                 "model": config.model,
-                "approvalPolicy": config.approval_policy,
+                "approvalPolicy": if provider._stdio_mcp.is_some() { crate::stdio_mcp::codex_approval_policy() } else { json!(config.approval_policy) },
                 "runtimeWorkspaceRoots": [config.cwd],
                 "dynamicTools": dynamic_tools,
             });
@@ -1133,6 +1247,12 @@ impl CodexProvider {
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
+            provider.observed_model = opened
+                .get("model")
+                .or_else(|| opened.pointer("/thread/model"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 240)
+                .map(str::to_owned);
 
             if resume_thread_id.is_some() {
                 stage = ProviderStartupStage::ThreadRead;
@@ -1173,6 +1293,10 @@ impl CodexProvider {
 
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
+    }
+
+    pub fn observed_model(&self) -> Option<&str> {
+        self.observed_model.as_deref()
     }
 
     pub(crate) fn take_provider_trace_frame_id(&mut self) -> Option<u64> {
@@ -1344,7 +1468,8 @@ impl CodexProvider {
                     ));
                 }
                 Some(CodexProviderEvent::ToolCall { .. })
-                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                | Some(CodexProviderEvent::RuntimeRequest { .. })
+                | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
                     return Err(LocalRunnerError::invalid(
                         "Codex warm run attachment observed a post-terminal provider request",
                     ));
@@ -1686,6 +1811,17 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_options_and_effort(message, cwd, options, None, None)
+    }
+
+    pub(crate) fn start_turn_with_options_and_effort(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        options: CodexTurnOptions<'_>,
+        effort: Option<&Value>,
+        run_id: Option<&str>,
+    ) -> Result<Value, LocalRunnerError> {
         let CodexTurnOptions {
             skills,
             reasoning_mode,
@@ -1704,6 +1840,17 @@ impl CodexProvider {
         }
         for skill in skills {
             skill.validate()?;
+        }
+        let effort = effort.filter(|value| !value.is_null());
+        if effort.is_some_and(|value| {
+            !matches!(
+                value.as_str(),
+                Some("minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+            )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "unsupported native Codex reasoning effort",
+            ));
         }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
@@ -1745,6 +1892,16 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        // The retained proxy's launch environment belongs to its first run.
+        // Only runnerd's rotated authority supplies the current run identity.
+        if self.config.provider == "opencode" {
+            if let Some(run_id) = run_id {
+                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+        }
+        if let Some(effort) = effort {
+            turn_params_object.insert("effort".to_owned(), effort.clone());
+        }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
         }
@@ -2030,7 +2187,11 @@ impl CodexProvider {
                 "runtime response belongs to another Codex turn",
             ));
         }
-        let result = codex_question_response(&pending, response)?;
+        let result = if pending.method == "mcpServer/elicitation/request" {
+            crate::stdio_mcp::tool_approval_response(response)?
+        } else {
+            codex_question_response(&pending, response)?
+        };
         self.process
             .send(&json!({"id": pending.rpc_id, "result": result}))?;
         if let Some(completed) = self.pending_runtime_requests.remove(request_id) {
@@ -2488,11 +2649,18 @@ impl CodexProvider {
             if matches!(
                 method,
                 "item/tool/requestUserInput" | OPENCODE_RUNTIME_REQUEST_METHOD
-            ) {
+            ) || (method == "mcpServer/elicitation/request"
+                && message
+                    .pointer("/params/_meta/codex_approval_kind")
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call"))
+            {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                if method == "item/tool/requestUserInput"
-                    && params.get("threadId").and_then(Value::as_str)
-                        != Some(self.thread_id.as_str())
+                if matches!(
+                    method,
+                    "item/tool/requestUserInput" | "mcpServer/elicitation/request"
+                ) && params.get("threadId").and_then(Value::as_str)
+                    != Some(self.thread_id.as_str())
                 {
                     if params
                         .get("threadId")
@@ -2527,6 +2695,20 @@ impl CodexProvider {
                 let (provider_request_id, question_set, option_labels) =
                     if method == OPENCODE_RUNTIME_REQUEST_METHOD {
                         opencode_question_set(&params)?
+                    } else if method == "mcpServer/elicitation/request" {
+                        let servers = self
+                            ._stdio_mcp
+                            .as_ref()
+                            .map(|session| {
+                                session
+                                    .entries
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        crate::stdio_mcp::validate_tool_approval(&params, &servers)?;
+                        (rpc_id.to_string(), Value::Null, BTreeMap::new())
                     } else {
                         codex_question_set(&rpc_id, &params)?
                     };
@@ -2538,6 +2720,8 @@ impl CodexProvider {
                     &question_set,
                     &option_labels,
                 )?;
+                let mcp_params =
+                    (method == "mcpServer/elicitation/request").then(|| params.clone());
                 let pending = PendingRuntimeRequest {
                     rpc_id: rpc_id.clone(),
                     turn_id: active_turn_id.clone(),
@@ -2598,6 +2782,12 @@ impl CodexProvider {
                     .insert(request_id.clone(), pending);
                 self.pending_runtime_request_bytes =
                     retained_request_bytes.expect("bounded runtime request bytes checked above");
+                if let Some(params) = mcp_params {
+                    return Ok(Some(CodexProviderEvent::McpPermissionRequest {
+                        request_id,
+                        params,
+                    }));
+                }
                 return Ok(Some(CodexProviderEvent::RuntimeRequest {
                     request_id,
                     question_set,
@@ -4044,6 +4234,77 @@ fn codex_question_response(
 mod tests {
     use super::*;
 
+    #[test]
+    #[cfg(unix)]
+    fn runtime_notification_policy_grants_only_discovery_files_and_ipc() {
+        let mut args = vec![
+            "shell_environment_policy.include_only=[\"PATH\",\"LANG\",\"PAPERCLIP_API_KEY\"]"
+                .into(),
+        ];
+        for name in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            args.push(format!(
+                "permissions.{name}.filesystem={{\":root\"=\"none\",\"/state/private\"=\"none\"}}"
+            ));
+        }
+        let paths = [
+            PathBuf::from("/runtime/runnerd"),
+            PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/state/private/runtime-activity.lock"),
+            PathBuf::from("/tmp/prn-channel"),
+        ];
+        let extra =
+            runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
+        let keys: Vec<String> = serde_json::from_str(
+            extra[1]
+                .strip_prefix("shell_environment_policy.include_only=")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys,
+            [
+                "PATH",
+                "LANG",
+                "PAPERCLIP_API_KEY",
+                crate::runtime_notifications::CONTEXT_ENV,
+                crate::runtime_notifications::HELPER_ENV
+            ]
+        );
+        let serialized = extra.join("\n");
+        for profile in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            let prefix = format!("permissions.{profile}.filesystem=");
+            let value = extra
+                .iter()
+                .find_map(|arg| arg.strip_prefix(&prefix))
+                .unwrap();
+            let config = format!("filesystem={value}")
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            let filesystem = config["filesystem"].as_inline_table().unwrap();
+            for (path, mode) in [
+                (":root", "none"),
+                ("/state/private", "none"),
+                ("/runtime/runnerd", "read"),
+                ("/state/private/runtime-notifications.json", "read"),
+                ("/state/private/runtime-activity.lock", "read"),
+                ("/tmp/prn-channel", "write"),
+            ] {
+                assert_eq!(
+                    filesystem.get(path).and_then(toml_edit::Value::as_str),
+                    Some(mode)
+                );
+            }
+        }
+        assert!(!serialized.contains("network."));
+        assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
+    }
+
     #[cfg(unix)]
     fn completion_tail_provider() -> CodexProvider {
         completion_tail_provider_with_stdout_flood(false)
@@ -4094,6 +4355,7 @@ done
             instructions: "Test only.".to_owned(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4481,6 +4743,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4601,6 +4864,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };

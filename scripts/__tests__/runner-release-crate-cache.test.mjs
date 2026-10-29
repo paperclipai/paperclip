@@ -79,6 +79,7 @@ test("the script's path list and key inputs cover what the release build of the 
   ]);
   assert.deepEqual(HASHED_INPUTS, [
     `${RUNNER_PACKAGE}/rust-toolchain.toml`,
+    `${RUNNER_PACKAGE}/acpx-profiles.json`,
     `${RUNNER_PACKAGE}/runner/Cargo.toml`,
     `${RUNNER_PACKAGE}/runner/Cargo.lock`,
     `${RUNNER_PACKAGE}/runner/crates/**`,

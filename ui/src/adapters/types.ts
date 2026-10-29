@@ -53,6 +53,10 @@ export interface AdapterConfigFieldsProps {
   managedSandboxOnly?: boolean;
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
+  /** Personal Muse is offered only with its own flag and the native Runner enabled. */
+  museEnabled?: boolean;
+  /** The parent Harness control determines the profile; hide runner and ACP agent selectors. */
+  hideRunnerHarness?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {

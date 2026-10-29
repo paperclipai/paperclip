@@ -56,10 +56,8 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: s
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
       let executable = "claude";
       if (provider === "openai") {
-        // Linux ARM64 retains its supported legacy CLI path; it is not a
-        // qualified native runner target. Other hosts prefer the installed
-        // dependency, then an existing CLI when the dependency is absent.
-        const legacyPlatform = process.platform === "linux" && process.arch === "arm64";
+        const legacyPlatform = !((process.platform === "linux" || process.platform === "darwin")
+          && (process.arch === "x64" || process.arch === "arm64"));
         try {
           if (legacyPlatform) {
             await ensureCommandResolvable("codex", home, process.env);

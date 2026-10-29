@@ -67,12 +67,47 @@ export interface SkillSource {
   connectionId: string | null;
   excludedFolders: string[];
   enabled: boolean;
+  automaticUpdates?: boolean;
+  importNewSkills?: boolean;
+  accessScope?: 'company' | 'projects';
+  trackingActive?: boolean;
+  syncState?: 'pending' | 'refreshing' | 'ready' | 'error' | 'paused';
+  projects?: Array<{ id: string; name: string; visibility: 'open' | 'private'; active: boolean }>;
   revision: number;
   lastAttemptAt: Date | null;
   lastSuccessAt: Date | null;
   lastScanCommit: string | null;
   lastError: string | null;
+  repairAction?: 'connection' | 'branch' | 'retry' | null;
   entries: SkillSourceEntry[];
+}
+export interface SkillSourceSettingsRequest {
+  revision: number;
+  automaticUpdates?: boolean;
+  importNewSkills?: boolean;
+  connectionId?: string | null;
+  /** Follow this branch/ref, or HEAD for the default branch. Version pins remain intact. */
+  trackingRef?: string;
+}
+export interface SkillSourceBranchesQuery { connectionId?: string }
+export interface SkillSourceBranches {
+  defaultBranch: string;
+  branches: Array<{ name: string; isDefault: boolean }>;
+  /** The bounded list may omit branches; an unlisted name can still be entered. */
+  truncated: boolean;
+}
+export interface ProjectSkillRepository {
+  projectId: string;
+  projectName: string;
+  projectVisibility: 'open' | 'private';
+  workspaceId: string;
+  repositoryUrl: string;
+  trackingRef: string;
+  bindingId: string | null;
+  sourceId: string | null;
+  status: 'available' | 'pending' | 'ready' | 'error';
+  importState?: 'queued' | 'importing';
+  lastError: string | null;
 }
 export interface SkillSourceDiscoveryRequest {
   packageMode?: SkillSourcePackageMode;
@@ -140,4 +175,14 @@ export interface SkillSourceRefreshResult {
   updated: CompanySkill[];
   unchanged: number;
   warnings: string[];
+}
+
+export interface SkillSourceDisconnectRequest {
+  revision: number;
+  skills: 'copy' | 'delete';
+}
+export interface SkillSourceDisconnectResult {
+  id: string;
+  copiedCount: number;
+  deletedCount: number;
 }

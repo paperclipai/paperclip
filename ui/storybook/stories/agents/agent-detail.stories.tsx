@@ -129,11 +129,24 @@ const budgetOverviewFixture: BudgetOverview = {
   pendingApprovalCount: 0,
 };
 
-function seedAgentDetailData(queryClient: QueryClient) {
+const sharedCompanyUserDirectoryFixture = {
+  users: [
+    { principalId: "local-board", status: "active", user: { id: "local-board", email: null, name: "Board", image: null } },
+    { principalId: "user-alice", status: "active", user: { id: "user-alice", email: "alice@example.com", name: "Alice Admin", image: null } },
+    { principalId: "user-bob", status: "active", user: { id: "user-bob", email: "bob@example.com", name: "Bob Builder", image: null } },
+  ],
+};
+
+type AgentDetailScenarioOptions = { sharedCompany?: boolean };
+
+function seedAgentDetailData(queryClient: QueryClient, { sharedCompany = false }: AgentDetailScenarioOptions = {}) {
   queryClient.setQueryData(
     [...queryKeys.agents.detail(AGENT_ROUTE_REF), COMPANY_ID],
-    agentDetailFixture,
+    sharedCompany ? { ...agentDetailFixture, createdByUserId: "user-alice" } : agentDetailFixture,
   );
+  if (sharedCompany) {
+    queryClient.setQueryData(queryKeys.access.companyUserDirectory(COMPANY_ID), sharedCompanyUserDirectoryFixture);
+  }
   queryClient.setQueryData(queryKeys.agents.runtimeState(AGENT_ID), runtimeStateFixture);
   queryClient.setQueryData(queryKeys.heartbeats(COMPANY_ID, AGENT_ID), heartbeatRunsFixture);
   queryClient.setQueryData(
@@ -155,7 +168,7 @@ function seedAgentDetailData(queryClient: QueryClient) {
  * (fixed at /PAP/storybook): seed the QueryClient, then navigate to the
  * canonical agent URL so useParams resolves the fixture agent.
  */
-function AgentDetailScenario() {
+function AgentDetailScenario(options: AgentDetailScenarioOptions) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -163,7 +176,7 @@ function AgentDetailScenario() {
   // Seed synchronously before the page's queries mount (staleTime: Infinity
   // in the preview QueryClient keeps these fixtures authoritative).
   useState(() => {
-    seedAgentDetailData(queryClient);
+    seedAgentDetailData(queryClient, options);
     return true;
   });
 
@@ -192,11 +205,24 @@ function AgentDetailScenario() {
 const meta: Meta = {
   id: "pages-agent-detail",
   title: "Agents and reusable capabilities/Hiring, configuration, and organization/Pages/Agent Detail",
-  parameters: { layout: "fullscreen", a11y: { test: "off" } },
+  parameters: { layout: "fullscreen", a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "agents/lifecycle",
+        "agents/instructions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 type Story = StoryObj;
 
 export const Dashboard: Story = {
   render: () => <AgentDetailScenario />,
+};
+
+export const SharedCompanyShowsCreator: Story = {
+  render: () => <AgentDetailScenario sharedCompany />,
 };

@@ -353,6 +353,13 @@ const meta = {
           "Navigation and layout stories cover the board shell components that orient operators across companies, work surfaces, command search, breadcrumbs, tabs, and mobile navigation.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "navigation-preferences/navigation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof NavigationLayoutStories>;
 

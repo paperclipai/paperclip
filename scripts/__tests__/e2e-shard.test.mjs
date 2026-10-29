@@ -57,9 +57,9 @@ function readWorkflowJobs(workflow) {
 function runStackScope(stack, prBaseRef) {
   const workflow = readFileSync(routingWorkflow, "utf8");
   const match = workflow.match(
-    /      - name: Select stacked PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\s*$/,
+    /      - name: Select PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\s*$/,
   );
-  assert.ok(match, "routing workflow must define the stacked PR scope script");
+  assert.ok(match, "routing workflow must define the PR CI scope script");
   const script = match[1]
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))

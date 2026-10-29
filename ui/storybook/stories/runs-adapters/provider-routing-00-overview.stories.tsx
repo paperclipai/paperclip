@@ -6,7 +6,16 @@ const meta = {
   id: "ai-connections-provider-routing-00-overview",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Provider routing/00 Overview",
   component: ReviewIndex,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "guide",
+      "boundary": "static",
+      "notes": "Review guide retained; explanatory content does not establish runtime or production coverage."
+    },
+  },
   ...reviewLifecycle,
   decorators: [
     (Story) => (

@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -40,6 +41,12 @@ function actor(row: Copy): AuthorizationActor {
 }
 export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string, runId: string) => Promise<Copy | null>, patch: (row: Copy, values: Partial<typeof copies.$inferInsert>) => Promise<Copy>, environmentRuntime?: EnvironmentRuntimeService) {
   const store = agentFileStore(db);
+  async function insertCopy(values: typeof copies.$inferInsert) {
+    return db.transaction(async tx => {
+      await notifyInstructionCollection(tx, { companyId: values.companyId, runId: values.runId });
+      return tx.insert(copies).values(values).returning();
+    });
+  }
   const ownerFile = (row: Copy) => path.join(path.dirname(row.localRoot), "owner.json");
   async function owns(row: Copy) {
     if (row.receipt?.warm !== true) return true;
@@ -71,7 +78,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       // while plugin capability discovery is cold after controller restart.
       runtimeRootDir: sandboxTransferRoot(row, target.remoteCwd),
       syncWorkspace: true, workspaceInboundMode: recovering ? "adopt_remote" : undefined,
-      workspaceBaseline: baseline(row), workspaceGitSnapshot: null, workspaceFileMode: "all",
+      workspaceBaseline: baseline(row), workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all",
       workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
   }
   async function observe(row: Copy, target?: AdapterExecutionTarget | null) {
@@ -104,8 +111,8 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         const receipt = { ...current.receipt, cleanup: input.target?.kind === "remote" ? { leaseId: input.target.leaseId ?? null, remoteCwd: input.target.remoteCwd } : undefined };
         // Insert before taking the agent-row lock: this foreign key needs an
         // independent transaction, and must survive post-handoff failures.
-        const [successor] = await db.insert(copies).values({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!,
-          entryFile: current.entryFile, baseHash: current.baseHash, localRoot: current.localRoot, executionRoot: current.executionRoot, location: current.location, state: "prepared", receipt }).returning();
+        const [successor] = await insertCopy({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!,
+          entryFile: current.entryFile, baseHash: current.baseHash, localRoot: current.localRoot, executionRoot: current.executionRoot, location: current.location, state: "prepared", receipt });
         let handedOff = false;
         try { return await store.locked(input.companyId, input.agentId, bound, false, async (_tx, lockedAgent, canonical) => {
           // The reservation's earlier check is only a hint. Serialize this last
@@ -167,7 +174,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       nextAttemptAt: null, errorCode: null, errorMessage: null };
     if (row) row = await patch(row, preparing);
     else {
-      await db.insert(copies).values({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!, ...preparing });
+      await insertCopy({ runId: input.runId, companyId: input.companyId, agentId: input.agentId, responsibleUserId: bound.onBehalfOfUserId!, ...preparing });
       row = (await get(input.companyId, input.runId))!;
     }
     const { snapshot, storageWarning } = await store.locked(input.companyId, input.agentId, bound, false, async (_tx, _agent, canonical) => {
@@ -291,6 +298,8 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       const current = await inspectAgentDirectory(canonical);
       const canonicalChanged = agentDirectoryBaselineDigest(current.snapshot) !== agentDirectoryBaselineDigest(baseline(prior));
       if (canonicalChanged && !input.allowRetirementHandoff) return null;
+      await notifyInstructionCollection(tx, { companyId: input.companyId, runId: prior.runId });
+      await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
       const [claimed] = await tx.update(copies).set({ receipt: { ...prior.receipt, retainedByRunId: input.runId }, updatedAt: new Date() })
         .where(and(eq(copies.companyId, input.companyId), eq(copies.runId, prior.runId), eq(copies.agentId, input.agentId), eq(copies.state, "unchanged_turn"),
           eq(copies.updatedAt, prior.updatedAt), eq(copies.baseHash, prior.baseHash), eq(copies.localRoot, prior.localRoot),

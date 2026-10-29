@@ -3,7 +3,9 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
-const mockSkillSourceService = vi.hoisted(() => ({ sourceForSkill: vi.fn(), importFromUrl: vi.fn(), discover: vi.fn() }));
+const mockCaptureRunIdentity = vi.hoisted(() => vi.fn());
+
+const mockSkillSourceService = vi.hoisted(() => ({ sourceForSkill: vi.fn(), importFromUrl: vi.fn(), discover: vi.fn(), branches: vi.fn() }));
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -133,6 +135,10 @@ function denySkillPolicy(action = "skills.import") {
 }
 
 function registerModuleMocks() {
+  vi.doMock("../services/run-identity.js", async () => ({
+    ...await vi.importActual<typeof import("../services/run-identity.js")>("../services/run-identity.js"),
+    captureRunIdentity: mockCaptureRunIdentity,
+  }));
   vi.doMock("../services/skill-sources.js", () => ({ skillSourceService: () => mockSkillSourceService }));
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
@@ -158,6 +164,15 @@ function registerModuleMocks() {
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
   }));
+
+  // This route-contract harness supplies no database. Private-source decisions
+  // are exercised with the real database in project-skill-sources.test.ts.
+  vi.doMock("../services/skill-access.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/skill-access.js")>("../services/skill-access.js");
+    return { ...actual, skillAccessService: (db: Parameters<typeof actual.skillAccessService>[0]) => ({
+      ...actual.skillAccessService(db), assertSource: async () => {},
+    }) };
+  });
 
   vi.doMock("../services/company-skills.js", async () => {
     const actual = await vi.importActual<typeof import("../services/company-skills.js")>(
@@ -295,6 +310,7 @@ describe("company skill mutation permissions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCaptureRunIdentity.mockResolvedValue({ run: { responsibleUserId: "validated-owner" } });
     mockSkillSourceService.sourceForSkill.mockResolvedValue(null);
     mockSkillSourceService.importFromUrl.mockImplementation((companyId, source) => mockCompanySkillService.importFromSource(companyId, source));
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -1232,6 +1248,33 @@ describe("company skill mutation permissions", () => {
     });
   });
 
+  it.each(["responsible-person", "local-board"])("does not persist API-key refresh authority from %s", async (onBehalfOfUserId) => {
+    const agent = { ...assignedAgentActor(), source: "agent_key", runId: undefined, onBehalfOfUserId,
+      onBehalfOfMemberships: [{ companyId: "company-1", membershipRole: "member", status: "active" }] };
+    const response = await request(createApp(agent)).post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/acme/public-skills" });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockSkillSourceService.importFromUrl).toHaveBeenCalledWith("company-1", expect.anything(),
+      expect.objectContaining({ setup: { userId: null, agentId: agent.agentId, localTrusted: false } }));
+  });
+
+  it("derives refresh authority from the authenticated run instead of caller responsibility", async () => {
+    const agent = { ...assignedAgentActor(), source: "agent_jwt", onBehalfOfUserId: "unverified-person",
+      onBehalfOfMemberships: [{ companyId: "company-1", membershipRole: "member", status: "active" }] };
+    const response = await request(createApp(agent)).post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/acme/public-skills" });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockCaptureRunIdentity).toHaveBeenCalledWith(expect.anything(), { companyId: "company-1", agentId: agent.agentId, runId: "run-1" }, { readScope: "identity" });
+    expect(mockSkillSourceService.importFromUrl).toHaveBeenCalledWith("company-1", expect.anything(),
+      expect.objectContaining({ setup: { userId: "validated-owner", agentId: agent.agentId, localTrusted: false } }));
+  });
+
+  it("rejects a run-authenticated import without a run identity", async () => {
+    await request(createApp({ ...assignedAgentActor(), source: "agent_jwt", runId: undefined }))
+      .post("/api/companies/company-1/skills/import").send({ source: "https://github.com/acme/public-skills" }).expect(403);
+    expect(mockSkillSourceService.importFromUrl).not.toHaveBeenCalled();
+  });
+
   it('streams discovery updates and a final result while retaining JSON compatibility', async () => {
     const result = { candidates: [], commitSha: 'a'.repeat(40) };
     mockSkillSourceService.discover.mockImplementation(async (_input, _context, options) => {
@@ -1293,6 +1336,25 @@ describe("company skill mutation permissions", () => {
     }
   });
 
+  it("requires an explicit skill disposition and revision when removing a source", async () => {
+    const app = createApp({ type: "board", userId: "member", companyIds: ["company-1"], source: "session" });
+    const path = "/api/companies/company-1/skill-sources/source-id";
+    for (const body of [{}, { revision: 0 }, { skills: "delete" }, { revision: 0, skills: "ignore" }]) {
+      await request(app).delete(path).send(body).expect(400);
+    }
+  });
+
+  it('lists authorized source branches with a validated connection override', async () => {
+    const app = createApp({ type: 'board', userId: 'member', companyIds: ['company-1'], source: 'session' });
+    const connectionId = '00000000-0000-4000-8000-000000000042';
+    const data = { defaultBranch: 'master', branches: [{ name: 'master', isDefault: true }], truncated: false };
+    mockSkillSourceService.branches.mockResolvedValue(data);
+    const path = '/api/companies/company-1/skill-sources/source-id/branches';
+    expect((await request(app).get(path).query({ connectionId }).expect(200)).body).toEqual(data);
+    expect(mockSkillSourceService.branches).toHaveBeenCalledWith('company-1', 'source-id', { connectionId }, expect.objectContaining({ read: expect.any(Function) }), expect.any(AbortSignal));
+    await request(app).get(path).query({ connectionId: 'invalid' }).expect(400);
+  });
+
   it("rejects cross-company source reads and mutations for board users and agents", async () => {
     for (const actor of [
       { type: "board", userId: "member", companyIds: ["company-1"], isInstanceAdmin: true, source: "session" },
@@ -1301,7 +1363,7 @@ describe("company skill mutation permissions", () => {
       const app = createApp(actor);
       const base = "/api/companies/company-2/skill-sources";
       const responses = await Promise.all([
-        request(app).get(base), request(app).get(`${base}/repositories`), request(app).get(`${base}/source-id`),
+        request(app).get(base), request(app).get(`${base}/repositories`), request(app).get(`${base}/source-id`), request(app).get(`${base}/source-id/branches`),
         request(app).post(`${base}/discover`).send({ repositoryUrl: "https://github.com/acme/skills" }),
         request(app).post(`${base}/discover`).set('Accept', 'application/x-ndjson').send({ repositoryUrl: "https://github.com/acme/skills" }),
         request(app).post(`${base}/preview`).send({ repositoryUrl: "https://github.com/acme/skills", commitSha: "a".repeat(40), skillPath: "SKILL.md", filePath: "SKILL.md" }),

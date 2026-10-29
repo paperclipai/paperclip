@@ -15,6 +15,12 @@ const phases = {
   cleaning_up: ["Cleaning up agent", "Required resources are being removed. Termination is not complete."],
 } satisfies Partial<Record<AgentLifecycleState, [string, string]>>;
 
+const failedPhases = {
+  preparing: "Agent preparation failed", verifying: "Agent verification failed",
+  pausing: "Agent pause failed", resuming: "Agent resume failed",
+  terminating: "Agent termination failed", cleaning_up: "Agent cleanup failed",
+};
+
 function pendingPhase(state?: AgentLifecycleState) {
   return state && state in phases ? phases[state as keyof typeof phases] : undefined;
 }
@@ -29,7 +35,7 @@ export function useAgentLifecycleStatus(agent?: Agent) {
     queryKey: [...queryKeys.agents.detail(agent?.id ?? ""), "lifecycle", agent?.companyId],
     queryFn: () => agentsApi.get(agent!.id, agent!.companyId),
     enabled: Boolean(agent),
-    select: current => ({ status: current.status, lifecycleState: current.lifecycleState,
+    select: current => ({ status: current.status, pauseReason: current.pauseReason, pausedAt: current.pausedAt, lifecycleState: current.lifecycleState,
       lifecycleVersion: current.lifecycleVersion, lifecycleError: current.lifecycleError }),
     refetchInterval: query => agentLifecycleRefetchInterval(query.state.data?.lifecycleState ?? agent?.lifecycleState),
   });
@@ -48,15 +54,16 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
     {phase && <div className="flex flex-wrap items-center gap-2">
       <Badge variant={agent.lifecycleError ? "destructive" : "secondary"}>
         {!agent.lifecycleError && <Loader2 aria-hidden="true" className="mr-1 size-3 animate-spin motion-reduce:animate-none" />}
-        {phase[0]}
+        {agent.lifecycleError ? failedPhases[agent.lifecycleState as keyof typeof failedPhases] : phase[0]}
       </Badge>
-      <span className="text-muted-foreground">{phase[1]}</span>
+      {!agent.lifecycleError && <span className="text-muted-foreground">{phase[1]}</span>}
     </div>}
     {phase && agent.lifecycleError && <div className="flex flex-wrap items-center gap-2 text-destructive">
       <span>{agent.lifecycleError}</span>
       <Button variant="outline" size="sm" disabled={retryPending} onClick={onRetry}>
-        {retryPending ? "Retrying…" : "Retry"}
+        {retryPending ? "Retrying…" : "Retry now"}
       </Button>
     </div>}
+    {phase && agent.lifecycleError && <p className="text-muted-foreground">Paperclip retries automatically; Retry now checks again immediately.</p>}
   </div>;
 }

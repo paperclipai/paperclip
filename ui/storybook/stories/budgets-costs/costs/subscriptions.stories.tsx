@@ -103,7 +103,16 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
 const meta = { id: "costs-subscriptions",
   title: "Oversight and operation/Costs and budgets/Costs/Subscriptions", component: SubscriptionCostsStory, parameters: {
   layout: "padded", docs: { description: { component: "Production Costs page with API spend, monthly subscription estimates, user and project costs. View details to edit monthly or annual prices. Provider calls are fixtures." } },
-} } satisfies Meta<typeof SubscriptionCostsStory>;
+    paperclip: {
+      "capabilities": [
+        "budgets-costs/cost-reporting",
+        "budgets-costs/budgets"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The upstream budget UI distinguishes soft warnings from hard stops; hard incidents retain raise-and-resume and keep-paused controls."
+    },
+  } } satisfies Meta<typeof SubscriptionCostsStory>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Overview: Story = { play: async ({ canvasElement }) => {

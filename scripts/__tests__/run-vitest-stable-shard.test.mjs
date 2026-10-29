@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -52,18 +53,6 @@ function dryRunJson(args, envOverrides = {}) {
 const SHARD_COUNT = 12;
 const SERIALIZED_SHARD_COUNT = 9;
 
-
-test("the serialized shards form a complete, non-overlapping partition", () => {
-  const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
-    dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
-  );
-
-  const total = shards[0].serializedSuiteCount;
-  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
-  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
-  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
-});
-
 test("the general-server shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
     dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)]),
@@ -77,6 +66,10 @@ test("the general-server shards form a complete, non-overlapping partition", () 
   for (const shard of shards) {
     assert.equal(shard.generalServerSuiteCount, total, "suite count must be stable across shards");
     for (const file of shard.selectedGeneralServerSuites) {
+      assert.ok(
+        !(file.startsWith("server/src/__tests__/") && /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file)),
+        `route/authz suite must stay in the serialized lane, not general-server: ${file}`,
+      );
       assert.ok(!seen.has(file), `suite assigned to more than one shard: ${file}`);
       seen.add(file);
       selectedTotal += 1;
@@ -86,16 +79,6 @@ test("the general-server shards form a complete, non-overlapping partition", () 
   // Every suite runs exactly once: union covers the whole set with no overlap.
   assert.equal(selectedTotal, total, "every suite must be selected exactly once");
   assert.equal(seen.size, total, "union of shards must cover the whole suite set");
-});
-
-test("a route/authz suite never leaks into the general-server shards", () => {
-  const shard = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", SHARD_COUNT.toString()]);
-  for (const file of shard.selectedGeneralServerSuites) {
-    assert.ok(
-      !(file.startsWith("server/src/__tests__/") && /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file)),
-      `route/authz suite must stay in the serialized lane, not general-server: ${file}`,
-    );
-  }
 });
 
 test("general shards retain scripts and route-named suites outside the serialized directory", () => {
@@ -306,12 +289,17 @@ test("the checked-in serialized manifest loads and covers most of the current su
   );
 });
 
-test("the real serialized shard partition is duration-balanced", () => {
+test("the real serialized shard partition is complete, non-overlapping and duration-balanced", () => {
   const durations = loadShardDurations(serializedDurationsManifest);
   const fallback = defaultSuiteWeight(durations);
   const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
     dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
   );
+
+  const total = shards[0].serializedSuiteCount;
+  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
+  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
+  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
 
   const totals = shards.map((shard) =>
     shard.selectedSerializedSuites.reduce((sum, file) => sum + (durations[file] ?? fallback), 0),
@@ -326,19 +314,26 @@ test("the real serialized shard partition is duration-balanced", () => {
   );
 });
 
-test("the real shard partition is duration-balanced", () => {
-  // Mirrors the PR matrix: general-server-without-chat across SHARD_COUNT
-  // runners, with the chat suite carried by the dedicated general-chat lanes
-  // and the native-runner suite by the Rust-cached PR vitest lane.
+const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
+const nativeRunnerSuitePath =
+  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
+const restartRecoverySuitePath =
+  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+
+// Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
+// "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
+// native-runner suite in the Rust-cached final Verify Paperclip Runner vitest
+// shard, so together the three cover the full server group exactly.
+test("12 PR without-chat shards plus the dedicated chat and native-runner lanes cover the original server group exactly", () => {
   const durations = loadShardDurations(durationsManifest);
   const fallback = defaultSuiteWeight(durations);
-  const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    dryRunJson(
-      ["--mode", "general", "--group", "general-server-without-chat", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)],
-      { GITHUB_WORKFLOW: "PR" },
-    ),
-  );
-
+  const prEnv = { GITHUB_WORKFLOW: "PR" };
+  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], prEnv);
+  const shards = Array.from({ length: 12 }, (_, index) => dryRunJson([
+    "--mode", "general", "--group", "general-server-without-chat",
+    "--shard-index", String(index), "--shard-count", "12",
+  ], prEnv));
   const totals = shards.map((shard) =>
     shard.selectedGeneralServerSuites.reduce((sum, file) => sum + (durations[file] ?? fallback), 0),
   );
@@ -359,33 +354,13 @@ test("the real shard partition is duration-balanced", () => {
     maxTotal - minTotal <= heaviest,
     `shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
   );
-});
 
-
-const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
-const nativeRunnerSuitePath =
-  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
-const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
-const restartRecoverySuitePath =
-  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
-
-// Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
-// "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
-// native-runner suite in the Rust-cached final Verify Paperclip Runner vitest
-// shard, so together the three cover the full server group exactly.
-test("12 PR without-chat shards plus the dedicated chat and native-runner lanes cover the original server group exactly", () => {
-  const prEnv = { GITHUB_WORKFLOW: "PR" };
-  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], prEnv);
-  const shards = Array.from({ length: 12 }, (_, index) => dryRunJson([
-    "--mode", "general", "--group", "general-server-without-chat",
-    "--shard-index", String(index), "--shard-count", "12",
-  ], prEnv));
   const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
   assert.ok(!files.includes(chatSuitePath));
   assert.ok(!files.includes(nativeRunnerSuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -430,6 +405,7 @@ for (const caller of ["Release", "Cloud readiness", "another caller"]) {
 test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   const lane = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"]);
   assert.deepEqual(lane.selectedGeneralServerSuites, [
+    "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,
@@ -543,5 +519,71 @@ test("filtered collection must match the exact assigned case identities, includi
     [expected[0], expected[1], caseAt(20, "renamed")],
     [expected[0], expected[1], caseAt(21, "nested > case")]]) {
     assert.throws(() => assertSelectedTests(expected, actual, lineShardFile));
+  }
+});
+
+
+test("parallel chat jobs form a complete disjoint partition", () => {
+  for (const count of [2, 3, 4]) {
+    const shards = Array.from({ length: count }, (_, index) =>
+      dryRunJson(["--mode", "general", "--group", "general-chat", "--shard-index", String(index), "--shard-count", String(count)],
+        { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards,
+    );
+    assert.ok(shards.every((workers) => workers.length === 2));
+    assert.deepEqual(shards.flat().map(({ index }) => index).sort((a, b) => a - b),
+      Array.from({ length: count * 2 }, (_, index) => index));
+    assert.ok(shards.flat().every((shard) => shard.count === count * 2));
+  }
+});
+
+test("shared-database and unsharded chat runs retain one serial partition", () => {
+  for (let index = 0; index < 3; index++) {
+    const result = dryRunJson(["--mode", "general", "--group", "general-chat", "--shard-index", String(index), "--shard-count", "3"],
+      { PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test" });
+    assert.deepEqual(result.chatVitestShards, [{ index, count: 3 }]);
+  }
+  assert.deepEqual(dryRunJson(["--mode", "general", "--group", "general-chat"],
+    { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, [{ index: 0, count: 1 }]);
+});
+
+
+test("a failed chat child fails the job after its sibling finishes", { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "chat-launch-proof-"));
+  const file = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
+  const lines = readFileSync(file, "utf8").split("\n")
+    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []).slice(0, 6);
+  assert.equal(lines.length, 6);
+  const tests = lines.map((line) => ({ file, projectName: "@paperclipai/server",
+    name: `launcher fixture ${line}`, location: { line } }));
+  const receipt = path.join(directory, "sibling-finished");
+  const fakePnpm = path.join(directory, "pnpm");
+  try {
+    writeFileSync(fakePnpm, `#!${process.execPath}
+      const fs = require('node:fs');
+      const args = process.argv.slice(2);
+      const tests = ${JSON.stringify(tests)};
+      const selected = args.flatMap(arg => {
+        const match = arg.match(/chat-channels\\.integration\\.test\\.ts:(\\d+)$/);
+        return match ? [Number(match[1])] : [];
+      });
+      if (args.includes('list')) {
+        const output = args.find(arg => arg.startsWith('--json=')).slice(7);
+        fs.writeFileSync(output, JSON.stringify(selected.length
+          ? tests.filter(test => selected.includes(test.location.line)) : tests));
+      } else if (selected.includes(${lines[0]})) process.exit(7);
+      else setTimeout(() => fs.writeFileSync(${JSON.stringify(receipt)}, 'finished'), 200);
+    `);
+    chmodSync(fakePnpm, 0o755);
+    const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-chat",
+      "--shard-index", "0", "--shard-count", "3"], {
+      cwd: repoRoot, encoding: "utf8", timeout: 30_000,
+      env: { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        PAPERCLIP_TEST_DATABASE_URL: "", PAPERCLIP_CI_PROFILE: "false" },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /failed \(7\)/);
+    assert.equal(readFileSync(receipt, "utf8"), "finished", "a failed worker must not abandon its sibling");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

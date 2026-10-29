@@ -1,3 +1,8 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -23,6 +28,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -70,6 +76,7 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
 };
 
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+export const ISSUE_TREE_RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
 const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
@@ -324,13 +331,21 @@ function issueSkipReason(input: {
   return null;
 }
 
-function buildAffectedAgents(issuesToPreview: IssueTreePreviewIssue[]): IssueTreePreviewAgent[] {
+function canWakeOnResume(issue: IssueTreePreviewIssue): boolean {
+  return !!issue.assigneeAgentId && ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status);
+}
+
+function buildAffectedAgents(
+  issuesToPreview: IssueTreePreviewIssue[],
+  mode: IssueTreeControlMode,
+): IssueTreePreviewAgent[] {
   const byAgentId = new Map<string, IssueTreePreviewAgent>();
   for (const issue of issuesToPreview) {
     if (issue.skipped) continue;
+    if (mode === "resume" && !canWakeOnResume(issue)) continue;
     const agentIds = new Set<string>();
     if (issue.assigneeAgentId) agentIds.add(issue.assigneeAgentId);
-    if (issue.activeRun) agentIds.add(issue.activeRun.agentId);
+    if (mode !== "resume" && issue.activeRun) agentIds.add(issue.activeRun.agentId);
     for (const agentId of agentIds) {
       const current = byAgentId.get(agentId) ?? { agentId, issueCount: 0, activeRunCount: 0 };
       current.issueCount += 1;
@@ -385,6 +400,17 @@ function buildWarnings(input: {
       code: "no_active_pause_holds",
       message: "No active pause holds were found in this subtree.",
     });
+  }
+
+  if (input.mode === "resume") {
+    const idleIssueIds = affectedIssues.filter((issue) => !canWakeOnResume(issue)).map((issue) => issue.id);
+    if (idleIssueIds.length > 0) {
+      warnings.push({
+        code: "resume_tasks_remain_idle",
+        message: "Blocked, backlog, and unassigned tasks will be unpaused but will not start.",
+        issueIds: idleIssueIds.sort(),
+      });
+    }
   }
 
   if (input.mode === "restore") {
@@ -675,7 +701,7 @@ export function issueTreeControlService(db: Db) {
     const activeRuns = activeRunRows
       .map(toPreviewRun)
       .sort((a, b) => a.issueId.localeCompare(b.issueId) || a.id.localeCompare(b.id));
-    const affectedAgents = buildAffectedAgents(issuesToPreview);
+    const affectedAgents = buildAffectedAgents(issuesToPreview, input.mode);
 
     return {
       companyId,
@@ -974,9 +1000,17 @@ export function issueTreeControlService(db: Db) {
     const now = new Date();
     const releasedCancelHoldIds = activeCancelHolds.map((hold) => hold.id);
     const updatedIssues = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
+        for (const issueId of issueIdsForStatus) {
+          await notifyNativeStatusReassessment(tx, { companyId, issueId });
+          await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+          await notifyChatResponseAvailability(tx, { companyId, issueId });
+          if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
+        }
         const rows = await tx
           .update(issues)
           .set({
@@ -1176,28 +1210,31 @@ export function issueTreeControlService(db: Db) {
     const issueIds = treeIssues.map((issue) => issue.id);
     if (issueIds.length === 0) return [];
     const now = new Date();
-    return db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: reason,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
-          isNull(agentWakeupRequests.runId),
-          inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
-        ),
-      )
-      .returning({
-        id: agentWakeupRequests.id,
-        agentId: agentWakeupRequests.agentId,
-        reason: agentWakeupRequests.reason,
-        payload: agentWakeupRequests.payload,
-      });
+    return db.transaction(async tx => {
+      await notifyChatInboundWakeNotices(tx, { companyId });
+      return tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            isNull(agentWakeupRequests.runId),
+            inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
+          ),
+        )
+        .returning({
+          id: agentWakeupRequests.id,
+          agentId: agentWakeupRequests.agentId,
+          reason: agentWakeupRequests.reason,
+          payload: agentWakeupRequests.payload,
+        });
+    });
   }
 
   return {

@@ -67,6 +67,14 @@ const meta = {
           "Compact control-plane notice used for structured task-thread events. Expand the row to inspect workspace metadata without presenting it as an agent reply.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   render: ({ item }) => <StoryFrame item={item} />,
 } satisfies Meta<typeof TaskChatSystemNotice>;

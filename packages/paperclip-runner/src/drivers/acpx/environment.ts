@@ -1,5 +1,8 @@
+import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
+import { providerObservabilityEnvironment } from "../agent-observability.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
+import { PRECONFIGURED_HOME_KEYS, usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
 export const ACPX_CREDENTIAL_BINDING_ENV = "PAPERCLIP_ACPX_CREDENTIAL_BINDING";
@@ -11,7 +14,7 @@ export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"],
   codex: ["OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY"],
 };
-export const CLAUDE_ROUTING_ENV_KEYS = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] as const;
+export const CLAUDE_ROUTING_ENV_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] as const;
 
 /** Keep the task projection consistent when excluding general IAM from Pi. */
 function removePiIamCredentials(environment: NodeJS.ProcessEnv): void {
@@ -99,9 +102,11 @@ export function createSanitizedAcpxSpawnInput(
   environment: NodeJS.ProcessEnv | undefined,
   agent: QualifiedAcpxAgent,
 ): SanitizedAcpxSpawnInput {
-  const source = environment ?? process.env;
+  const source = agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME !== undefined
+    ? { ...environment, CLAUDE_CONFIG_DIR: environment.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME }
+    : environment ?? process.env;
   const candidate = isCandidate(agent);
-  const result: NodeJS.ProcessEnv = configuredEnvironment(environment);
+  const result: NodeJS.ProcessEnv = { ...configuredEnvironment(environment), ...providerObservabilityEnvironment(environment, agent) };
   const credentialNames = agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent];
   const allowed = new Set([
     "PATH",
@@ -124,10 +129,16 @@ export function createSanitizedAcpxSpawnInput(
     "all_proxy",
     "RUST_BACKTRACE",
     "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_NATIVE_MCP_URL",
     ...(environment === undefined ? [] : ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]),
     ...credentialNames,
     ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
+    ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT"] : []),
+    ...(usesPreconfiguredHome(source) ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_HOME_MODE", "ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] : []),
+    ...(agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME
+      ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"] : []),
   ]);
   let retainedBytes = 0;
   for (const [key, value] of Object.entries(source)) {
@@ -147,6 +158,9 @@ export function createSanitizedAcpxSpawnInput(
     result[key] = value;
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
+    result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
+  }
   return Object.freeze({
     env: Object.freeze(result),
   }) as SanitizedAcpxSpawnInput;

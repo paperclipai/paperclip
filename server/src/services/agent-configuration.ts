@@ -1,3 +1,6 @@
+import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
@@ -80,6 +83,12 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
+  }
+  if (normalizedPatch.adapterConfig !== undefined) {
+    await notifySkillVersionPinChange(db, existing.companyId, existing.adapterConfig ?? {}, normalizedPatch.adapterConfig);
+  }
   return normalizedPatch;
 }
 
@@ -100,6 +109,7 @@ export async function completeAgentConfiguration(txDb: Db, existing: AgentConfig
       (key) => priorAdapterConfig[key] !== afterConfig[key],
     ));
   if (changedExecution) {
+    await notifyExternalConversationSettlement(txDb, { companyId: existing.companyId });
     await txDb.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, existing.companyId), eq(agentTaskSessions.agentId, id)));
     await txDb.update(agentRuntimeState).set({ adapterType: updated.adapterType, sessionId: null, stateJson: {}, updatedAt: new Date() })
       .where(and(eq(agentRuntimeState.companyId, existing.companyId), eq(agentRuntimeState.agentId, id)));

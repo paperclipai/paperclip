@@ -1,6 +1,12 @@
+---
+navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":70}
+---
+
 # Documents, attachments, and work products
 
 People read and revise task documents, annotate specific content, open attached files, and inspect the outputs an agent hands back. The artifact library provides another route to the same work.
+
+Feature ID: `documents-artifacts`.
 
 Implementation: [task documents](../../ui/src/components/IssueDocumentsSection.tsx), [artifact library](../../ui/src/pages/Artifacts.tsx), [document panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.tsx).
 
@@ -8,17 +14,25 @@ Agent access: [companion](../agent-access-map/documents-artifacts.md).
 
 ## Sub-features
 
-- `documents`: edit versioned task documents and inspect or restore revisions.
-- `annotations`: attach feedback to document content and inspect resolution state.
-- `attachments`: upload, preview, and download allowed files with company access checks.
-- `work-products`: link deliverables to their source task, resource, and review context.
-- `library`: search, filter, group, and open artifact stacks.
+- `documents`: `documents-artifacts/documents` — edit versioned task documents and inspect or restore revisions.
+- `annotations`: `documents-artifacts/annotations` — attach feedback to document content and inspect resolution state.
+- `attachments`: `documents-artifacts/attachments` — upload, preview, and download allowed files with company access checks.
+- `work-products`: `documents-artifacts/work-products` — link deliverables to their source task, resource, and review context.
+- `library`: `documents-artifacts/library` — search, filter, group, and open artifact stacks.
 
 ## How to get to it (user POV)
 
 ### `task-document`
 
 Open a document from the task thread or document side panel.
+
+Coordinator decision receipts also open a pinned reviewed revision alongside
+the matching task interaction. Historical tabs retain their revision identity
+independently of the current document tab. Missing revisions are explicit and
+never silently replaced with the latest document.
+When a decision in one task reviews another task's document, the center pane
+keeps the originating conversation while the sidebar opens the document owner's
+exact revision. An inaccessible owner never falls back to the origin task's document.
 
 ### `task-output`
 
@@ -38,6 +52,11 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `task-document`
 
 Automated: [documents service](../../server/src/__tests__/documents-service.test.ts), [annotations](../../server/src/__tests__/document-annotations-service.test.ts), and [revision restore](../../server/src/__tests__/issue-document-restore-routes.test.ts) cover server contracts.
+
+[Exact revision panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.test.tsx)
+checks pinned content and missing-revision behavior; this component test does not
+prove end-to-end conversation scrolling. Open a resolved receipt after making a
+new revision and verify the earlier body plus matching interaction in the browser.
 
 Manual: Edit a paragraph, save, reload, and compare revisions. Add an annotation to a specific selection and inspect it after another edit. Resolve it through the supported action. Restore a disposable revision and confirm the new current document and history agree.
 
@@ -61,6 +80,23 @@ Manual: Find the task’s output through search and grouping, open its stack, pa
 
 ## Gotchas
 
+- In Coordinator, saved plan cards use document chronology, so a plan written before its output appears first even when both writes share one native run. Authored issue-document links use the same compact sidebar-link surface and retain revision/annotation targets. Classic run embedding is unchanged. The UI does not remove or deduplicate canonical plan content.
+
 - A local path is not automatically an uploaded artifact accessible to another user.
 - A preview screenshot is not proof that download bytes or revision references are correct.
 - Version conflicts and stale annotations must stay visible rather than silently targeting different content.
+
+### Storybook verification
+
+#### `documents`
+
+Capability ID: `documents-artifacts/documents`.
+
+Scope: ui
+Storybook: Writable/read-only document, save pending/failure/conflict, revision history/historical preview and restore confirmation.
+Production: Persist edited body and reload; append-only restore creates new revision; reject stale writes and inaccessible company/task.
+Sources: Source: [IssueDocumentsSection.tsx](../../ui/src/components/IssueDocumentsSection.tsx), [TaskDocumentPanel.tsx](../../ui/src/components/task-side-panel/TaskDocumentPanel.tsx), [documents.ts](../../server/src/services/documents.ts). Tests: [IssueDocumentsSection.test.tsx](../../ui/src/components/IssueDocumentsSection.test.tsx), [document-revisions.test.ts](../../ui/src/lib/document-revisions.test.ts), [documents-service.test.ts](../../server/src/__tests__/documents-service.test.ts), [issue-document-restore-routes.test.ts](../../server/src/__tests__/issue-document-restore-routes.test.ts)
+
+### Documentation scope: Artifacts and work products
+
+Document/attachment/library/work-product journeys are mapped; every media preview type, storage backend, annotation conflict, and runtime-resource lifecycle variant remains separate.

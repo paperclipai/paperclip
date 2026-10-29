@@ -11,8 +11,10 @@ import {
   taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
+  readTaskSidePanelState,
   writeTaskSidePanelState,
 } from "@/lib/task-side-panel-state";
+import type { TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
 import { TaskSidePanel } from "./TaskSidePanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,6 +27,13 @@ class ResizeObserverStub {
 
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+vi.mock("@/plugins/slots", () => ({
+  PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div>Plugin viewer {context.entityId}</div>,
+}));
+vi.mock("@/hooks/useTaskPluginPanels", () => ({
+  taskPluginPanelId: (panel: TaskPluginPanel) => `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`,
+}));
+const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
 vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
 vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
@@ -75,6 +84,10 @@ vi.mock("@/components/task-detail/TaskDetailRelationsPanel", () => ({
 }));
 
 const agentChat = vi.hoisted(() => ({ enabled: true }));
+const coordinator = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: coordinator.enabled, loaded: true }),
+}));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({
   useAgentChatEnabled: () => ({ enabled: agentChat.enabled, loaded: true }),
 }));
@@ -93,7 +106,7 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
-  TaskDocumentPanel: ({ documentKey }: { documentKey: string }) => <div>{`Document ${documentKey}`}</div>,
+  TaskDocumentPanel: ({ documentKey, issueId, revisionId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
 }));
 
 vi.mock("./TaskWorkspaceFilePanel", () => ({
@@ -129,12 +142,14 @@ describe("TaskSidePanel", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    coordinator.enabled = false;
     window.localStorage.clear();
     browserFixture.data = [];
     browserFixture.control.mockClear();
     fixture.documents = [];
     fixture.plan = null;
     routeFixture.location.search = "";
+    routeFixture.location.hash = "";
     window.history.replaceState(null, "", routeFixture.location.pathname);
     routeFixture.navigate.mockReset();
     container = document.createElement("div");
@@ -178,6 +193,126 @@ describe("TaskSidePanel", () => {
       />
     );
   }
+
+  it("adds the active plugin panel, preserves manual dismissal, and removes inactive plugin panels", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Live view");
+    expect(container.textContent).toContain(`Plugin viewer ${pluginPanel.entityId}`);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]')?.click());
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await render(panel({ pluginPanels: [] }));
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    // An already handled panel remains available in the launcher without reopening.
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("restores an automatically removed panel without taking focus after availability recovers", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    await act(async () => container.querySelector<HTMLButtonElement>('#side-panel-tab-properties')?.click());
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("preserves dismissal and saved selection when the mobile drawer remounts", async () => {
+    const openedPluginPanelKeys = new Set<string>();
+    const dismissedPluginPanelKeys = new Set<string>();
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch tabs"]')?.click());
+    const close = document.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]');
+    expect(close).not.toBeNull();
+    await act(async () => close!.click());
+    const selected = container.querySelector('[id^="side-panel-tab-"]')?.id;
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(null);
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
+    expect(container.querySelector('[id^="side-panel-tab-"]')?.id).toBe(selected);
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("replaces a previous agent's plugin panel when the task's running agent changes", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    const next = { ...pluginPanel, entityId: "44444444-4444-4444-8444-444444444444", runId: "run-2" };
+    await render(panel({ pluginPanels: [next] }));
+    expect(container.querySelectorAll('[data-side-panel-tab-target^="plugin:"]')).toHaveLength(1);
+    expect(container.textContent).toContain(`Plugin viewer ${next.entityId}`);
+    expect(container.textContent).not.toContain(`Plugin viewer ${pluginPanel.entityId}`);
+  });
+
+  it("keeps the upload slot mounted and inert when switching away from Artifacts", async () => {
+    await render(panel({ streamlinedTabs: true, artifactsOpenRequestId: 1 }));
+    const slot = container.querySelector<HTMLElement>("[data-artifact-upload-slot]");
+    expect(slot).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-artifacts")?.click());
+    expect(slot?.getAttribute("aria-hidden")).toBe("false");
+    expect(slot?.hasAttribute("inert")).toBe(false);
+    expect(slot?.className).not.toContain("invisible");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBe(slot);
+    expect(slot?.getAttribute("aria-hidden")).toBe("true");
+    expect(slot?.hasAttribute("inert")).toBe(true);
+    expect(slot?.className).toContain("invisible");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-artifacts")?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBe(slot);
+    expect(slot?.hasAttribute("inert")).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Artifacts"]')?.click());
+    expect(container.querySelector("[data-artifact-upload-slot]")).toBeNull();
+  });
+
+  it("opens only the requested Coordinator document despite background plans, subtasks and artifacts", async () => {
+    coordinator.enabled = true;
+    fixture.plan = issueDocument("plan", "Unrequested plan");
+    fixture.documents = [fixture.plan, issueDocument("report", "Reviewed report")];
+    routeFixture.location.hash = "#document-report&revision=reviewed-version&interaction=decision-1";
+    const onArtifactsOpened = vi.fn();
+    await render(panel({
+      documentDeepLink: { requestId: 1, documentKey: "report" },
+      artifactsOpenRequestId: 1, onArtifactsOpened,
+      showSubtasksTab: true, childIssues: [issue({ id: "child-1" })],
+    }));
+    expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["document:report:reviewed-version"]);
+    expect(onArtifactsOpened).toHaveBeenCalledWith(1);
+  });
+
+  it("opens another task's exact plan without requiring an origin plan or reusing origin document data", async () => {
+    coordinator.enabled = true;
+    fixture.plan = null;
+    fixture.documents = [issueDocument("plan", "Origin task document must not leak")];
+    routeFixture.location.hash = "#document-plan&revision=b-v1&interaction=review-on-a&documentIssue=task-b";
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" } }));
+    const document = container.querySelector("[data-document-owner]");
+    expect(document?.getAttribute("data-document-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-revision-id")).toBe("b-v1");
+    expect(document?.hasAttribute("data-initial-document")).toBe(false);
+    expect(container.textContent).not.toContain("Origin task document must not leak");
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("document:task-b:plan:b-v1");
+  });
+
+  it("preserves explicitly saved Coordinator tabs when a decision link adds its document", async () => {
+    coordinator.enabled = true;
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelPropertiesTab(), taskPanelArtifactsTab()], activeTabId: "properties" },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: Date.now(),
+    });
+    fixture.documents = [issueDocument("report", "Report")];
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "report" } }));
+    expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["properties", "artifacts", "document:report"]);
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Report");
+  });
 
   it("opens, deduplicates, switches and closes text attachment tabs", async () => {
     const onAttachmentOpened = vi.fn();
@@ -440,9 +575,9 @@ describe("TaskSidePanel", () => {
     const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
     expect(propertiesTab?.className).toContain("text-sm");
     expect(propertiesTab?.querySelector("svg")).toBeNull();
-    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.className).toContain("mx-1.5");
+    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.parentElement?.className).toContain("mx-0.75");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.className)
-      .toContain("opacity-0");
+      .toContain("opacity-100");
     const addButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
     expect(addButton?.className).toContain("h-(--side-panel-tab-height)");
     expect(addButton?.className).toContain("w-(--side-panel-tab-height)");
@@ -641,6 +776,30 @@ describe("TaskSidePanel", () => {
     await render(panel({ issue: issue({ workMode: "planning" }) }));
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(1);
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it.each([false, true])("restores each workspace before persisting a same-task scope switch (mobile=%s)", async (mobile) => {
+    const classic = { tabs: [taskPanelPropertiesTab()], activeTabId: "properties" };
+    const experiment = { tabs: [taskPanelArtifactsTab()], activeTabId: "artifacts" };
+    for (const [scope, state] of [["user-1", classic], ["coordinator:user-1", experiment]] as const) {
+      writeTaskSidePanelState(scope, "company-1", "task-1", {
+        state, launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+      });
+    }
+    await render(panel({ accountScope: "user-1", mobile }));
+    expect(container.textContent).toContain("Properties content");
+    // A preference refreshed from another window can change scope without
+    // changing the task or remounting the public TaskSidePanel component.
+    coordinator.enabled = true;
+    await render(panel({ accountScope: "coordinator:user-1", mobile }));
+    expect(container.textContent).toContain("Artifacts content");
+    expect(container.textContent).not.toContain("Properties content");
+    expect(readTaskSidePanelState("user-1", "company-1", "task-1", false)?.state).toEqual(classic);
+    expect(readTaskSidePanelState("coordinator:user-1", "company-1", "task-1", false)?.state).toEqual(experiment);
+    coordinator.enabled = false;
+    await render(panel({ accountScope: "user-1", mobile }));
+    expect(container.textContent).toContain("Properties content");
+    expect(readTaskSidePanelState("coordinator:user-1", "company-1", "task-1", false)?.state).toEqual(experiment);
   });
 
   it("opens a URL-backed workspace file tab outside file-viewer provider ancestry", async () => {

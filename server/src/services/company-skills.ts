@@ -1,3 +1,15 @@
+import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { verifyFileManifest } from "./file-manifest-cache.js";
+import { skillPackageStorageEnabled, skillPackageStore, skillVersionFileMap, skillVersionMetadataColumns, withSkillPackageReadScope, type StoredSkillVersion } from "./skill-package-store.js";
+import { skillPackageRuntime } from "./skill-package-runtime.js";
+import type { SkillPackageFileMapping } from "@paperclipai/db";
+import { ensureSkillCacheDirectory, touchSkillVersionCache, withSkillVersionCacheLock } from "./skill-version-cache.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
+import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
+import { retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
+import { assertLocalImportOutsideSkillPackageCache } from "./skill-local-import-boundary.js";
+import type { AuthorizationActor } from "./authorization.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { logger } from "../middleware/logger.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
@@ -5,9 +17,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { skillFileBytes, snapshotFile, assertSkillSnapshotPath } from "./skill-snapshot.js";
+import { skillFileBytes, snapshotFile, assertSkillSnapshotPath, skillSnapshotHash } from "./skill-snapshot.js";
 import { fileURLToPath } from "node:url";
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents as agentsTable,
@@ -19,8 +31,9 @@ import {
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
-  companySkillVersions, companySkillRepositorySnapshots,
+  companySkillVersions, withDedicatedDbConnection,
   companySkills,
+  companySkillRepositorySnapshots,
   costEvents,
   documents,
   issueAttachments,
@@ -29,8 +42,10 @@ import {
   issueThreadInteractions,
   issueWorkProducts,
 } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
 import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "./skill-repository-package.js";
+import { runVersionSnapshotFlight } from "./skill-version-retention.js";
 import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
   AgentDesiredSkillEntry,
@@ -93,6 +108,7 @@ import type {
   CompanySkillUpdateHoldReason,
   CompanySkillUsageAgent,
   CompanySkillVersion,
+  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
   IssueAttachment,
@@ -240,6 +256,7 @@ type ImportedSkillPersistValues = Pick<
   | "name"
   | "description"
   | "markdown"
+  | "accessSourceId"
   | "sourceType"
   | "sourceLocator"
   | "sourceRef"
@@ -276,8 +293,6 @@ type ParsedSkillImportSource = {
   originalSkillsShUrl: string | null;
   warnings: string[];
 };
-
-const versionSnapshotFlights = new Map<string, Promise<string>>();
 
 const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url"]);
 
@@ -377,6 +392,10 @@ export type ProjectSkillScanTarget = {
 type RuntimeSkillEntryOptions = {
   materializeMissing?: boolean;
   versionSelections?: Map<string, string | null>;
+  selectionConfig?: Record<string, unknown>;
+  includeLegacy?: boolean;
+  onlyKeys?: Set<string>;
+  snapshotLatest?: boolean;
 };
 
 type SkillActor = {
@@ -396,6 +415,8 @@ type BundledSkillReleaseManifestEntry = {
 type CreateVersionOptions = {
   repositorySnapshotId?: string;
   repositorySkillPath?: string;
+  packageSnapshotId?: string;
+  packageFileMap?: SkillPackageFileMapping[] | null;
   fileInventory?: CompanySkillVersionFileInventoryEntry[];
   release?: { id: string; name: string; releasedAt: Date };
   updateCurrentVersion?: boolean;
@@ -440,6 +461,7 @@ function selectCompanySkillColumns() {
     authorName: companySkills.authorName,
     homepageUrl: companySkills.homepageUrl,
     categories: companySkills.categories,
+    accessSourceId: companySkills.accessSourceId,
     sharingScope: companySkills.sharingScope,
     publicShareToken: companySkills.publicShareToken,
     forkedFromSkillId: companySkills.forkedFromSkillId,
@@ -591,7 +613,7 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
   return candidate;
 }
 
-function buildSkillRuntimeName(key: string, slug: string) {
+export function buildSkillRuntimeName(key: string, slug: string) {
   if (key.startsWith("paperclipai/paperclip/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
 }
@@ -1918,8 +1940,9 @@ function serializeVersionFileInventory(
 }
 
 function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
+  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, ...publicRow } = row;
   return {
-    ...row,
+    ...publicRow,
     label: row.label ?? null,
     releaseId: row.releaseId ?? null,
     releaseName: row.releaseName ?? null,
@@ -2783,7 +2806,7 @@ function enrichSkill(
   skill: CompanySkill,
   attachedAgentCount: number,
   usedByAgents: CompanySkillUsageAgent[] = [],
-  currentVersion: CompanySkillVersion | null = null,
+  currentVersion: CompanySkillVersionSummary | null = null,
   starredByCurrentActor = false,
   existingForks: CompanySkillForkSummary[] = [],
 ) {
@@ -2953,7 +2976,13 @@ async function listLastEditorsBySkillId(
   return editors;
 }
 
-export function companySkillService(db: Db) {
+export function companySkillService(db: Db, options: { actor?: AuthorizationActor; packageDb?: Db } = {}) {
+  const packageDb = options.packageDb ?? db;
+  const packages = skillPackageStore(packageDb);
+  const packageRuntime = skillPackageRuntime(packageDb);
+  // Admin reads keep SQL on the caller's transaction, which may own the pool's only slot.
+  const packageReader = db === packageDb ? packages : skillPackageStore(db, undefined, packageDb);
+  const visibility = (database: DbOrTransaction = db) => skillAccessService(database as Db, options.actor);
   const folderSvc = folderService(db);
   const agents = agentService(db);
   const projects = projectService(db);
@@ -2965,6 +2994,7 @@ export function companySkillService(db: Db) {
         code: "skill_source_validation_failed",
       });
     }
+    await assertLocalImportOutsideSkillPackageCache(sourceRealPath, resolveManagedSkillsRoot(companyId));
     const projectRows = await projects.list(companyId);
     const configuredRoots = [
       resolveManagedSkillsRoot(companyId),
@@ -2985,6 +3015,25 @@ export function companySkillService(db: Db) {
         code: "skill_workspace_boundary_denied",
         remediation: "Import from a configured Paperclip workspace or the company managed-skill directory.",
       });
+    }
+    // A filesystem import cannot discard the provenance of installed private
+    // snapshots or their materialized copies, even for an authorized reader.
+    const restricted = await db.select({ id: companySkills.id, key: companySkills.key, slug: companySkills.slug,
+      sourceType: companySkills.sourceType, sourceLocator: companySkills.sourceLocator }).from(companySkills).where(and(
+      eq(companySkills.companyId, companyId), isNotNull(companySkills.accessSourceId)));
+    for (const skill of restricted) {
+      const localRoot = skill.sourceType === "local_path" || skill.sourceType === "catalog" ? normalizeSourceLocatorDirectory(skill.sourceLocator) : null;
+      const protectedRoots = [path.join(resolveManagedSkillsRoot(companyId), "__versions__", skill.id),
+        resolveRuntimeSkillMaterializedPath(companyId, skill), localRoot].filter((root): root is string => Boolean(root));
+      for (const root of protectedRoots) {
+        const canonical = await fs.realpath(root).catch(() => null);
+        if (canonical && (sourceRealPath === canonical || sourceRealPath.startsWith(`${canonical}${path.sep}`)
+          || canonical.startsWith(`${sourceRealPath}${path.sep}`))) {
+          await visibility().assertSkill(companyId, skill.id);
+          throw unprocessable("Project-derived skill files cannot be imported as a company-wide local source. Fork the installed skill to retain project access.",
+            { code: "skill_project_provenance_required" });
+        }
+      }
     }
   }
 
@@ -3016,9 +3065,9 @@ export function companySkillService(db: Db) {
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, [...bundledSkills, firstTaskSkill]);
+      return upsertImportedSkills(companyId, [...bundledSkills, firstTaskSkill], db, { includeFolderPath: false });
     }
-    return upsertImportedSkills(companyId, [firstTaskSkill]);
+    return upsertImportedSkills(companyId, [firstTaskSkill], db, { includeFolderPath: false });
   }
 
   async function readBundledSkillReleaseRegistry() {
@@ -3065,30 +3114,22 @@ export function companySkillService(db: Db) {
       const fileInventory = serializeVersionFileInventory(
         await collectVersionFileInventoryFromDirectory(release.releaseDir),
       );
-      const existing = await db
-        .select()
-        .from(companySkillVersions)
-        .where(and(
-          eq(companySkillVersions.companyId, companyId),
-          eq(companySkillVersions.companySkillId, paperclipSkill.id),
-          eq(companySkillVersions.releaseId, release.id),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        const existingInventory = toCompanySkillVersion(existing).fileInventory;
-        const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        if (existingHash !== registryHash) {
-          throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
-        }
-        continue;
-      }
+      const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
+        path: entry.path,
+        sha256: sha256Buffer(entry.content),
+      })));
+      if (await verifyExistingBundledSkillRelease({ db, companyId, skillId: paperclipSkill.id, releaseId: release.id,
+        expectedInventoryHash: registryHash, validateInventory: existing => {
+          const existingInventory = toCompanySkillVersion(existing).fileInventory;
+          const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
+            path: entry.path,
+            sha256: sha256Buffer(entry.content),
+          })));
+          if (existingHash !== registryHash) {
+            throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
+          }
+        },
+      })) continue;
       const releasedAt = new Date(release.releasedAt);
       if (Number.isNaN(releasedAt.getTime())) {
         throw new Error(`Invalid bundled skill release date: ${release.releasedAt}`);
@@ -3109,7 +3150,7 @@ export function companySkillService(db: Db) {
         id: companySkills.id,
         key: companySkills.key,
         folderId: companySkills.folderId,
-        metadata: companySkills.metadata,
+        metadata: sql<Record<string, unknown>>`jsonb_build_object('sourceKind', ${companySkills.metadata}->'sourceKind')`,
       })
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId))
@@ -3149,7 +3190,7 @@ export function companySkillService(db: Db) {
         metadata: companySkills.metadata,
       })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId));
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.sourceType, "local_path")));
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
@@ -3205,15 +3246,21 @@ export function companySkillService(db: Db) {
 
       await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
         await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-        await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+        await db.transaction(async tx => {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+          await notifySkillVersionRetention(tx, companyId);
+          await tx.delete(companySkills).where(eq(companySkills.id, skill.id));
+        });
       });
     }
   }
 
   async function ensureSkillInventoryCurrent(companyId: string) {
+    // Denied reads must not perform the lazy bundled-skill reconciliation.
+    if (!visibility().canReadCompany(companyId)) return;
     const existingRefresh = skillInventoryRefreshPromises.get(companyId);
     if (existingRefresh) {
-      await existingRefresh;
+      await measureRunPhase("skills.inventory.wait", () => existingRefresh);
       return;
     }
 
@@ -3226,10 +3273,10 @@ export function companySkillService(db: Db) {
       if (!companyExists) {
         throw notFound("Company not found");
       }
-      const bundledSkills = await ensureBundledSkills(companyId);
-      await ensureBundledSkillReleases(companyId, bundledSkills);
-      await reconcilePaperclipSkillFolders(companyId);
-      await reconcileLocalPathSkillSources(companyId);
+      const bundledSkills = await measureRunPhase("skills.inventory.bundled", () => ensureBundledSkills(companyId));
+      await measureRunPhase("skills.inventory.releases", () => ensureBundledSkillReleases(companyId, bundledSkills));
+      await measureRunPhase("skills.inventory.folders", () => reconcilePaperclipSkillFolders(companyId));
+      await measureRunPhase("skills.inventory.local_sources", () => reconcileLocalPathSkillSources(companyId));
     })();
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
@@ -3243,6 +3290,7 @@ export function companySkillService(db: Db) {
   }
 
   async function list(companyId: string, query: CompanySkillListQuery = {}): Promise<CompanySkillListItem[]> {
+    if (!visibility().canReadCompany(companyId)) return [];
     await ensureSkillInventoryCurrent(companyId);
     const [dbRows, folderListing] = await Promise.all([db
       .select({
@@ -3265,6 +3313,7 @@ export function companySkillService(db: Db) {
         authorName: companySkills.authorName,
         homepageUrl: companySkills.homepageUrl,
         categories: companySkills.categories,
+        accessSourceId: companySkills.accessSourceId,
         sharingScope: companySkills.sharingScope,
         publicShareToken: companySkills.publicShareToken,
         forkedFromSkillId: companySkills.forkedFromSkillId,
@@ -3278,7 +3327,7 @@ export function companySkillService(db: Db) {
         updatedAt: companySkills.updatedAt,
       })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId))
+      .where(and(eq(companySkills.companyId, companyId), await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key))
       .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow))),
       folderSvc.list(companyId, "skill"),
@@ -3295,7 +3344,15 @@ export function companySkillService(db: Db) {
         ? await folderSvc.descendantIds(companyId, "skill", query.folderId)
         : new Set([query.folderId]);
     }
-    const agentRows = await agents.list(companyId);
+    const agentRows = await db.select({
+      desiredSkills: sql<unknown>`${agentsTable.adapterConfig}->'paperclipSkillSync'->'desiredSkills'`,
+    }).from(agentsTable).where(and(eq(agentsTable.companyId, companyId), ne(agentsTable.status, "terminated")));
+    const attachedAgentCounts = new Map<string, number>();
+    for (const agent of agentRows) {
+      for (const key of resolveDesiredSkillKeys(rows, { paperclipSkillSync: { desiredSkills: agent.desiredSkills } })) {
+        attachedAgentCounts.set(key, (attachedAgentCounts.get(key) ?? 0) + 1);
+      }
+    }
     const q = query.q?.trim().toLowerCase() ?? "";
     const categories = new Set(
       (query.categories ?? [])
@@ -3321,13 +3378,7 @@ export function companySkillService(db: Db) {
       }
       return true;
     });
-    const items = filtered.map((skill) => {
-      const attachedAgentCount = agentRows.filter((agent) => {
-        const desiredSkills = resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>);
-        return desiredSkills.includes(skill.key);
-      }).length;
-      return toCompanySkillListItem(skill, attachedAgentCount);
-    });
+    const items = filtered.map((skill) => toCompanySkillListItem(skill, attachedAgentCounts.get(skill.key) ?? 0));
     const sort = query.sort ?? "alphabetical";
     items.sort((left, right) => {
       if (sort === "recent") return right.updatedAt.getTime() - left.updatedAt.getTime() || left.name.localeCompare(right.name);
@@ -3348,11 +3399,17 @@ export function companySkillService(db: Db) {
   }
 
   async function listFull(companyId: string): Promise<CompanySkill[]> {
+    if (!visibility().canReadCompany(companyId)) return [];
     await ensureSkillInventoryCurrent(companyId);
+    return readFullSkillRows(companyId);
+  }
+
+  async function readFullSkillRows(companyId: string, keys?: Set<string>, unrestrictedOnly = false): Promise<CompanySkill[]> {
+    if (!visibility().canReadCompany(companyId) || keys?.size === 0) return [];
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId))
+      .where(and(eq(companySkills.companyId, companyId), keys ? inArray(companySkills.key, [...keys]) : undefined, unrestrictedOnly ? isNull(companySkills.accessSourceId) : await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key));
     return rows.map((row) => toCompanySkill(row));
   }
@@ -3378,7 +3435,7 @@ export function companySkillService(db: Db) {
         slug: companySkills.slug,
       })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId));
+      .where(and(eq(companySkills.companyId, companyId), await visibility().condition(companyId)));
     return rows as CompanySkillReferenceRow[];
   }
 
@@ -3386,25 +3443,32 @@ export function companySkillService(db: Db) {
     const row = await database
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id)))
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id), await visibility(database).condition(companyId)))
       .then((rows) => rows[0] ?? null);
     return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
-  async function getByKey(companyId: string, key: string, database: DbOrTransaction = db) {
+  async function getByKey(
+    companyId: string,
+    key: string,
+    database: DbOrTransaction = db,
+    options: { includeFolderPath?: boolean } = {},
+  ) {
     const row = await database
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key), await visibility(database).condition(companyId)))
       .then((rows) => rows[0] ?? null);
-    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
+    if (!row) return null;
+    const skill = toCompanySkill(row);
+    return options.includeFolderPath === false ? skill : enrichFolderPath(companyId, skill);
   }
 
   async function getBySlugIfUnique(companyId: string, slug: string) {
     const rows = await db
       .select(selectCompanySkillColumns())
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, slug)));
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, slug), await visibility().condition(companyId)));
     return rows.length === 1 ? enrichFolderPath(companyId, toCompanySkill(rows[0]!)) : null;
   }
 
@@ -3420,21 +3484,29 @@ export function companySkillService(db: Db) {
       ?? await getByKey(companyId, ref);
   }
 
-  async function getVersion(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
-    const row = await db
-      .select()
-      .from(companySkillVersions)
-      .where(and(
-        eq(companySkillVersions.companyId, companyId),
-        eq(companySkillVersions.companySkillId, skillId),
-        eq(companySkillVersions.id, versionId),
-      ))
-      .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkillVersion(row) : null;
+  async function readVersionMetadata(companyId: string, skillId: string, versionId: string): Promise<StoredSkillVersion | null> {
+    if (db === packageDb) return packages.version(companyId, skillId, versionId);
+    const [row] = await db.select(skillVersionMetadataColumns).from(companySkillVersions).where(and(
+      eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId), eq(companySkillVersions.id, versionId)));
+    return row ?? null;
   }
 
-  async function getCurrentVersion(skill: CompanySkill): Promise<CompanySkillVersion | null> {
-    return skill.currentVersionId ? getVersion(skill.companyId, skill.id, skill.currentVersionId) : null;
+  async function getVersion(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
+    if (!await getById(companyId, skillId)) return null;
+    const row = await readVersionMetadata(companyId, skillId, versionId);
+    return row ? toCompanySkillVersion({ ...row, fileInventory: await packageReader.versionFiles(row) }) : null;
+  }
+
+  async function versionSummary(row: StoredSkillVersion): Promise<CompanySkillVersionSummary> {
+    return { ...toCompanySkillVersion(row), fileInventory: await packageReader.versionInventory(row) };
+  }
+  async function getVersionSummary(companyId: string, skillId: string, versionId: string) {
+    if (!await getById(companyId, skillId)) return null;
+    const row = await readVersionMetadata(companyId, skillId, versionId);
+    return row ? versionSummary(row) : null;
+  }
+  async function getCurrentVersion(skill: CompanySkill): Promise<CompanySkillVersionSummary | null> {
+    return skill.currentVersionId ? getVersionSummary(skill.companyId, skill.id, skill.currentVersionId) : null;
   }
 
   async function isStarredByActor(companyId: string, skillId: string, actor: SkillActor | null | undefined) {
@@ -3498,17 +3570,21 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
     if (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash && skill.currentVersionId) {
-      const version = await getVersion(companyId, skill.id, skill.currentVersionId);
-      if (!version) throw unprocessable("Installed skill version is unavailable.");
-      const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
-      const audit = await auditInstalledSkillBytes({
-        ...skill,
-        sourceType: "local_path",
-        sourceLocator,
-        fileInventory: await runtimeVersionInventory(companyId, version),
+      const versionId = skill.currentVersionId;
+      return withSkillVersionCacheLock(db, companyId, async () => {
+        const version = await readVersionMetadata(companyId, skill.id, versionId);
+        if (!version) throw unprocessable("Installed skill version is unavailable.");
+        const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
+        const audit = await auditInstalledSkillBytes({
+          ...skill,
+          sourceType: "local_path",
+          sourceLocator,
+          fileInventory: version.repositorySnapshotId || version.packageSnapshotId
+            ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
+        });
+        await persistAuditMetadata(skill, audit);
+        return audit;
       });
-      await persistAuditMetadata(skill, audit);
-      return audit;
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
       throw unprocessable("Only local-path and catalog-managed company skills support audit.");
@@ -3573,7 +3649,7 @@ export function companySkillService(db: Db) {
     const existingForks = await existingForkSummaries(companyId, skill.id, actor);
     const currentVersion = await getCurrentVersion(skill);
     const repositoryInventory = currentVersion?.repositorySnapshotId
-      ? await runtimeVersionInventory(companyId, currentVersion) : null;
+      ? await packageRuntime.inventory((await readVersionMetadata(companyId, skill.id, currentVersion.id))!) : null;
     return enrichSkill(
       repositoryInventory ? { ...skill, fileInventory: repositoryInventory.map(({ path, kind }) => ({ path, kind })) } : skill,
       usedByAgents.length,
@@ -3621,15 +3697,17 @@ export function companySkillService(db: Db) {
     return out;
   }
 
-  async function listVersions(companyId: string, skillId: string): Promise<CompanySkillVersion[]> {
+  async function listVersions(companyId: string, skillId: string): Promise<CompanySkillVersionSummary[]> {
     const skill = await getById(companyId, skillId);
     if (!skill) throw notFound("Skill not found");
     const rows = await db
-      .select()
+      .select(skillVersionMetadataColumns)
       .from(companySkillVersions)
       .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId)))
       .orderBy(desc(companySkillVersions.revisionNumber));
-    return rows.map((row) => toCompanySkillVersion(row));
+    const result: CompanySkillVersionSummary[] = [];
+    for (const row of rows) result.push(await versionSummary(row));
+    return result;
   }
 
   async function createVersion(
@@ -3645,8 +3723,26 @@ export function companySkillService(db: Db) {
     const fileInventory = serializeVersionFileInventory(
       options.fileInventory ?? await collectVersionFileInventory(companyId, skill),
     );
-    const previousVersion = options.fileInventory === undefined ? await getCurrentVersion(skill) : null;
+    const previousVersion = options.fileInventory === undefined && skill.currentVersionId ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null;
+    // Shipped release rows retain their existing validation contract. All user
+    // snapshots use the package store; source imports prepare before their transaction.
+    let packageFileMap = options.packageFileMap ?? null;
+    const preparePackage = async (store: ReturnType<typeof skillPackageStore>) => {
+      const id = await store.prepare(companyId, fileInventory);
+      packageFileMap = skillVersionFileMap(fileInventory, await store.manifest(companyId, id));
+      return id;
+    };
+    const packageSnapshotId = options.packageSnapshotId ?? (options.release || !skillPackageStorageEnabled() ? null : options.database
+      ? await withDedicatedDbConnection(packageDb, connection => preparePackage(skillPackageStore(connection)))
+      : await preparePackage(packages));
+    if (options.packageSnapshotId) {
+      const metadata = new Map(fileInventory.map(file => [file.path, file]));
+      packageFileMap = (packageFileMap ?? fileInventory.map(file => ({ path: file.path, kind: file.kind, sourcePath: file.path })))
+        .map(file => ({ ...file, encoding: metadata.get(file.path)?.encoding ?? "utf8" }));
+    }
     const persist = async (tx: DbOrTransaction) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+      await notifySkillVersionRetention(tx, companyId);
       await tx.execute(sql`
         select ${companySkills.id}
         from ${companySkills}
@@ -3654,6 +3750,14 @@ export function companySkillService(db: Db) {
           and ${companySkills.companyId} = ${companyId}
         for update
       `);
+      // File edits already own the skill lock when a dedicated connection saves
+      // their package. Never hold a package lock while waiting for that skill.
+      if (packageSnapshotId) {
+        const [saved] = await tx.select({ storage: companySkillRepositorySnapshots.storage })
+          .from(companySkillRepositorySnapshots).where(and(eq(companySkillRepositorySnapshots.companyId, companyId),
+            eq(companySkillRepositorySnapshots.id, packageSnapshotId))).for("update");
+        if (!saved?.storage) throw conflict("Skill package changed during publication; retry the operation.");
+      }
       const [{ nextRevision }] = await tx
         .select({
           nextRevision: sql<number>`coalesce(max(${companySkillVersions.revisionNumber}), 0) + 1`,
@@ -3667,12 +3771,15 @@ export function companySkillService(db: Db) {
           companySkillId: skillId,
           repositorySnapshotId: options.repositorySnapshotId ?? previousVersion?.repositorySnapshotId ?? null,
           repositorySkillPath: options.repositorySkillPath ?? previousVersion?.repositorySkillPath ?? null,
+          packageSnapshotId,
+          migrationAt: packageSnapshotId || options.release ? null : new Date(),
+          packageFileMap,
           revisionNumber: Number(nextRevision ?? 1),
           label: input.label?.trim() || null,
           releaseId: options.release?.id ?? null,
           releaseName: options.release?.name ?? null,
           releasedAt: options.release?.releasedAt ?? null,
-          fileInventory,
+          fileInventory: packageSnapshotId ? [] : fileInventory,
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
         })
@@ -3689,7 +3796,7 @@ export function companySkillService(db: Db) {
     };
     const versionRow = options.database ? await persist(options.database) : await db.transaction(persist);
     if (!versionRow) throw notFound("Failed to persist skill version");
-    return toCompanySkillVersion(versionRow);
+    return toCompanySkillVersion({ ...versionRow, fileInventory });
   }
 
   async function refreshStarCount(companyId: string, skillId: string) {
@@ -3956,6 +4063,8 @@ export function companySkillService(db: Db) {
 
   async function cleanupFailedFork(companyId: string, sourceSkillId: string, forkSkillId: string, forkDir: string) {
     await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+      await notifySkillVersionRetention(tx, companyId);
       await tx
         .update(companySkills)
         .set({ currentVersionId: null, updatedAt: new Date() })
@@ -3993,16 +4102,17 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const source = await getById(companyId, skillId);
     if (!source) throw notFound("Skill not found");
-    const existing = await listFull(companyId);
+    if (source.accessSourceId && input.sharingScope === "public_link") throw forbidden("Project skills cannot be published through a public link.");
+    const existing = await db.select({ slug: companySkills.slug }).from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
     const usedSlugs = new Set(existing.map((skill) => normalizeSkillSlug(skill.slug) ?? skill.slug));
     const forkSlug = uniqueSkillSlug(normalizeSkillSlug(input.slug ?? `${source.slug}-fork`) ?? `${source.slug}-fork`, usedSlugs);
     const forkName = input.name?.trim() || `${source.name} Fork`;
     const forkKey = `company/${companyId}/${forkSlug}`;
     const plannedReassignments = await planSkillReassignments(companyId, source, forkKey, input.reassignAgentIds);
     const managedRoot = resolveManagedSkillsRoot(companyId);
-    const forkDir = path.resolve(managedRoot, forkSlug);
-    await fs.rm(forkDir, { recursive: true, force: true });
-    await fs.mkdir(forkDir, { recursive: true });
+    await fs.mkdir(managedRoot, { recursive: true });
+    const forkDir = await fs.mkdtemp(path.join(managedRoot, `${forkSlug}-fork-`));
     const sourceVersion = await getCurrentVersion(source);
     const repositoryFiles = sourceVersion?.repositorySnapshotId ? await runtimeVersionInventory(companyId, sourceVersion) : null;
     for (const entry of repositoryFiles ?? source.fileInventory) {
@@ -4019,7 +4129,9 @@ export function companySkillService(db: Db) {
     }
     const inventory = await collectLocalSkillInventory(forkDir);
     const parsed = parseFrontmatterMarkdown(markdown);
+    const accessSourceId = await retainProjectSkillAccess(db, companyId, source.accessSourceId);
     const metadata = {
+      accessSourceId,
       sourceKind: "managed_local",
       forkedFromSkillId: source.id,
       forkedFromCompanyId: source.companyId,
@@ -4044,6 +4156,7 @@ export function companySkillService(db: Db) {
     await db
       .update(companySkills)
       .set({
+        accessSourceId,
         iconUrl: source.iconUrl,
         color: source.color,
         tagline: source.tagline,
@@ -4357,11 +4470,14 @@ export function companySkillService(db: Db) {
   async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
     if (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash && skill.currentVersionId) {
-      const version = await getCurrentVersion(skill);
-      // Keep original package-relative reads working, and expose the repository
-      // files from the same saved snapshot used by runtime delivery.
-      const file = version?.fileInventory.find(entry => entry.path === normalizedPath)
-        ?? (version?.repositorySnapshotId ? (await runtimeVersionInventory(skill.companyId, version)).find(entry => entry.path === normalizedPath) : undefined);
+      const version = await readVersionMetadata(skill.companyId, skill.id, skill.currentVersionId);
+      let file: CompanySkillVersionFileInventoryEntry | undefined;
+      if (version) {
+        file = await packageReader.readVersionFile(version, normalizedPath);
+        if (!file && version.repositorySnapshotId && version.repositorySkillPath) {
+          file = (await runtimeVersionInventory(skill.companyId, toCompanySkillVersion(version))).find(file => file.path === normalizedPath);
+        }
+      }
       if (!file) throw notFound("Installed skill snapshot is missing a file.");
       return { ...file, skillId: skill.id, language: file.encoding === "base64" ? null : inferLanguageFromPath(normalizedPath),
         markdown: file.encoding !== "base64" && isMarkdownPath(normalizedPath), editable: false };
@@ -4437,6 +4553,7 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) throw notFound("Skill not found");
 
+    if (skill.accessSourceId && input.sharingScope === "public_link") throw forbidden("Project skills cannot be published through a public link.");
     const sharingScope = Object.prototype.hasOwnProperty.call(input, "sharingScope")
       ? normalizeMutableSharingScope(input.sharingScope)
       : null;
@@ -4494,6 +4611,9 @@ export function companySkillService(db: Db) {
       : null;
     if (input.forkedFromSkillId && !forkSource) {
       throw notFound("Fork source skill not found");
+    }
+    if (forkSource?.accessSourceId && input.sharingScope === "public_link") {
+      throw forbidden("Project skills cannot be published through a public link.");
     }
     const forkVersion = forkSource ? await getCurrentVersion(forkSource) : null;
     const repositoryFiles = forkVersion?.repositorySnapshotId ? await runtimeVersionInventory(companyId, forkVersion) : null;
@@ -4576,8 +4696,10 @@ export function companySkillService(db: Db) {
           ? await collectLocalSkillInventory(skillDir)
           : [{ path: "SKILL.md", kind: "skill" as const }];
         const parsed = parseFrontmatterMarkdown(markdown);
+        const accessSourceId = await retainProjectSkillAccess(db, companyId, forkSource?.accessSourceId);
         const metadata = {
           sourceKind: "managed_local",
+          ...(accessSourceId ? { accessSourceId } : {}),
           ...(forkSource ? {
             forkedFromSkillId: forkSource.id,
             forkedFromCompanyId: forkSource.companyId,
@@ -4769,63 +4891,117 @@ export function companySkillService(db: Db) {
     input: CompanySkillFileDeleteRequest,
     actor: SkillActor | null = null,
   ): Promise<CompanySkillFileDeleteResult> {
-    return withSkillFileMutation(companyId, skillId, async (skill, tx) => {
+    let backup: { directory: string; source: string; copy: string } | undefined;
+    let mutation: { slug: string; sourceLocator: string | null; previousVersionId: string | null; savedVersionId?: string } | undefined;
+    let needsRestore = false;
+    async function restore() {
+      if (!backup || !needsRestore) return;
+      await fs.cp(backup.copy, backup.source, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      needsRestore = false;
+    }
+    try {
+      const result = await withSkillFileMutation(companyId, skillId, async (skill, tx) => {
+        const source = deriveSkillSourceInfo(skill);
+        if (!source.editable || skill.sourceType !== "local_path") {
+          throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
+        }
 
-      const source = deriveSkillSourceInfo(skill);
-      if (!source.editable || skill.sourceType !== "local_path") {
-        throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
-      }
+        const normalizedPath = normalizePortablePath(input.path);
+        if (!normalizedPath) {
+          throw unprocessable("Skill file path is required.");
+        }
 
-      const normalizedPath = normalizePortablePath(input.path);
-      if (!normalizedPath) {
-        throw unprocessable("Skill file path is required.");
-      }
+        const deletedPaths = input.target === "folder"
+          ? skill.fileInventory
+            .map((entry) => normalizePortablePath(entry.path))
+            .filter((entryPath) => entryPath.startsWith(`${normalizedPath}/`))
+          : skill.fileInventory
+            .map((entry) => normalizePortablePath(entry.path))
+            .filter((entryPath) => entryPath === normalizedPath);
 
-      const deletedPaths = input.target === "folder"
-        ? skill.fileInventory
-          .map((entry) => normalizePortablePath(entry.path))
-          .filter((entryPath) => entryPath.startsWith(`${normalizedPath}/`))
-        : skill.fileInventory
-          .map((entry) => normalizePortablePath(entry.path))
-          .filter((entryPath) => entryPath === normalizedPath);
-
-      if (deletedPaths.length === 0) {
-        throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
-      }
-      if (deletedPaths.includes("SKILL.md")) {
-        throw unprocessable("SKILL.md cannot be deleted.");
-      }
-
-      const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
-      if (!absolutePath) throw notFound("Skill file not found");
-
-      await fs.rm(absolutePath, {
-        recursive: input.target === "folder",
-        force: false,
-      }).catch((error) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (deletedPaths.length === 0) {
           throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
         }
-        throw error;
-    });
+        if (deletedPaths.includes("SKILL.md")) {
+          throw unprocessable("SKILL.md cannot be deleted.");
+        }
 
-    await tx
-      .update(companySkills)
-      .set({ updatedAt: new Date() })
-      .where(eq(companySkills.id, skill.id));
+        const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
+        if (!absolutePath) throw notFound("Skill file not found");
 
-    const inventory = await refreshEditedSkillInventory(skill, tx);
-    await createVersion(companyId, skillId, {
-      label: input.target === "folder" ? `Deleted ${normalizedPath}/` : `Deleted ${normalizedPath}`,
-    }, actor, { database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory });
+        // Keep the entire subtree, including unlisted files and empty folders.
+        // A temporary directory outside the skill also supports imported roots
+        // on other filesystems without adding the backup to its inventory.
+        const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-delete-"));
+        backup = { directory, source: absolutePath, copy: path.join(directory, "source") };
+        mutation = { slug: skill.slug, sourceLocator: skill.sourceLocator, previousVersionId: skill.currentVersionId };
+        await fs.cp(absolutePath, backup.copy, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true })
+          .catch((error) => {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
+            }
+            throw error;
+          });
 
-    return {
-      skillId: skill.id,
-      path: normalizedPath,
-      target: input.target,
-      deletedPaths,
-    };
-    });
+        try {
+          needsRestore = true;
+          await fs.rm(absolutePath, { recursive: input.target === "folder", force: false }).catch(error => {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              throw notFound(input.target === "folder" ? "Skill folder not found" : "Skill file not found");
+            }
+            throw error;
+          });
+          await tx
+            .update(companySkills)
+            .set({ updatedAt: new Date() })
+            .where(eq(companySkills.id, skill.id));
+
+          const inventory = await refreshEditedSkillInventory(skill, tx);
+          const version = await createVersion(companyId, skillId, {
+            label: input.target === "folder" ? `Deleted ${normalizedPath}/` : `Deleted ${normalizedPath}`,
+          }, actor, { database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory });
+          mutation.savedVersionId = version.id;
+
+          return { skillId: skill.id, path: normalizedPath, target: input.target, deletedPaths };
+        } catch (error) {
+          // Restore before releasing the mutation lock so a queued edit cannot
+          // observe missing files or be overwritten by rollback.
+          await restore();
+          throw error;
+        }
+      });
+      needsRestore = false;
+      return result;
+    } catch (error) {
+      if (needsRestore && mutation) {
+        const attempted = mutation;
+        try {
+          // A lost commit reply does not prove rollback. Reacquire the same
+          // locks before checking its outcome or touching the source again.
+          await db.transaction(async tx => {
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${attempted.slug}`}, 0))`);
+            const [current] = await tx.select({ slug: companySkills.slug, sourceLocator: companySkills.sourceLocator,
+              currentVersionId: companySkills.currentVersionId }).from(companySkills)
+              .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId))).for("update");
+            if (current?.slug !== attempted.slug || current.sourceLocator !== attempted.sourceLocator) return;
+            if (current.currentVersionId === attempted.savedVersionId) needsRestore = false;
+            else if (current.currentVersionId === attempted.previousVersionId) await restore();
+          });
+        } catch (recoveryError) {
+          logger.warn({ err: recoveryError, companyId, skillId }, "Skill deletion transaction outcome could not be checked");
+        }
+        if (needsRestore) {
+          logger.warn({ companyId, skillId, backupDirectory: backup?.directory }, "Skill deletion backup retained; outcome is unknown or skill changed");
+        }
+      }
+      throw error;
+    } finally {
+      if (backup && !needsRestore) {
+        await fs.rm(backup.directory, { recursive: true, force: true }).catch(error => {
+          logger.warn({ err: error, companyId, skillId }, "Skill file deletion backup cleanup failed");
+        });
+      }
+    }
   }
 
   async function installUpdate(companyId: string, skillId: string, options: { force?: boolean } = {}): Promise<CompanySkill | null> {
@@ -5918,13 +6094,15 @@ export function companySkillService(db: Db) {
         } else if (entry.isFile()) {
           out.push(normalizePortablePath(relativePath));
         } else {
-          out.push(normalizePortablePath(relativePath));
+          throw unprocessable("Unsafe file in materialized skill version.");
         }
       }
       return out;
     }
 
     try {
+      const rootStat = await fs.lstat(root);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw unprocessable("Unsafe materialized skill directory.");
       return await walk(root, "");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -5959,23 +6137,31 @@ export function companySkillService(db: Db) {
     return true;
   }
 
-  async function runtimeVersionInventory(companyId: string, version: CompanySkillVersion) {
-    if (!version.repositorySnapshotId) return version.fileInventory;
-    const [snapshot] = await db.select().from(companySkillRepositorySnapshots).where(and(
-      eq(companySkillRepositorySnapshots.companyId, companyId), eq(companySkillRepositorySnapshots.id, version.repositorySnapshotId)));
-    if (!snapshot || !version.repositorySkillPath) throw unprocessable("Installed repository snapshot is unavailable.");
-    return repositorySkillProjection(snapshot.fileInventory, version.repositorySkillPath);
+  async function runtimeVersionInventory(companyId: string, version: CompanySkillVersionSummary) {
+    if (!version.repositorySnapshotId) {
+      const row = (await readVersionMetadata(companyId, version.companySkillId, version.id))!;
+      return packageReader.versionFiles(row);
+    }
+    if (!version.repositorySkillPath) throw unprocessable("Installed repository snapshot is unavailable.");
+    return repositorySkillProjection(await packageReader.files(companyId, version.repositorySnapshotId, true), version.repositorySkillPath);
   }
 
-  async function materializeVersionSnapshot(companyId: string, skill: CompanySkill, version: CompanySkillVersion): Promise<string> {
-    version = { ...version, fileInventory: await runtimeVersionInventory(companyId, version) };
+  async function materializeVersionSnapshot(companyId: string, skill: CompanySkill, version: StoredSkillVersion): Promise<string> {
+    return withSkillVersionCacheLock(db, companyId, async () => {
+      const directory = await materializeVersionSnapshotLocked(companyId, skill, version);
+      await touchSkillVersionCache(companyId, skill.id, version.id);
+      return directory;
+    });
+  }
+
+  async function materializeVersionSnapshotLocked(companyId: string, skill: CompanySkill, version: StoredSkillVersion): Promise<string> {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id);
     const skillDir = path.join(runtimeRoot, version.id);
-    const existing = versionSnapshotFlights.get(skillDir);
-    if (existing) return existing;
-    const work = (async () => {
-      if (await materializedVersionSnapshotMatches(skillDir, version)) return skillDir;
-      await fs.mkdir(runtimeRoot, { recursive: true });
+    return runVersionSnapshotFlight(skillDir, async () => {
+      if (version.repositorySnapshotId || version.packageSnapshotId) return packageRuntime.materialize(version, skillDir);
+      version = { ...version, fileInventory: await packages.versionFiles(version) };
+      await ensureSkillCacheDirectory(runtimeRoot, true);
+      if (await measureRunPhase("skills.version.verify", () => materializedVersionSnapshotMatches(skillDir, version), { fileCount: version.fileInventory.length })) return skillDir;
       const staging = await fs.mkdtemp(path.join(runtimeRoot, `.${version.id}-`));
       try {
         let wroteSkillFile = false;
@@ -5999,9 +6185,7 @@ export function companySkillService(db: Db) {
         }
         return skillDir;
       } finally { await fs.rm(staging, { recursive: true, force: true }); }
-    })();
-    versionSnapshotFlights.set(skillDir, work);
-    try { return await work; } finally { versionSnapshotFlights.delete(skillDir); }
+    });
   }
 
   function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
@@ -6015,10 +6199,10 @@ export function companySkillService(db: Db) {
     options: RuntimeSkillEntryOptions,
   ): Promise<RuntimeSkillSourceResolution | null> {
     const selectedVersionId = options.versionSelections?.get(skill.key)
-      ?? (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash ? skill.currentVersionId : null);
+      ?? (options.snapshotLatest || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null);
     if (selectedVersionId) {
       const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
-      const version = await getVersion(companyId, skill.id, selectedVersionId);
+      const version = await measureRunPhase("skills.version.read", () => readVersionMetadata(companyId, skill.id, selectedVersionId));
       if (!version) {
         return {
           status: "missing",
@@ -6030,7 +6214,21 @@ export function companySkillService(db: Db) {
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
       try {
-        const versionSource = await materializeVersionSnapshot(companyId, skill, version);
+        if (options.materializeMissing === false && !options.snapshotLatest) {
+          // Agent settings enumerate the library, including unselected skills.
+          // Execution, rather than browsing, validates the repository bytes.
+          try {
+            await ensureSkillCacheDirectory(versionPath);
+            const entrypoint = await fs.lstat(path.join(versionPath, "SKILL.md"));
+            if (!entrypoint.isFile() || entrypoint.isSymbolicLink()) throw unprocessable("Unsafe skill cache entrypoint.");
+            return { status: "available", source: versionPath };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            return { status: "missing", source: versionPath,
+              detail: "The selected skill version will be materialized on the next run." };
+          }
+        }
+        const versionSource = await measureRunPhase("skills.version.materialize", () => materializeVersionSnapshot(companyId, skill, version));
         if (versionSource) return { status: "available", source: versionSource };
         return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };
       } catch (error) {
@@ -6098,18 +6296,116 @@ export function companySkillService(db: Db) {
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
   ): Promise<PaperclipSkillEntry[]> {
-    const skills = await listFull(companyId);
+    return withRuntimeSkillEntries(companyId, options, entries => entries);
+  }
+
+  async function withRuntimeSkillEntries<T>(
+    companyId: string,
+    options: RuntimeSkillEntryOptions,
+    consume: (entries: PaperclipSkillEntry[]) => T | Promise<T>,
+  ): Promise<T> {
+    if (options.onlyKeys?.size === 0 || (!options.onlyKeys && options.selectionConfig && !options.includeLegacy
+      && readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills.length === 0)) return consume([]);
+    // Probe only the selected metadata. Public selections avoid scanning
+    // unrelated source permissions; restricted selections still authorize now.
+    const requested = options.onlyKeys ?? (options.selectionConfig && !options.includeLegacy
+      ? new Set(readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills) : null);
+    const columns = { key: companySkills.key, slug: companySkills.slug, sourceLocator: companySkills.sourceLocator,
+      sourceKind: sql<string>`${companySkills.metadata}->>'sourceKind'`, accessSourceId: companySkills.accessSourceId };
+    let installed = requested?.size && visibility().canReadCompany(companyId) ? await db.select(columns)
+      .from(companySkills).where(and(eq(companySkills.companyId, companyId), inArray(companySkills.key, [...requested]))) : [];
+    if (requested && installed.some(skill => skill.accessSourceId !== null)) {
+      installed = await db.select(columns).from(companySkills).where(and(eq(companySkills.companyId, companyId),
+        inArray(companySkills.key, [...requested]), await visibility().condition(companyId)));
+    }
+    const preparedSelection = requested && installed.length === requested.size;
+    if (!preparedSelection) {
+      await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
+    } else {
+      for (const skill of installed.filter(skill => skill.sourceKind === "paperclip_bundled")) {
+        const candidates = skill.key === ONBOARDING_FIRST_TASK_SKILL_KEY
+          ? [fileURLToPath(new URL("../onboarding-assets/first-task/skills/first-task/", import.meta.url))]
+          : resolveBundledSkillsRoot().map(root => path.join(root, skill.slug));
+        for (const directory of candidates) {
+          if (!(await fs.stat(path.join(directory, "SKILL.md")).catch(() => null))?.isFile()) continue;
+          if (normalizeSourceLocatorDirectory(skill.sourceLocator) !== path.resolve(directory)) {
+            const imported = await readLocalSkillImportFromDirectory(companyId, directory, { metadata: { sourceKind: "paperclip_bundled" } });
+            if (imported.key !== skill.key) throw new Error("Bundled runtime skill key changed");
+            await upsertImportedSkills(companyId, [imported], db, { includeFolderPath: false });
+          }
+          break;
+        }
+      }
+    }
+    return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, async () => {
+      // Recheck scope on the full row read: a public-to-project change between
+      // the probe and consumption must fail closed.
+      const runtimeOptions = preparedSelection ? { ...options, onlyKeys: requested } : options;
+      const entries = await listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
+        Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null)));
+      return measureRunPhase("skills.consume", () => consume(entries));
+    }));
+  }
+
+  async function listRuntimeSkillEntriesLocked(
+    companyId: string,
+    options: RuntimeSkillEntryOptions,
+    unrestrictedOnly = false,
+  ): Promise<PaperclipSkillEntry[]> {
+    const references = !options.onlyKeys && options.selectionConfig ? await listReferenceTargets(companyId) : [];
+    const selectedKeys = options.onlyKeys ?? (options.selectionConfig ? new Set(
+      (options.includeLegacy ? resolveLegacyPaperclipDesiredSkillNames : resolvePaperclipDesiredSkillNames)(
+        options.selectionConfig, references.map(skill => ({ key: skill.key, runtimeName: buildSkillRuntimeName(skill.key, skill.slug) }))),
+    ) : undefined);
+    const skills = await measureRunPhase("skills.rows", () => readFullSkillRows(companyId, selectedKeys, unrestrictedOnly));
+    await packages.prefetch(companyId, skills.flatMap(skill => {
+      const id = options.versionSelections?.get(skill.key) ?? skill.currentVersionId;
+      return id ? [id] : [];
+    }));
 
     const out: PaperclipSkillEntry[] = [];
-    for (const skill of skills) {
-      const sourceResolution = await resolveRuntimeSkillSource(companyId, skill, options);
+    for (let skill of skills) {
+      if (selectedKeys && !selectedKeys.has(skill.key)) continue;
+      let installedResolution: RuntimeSkillSourceResolution | null = null;
+      const unpinned = !options.versionSelections?.get(skill.key);
+      const installedDirectory = options.snapshotLatest && unpinned && (skill.sourceType === "local_path" || skill.sourceType === "catalog")
+        ? await resolveExistingSkillDirectory(normalizeSkillDirectory(skill)) : null;
+      const installedVersion = installedDirectory && skill.currentVersionId
+        ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null;
+      const installedUnchanged = installedDirectory && installedVersion?.packageSnapshotId && !installedVersion.packageFileMap
+        ? await verifyFileManifest(installedDirectory, (await packages.manifest(companyId, installedVersion.packageSnapshotId)).files)
+        : false;
+      if (!installedUnchanged && options.snapshotLatest && unpinned && (!skill.currentVersionId || installedDirectory)) {
+        // Capture installed bytes only. Older remote imports can have no
+        // version yet; execution must not fetch their missing files upstream.
+        const installed: RuntimeSkillSourceResolution | null = installedDirectory ? { status: "available", source: installedDirectory }
+          : await resolveRuntimeSkillSource(companyId, skill, { ...options, snapshotLatest: false, materializeMissing: false });
+        const inventory = installed?.status === "available"
+          ? await collectVersionFileInventoryFromDirectory(installed.source)
+          : skill.fileInventory.length === 1 && skill.fileInventory[0]?.path === "SKILL.md" && skill.markdown
+            ? [{ path: "SKILL.md", kind: "skill" as const, content: skill.markdown }] : null;
+        if (inventory) {
+          const previous = installedVersion ?? (skill.currentVersionId ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null);
+          const previousHash = previous?.packageSnapshotId && !previous.packageFileMap
+            ? (await packages.descriptor(companyId, previous.packageSnapshotId)).contentHash
+            : previous ? skillSnapshotHash(await packages.versionFiles(previous)) : null;
+          if (previousHash !== skillSnapshotHash(inventory)) {
+            const version = await createVersion(companyId, skill.id, { label: "Execution snapshot" }, { type: "system" },
+              { skipInventoryRefresh: true, skill, fileInventory: inventory });
+            skill = { ...skill, currentVersionId: version.id };
+          }
+        } else installedResolution = installed;
+      }
+      const sourceResolution = installedResolution ?? await resolveRuntimeSkillSource(companyId, skill, {
+        ...options, ...(options.snapshotLatest ? { materializeMissing: false } : {}),
+      });
       if (!sourceResolution) continue;
 
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source: sourceResolution.source,
-        versionId: options.versionSelections?.get(skill.key) ?? (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash ? skill.currentVersionId : null),
+        versionId: options.versionSelections?.get(skill.key) ?? (options.snapshotLatest || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null),
         currentVersionId: skill.currentVersionId,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
@@ -6125,6 +6421,8 @@ export function companySkillService(db: Db) {
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
+      /** Managed plugin namespaces may share a slug while retaining separate canonical records. */
+      allowSlugCollision?: boolean;
     },
   ): Promise<ImportPackageSkillResult[]> {
     await ensureSkillInventoryCurrent(companyId);
@@ -6173,7 +6471,7 @@ export function companySkillService(db: Db) {
       const normalizedSlug = normalizeSkillSlug(importedSkill.slug) ?? importedSkill.slug;
       const existingByIncomingKey = existingByKey.get(importedSkill.key) ?? null;
       const existingByIncomingSlug = existingBySlug.get(normalizedSlug) ?? null;
-      const conflict = existingByIncomingKey ?? existingByIncomingSlug;
+      const conflict = existingByIncomingKey ?? (options?.allowSlugCollision ? null : existingByIncomingSlug);
 
       if (!conflict || conflictStrategy === "replace") {
         const skillToPersist = conflict && conflict.key !== importedSkill.key
@@ -6263,12 +6561,14 @@ export function companySkillService(db: Db) {
     companyId: string,
     imported: ImportedSkill[],
     database: DbOrTransaction = db,
+    options: { includeFolderPath?: boolean } = {},
   ): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
+    const bundledFolders = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureBundledCategory>>>();
     for (const skill of imported) {
       assertImportedSkillKeyAllowed(skill);
       assertImportedSkillSourceAllowed(skill);
-      const existing = await getByKey(companyId, skill.key, database);
+      const existing = await getByKey(companyId, skill.key, database, options);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
@@ -6292,9 +6592,11 @@ export function companySkillService(db: Db) {
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
       const bundledCategory = paperclipBundledFolderCategory(skill.key, incomingMeta);
-      const bundledFolder = bundledCategory
-        ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
-        : null;
+      let bundledFolder = bundledCategory ? bundledFolders.get(bundledCategory) : undefined;
+      if (bundledCategory && !bundledFolder) {
+        bundledFolder = await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory));
+        bundledFolders.set(bundledCategory, bundledFolder);
+      }
       const projectId = asString(incomingMeta.projectId);
       const projectName = asString(incomingMeta.projectName);
       const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
@@ -6308,6 +6610,7 @@ export function companySkillService(db: Db) {
         name: skill.name,
         description: skill.description,
         markdown: skill.markdown,
+        accessSourceId: typeof skill.metadata?.accessSourceId === "string" ? skill.metadata.accessSourceId : existing?.accessSourceId ?? null,
         sourceType: skill.sourceType,
         sourceLocator: skill.sourceLocator,
         sourceRef: skill.sourceRef,
@@ -6608,7 +6911,7 @@ export function companySkillService(db: Db) {
       throw unprocessable("Cannot run a skill test for a skill with zero files.");
     }
 
-    const currentVersion = await getCurrentVersion(skill);
+    const currentVersion = skill.currentVersionId ? await getVersion(companyId, skill.id, skill.currentVersionId) : null;
     if (!currentVersion || !versionInventorySnapshotEqual(currentVersion.fileInventory, currentSnapshot)) {
       return createVersion(companyId, skill.id, { label: "Auto version for test run" }, actor);
     }
@@ -6855,7 +7158,7 @@ export function companySkillService(db: Db) {
     if (!run) return null;
     const harnessIssueGone = Boolean(row.harnessIssueDeletedAt);
     const [version, issue, documentRows, interactionRows, attachmentRows, workProductRows] = await Promise.all([
-      getVersion(companyId, skillId, row.skillVersionId),
+      getVersionSummary(companyId, skillId, row.skillVersionId),
       harnessIssueGone
         ? Promise.resolve(null)
         : db
@@ -7146,6 +7449,7 @@ export function companySkillService(db: Db) {
       ));
     for (const row of rows) {
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         await tx
           .update(issues)
           .set({ hiddenAt: now, updatedAt: now })
@@ -7159,45 +7463,89 @@ export function companySkillService(db: Db) {
     return { pruned: rows.length };
   }
 
-  async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
-    const initial = await getById(companyId, skillId);
-    if (!initial) return null;
+  async function makeImportedSkillEditable(
+    companyId: string, skillId: string, actor: SkillActor, folderId: string | null,
+    database: DbOrTransaction, createdDirectories: string[],
+  ) {
+    const [locked] = await database.select({ id: companySkills.id }).from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId))).for("update");
+    if (!locked) throw conflict("An imported skill changed. Reload before disconnecting.");
+    const skill = (await getById(companyId, skillId, database))!;
+    const version = await getCurrentVersion(skill);
+    const recovery = `Cannot keep "${skill.name}" because its saved files are incomplete. Refresh the source before keeping editable copies, or choose Delete skills.`;
+    if (!version) throw unprocessable(recovery);
+    const files = await runtimeVersionInventory(companyId, version);
+    const savedPaths = new Set(files.map(file => file.path));
+    const savedSkillPath = (relativePath: string) => version.repositorySnapshotId && version.repositorySkillPath
+      ? `${REPOSITORY_CONTENT_DIR}/${path.posix.join(path.posix.dirname(version.repositorySkillPath), relativePath)}`
+      : relativePath;
+    if (!savedPaths.has("SKILL.md") || skill.fileInventory.some(file => !savedPaths.has(savedSkillPath(file.path)))) {
+      throw unprocessable(recovery);
+    }
+    const managedRoot = resolveManagedSkillsRoot(companyId);
+    await fs.mkdir(managedRoot, { recursive: true });
+    const directory = await fs.mkdtemp(path.join(managedRoot, `${skill.slug}-copy-`));
+    createdDirectories.push(directory);
+    for (const file of files) {
+      assertSkillSnapshotPath(file.path);
+      const target = path.join(directory, file.path);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, skillFileBytes(file), { mode: file.executable ? 0o755 : 0o644 });
+    }
+    const updated = await database.update(companySkills).set({
+      sourceType: "local_path", sourceLocator: directory, sourceRef: null, folderId,
+      fileInventory: files.map(({ path, kind }) => ({ path, kind })),
+      metadata: {
+        sourceKind: "managed_local",
+        copiedFromRepository: { url: skill.sourceLocator, ref: skill.sourceRef, path: skill.metadata?.skillSourcePath },
+        forkedByUserId: actor.type === "user" ? actor.userId ?? null : null,
+        forkedByAgentId: actor.type === "agent" ? actor.agentId ?? null : null,
+      },
+      updatedAt: new Date(),
+    }).where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId))).returning({ id: companySkills.id });
+    if (updated.length !== 1) throw conflict("An imported skill changed. Reload before disconnecting.");
+  }
+
+  async function deleteSkills(
+    companyId: string, skillIds: string[],
+    onDelete?: (tx: DbTransaction, deleted: CompanySkill[]) => Promise<void>,
+    beforeDelete?: (tx: DbTransaction) => Promise<void>,
+  ): Promise<CompanySkill[]> {
+    const initial = (await Promise.all([...new Set(skillIds)].sort().map(id => getById(companyId, id))))
+      .filter((skill): skill is CompanySkill => Boolean(skill));
     async function assertUnused(skill: CompanySkill) {
       const usedByAgents = await usage(companyId, skill.key);
       if (usedByAgents.length === 0) return;
-      const agentNames = usedByAgents.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
       throw unprocessable(
-        `Cannot delete skill "${skill.name}" while it is still used by ${agentNames.join(", ")}. Detach it from those agents first.`,
-        {
-          skillId: skill.id, skillKey: skill.key,
-          usedByAgents: usedByAgents.map((agent) => ({
-            id: agent.id, name: agent.name, urlKey: agent.urlKey, adapterType: agent.adapterType,
-          })),
-        },
+        `Cannot delete skill "${skill.name}" while it is still used by ${usedByAgents.map(agent => agent.name).sort().join(", ")}. Detach it from those agents first.`,
+        { skillId: skill.id, skillKey: skill.key, usedByAgents: usedByAgents.map(({ id, name, urlKey, adapterType }) => ({ id, name, urlKey, adapterType })) },
       );
     }
-    await assertUnused(initial);
+    for (const skill of initial) await assertUnused(skill);
     const managedRoot = resolveManagedSkillsRoot(companyId);
-    let movedSource: { source: string; quarantine: string } | undefined;
-    let deleted: CompanySkill | null = null;
-    async function restoreSource() {
-      if (!movedSource) return;
-      await fs.rename(movedSource.quarantine, movedSource.source);
-      movedSource = undefined;
+    const moved: Array<{ source: string; quarantine: string }> = [];
+    async function restoreSources() {
+      for (const item of moved.reverse()) await fs.rename(item.quarantine, item.source);
+      moved.length = 0;
     }
-    // Keep the cache lifecycle lock through database commit. A publisher must
-    // not see the old row after cache removal and republish a deleted skill.
-    await removeRuntimeSkillCache(managedRoot, initial.id, async () => {
+    async function withCacheLocks(index: number): Promise<CompanySkill[]> {
+      if (index < initial.length) {
+        let result: CompanySkill[] = [];
+        await removeRuntimeSkillCache(managedRoot, initial[index]!.id, async () => { result = await withCacheLocks(index + 1); });
+        return result;
+      }
       try {
-        deleted = await db.transaction(async (tx) => {
-          // Share creation's name lock and re-read the ID, so a second delete
-          // cannot remove a newly recreated skill with the same name.
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${initial.slug}`}, 0))`);
-          const skill = await getById(companyId, skillId, tx);
-          if (!skill) return null;
-          if (skill.slug !== initial.slug) throw conflict("Skill changed during deletion. Retry the request.");
-          await assertUnused(skill);
-          try {
+        return await db.transaction(async tx => {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+          if (initial.length) await notifySkillVersionRetention(tx, companyId);
+          await beforeDelete?.(tx);
+          const deleted: CompanySkill[] = [];
+          for (const before of initial) {
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${before.slug}`}, 0))`);
+            const skill = await getById(companyId, before.id, tx);
+            if (!skill) continue;
+            if (skill.slug !== before.slug) throw conflict("Skill changed during deletion. Retry the request.");
+            await assertUnused(skill);
             await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
             if (isPaperclipManagedRenameTarget(skill)) {
               const source = normalizeSkillDirectory(skill)!;
@@ -7209,33 +7557,36 @@ export function companySkillService(db: Db) {
                 const quarantineRoot = path.join(managedRoot, ".deleted");
                 await fs.mkdir(quarantineRoot, { recursive: true });
                 const quarantine = path.join(quarantineRoot, `${skill.id}-${randomUUID()}`);
-                // Do not follow symlinks or delete external/project sources.
-                // Retain bytes until the database deletion commits.
                 await fs.rename(source, quarantine);
-                movedSource = { source, quarantine };
+                moved.push({ source, quarantine });
               }
             }
-            await tx.delete(companySkills).where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
-          } catch (error) {
-            // Restore before releasing the name lock on a failed write.
-            await restoreSource();
-            throw error;
+            await tx.delete(companySkills).where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
+            deleted.push(skill);
           }
-          return skill;
+          await onDelete?.(tx, deleted);
+          return deleted;
         });
       } catch (error) {
-        await restoreSource();
+        await restoreSources();
         throw error;
       }
-    });
-    // Only remove the unique quarantine path after commit. Cleanup must not
-    // remove a replacement skill or report a committed delete as failed.
-    if (movedSource) {
-      await fs.rm(movedSource.quarantine, { recursive: true, force: true }).catch((error) => {
-        logger.warn({ err: error, companyId, skillId }, "Skill deleted; quarantined source cleanup failed");
+    }
+    let deleted: CompanySkill[];
+    try { deleted = await withCacheLocks(0); }
+    catch (error) { await restoreSources(); throw error; }
+    for (const item of moved) {
+      await fs.rm(item.quarantine, { recursive: true, force: true }).catch(error => {
+        logger.warn({ err: error, companyId }, "Skill deleted; quarantined source cleanup failed");
       });
     }
+    // Version caches may still be linked into a captured run. The retention
+    // worker removes orphan versions only after their run pins have settled.
     return deleted;
+  }
+
+  async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
+    return (await deleteSkills(companyId, [skillId]))[0] ?? null;
   }
 
   return {
@@ -7277,6 +7628,8 @@ export function companySkillService(db: Db) {
     deleteFile,
     createLocalSkill,
     deleteSkill,
+    deleteSkills,
+    makeImportedSkillEditable,
     listTestInputs,
     createTestInput,
     updateTestInput,
@@ -7302,5 +7655,6 @@ export function companySkillService(db: Db) {
     installUpdate,
     resetSkill,
     listRuntimeSkillEntries,
+    withRuntimeSkillEntries,
   };
 }

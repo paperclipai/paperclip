@@ -30,3 +30,26 @@ it("serves a review detail to the routed preview and rejects unknown review IDs"
     flushSync(() => root.unmount());
   }
 });
+
+it("persists connection defaults, preserves omitted values and clears them explicitly", async () => {
+  vi.spyOn(window, "fetch").mockResolvedValue(Response.json({}));
+  let root = createRoot(document.createElement("div"));
+  const url = `/api/chat-endpoints/${endpoint.id}`;
+  const patch = async (body: unknown) => (await window.fetch(url, {
+    method: "PATCH", body: JSON.stringify(body),
+  })).json();
+  try {
+    flushSync(() => root.render(<FixtureApi><span>Ready</span></FixtureApi>));
+    const executionDefaults = { projectId: null, workspace: { kind: "task_directory" } };
+    expect(await patch({ executionDefaults })).toMatchObject({ executionDefaults });
+    expect(await (await window.fetch(url)).json()).toMatchObject({ executionDefaults });
+    expect(await patch({ communicationInstructions: "Fixture instructions" })).toMatchObject({ executionDefaults });
+    expect(await patch({ executionDefaults: null })).toMatchObject({ executionDefaults: null });
+    flushSync(() => root.unmount());
+    root = createRoot(document.createElement("div"));
+    flushSync(() => root.render(<FixtureApi><span>Ready</span></FixtureApi>));
+    expect((await (await window.fetch(url)).json()).executionDefaults).toEqual(endpoint.executionDefaults);
+  } finally {
+    flushSync(() => root.unmount());
+  }
+});

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 import { createAssignedMcpTools, getAssignedMcpGateway, registerAssignedMcpGateway } from "./assigned-mcp-tools.js";
+import { startOpenCodeMcpBridge } from "../../vendor/paperclip-runner/testing.js";
 
 function descriptor(name: string, risk: ToolGatewayDescriptor["risk"] = "read"): ToolGatewayDescriptor {
   return { name, displayName: name, description: `Use ${name}`, parametersSchema: { type: "object", properties: { query: { type: "string" } } }, pluginId: "fixture", providerType: "mcp_remote_http", risk };
@@ -17,6 +18,182 @@ function fixture(tools: ToolGatewayDescriptor[]) {
 describe("assigned MCP runner tools", () => {
   const searchName = "paperclip_search_assigned_tools";
   const callName = "paperclip_call_assigned_tool";
+
+  it.each([undefined, "on_demand"] as const)("advertises usable page limits through MCP discovery (%s)", async delivery => {
+    const f = fixture(Array.from({ length: 25 }, (_, i) => descriptor(`operation_${i}`)));
+    const assigned = await createAssignedMcpTools({ ...f, delivery });
+    const bridge = await startOpenCodeMcpBridge({
+      tools: assigned.definitions(tools => tools.length <= 2), handler: call => assigned.execute(call),
+    });
+    let id = 0;
+    const rpc = async (method: string, params?: Record<string, unknown>) => {
+      const response = await fetch(bridge.url, {
+        method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
+      });
+      return (await response.json()).result;
+    };
+    try {
+      const listing = await rpc("tools/list");
+      const search = listing.tools.find((tool: { name: string }) => tool.name === searchName);
+      const limit = search.inputSchema.properties.limit;
+      for (const description of [search.description, limit.description]) {
+        expect(description).toContain(`${limit.minimum} to ${limit.maximum}`);
+        expect(description).toContain(`default ${limit.default}`);
+      }
+      expect(limit).toMatchObject({ minimum: 1, maximum: 20, default: 5 });
+      const page = async (args: Record<string, unknown>) => {
+        const result = await rpc("tools/call", { name: searchName, arguments: args });
+        expect(result.isError).not.toBe(true);
+        return JSON.parse(result.content[0].text);
+      };
+      expect((await page({ query: "" })).tools).toHaveLength(limit.default);
+      const first = await page({ query: "", limit: limit.maximum });
+      expect(first.tools).toHaveLength(limit.maximum);
+      const second = await page({ query: "", limit: limit.maximum, offset: first.nextOffset });
+      expect(second.nextOffset).toBeNull();
+      expect(new Set([...first.tools, ...second.tools].map((tool: { name: string }) => tool.name)).size).toBe(25);
+      for (const invalid of [21, 50]) {
+        await expect(assigned.execute({ tool: searchName, arguments: { query: "", limit: invalid } }))
+          .rejects.toThrow("assigned_mcp_tool_invalid_arguments");
+      }
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it.each(["page", "escaped schema"])("keeps on-demand %s results valid through the OpenCode MCP bridge", async variant => {
+    const schema = { type: "object", description: variant === "page" ? "x".repeat(20_000) : "\"\\\u0000🙂".repeat(30_000) };
+    const f = fixture(Array.from({ length: variant === "page" ? 5 : 1 }, (_, i) => ({
+      ...descriptor(`large_${i}`), parametersSchema: schema,
+    })));
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const bridge = await startOpenCodeMcpBridge({ tools: assigned.definitions(), handler: call => assigned.execute(call) });
+    let id = 0;
+    const search = async (args: Record<string, unknown>) => {
+      const response = await fetch(bridge.url, {
+        method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name: searchName, arguments: args } }),
+      });
+      const rpc = await response.json() as { result: { isError?: boolean; content: Array<{ text: string }> } };
+      expect(rpc.result.isError).not.toBe(true);
+      return JSON.parse(rpc.result.content[0]!.text);
+    };
+    try {
+      let page = await search({ query: "", limit: 20 });
+      if (variant === "page") {
+        const seen = [...page.tools];
+        while (page.nextOffset !== null) {
+          page = await search({ query: "", offset: page.nextOffset, limit: 20 });
+          seen.push(...page.tools);
+        }
+        expect(seen).toHaveLength(5);
+        expect(seen.every(tool => JSON.stringify(tool.inputSchema) === JSON.stringify(schema))).toBe(true);
+      } else {
+        const name = page.tools[0]!.inputSchemaRef;
+        expect(name).toBeTypeOf("string");
+        let offset: number | null = 0;
+        let reconstructed = "";
+        do {
+          const chunk = await search({ query: "", schemaTool: name, schemaOffset: offset });
+          reconstructed += chunk.schemaJson;
+          offset = chunk.nextSchemaOffset;
+        } while (offset !== null);
+        expect(JSON.parse(reconstructed)).toEqual(schema);
+      }
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it.each([1, 741])("uses bounded on-demand delivery for %i tools even when the direct catalog fits", async count => {
+    const f = fixture(Array.from({ length: count }, (_, i) => descriptor(`app.operation_${i}`)));
+    const direct = await createAssignedMcpTools(f);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const fits = vi.fn(() => true);
+    expect(assigned.definitions(fits).map(tool => tool.name)).toEqual([searchName, callName]);
+    expect(fits).toHaveBeenCalledExactlyOnceWith(assigned.definitions());
+    expect(() => assigned.definitions(() => false)).toThrow("assigned_mcp_tool_catalog_capacity_exceeded");
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "", limit: 1 } }) as { tools: Array<{ name: string }> };
+    expect(page.tools[0]!.name).toBe(direct.definitions().map(tool => String(tool.name)).sort()[0]);
+    await assigned.execute({ tool: callName, arguments: { name: page.tools[0]!.name, arguments: { query: "fixture" }, gatewayPublicId: "untrusted", bearerToken: "untrusted" } });
+    expect(f.executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ gatewayPublicId: f.gatewayPublicId, sessionToken: f.bearerToken }));
+    f.listToolsForNamedGateway.mockResolvedValue([]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } })).resolves.toEqual({ tools: [], nextOffset: null });
+  });
+
+  it("keeps on-demand aliases pinned, mode restricted, revocable and approval gated", async () => {
+    const read = descriptor("mcp.first:search");
+    const write = descriptor("mcp.second:search", "write");
+    const f = fixture([read, write]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "" } }) as { tools: Array<{ name: string; description: string }> };
+    expect(new Set(page.tools.map(tool => tool.name)).size).toBe(2);
+    const writeAlias = page.tools.find(tool => tool.description.includes(write.name))!.name;
+    const call = { tool: callName, arguments: { name: writeAlias, arguments: {} } };
+    await expect(assigned.execute(call, "planning")).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    await expect(assigned.execute(call, "ask")).rejects.toThrow("paperclip_runner_tool_mode_denied");
+    expect(f.executeTool).not.toHaveBeenCalled();
+    const denied = new ToolGatewayHttpError(403, "Approval required", "approval_required");
+    f.executeTool.mockRejectedValueOnce(denied);
+    await expect(assigned.execute(call)).rejects.toBe(denied);
+    f.listToolsForNamedGateway.mockResolvedValue([read, descriptor("newly.granted")]);
+    const refreshed = await assigned.execute({ tool: searchName, arguments: { query: "" } }) as { tools: Array<{ name: string }> };
+    expect(refreshed.tools).toHaveLength(1);
+    expect(refreshed.tools[0]!.name).not.toBe(writeAlias);
+    // Execution still goes through the original gateway, which reauthorizes
+    // each call; discovery never grants an added tool to this pinned session.
+    const revoked = new ToolGatewayHttpError(403, "Revoked", "connection_revoked");
+    f.executeTool.mockRejectedValueOnce(revoked);
+    await expect(assigned.execute(call)).rejects.toBe(revoked);
+    await expect(assigned.execute({ tool: callName, arguments: { name: "newly.granted", arguments: {} } })).rejects.toThrow("assigned_mcp_tool_unknown");
+  });
+
+  it("deduplicates repeated app tools in direct and on-demand catalogs while retaining revocation", async () => {
+    const read = descriptor("memory.search");
+    const write = descriptor("memory.store", "write");
+    const f = fixture([read, structuredClone(read), write, structuredClone(write)]);
+    const assigned = await createAssignedMcpTools(f);
+    const direct = assigned.definitions();
+    expect(direct).toHaveLength(2);
+    expect(assigned.definitions(tools => tools.length <= 2)).toEqual(direct);
+    expect(assigned.definitions(tools => tools[0]?.name === searchName).map(tool => tool.name)).toEqual([searchName, callName]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } }, "planning"))
+      .resolves.toEqual({ tools: [direct[0]], nextOffset: null });
+    await assigned.execute({ tool: callName, arguments: { name: direct[0]!.name, arguments: { query: "fixture" } } });
+    expect(f.executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tool: read.name }));
+    f.listToolsForNamedGateway.mockResolvedValue([write, structuredClone(write)]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } }))
+      .resolves.toEqual({ tools: [direct[1]], nextOffset: null });
+  });
+
+  it.each([
+    { risk: "write" as const },
+    { connectionId: "another-connection" },
+    { parametersSchema: { type: "object", properties: { secret: { type: "string" } } } },
+  ])("rejects conflicting definitions with the same gateway name: %j", async change => {
+    const tool = descriptor("memory.search");
+    const f = fixture([tool, { ...tool, ...change }]);
+    await expect(createAssignedMcpTools(f)).rejects.toMatchObject({ reasonCode: "tool_name_collision" });
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("identifies the conflicting tool and both connection bindings without exporting descriptor metadata", async () => {
+    const tool = { ...descriptor("calendar.search"), connectionId: "first-connection", providerMetadata: { token: "private-token" } };
+    const f = fixture([tool, { ...tool, connectionId: "second-connection" }]);
+    await expect(createAssignedMcpTools(f)).rejects.toMatchObject({ reasonCode: "tool_name_collision",
+      message: 'Conflicting tool definitions share the name "calendar.search" (connections ["first-connection","second-connection"]).' });
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-action tools from distinct connections separately callable", async () => {
+    const f = fixture([descriptor("mcp.memory-first:search"), descriptor("mcp.memory-second:search")]);
+    const assigned = await createAssignedMcpTools(f);
+    const direct = assigned.definitions();
+    expect(new Set(direct.map(tool => tool.name)).size).toBe(2);
+    for (const tool of direct) await assigned.execute({ tool: tool.name as string, arguments: {} });
+    expect(f.executeTool.mock.calls.map(([call]) => call.tool)).toEqual(["mcp.memory-first:search", "mcp.memory-second:search"]);
+  });
 
   it("pages through an oversized catalog and calls every tool through the original gateway", async () => {
     const f = fixture(Array.from({ length: 224 }, (_, i) => descriptor(`app.action_${i}`)));
@@ -61,6 +238,27 @@ describe("assigned MCP runner tools", () => {
     expect(JSON.stringify(result)).not.toMatch(/private-|secret-provider|gateway-fixture|new_grant/);
     f.listToolsForNamedGateway.mockRejectedValue(new Error("gateway_token_revoked"));
     await expect(assigned.execute({ tool: searchName, arguments: { query: "" } })).rejects.toThrow("gateway_token_revoked");
+  });
+
+  it("keeps pagination stable when an earlier tool is revoked between pages", async () => {
+    const descriptors = ["alpha", "bravo", "charlie", "delta"].map(name => descriptor(name));
+    const f = fixture(descriptors);
+    const assigned = await createAssignedMcpTools(f);
+    const definitions = assigned.definitions();
+    const first = await assigned.execute({
+      tool: searchName, arguments: { query: "", offset: 0, limit: 2 },
+    }) as { tools: unknown[]; nextOffset: number };
+    expect(first).toEqual({ tools: definitions.slice(0, 2), nextOffset: 2 });
+
+    f.listToolsForNamedGateway.mockResolvedValue(descriptors.slice(1));
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(2), nextOffset: null });
+
+    f.listToolsForNamedGateway.mockResolvedValue([descriptors[1]!, descriptors[3]!]);
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(3), nextOffset: null });
   });
 
   it.each(["planning", "ask"] as const)("preserves pinned and fresh %s restrictions through the call wrapper", async mode => {

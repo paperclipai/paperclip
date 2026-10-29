@@ -21,7 +21,7 @@ function fixture(t) {
   const agent = path.join(root, "maps/agent-access-map/example.md");
   writeFileSync(path.join(root, "maps/README.md"), "# Contract\n");
   for (const dir of ["feature-map", "agent-access-map"]) writeFileSync(path.join(root, "maps", dir, "README.md"), "[Example](example.md)\n");
-  writeFileSync(product, "# Example\n\n[Agent access](../agent-access-map/example.md)\n\n## Sub-features\n\n- `create`: create a record.\n\n## How to get to it (user POV)\n");
+  writeFileSync(product, '---\nnavigation: {"section":"Work","sectionOrder":10,"order":10}\n---\n# Example\n\nExample workflows.\n\n[Agent access](../agent-access-map/example.md)\n\n## Sub-features\n\n- `create`: create a record.\n\n## How to get to it (user POV)\n');
   writeFileSync(agent, `# Agent access\n\nProduct map: [Example](../feature-map/example.md).\n\nReview date: 2026-10-12. Source commit: \`${"a".repeat(40)}\`.\n\n## \`create\`\n\nReview: \`baseline\`.\n\n${record}`);
   return { root, product, agent };
 }

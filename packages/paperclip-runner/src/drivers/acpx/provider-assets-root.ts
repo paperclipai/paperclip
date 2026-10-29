@@ -44,7 +44,7 @@ export function resolveRunnerProviderAssetsRoot(moduleUrl: string, provider: Nat
         // runnerd derives this binding from the verified sidecar in the public
         // server package. Images may carry assets alongside that bundle; local
         // explicit setup uses the OS-account cache when package assets are absent.
-        packageRoot = join(dirname(canonicalManifest), "dist/vendor/paperclip-runner");
+        packageRoot = provider === "copilot" ? dirname(canonicalManifest) : join(dirname(canonicalManifest), "dist/vendor/paperclip-runner");
         if (realpathSync(packageRoot) !== packageRoot) throw new Error("Vendored runner directory is not contained by its server package");
       } else if (value?.name === RUNNER_PACKAGE_NAME) {
         packageRoot = dirname(canonicalManifest);
@@ -60,7 +60,7 @@ export function resolveRunnerProviderAssetsRoot(moduleUrl: string, provider: Nat
       const metadata = readPackageManifest(manifest, manifest);
       if (metadata.name !== SERVER_PACKAGE_NAME) throw new Error("Runner server vendor package identity is invalid");
       assertServerVendorLayout(packageRoot);
-      packageRoot = join(packageRoot, "dist/vendor/paperclip-runner");
+      if (provider !== "copilot") packageRoot = join(packageRoot, "dist/vendor/paperclip-runner");
     } else if (new RegExp(`/(?:src|dist)/drivers/acpx/${provider}-installation\\.(?:ts|js)$`).test(url.pathname)) packageRoot = fileURLToPath(new URL("../../../", url));
     else if (/\/dist\/cli\/acpx-runtime-sidecar\.(?:cjs|js)$/.test(url.pathname)) packageRoot = fileURLToPath(new URL("../../", url));
     else if (new RegExp(`/dist/vendor/paperclip-runner/drivers/acpx/${provider}-installation\\.(?:js)$`).test(url.pathname)) packageRoot = fileURLToPath(new URL("../../", url));

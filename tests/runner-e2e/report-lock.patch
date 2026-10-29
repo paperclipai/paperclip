@@ -1,0 +1,45 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index d08b8e2..390d086 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1100,6 +1100,9 @@ importers:
+       svix:
+         specifier: 1.76.1
+         version: 1.76.1
++      tar-stream:
++        specifier: 3.2.0
++        version: 3.2.0
+       ws:
+         specifier: ^8.22.0
+         version: 8.22.0
+@@ -1150,6 +1153,9 @@ importers:
+       '@types/supertest':
+         specifier: ^7.2.1
+         version: 7.2.1
++      '@types/tar-stream':
++        specifier: ^3.1.5
++        version: 3.1.5
+       '@types/ws':
+         specifier: ^8.18.2
+         version: 8.18.2
+@@ -5522,6 +5528,9 @@ packages:
+   '@types/supertest@7.2.1':
+     resolution: {integrity: sha512-4CbBvoYVLHL7+yhbYrZET0vsvuyXTC05aRe7dNQkwMzm56auceoy6Yu3K50uZmwfHna1os3CMSgM/3QVkUtPTw==}
+ 
++  '@types/tar-stream@3.1.5':
++    resolution: {integrity: sha512-zCUA6CSDw0t2cpQiZixpyzfubpeuVZmBr5wztvuCG4bhy7reX/9wGXdZxEzz2CjMFLQ32UPR/01jzUUSRJeCeQ==}
++
+   '@types/three@0.185.4':
+     resolution: {integrity: sha512-gAsBIC07NIFrxjbf7tH2t71c38uulFfk/RFoC7FNBSjMRAQ8J1x/RBvusX0N5PJouaYFJawXQqfCQ0RKUx/1nA==}
+ 
+@@ -13688,6 +13697,10 @@ snapshots:
+       '@types/methods': 1.1.4
+       '@types/superagent': 8.1.11
+ 
++  '@types/tar-stream@3.1.5':
++    dependencies:
++      '@types/node': 24.13.3
++
+   '@types/three@0.185.4':
+     dependencies:
+       '@dimforge/rapier3d-compat': 0.12.0

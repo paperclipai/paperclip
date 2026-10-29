@@ -1,3 +1,9 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
+import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
+import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { and, asc, desc, eq, gt, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -6,7 +12,9 @@ import {
   activityLog,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  environmentLeases,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject } from "../../../adapters/utils.js";
 import { visibleIssueCondition } from "../../../services/issue-visibility.js";
@@ -65,6 +73,27 @@ function toRunSnapshot(row: typeof heartbeatRuns.$inferSelect): RunSnapshot {
   };
 }
 
+function runtimeSettlementPending(companyId: string, runId: string) {
+  return sql<boolean>`(
+    ${heartbeatRuns.runtimeMode} = 'native'
+    or coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> ''
+    or exists (
+      select 1 from ${environmentLeases}
+      where ${environmentLeases.companyId} = ${companyId}
+        and ${environmentLeases.heartbeatRunId} = ${runId}
+        and ${environmentLeases.providerLeaseId} is not null
+        and ${environmentLeases.status} in ('active', 'acquiring')
+    )
+    or exists (
+      select 1 from ${workspaceOperations}
+      where ${workspaceOperations.companyId} = ${companyId}
+        and ${workspaceOperations.heartbeatRunId} = ${runId}
+        and ${workspaceOperations.phase} = 'workspace_finalize'
+        and ${workspaceOperations.status} in ('running', 'failed')
+    )
+  )`;
+}
+
 export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & WatchdogWriter {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -117,6 +146,13 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1);
     return row ? toRunSnapshot(row) : null;
+  }
+
+  async function isRuntimeSettlementPending(companyId: string, runId: string): Promise<boolean> {
+    const [row] = await db.select({
+      pending: sql<boolean>`${heartbeatRuns.status} <> 'running' or ${runtimeSettlementPending(companyId, runId)}`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+    return row?.pending ?? true;
   }
 
   async function findLatestDecision(companyId: string, runId: string, now: Date) {
@@ -307,6 +343,12 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     };
 
     const transactionResult = await db.transaction(async (tx) => {
+      await notifyInstructionCollection(tx, { companyId, runId: input.run.id });
+      await notifyExternalAgentSettlement(tx, { companyId, runId: input.run.id });
+      await notifyCancelledWorkspacePreservation(tx, { companyId, runId: input.run.id });
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId: input.sourceIssue.id });
+      await notifyNativeStatusReassessment(tx, { companyId, issueId: input.sourceIssue.id });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const [updatedRun] = await tx
         .update(heartbeatRuns)
         .set({
@@ -321,6 +363,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           eq(heartbeatRuns.id, input.run.id),
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.status, "running"),
+          sql`not ${runtimeSettlementPending(companyId, input.run.id)}`,
         ))
         .returning();
       if (!updatedRun) return null;
@@ -449,6 +492,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         ));
       const runningCount = Number(runningCountRow?.count ?? 0);
       const nextAgentStatus = runningCount > 0 ? "running" : "idle";
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       await tx
         .update(agents)
         .set({ status: nextAgentStatus, lastHeartbeatAt: new Date(), updatedAt: new Date() })
@@ -477,6 +521,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   return {
     findCandidateSilentRuns,
     findRunForCompany,
+    isRuntimeSettlementPending,
     findLatestDecision,
     findOpenStaleRunEvaluation,
     findEvaluationIssueById,

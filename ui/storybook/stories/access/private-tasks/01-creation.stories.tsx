@@ -52,7 +52,17 @@ const meta = {
   id: "private-tasks-01-creation",
   title: "Getting started and access/Login, invitations, and access/Private tasks/01 Creation",
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, waitForViewport: true, docs: { description: { component: "Route /PAP/issues with the new-task composer. Choose Private task from +; the lock chip keeps the selection visible. Hover, focus, or tap an inherited chip to see the parent task or private project that requires privacy. Mobile stories use the real shell and check that menu actions and composer controls stay inside the viewport." } } },
+  parameters: { ...privacyParameters, waitForViewport: true, docs: { description: { component: "Route /PAP/issues with the new-task composer. Choose Private task from +; the lock chip keeps the selection visible. Hover, focus, or tap an inherited chip to see the parent task or private project that requires privacy. Mobile stories use the real shell and check that menu actions and composer controls stay inside the viewport." } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   args: { taskTitle: "Prepare my board briefing" },
   argTypes: { taskTitle: { control: "text" } },
   render: (args) => <Creation {...args} />,

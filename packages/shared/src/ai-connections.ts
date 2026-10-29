@@ -32,6 +32,7 @@ export const AI_PROVIDERS = [
   "openai",
   "openrouter",
   "xai",
+  "github",
   "google",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
@@ -79,7 +80,11 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     >;
   }
 > = {
-  google: { name: "Google", methods: { api_key: { adapters: ["gemini_local"], envKey: "GEMINI_API_KEY" } } },
+  github: {
+    name: "GitHub Copilot",
+    methods: { api_key: { adapters: ["copilot_runtime"], envKey: "COPILOT_GITHUB_TOKEN" } },
+  },
+  google: { name: "Google", methods: { api_key: { adapters: ["gemini_local", "pi_local"], envKey: "GEMINI_API_KEY" } } },
   anthropic: {
     name: "Claude",
     methods: {
@@ -87,20 +92,20 @@ export const AI_CONNECTION_CAPABILITIES: Record<
         adapters: ["claude_local"],
         envKey: "CLAUDE_CODE_OAUTH_TOKEN",
       },
-      api_key: { adapters: ["claude_local"], envKey: "ANTHROPIC_API_KEY" },
+      api_key: { adapters: ["claude_local", "pi_local"], envKey: "ANTHROPIC_API_KEY" },
     },
   },
   openai: {
     name: "OpenAI",
     methods: {
       subscription: { adapters: ["codex_local"], envKey: "CODEX_HOME" },
-      api_key: { adapters: ["codex_local"], envKey: "OPENAI_API_KEY" },
+      api_key: { adapters: ["codex_local", "pi_local"], envKey: "OPENAI_API_KEY" },
     },
   },
   openrouter: {
     name: "OpenRouter",
     methods: {
-      api_key: { adapters: ["opencode_local"], envKey: "OPENROUTER_API_KEY" },
+      api_key: { adapters: ["opencode_local", "pi_local"], envKey: "OPENROUTER_API_KEY" },
     },
   },
   xai: {
@@ -122,8 +127,11 @@ export function isAiConnectionCompatible(
   if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
+  if (adapterType === "pi_local") return (requirement.method === "api_key" || ("mode" in requirement && requirement.mode === "responsible_user"))
+    && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
+    && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local"].includes(adapterType);
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
@@ -187,6 +195,7 @@ export const createAiConnectionSchema = z
     ownership: z.enum(["personal", "shared"]),
     routing: aiProviderRoutingSchema.optional(),
     apiKey: z.string().trim().min(1).max(32768).optional(),
+    environmentId: z.string().uuid().nullable().optional(),
     loginSessionId: z.string().max(128).optional(),
     connectionId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),

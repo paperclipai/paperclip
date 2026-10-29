@@ -721,6 +721,16 @@ const meta = {
           "Fixture-backed stories for Paperclip form controls, markdown editors, inline editors, schedule controls, runtime-variable dialogs, and selection pickers.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "developer-labs/design"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related design reference: demonstrates shared production controls and visual states in an isolated contributor fixture; retains its Foundations home. No product-journey or baseline comparison claim.",
+      "home": "foundations",
+      "exception": "Shared foundations or contributor guide; no single business capability owns this suite."
+    },
   },
 } satisfies Meta;
 

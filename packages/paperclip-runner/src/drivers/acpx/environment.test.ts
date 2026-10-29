@@ -6,6 +6,35 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("does not inherit ambient prepared storage", () => {
+    vi.stubEnv("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "/ambient/claude");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/ambient/claude");
+    vi.stubEnv("PAPERCLIP_RUNNER_HOME_MODE", undefined);
+    const launch = createSanitizedAcpxSpawnInput(undefined, "claude").env;
+    expect(launch.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME).toBeUndefined();
+    expect(launch.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+  it.each([undefined, "/ignored/claude"])("derives Claude's config directory from prepared storage over %s", configured => {
+    const environment = { PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/prepared/claude", ...(configured ? {CLAUDE_CONFIG_DIR: configured} : {}) };
+    const launch = createSanitizedAcpxSpawnInput(environment, "claude").env;
+    expect(launch.CLAUDE_CONFIG_DIR).toBe("/prepared/claude");
+    expect(launch.PAPERCLIP_RUNNER_HOME_MODE).toBeUndefined();
+    expect(launch.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBeUndefined();
+    expect(environment.CLAUDE_CONFIG_DIR).toBe(configured);
+  });
+  it("retains Runner notification discovery while denying task-supplied overrides", () => {
+    for (const key of ["PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER"]) {
+      expect(createSanitizedAcpxSpawnInput({ [key]: "/private/runner/context" }, "claude").env[key]).toBe("/private/runner/context");
+      expect(configuredEnvironmentProjection({ [key]: "/caller/override" })).not.toHaveProperty(key);
+    }
+  });
+  it("retains an explicit Claude MCP timeout without inheriting an ambient or sibling setting", () => {
+    vi.stubEnv("MCP_TOOL_TIMEOUT", "999999");
+    expect(createSanitizedAcpxSpawnInput(undefined, "claude").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+    expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "claude").env.MCP_TOOL_TIMEOUT).toBe("120000");
+    expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "codex").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+  });
+
   it("excludes general IAM from the Pi sidecar and launch, including selected task values", () => {
     const iam = { AWS_ACCESS_KEY_ID: "general-key", AWS_SECRET_ACCESS_KEY: "general-secret", AWS_SESSION_TOKEN: "general-session" };
     const source = { ...iam, ...configuredEnvironmentProjection({ ...iam, CUSTOM_SETTING: "allowed" }), AWS_BEARER_TOKEN_BEDROCK: "provider-key" };

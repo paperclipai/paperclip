@@ -218,6 +218,13 @@ const meta: Meta = {
   parameters: {
     layout: "fullscreen",
     a11y: { test: "todo" },
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/attachments"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 };
 

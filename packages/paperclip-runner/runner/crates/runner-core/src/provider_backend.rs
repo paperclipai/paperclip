@@ -326,6 +326,25 @@ fn authorized_tool_set(payload: &Value) -> Result<AuthorizedToolSet, DurableRunn
     })
 }
 
+fn mcp_permission_event(
+    identity: &ProviderEventIdentity,
+    request_id: String,
+    params: Value,
+) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "runtime_request.created".to_owned(),
+        priority: EventPriority::P0,
+        payload: json!({"request":{
+            "schema":"paperclip.runtime_request.v2", "requestKind":"permission_approval", "type":"permission",
+            "requestId":request_id, "status":"pending", "turnId":identity.turn_id, "itemId":identity.item_id,
+            "prompt":params["message"],
+            "choices":[{"key":"accept","label":"Allow once"},{"key":"decline","label":"Deny"},{"key":"cancel","label":"Cancel"}],
+            "details":params,
+            "origin":{"adapter":"codex-app-server","provider":"codex","method":"mcpServer/elicitation/request"}
+        }}),
+    }
+}
+
 fn semantic_correlation(identity: &ProviderEventIdentity) -> Value {
     json!({
         "runId": identity.run_id,
@@ -538,13 +557,14 @@ fn admit_terminal_tool_authority(
         "paperclip_finish" => {
             matches!(disposition.as_str(), "done" | "needs_review")
                 || (disposition == "yielded"
-                    && matches!(
-                        input
-                            .get("continuation")
-                            .and_then(|continuation| continuation.get("kind"))
-                            .and_then(Value::as_str),
-                        Some("response_wake" | "monitor")
-                    ))
+                    && (input.get("continuation").map_or(true, Value::is_null)
+                        || matches!(
+                            input
+                                .get("continuation")
+                                .and_then(|continuation| continuation.get("kind"))
+                                .and_then(Value::as_str),
+                            Some("response_wake" | "monitor" | "case_handoff" | "same_agent")
+                        )))
         }
         "paperclip_block" => disposition == "blocked",
         _ => false,
@@ -2608,7 +2628,14 @@ impl CodexCommandExecutor {
             .as_ref()
             .and_then(|state| state.thread_id.as_ref())
             .is_some();
-        let (thread_id, provider_session_id, process_id, active_provider_turn_id, goal_probe) = {
+        let (
+            thread_id,
+            provider_session_id,
+            process_id,
+            active_provider_turn_id,
+            goal_probe,
+            observed_model,
+        ) = {
             let provider = self.ensure_provider()?;
             (
                 provider.thread_id().to_owned(),
@@ -2616,6 +2643,7 @@ impl CodexCommandExecutor {
                 provider.process_id(),
                 provider.active_provider_turn_id().map(str::to_owned),
                 provider.get_goal(),
+                provider.observed_model().map(str::to_owned),
             )
         };
         let (goal_capability, goal) = match goal_probe {
@@ -2703,6 +2731,7 @@ impl CodexCommandExecutor {
                         "providerSessionId": thread_id,
                         "providerAccountSessionId": provider_session_id,
                         "processId": process_id,
+                        "providerDescriptor": { "driver": driver, "providerVersion": provider_version, "effectiveModel": observed_model },
                     }),
                 ),
                 (
@@ -2996,6 +3025,10 @@ impl CodexCommandExecutor {
             state.ambiguous_turn_start_pending = true;
         }
         self.save_state()?;
+        let run_id = self
+            .event_identity
+            .as_ref()
+            .map(|identity| identity.run_id.clone());
         let (
             start_result,
             completion_authority_retained,
@@ -3003,13 +3036,15 @@ impl CodexCommandExecutor {
             rejected_accepted_turn,
         ) = {
             let provider = self.ensure_provider()?;
-            let result = provider.start_turn_with_options(
+            let result = provider.start_turn_with_options_and_effort(
                 text,
                 &cwd,
                 CodexTurnOptions {
                     skills: &skills,
                     reasoning_mode,
                 },
+                payload.get("effort"),
+                run_id.as_deref(),
             );
             (
                 result,
@@ -3443,9 +3478,25 @@ impl CodexCommandExecutor {
                 "cannot resolve a {provider_name} runtime request outside an active turn"
             )));
         }
+        if payload
+            .get("turnId")
+            .and_then(Value::as_str)
+            .is_some_and(|turn| {
+                self.event_identity
+                    .as_ref()
+                    .is_none_or(|identity| turn != identity.turn_id)
+            })
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex runtime response belongs to a stale turn",
+            ));
+        }
         let response = payload
             .get("response")
-            .ok_or_else(|| DurableRunnerError::invalid("request.resolve requires response"))?;
+            .or_else(|| payload.get("resolution"))
+            .ok_or_else(|| {
+                DurableRunnerError::invalid("request.resolve requires response or resolution")
+            })?;
         self.ensure_provider()?
             .resolve_runtime_request(request_id, response)
             .map_err(|error| {
@@ -3482,17 +3533,21 @@ impl CodexCommandExecutor {
             .state
             .as_mut()
             .expect("Codex state remains available for a rejected tool call");
+        let mut payload = json!({
+            "provider": state.config.provider,
+            "code": "semantic_tool_denied",
+            "operationId": operation_id,
+            "callId": call_id,
+            "message": reason,
+            "paperclipExecuted": false,
+        });
+        if let Some(guidance) = error.safe_provider_message() {
+            payload["inputSchemaGuidance"] = json!(guidance);
+        }
         let event = NormalizedProviderEvent {
             event_type: "harness.diagnostic".to_owned(),
             priority: EventPriority::P0,
-            payload: json!({
-                "provider": state.config.provider,
-                "code": "semantic_tool_denied",
-                "operationId": operation_id,
-                "callId": call_id,
-                "message": reason,
-                "paperclipExecuted": false,
-            }),
+            payload,
         };
         if state.receipt_limit_interrupt_pending {
             state.push_receipt_limit_cleanup_event(event)?;
@@ -4367,6 +4422,20 @@ impl CodexCommandExecutor {
                         );
                     }
                 }
+                CodexProviderEvent::McpPermissionRequest { request_id, params } => {
+                    let identity = self.event_identity()?;
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("Codex state remains available while polling");
+                    let event = mcp_permission_event(&identity, request_id, params);
+                    if receipt_limit_terminal_poll {
+                        state.push_receipt_limit_cleanup_event(event)?;
+                    } else {
+                        state.push_event(event)?;
+                    }
+                    self.save_state()?;
+                }
                 CodexProviderEvent::RuntimeRequest {
                     request_id,
                     question_set,
@@ -4660,6 +4729,26 @@ impl CommandExecutor for CodexCommandExecutor {
 mod tests {
 
     #[test]
+    fn mcp_permission_requests_use_durable_turn_and_item_identity() {
+        let identity = ProviderEventIdentity {
+            runner_instance_id: "runner".into(),
+            run_id: "run".into(),
+            normalized_session_id: "session".into(),
+            turn_id: "durable-turn".into(),
+            item_id: "durable-item".into(),
+        };
+        let params = json!({"threadId":"provider-thread", "turnId":"provider-turn",
+            "itemId":"provider-item", "message":"Allow tool?", "serverName":"assigned"});
+        let event = mcp_permission_event(&identity, "request-1".into(), params.clone());
+        let request = &event.payload["request"];
+        assert_eq!(event.event_type, "runtime_request.created");
+        assert_eq!(request["requestKind"], "permission_approval");
+        assert_eq!(request["turnId"], identity.turn_id);
+        assert_eq!(request["itemId"], identity.item_id);
+        assert_eq!(request["details"], params);
+    }
+
+    #[test]
     fn startup_evidence_save_failure_cannot_become_an_empty_drain_or_admission() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-startup-write-failure-{}",
@@ -4920,7 +5009,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tool_results_expose_only_reserved_schema_guidance() {
+    fn invalid_tool_results_expose_authorized_schema_guidance() {
         let finish_result = schema_rejection(
             "paperclip_finish",
             json!({"secretSubmittedValue": "must-not-appear"}),
@@ -4947,21 +5036,49 @@ mod tests {
 
         let question_result = schema_rejection(
             "request_human_input",
-            json!({"PRIVATE_FIELD": "PRIVATE_VALUE"}),
+            json!({"interactionKind": "questions", "PRIVATE_FIELD": "PRIVATE_VALUE"}),
         );
         let question_message = question_result.result["error"]["message"].as_str().unwrap();
         assert!(question_message.contains("payload.questionSet"));
+        assert!(question_message.contains("Preserve question and option IDs"));
         assert!(question_message.contains("/required (missing \"requiredField\")"));
         assert!(!question_message.contains("PRIVATE_FIELD"));
         assert!(!question_result.result.to_string().contains("PRIVATE_VALUE"));
         assert!(question_message.len() <= 512);
         assert_eq!(question_result.result["error"]["retryable"], false);
+        for kind in ["confirmation", "checkbox"] {
+            let proposal = schema_rejection(
+                "request_human_input",
+                json!({"interactionKind": kind, "PRIVATE_FIELD": "PRIVATE_VALUE"}),
+            );
+            let guidance = proposal.result["error"]["message"].as_str().unwrap();
+            assert!(guidance.contains("payload.version"));
+            assert!(guidance.contains("payload.supersedeOnUserComment"));
+            assert!(guidance.contains("confirmation or checkbox"));
+            assert!(!guidance.contains("payload.questionSet"));
+            assert!(!proposal.result.to_string().contains("PRIVATE_VALUE"));
+            assert!(guidance.len() <= 512);
+        }
+
+        let monitor_result = schema_rejection(
+            "set_task_monitor",
+            json!({"PRIVATE_FIELD": "PRIVATE_VALUE"}),
+        );
+        let monitor_message = monitor_result.result["error"]["message"].as_str().unwrap();
+        assert!(monitor_message.contains("Put all scheduling fields inside monitor"));
+        assert!(monitor_message.contains("Correct the arguments and retry"));
+        assert!(monitor_message.contains("/required (missing \"requiredField\")"));
+        assert!(!monitor_message.contains("PRIVATE_FIELD"));
+        assert!(!monitor_result.result.to_string().contains("PRIVATE_VALUE"));
+        assert!(monitor_message.len() <= 512);
+        assert!(!monitor_message.chars().any(char::is_control));
+        assert_eq!(monitor_result.result["error"]["code"], "invalid_tool_call");
+        assert_eq!(monitor_result.result["error"]["retryable"], false);
 
         let ordinary_result = schema_rejection("get_task_context", json!({}));
-        assert_eq!(
-            ordinary_result.result["error"]["message"],
-            GENERIC_INVALID_TOOL_CALL_MESSAGE
-        );
+        let ordinary_message = ordinary_result.result["error"]["message"].as_str().unwrap();
+        assert!(ordinary_message.contains("Correct the arguments and retry"));
+        assert!(ordinary_message.contains("/required (missing \"requiredField\")"));
 
         let unauthorized_error = ProviderToolBridge::default()
             .begin_call(
@@ -4998,6 +5115,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5217,7 +5335,37 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tool_authority_rejects_an_unbound_yield() {
+    fn terminal_tool_authority_preserves_controller_resolved_workspace_yields() {
+        for continuation in [
+            None,
+            Some(Value::Null),
+            Some(json!({
+                "kind": "same_agent",
+                "summary": "Continue the prepared repository.",
+                "idempotencyKey": "repository:task:receipt:run"
+            })),
+        ] {
+            let mut state = opencode_result_state();
+            let mut result = valid_opencode_result();
+            result["reportedWorkDisposition"] = json!("yielded");
+            if let Some(value) = continuation {
+                result["continuation"] = value;
+            }
+            admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, false).unwrap();
+            assert_eq!(
+                state.active_provider_result_disposition.as_deref(),
+                Some("yielded")
+            );
+            assert_eq!(
+                state.active_provider_result_fingerprint.as_deref(),
+                Some(semantic_value_digest(&result).as_str())
+            );
+            assert!(state.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn terminal_tool_authority_does_not_record_a_controller_rejected_yield() {
         let mut state = opencode_result_state();
         let mut result = valid_opencode_result();
         result["reportedWorkDisposition"] = json!("yielded");
@@ -5227,9 +5375,10 @@ mod tests {
             "idempotencyKey": "same-agent-1"
         });
 
-        assert!(
-            admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, false,).is_err()
-        );
+        admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, true).unwrap();
+        assert!(state.active_provider_result_fingerprint.is_none());
+        assert!(state.active_provider_result_disposition.is_none());
+        assert!(state.validate().is_ok());
     }
 
     #[test]
@@ -5379,6 +5528,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5470,6 +5620,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5523,6 +5674,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5566,6 +5718,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5658,6 +5811,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5725,6 +5879,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5775,6 +5930,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5899,6 +6055,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6011,6 +6168,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6068,6 +6226,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6210,6 +6369,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6251,6 +6411,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6289,6 +6450,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6366,6 +6528,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6430,3 +6593,11 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/provider_api_validation.rs"]
+mod api_validation_tests;
+
+#[cfg(test)]
+#[path = "tests/provider_assigned_tool_validation.rs"]
+mod assigned_tool_validation_tests;

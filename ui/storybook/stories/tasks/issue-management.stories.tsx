@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { creationVisibilityStories } from "../../support/issue-creation-visibility";
 import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
 import type { RunForIssue } from "@/api/activity";
 import { useQueryClient } from "@tanstack/react-query";
@@ -594,7 +595,7 @@ function OpenFiltersPopover() {
           projects={storybookProjects.map((project) => ({ id: project.id, name: project.name }))}
           labels={storybookIssueLabels.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
           currentUserId="user-board"
-          enableRoutineVisibilityFilter
+          enableAgentCreatedVisibilityFilter
           buttonVariant="outline"
           creators={[
             { id: "user:user-board", label: "Riley Board", kind: "user", searchText: "board user human" },
@@ -771,7 +772,7 @@ function IssueManagementStories() {
               viewStateKey={issueListViewKey}
               onUpdateIssue={() => undefined}
               createIssueLabel="issue"
-              enableRoutineVisibilityFilter
+              enableAgentCreatedVisibilityFilter
             />
           </Section>
 
@@ -882,6 +883,15 @@ const meta = {
           "Issue-management stories exercise the full list, column, grouping, property, document, filter, continuation, run, workspace, and quicklook surfaces.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/properties",
+        "tasks/organize"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. Focused creation-visibility stories mount the production collection with simulated hierarchy reads and assert hidden roots, opt-in inclusion, and the unchecked filter control. Creation visibility examples and fixture setup now live in a support module so the surface matrix stays below 1000 lines; exported story IDs are unchanged. Creation visibility now shares the subscribed preference across modern and legacy controls; hierarchy child reads share a bounded rendering budget. Source alignment inspected; server behavior is tested separately. Hierarchy fetch and rendering budgets are separate; loaded context remains during paging. The large-tree UI regression exercises delayed reads in both list interfaces. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof IssueManagementStories>;
 
@@ -938,4 +948,21 @@ export const IssuePropertiesRelationshipBadges: Story = {
 export const IssuePropertiesRelationshipBadgesInline: Story = {
   name: "IssueProperties - relationship badges inline",
   render: () => <IssuePropertiesRelationshipBadgesPane inline />,
+};
+
+
+export const AgentCreatedTasksHidden: Story = {
+  ...creationVisibilityStories.hidden,
+  name: "Agent-created tasks — hidden by default",
+  play: creationVisibilityStories.hidden.play,
+};
+export const AgentCreatedTasksIncluded: Story = {
+  ...creationVisibilityStories.included,
+  name: "Agent-created tasks — explicit opt-in",
+  play: creationVisibilityStories.included.play,
+};
+export const AgentCreatedTasksFilter: Story = {
+  ...creationVisibilityStories.filter,
+  name: "Agent-created tasks — filter control",
+  play: creationVisibilityStories.filter.play,
 };

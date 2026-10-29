@@ -1,16 +1,21 @@
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as usageReceipts from "../usage-receipts.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
+import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { requestedRunCancellation } from "../run-cancellation.js";
+import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatAgentStatus } from "./agent-status.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -73,15 +78,19 @@ it("constructs completion handlers without querying or starting work", () => {
 });
 
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("heartbeat run completion boundary", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     // Keep the accounting transaction real without reading provider receipt files.
     vi.spyOn(usageReceipts, "indexPendingUsageReceipts").mockResolvedValue(new Map());
     vi.spyOn(usageReceipts, "recoverPendingRunUsageReceipts").mockResolvedValue([]);
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
-    db = createDb(database.connectionString);
+    const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
+      db = createDb(database.connectionString);
+    }
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.restoreAllMocks(); });
@@ -106,10 +115,35 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     };
     const completion = createHeartbeatRunCompletion(db, deps);
     const failure = (err: unknown): FailHeartbeatRunInput => ({ ...input, runId: run.id, err, identityRedactor: createAgentIdentityRedactor("private-identity-material"), requiredWorkspaceRestoreEvidence: { workspaceRestoreFailure: { reason: "missing_base" } }, legacyAdapterEntered: true, goalCheckpointSession: { current: null }, previousSessionDisplayId: "previous-session", taskSession: null });
-    const setup = (outerErr: unknown) => ({ run, runId: run.id, outerErr, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
+    const setup = (outerErr: unknown, providerDispatchStarted = false) => ({ run, runId: run.id, outerErr, signal: controller.signal, providerDispatchStarted, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it.each(["completeRun", "failRun"] as const)("settles the outgoing agent after a case handoff in %s", async operation => {
+    const f = await fixture();
+    await db.update(agents).set({ status: "running", lifecycleState: "ready" }).where(eq(agents.id, f.agent.id));
+    const [recipient] = await db.insert(agents).values({ companyId: f.agent.companyId, name: "Next phase", adapterType: "process" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: f.agent.companyId, title: "Case task", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    const [record] = await db.insert(cases).values({ companyId: f.agent.companyId, caseNumber: 1, identifier: "CASE-1", caseType: "work", title: issue.title, workIssueId: issue.id, handoffVersion: 1 }).returning();
+    await db.insert(caseHandoffs).values({ companyId: f.agent.companyId, caseId: record.id, issueId: issue.id, version: 1,
+      fromAgentId: f.agent.id, toAgentId: recipient.id, phase: "verification", instructions: "Verify the saved work",
+      actorType: "agent", actorId: f.agent.id, sourceRunId: f.run.id, wakeupRequestId: randomUUID(), idempotencyKey: "next-phase", inputFingerprint: "next-phase", state: "awaiting_release" });
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.deps.finalizeAgentStatus.mockImplementation(createHeartbeatAgentStatus(db).finalizeAgentStatus);
+
+    if (operation === "completeRun") await f.completion.completeRun(f.input);
+    else await f.completion.failRun(f.failure(new Error("Provider exited after the accepted handoff")));
+
+    const [settledAgent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(settledAgent).toMatchObject({ status: operation === "completeRun" ? "idle" : "error", lastHeartbeatAt: expect.any(Date) });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+    expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
+  });
 
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
     const f = await fixture();
@@ -153,6 +187,55 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
       expect((await read(f.run.id)).sessionIdAfter).toBe("provider-session");
       expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "cancelled", expect.any(String), expect.any(Object));
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
+  });
+
+  it("attributes an adapter stop caused by a lost controller lease", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline"));
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: { cancellation: {
+      source: "controller_lease", expected: false, initiator: { type: "system" }, reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it("attributes a lost controller lease when the adapter throws the abort reason", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_rejected"));
+    await f.completion.failRun(f.failure(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: {
+      workspaceRestoreFailure: { reason: "missing_base" },
+      cancellation: { source: "controller_lease", expected: false, reason: "Legacy controller lease lost (renewal_rejected)" } } });
+  });
+
+  it("records the watchdog timings with a lease loss that stops the adapter", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 61_000, renewalPendingMs: 58_000, deadlineLateMs: 2, renewalCount: 41 }));
+    await f.completion.completeRun(f.input);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ controllerLeaseLoss: {
+      cause: "renewal_deadline", sinceRenewalMs: 61_000, renewalPendingMs: 58_000, deadlineLateMs: 2, renewalCount: 41 } });
+  });
+
+  it("records the lease-loss cause and timings when setup fails on the abort reason", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 60_004, renewalPendingMs: null, deadlineLateMs: 55_000, renewalCount: 3 }));
+    await f.completion.failRunSetup(f.setup(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost", resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      controllerLeaseLoss: { cause: "renewal_deadline", sinceRenewalMs: 60_004, renewalPendingMs: null,
+        deadlineLateMs: 55_000, renewalCount: 3 } } });
+  });
+
+  it("keeps a stop requested before the lease loss when the adapter throws", async () => {
+    const f = await fixture();
+    const requested = requestedRunCancellation({ cancelledByActorType: "user", cancelledByUserId: "operator-1" }, "Stopped from the board");
+    await db.update(heartbeatRuns).set({ resultJson: { cancellation: requested } }).where(eq(heartbeatRuns.id, f.run.id));
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));
+    await f.completion.failRun(f.failure(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: { cancellation: {
+      source: "operator", expected: true, initiator: { type: "user", id: "operator-1" }, reason: "Stopped from the board" } } });
   });
 
   it("does not publish or overwrite a conflicting terminal transition that wins the compare-and-set", async () => {
@@ -256,6 +339,18 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
   });
 
+  it("persists a project denial without provider work or an automatic retry", async () => {
+    const f = await fixture();
+    const projectId = randomUUID();
+    await f.completion.failRunSetup(f.setup(new ProjectAccessDeniedError(projectId)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "project_access_denied",
+      resultJson: { projectAccessDenied: { projectId }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {
     const f = await fixture();
     await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("missing credential", { configurationIncomplete: { reason: "missing_binding" } })));
@@ -275,6 +370,34 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
       configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main", defaultBranch: "master", attemptedRefs: ["origin/main"], fingerprint: "workspace_base_ref:origin/main" },
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     } });
+  });
+
+  it("records a lease lost before dispatch as a retryable host stop, not an opaque setup failure", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_rejected"));
+    await f.completion.failRunSetup(f.setup(f.controller.signal.reason));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost", resultJson: {
+      cancellation: { source: "controller_lease", expected: false, reason: "Legacy controller lease lost (renewal_rejected)" },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", expect.any(String), expect.objectContaining({ keepIdleOnFailure: true }));
+  });
+
+  it("attributes a lease loss even when a setup step throws its own abort error", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline"));
+    await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
+      resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it("does not make a lease loss retryable once provider work has started", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));
+    await f.completion.failRunSetup(f.setup(new Error("usage capture write failed"), true));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed",
+      resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_error)" } } });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", expect.any(String), expect.objectContaining({ keepIdleOnFailure: false }));
   });
 
   it("leaves a winning terminal outcome and agent state untouched after a late setup error", async () => {

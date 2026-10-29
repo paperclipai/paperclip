@@ -19,7 +19,18 @@ const meta = {
   component: AgentConversationSidebar,
   parameters: { layout: "fullscreen", docs: { description: { component:
     "Secondary agent navigation at the same width as the app's other contextual sidebars. Uses production AgentAvatar, Input, and Button. The entire row is a link; selection and search are interactive. Search matches agent name, title, and role. Escape clears the query. Browse all agents links to the existing agent directory in the page stories."
-  } } },
+  } },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Support module re-exports production AgentConversationSidebar; search/selection use fixture callbacks."
+    },
+  },
   args: { agents: sidebarAgents, availableAgents: sidebarRoster(), activeId: "agent-codex", previews: sidebarPreviews },
   render: args => <InteractiveSidebar key={JSON.stringify(args)} {...args} />,
 } satisfies Meta<typeof AgentConversationSidebar>;

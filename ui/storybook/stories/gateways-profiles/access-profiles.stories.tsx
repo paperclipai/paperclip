@@ -476,7 +476,15 @@ function SeededAgentTools() {
 const meta: Meta = {
   id: "tools-access-profiles",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Tools/Access profiles",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/profiles"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

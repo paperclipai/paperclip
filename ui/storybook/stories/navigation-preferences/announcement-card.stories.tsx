@@ -3,6 +3,13 @@ import { AnnouncementCard } from "@/components/AnnouncementCard";
 import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
 
 const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "navigation-preferences/announcements"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "announcements-announcementcard",
   title: "Oversight and operation/Navigation, profile, and announcements/Announcements/AnnouncementCard",
   component: AnnouncementCard,

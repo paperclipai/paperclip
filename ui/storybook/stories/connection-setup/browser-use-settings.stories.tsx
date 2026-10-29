@@ -38,6 +38,14 @@ const meta = {
           "Production credential settings: per-run spending cap, saved-profile access, multiple credentials, and loading/error/permission states. Saves and provider profiles are simulated; no credentials are present.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   args: { connection, grants },
   beforeEach: () => mockBrowserUse(),

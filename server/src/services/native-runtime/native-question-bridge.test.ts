@@ -331,7 +331,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       );
       if (answered.kind !== "ask_user_questions") throw new Error("wrong question kind");
       expect(await deliverNativeQuestionResponse(db, answered)).toBe("queued");
-      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1",
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ runId, requestId: "request-1", turnId: "turn-1", commandId: `question_${cards[0]!.id}`,
         resolution: { action: "submit", response: { schema: "paperclip.question_response.v1", answers: { color: { selectedOptionIds: ["green"] } } } },
       }));
       await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));

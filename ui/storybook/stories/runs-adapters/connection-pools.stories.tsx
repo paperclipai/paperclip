@@ -75,7 +75,15 @@ function PoolSurfaces({ scenario = "overview" }: { scenario?: Scenario }) {
   </main></QueryClientProvider>;
 }
 const meta = { id: "ai-connections-connection-pools",
-  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Connection pools", component: PoolSurfaces, parameters: { layout: "fullscreen", docs: { description: { component: "All user-facing Core additions for the private connection-pool plugin. These stories mount the production selector, composer, quota banners, and run details/retry metadata. Routing requires manual operator configuration; there is no settings toggle. Accounts are fixtures; no live provider calls or instance mutations occur." } } }, render: args => <PoolSurfaces key={args.scenario} {...args} /> } satisfies Meta<typeof PoolSurfaces>;
+  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Connection pools", component: PoolSurfaces, parameters: { layout: "fullscreen", docs: { description: { component: "All user-facing Core additions for the private connection-pool plugin. These stories mount the production selector, composer, quota banners, and run details/retry metadata. Routing requires manual operator configuration; there is no settings toggle. Accounts are fixtures; no live provider calls or instance mutations occur." } },
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  }, render: args => <PoolSurfaces key={args.scenario} {...args} /> } satisfies Meta<typeof PoolSurfaces>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const AllCoreSurfaces: Story = { args: { scenario: "overview" } };

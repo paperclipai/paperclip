@@ -1,10 +1,11 @@
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { accountingRuntimeBaselines, budgetReservations, agentRuntimeState, agents, costEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, type Db } from "@paperclipai/db";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import { accountingRuntimeBaselines, budgetReservations, agentRuntimeState, agents, costEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withAccountingTransaction } from "./accounting-transaction.js";
+import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
 import { createCostEventInTransaction } from "./costs.js";
-import { budgetService, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
@@ -21,13 +22,13 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     pending: heartbeatRuns.costAccountingPending, accountedAt: heartbeatRuns.costAccountedAt,
     issueId: sql<string | null>`${heartbeatRuns.usageJson}->'ledgerScope'->>'issueId'`,
   }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-  if (!identity) return false;
-  // Finalization can call twice. Avoid disk work for settled or active runs,
-  // but retain the locked recheck, stale-marker cleanup, and stop delivery.
+  if (!identity || !identity.pending || !terminalStatuses.includes(identity.status)) return false;
+  // Finalization can call twice. Settled or active runs owe no accounting work.
+  // Pending acknowledgements still receive the locked stale-marker cleanup.
   const index = identity.pending && !identity.accountedAt && terminalStatuses.includes(identity.status)
     ? receiptIndex ?? await indexPendingUsageReceipts() : undefined;
   let recoveredFiles: string[] = [];
-  const accounted = await withAccountingTransaction(db, identity.companyId, async (tx, publications) => {
+  const accounted = await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(db, identity.companyId, async (tx, publications) => {
     // Native recovery owns the issue before updating its run. Acquire the
     // charge's issue FK lock first so inserting it cannot reverse that order.
     const issueId = text(identity.issueId);
@@ -38,6 +39,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
+        text(object(object(run.usageJson).ledgerScope).projectId));
       return false;
     }
     // The bounded global replay can leave a newer receipt behind an older
@@ -69,7 +72,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
-    if (preProviderFailure) return true;
+    if (preProviderFailure) {
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
+        text(object(object(run.usageJson).ledgerScope).projectId));
+      return true;
+    }
     const usage = object(run.usageJson);
     const scope = object(usage.ledgerScope);
     // Deleted attribution targets become unallocated; a deletion must never
@@ -121,11 +128,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
           ...receipt, idempotencyKey: `heartbeat:${run.id}:model:${index}`, model: text(part.model)!,
           inputTokens: amount(partUsage.inputTokens) ?? 0, cachedInputTokens: amount(partUsage.cachedInputTokens) ?? 0,
           outputTokens: amount(partUsage.outputTokens) ?? 0, costCents: partCents,
-        }, publications);
+        }, publications, undefined, { deferBudgetEvaluation: true });
       }
     } else {
-      await createCostEventInTransaction(tx, run.companyId, receipt, publications);
+      await createCostEventInTransaction(tx, run.companyId, receipt, publications, undefined, { deferBudgetEvaluation: true });
     }
+    await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId, text(scope.projectId));
     const [event] = await tx.select({
       inputTokens: sql<string>`coalesce(sum(${costEvents.inputTokens}),0)::text`,
       cachedInputTokens: sql<string>`coalesce(sum(${costEvents.cachedInputTokens}),0)::text`,
@@ -145,26 +153,52 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     }).where(eq(agentRuntimeState.agentId, run.agentId));
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date(), accountingProjectionVersion: "v2", accountingLastError: null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     return true;
-  });
+  }));
   for (const file of recoveredFiles) {
     try { await fs.rm(file, { force: true }); }
     catch (error) { logger.warn({ err: error, runId }, "Accounting committed; recovered receipt cleanup will retry"); }
   }
-  await deliverBudgetEnforcement(db, hooks, identity.companyId);
   return accounted;
 }
 
-export async function reconcileRunCosts(db: Db, hooks: BudgetServiceHooks = {}) {
-  const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+function actionableRunAccounting() {
+  return and(
     eq(heartbeatRuns.costAccountingPending, true), inArray(heartbeatRuns.status, terminalStatuses),
-    sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
-    sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
-      or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
-      or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
-      and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
-      and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
-    sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
-  )).orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id)).limit(100);
+    or(sql`${heartbeatRuns.costAccountedAt} is not null`, and(
+      sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
+      sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
+        or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
+        or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
+        and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
+      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
+    )),
+  );
+}
+
+/** Only unfinished, actionable debt warrants retries. Incomplete provider
+ * receipts retain their accounting/idle hold and wake when evidence arrives. */
+export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDirectory?: string) {
+  const [pending] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting()).limit(1);
+  const [deadline] = await db.execute<{ at: Date | string | null }>(sql`
+    select min(started_at) + interval '120 seconds 1 millisecond' as at from (
+      select ${decisionInvocations.startedAt} as started_at from ${decisionInvocations}
+        where ${decisionInvocations.status} = 'running'
+      union all
+      select ${promptInjectionInvocations.startedAt} from ${promptInjectionInvocations}
+        where ${promptInjectionInvocations.status} = 'running'
+    ) running_service_invocations`);
+  const nextRunAt = deadline?.at == null ? null : new Date(deadline.at).getTime();
+  const receipts = await indexPendingUsageReceipts(receiptDirectory);
+  return {
+    pending: !!pending || receipts.size > 0 || (nextRunAt !== null && nextRunAt <= now),
+    nextRunAt,
+  };
+}
+
+export async function reconcileRunCosts(db: Db, hooks: BudgetServiceHooks = {}) {
+  const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting())
+    .orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id)).limit(100);
   let accounted = 0;
   const receiptIndex = pending.length > 0 ? await indexPendingUsageReceipts() : undefined;
   for (const run of pending) {
@@ -176,20 +210,24 @@ export async function reconcileRunCosts(db: Db, hooks: BudgetServiceHooks = {}) 
       logger.error({ err: error, runId: run.id }, "Run accounting remains pending for retry");
     }
   }
-  await budgetService(db, hooks).reconcilePolicies();
   return { scanned: pending.length, accounted };
 }
 
-/** Share one full sweep across overlapping scheduler ticks. Do not enqueue
- * another sweep: the next tick retries after either success or failure. */
-export function createCostAccountingReconciler(db: Db, hooks: BudgetServiceHooks = {}) {
+/** Share recovery across overlapping signals. The owning delivery worker
+ * schedules retries only while a durable receipt or actionable debt remains. */
+export function createCostAccountingReconciler(db: Db, hooks: BudgetServiceHooks = {}, recoverServices?: () => Promise<void>) {
   let inFlight: Promise<Awaited<ReturnType<typeof reconcileRunCosts>>> | undefined;
   return () => {
     if (!inFlight) {
       inFlight = (async () => {
         try {
+          let serviceRecoveryFailure: { error: unknown } | undefined;
+          try { await recoverServices?.(); }
+          catch (error) { serviceRecoveryFailure = { error }; }
           await replayUsageReceipts(db);
-          return await reconcileRunCosts(db, hooks);
+          const result = await reconcileRunCosts(db, hooks);
+          if (serviceRecoveryFailure) throw serviceRecoveryFailure.error;
+          return result;
         } finally {
           inFlight = undefined;
         }

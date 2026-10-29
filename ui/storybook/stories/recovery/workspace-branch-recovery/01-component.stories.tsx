@@ -8,7 +8,15 @@ const meta = {
   title: "Projects and execution/Recovery/Workspace branch recovery/01 Repair card",
   component: WorkspaceBaseRefRecoveryNotice,
   args: { ...evidence, onRepair: simulateRepair },
-  parameters: { layout: "fullscreen", docs: { description: { component: "Proposed inline repair using the reusable component. Repository data and save/retry responses are simulated here; this story does not change a live task. The default-branch action appears only with a verified repository default." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Proposed inline repair using the reusable component. Repository data and save/retry responses are simulated here; this story does not change a live task. The default-branch action appears only with a verified repository default." } },
+    paperclip: {
+      "capabilities": [
+        "recovery/workspace"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   render: (args, context) => <div className="mx-auto max-w-2xl p-4 sm:p-8"><WorkspaceBaseRefRecoveryNotice key={context.id} {...args} /></div>,
 } satisfies Meta<typeof WorkspaceBaseRefRecoveryNotice>;
 export default meta;
