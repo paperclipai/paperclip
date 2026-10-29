@@ -2881,6 +2881,7 @@ async function getWorkspaceInheritanceIssue(
       projectWorkspaceId: issues.projectWorkspaceId,
       executionWorkspaceId: issues.executionWorkspaceId,
       executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      status: issues.status,
     })
     .from(issues)
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -10290,10 +10291,17 @@ export function issueService(db: Db) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
             inheritedWorkspaceSelection = true;
           }
+          // A terminal source issue (done or cancelled) must not pass its
+          // execution workspace down: the worktree is already torn down or
+          // carries abandoned state, and `reuse_existing` would bind the new
+          // issue to it. Grouping fields still inherit — the child remains
+          // topically part of the same project — only the execution
+          // worktree falls back to a fresh one.
           if (
             inheritsSourceProject &&
             !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
+            workspaceSource.executionWorkspaceId &&
+            !["done", "cancelled"].includes(workspaceSource.status)
           ) {
             const sourceWorkspace = await tx
               .select({
