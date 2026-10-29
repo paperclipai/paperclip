@@ -11,6 +11,35 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it("snapshots a staged tree and reports unstaged files without capturing GitHub credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-snapshot-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), repo = path.join(root, "repo");
+    await mkdir(bin); await mkdir(repo);
+    await exec("git", ["init", "-q", repo]);
+    await writeFile(path.join(repo, "tracked.txt"), "staged contents\n");
+    await exec("git", ["-C", repo, "add", "tracked.txt"]);
+    const expectedTree = (await exec("git", ["-C", repo, "write-tree"])).stdout;
+    await writeFile(path.join(repo, "tracked.txt"), "unstaged contents\n");
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    let captures = 0;
+    const server = createServer((_req, res) => {
+      captures++;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "unavailable", reason: "No GitHub connection" }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }), PATH: `${bin}:${process.env.PATH}` };
+    const git = (...args: string[]) => exec(path.join(bin, "git"), args, { cwd: root, env });
+    const tree = await git("--git-dir", path.join(repo, ".git"), "--work-tree", repo, "write-tree");
+    const diff = await git("-C", repo, "-c", "core.quotepath=false", "diff-files", "--name-only", "-z", "--", ".");
+    expect(tree.stdout).toBe(expectedTree);
+    expect(diff.stdout).toBe("tracked.txt\0");
+    expect(captures).toBe(0);
+  });
+
   it.each(["missing", "absent", "unavailable", "rejected"])("commits local work without an identity when GitHub access is %s", async (access) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-author-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
