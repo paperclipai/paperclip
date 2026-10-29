@@ -245,8 +245,9 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
       existingConnections: [], service: { service: "slack", name: "Slack", methods: [], state: "needs_user_action" },
       chatSetup: { endpointId: "endpoint", connectionId: "connection", path: "/ACME/apps/chat/connect?provider=slack&resume=endpoint" } });
     renderBody(interaction);
-    await flush();
-    expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint");
+    await waitForAssertion(() =>
+      expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint"),
+    );
     expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
     expect(completeMock).not.toHaveBeenCalled();
   });

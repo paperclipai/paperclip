@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,5 +45,23 @@ describe("paid workflow target authorization", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.output).toContain(`sha=${advancedSha}\n`);
     expect(result.output).toContain("ref=refs/heads/development\n");
+  });
+});
+
+describe("qualification image dependency correction", () => {
+  it.each([true, false])("applies the workflow correction only to its own source: %s", async sameSource => {
+    const workflow = await readFile(new URL("../../.github/workflows/docker-runner-check.yml", import.meta.url), "utf8");
+    const step = workflow.split("      - name: Apply reviewed qualification lock corrections\n")[1]!.split("\n      - ")[0]!;
+    const script = step.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
+    const directory = await mkdtemp(path.join(os.tmpdir(), "eval-image-lock-target-"));
+    try {
+      const marker = path.join(directory, "called");
+      const result = spawnSync("bash", ["-c", `node() { touch "$CALLED"; }\n${script}`], {
+        cwd: directory, encoding: "utf8", env: { ...process.env, GITHUB_SHA: queuedSha,
+          TARGET_SHA: sameSource ? queuedSha : advancedSha, CALLED: marker },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(await access(marker).then(() => true, () => false)).toBe(sameSource);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

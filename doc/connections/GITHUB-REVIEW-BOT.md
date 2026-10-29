@@ -134,6 +134,13 @@ choose an active sponsor, and use the restricted guest profile. Guests receive n
 sponsor credentials. Authority is checked again before tool calls and
 publication, so revocation also affects queued or ongoing work.
 
+The username lookup uses the bot's own GitHub App installation with a short-lived,
+metadata-only token. It does not use a personal account or the shared unauthenticated
+IP quota. An active connection with a verified installation is required. GitHub
+supports installation tokens for [Get a user](https://docs.github.com/en/rest/users/users#get-a-user)
+without additional permissions. Lookup errors distinguish unavailable accounts,
+rate limits, and installation authentication or access failures.
+
 Choose automatic events and author filters in **Settings** to control which
 authored PRs and issues start work. Authorized mentions remain available with
 automatic events off and bypass automatic author filters. The shared external-

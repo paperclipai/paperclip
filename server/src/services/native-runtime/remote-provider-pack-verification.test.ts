@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { readFileSync } from "node:fs";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalProviderPackJson, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
@@ -61,11 +62,12 @@ describe("installed provider pack compatibility", () => {
     }
   });
   const reseal = (pack: ProviderPackIdentity) => ({ ...pack, digest: sha(canonicalProviderPackJson(pack.payload)) });
-  const check = (installed: ProviderPackIdentity, options: { immutable?: boolean; requireExactIdentity?: boolean } = {}) => {
+  const check = (installed: ProviderPackIdentity, options: { immutable?: boolean; requireExactIdentity?: boolean; requireCurrentOpenCodeProxy?: boolean } = {}) => {
     const execute = vi.fn();
     return verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
       manifest: manifest("b"), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: options.immutable ?? true },
-      provider: { kind: "opencode" }, requireExactIdentity: options.requireExactIdentity });
+      provider: { kind: "opencode" }, requireExactIdentity: options.requireExactIdentity,
+      requireCurrentOpenCodeProxy: options.requireCurrentOpenCodeProxy });
   };
   it.each(["interface", "platform", "schema", "artifact_path", "digest", "legacy"])("rejects an incompatible %s", async field => {
     let pack = manifest("a");
@@ -85,6 +87,15 @@ describe("installed provider pack compatibility", () => {
     await expect(check(manifest("a"), { requireExactIdentity: true })).rejects.toThrow("incompatible");
     await expect(check(manifest("b"), { requireExactIdentity: true })).resolves.toEqual(manifest("b"));
   });
+  it("requires the current proxy for requested OpenCode diagnostics", async () => {
+    const installed = manifest("a");
+    await expect(check(installed)).resolves.toEqual(installed);
+    await expect(check(installed, { requireCurrentOpenCodeProxy: true }))
+      .rejects.toThrow("requested OpenCode diagnostics");
+    installed.payload.artifacts.opencodeProxy = manifest("b").payload.artifacts.opencodeProxy;
+    await expect(check(reseal(installed), { requireCurrentOpenCodeProxy: true }))
+      .resolves.toEqual(reseal(installed));
+  });
   it("ignores unrelated provider and dependency changes for OpenCode", async () => {
     const pack = manifest("a");
     pack.payload.compatibility!.acpx += 1;
@@ -101,6 +112,36 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "acpx" as const, agent: "claude" } };
     await expect(verifyRemoteProviderPack(input)).resolves.toEqual(reseal(installed));
     await expect(verifyRemoteProviderPack({ ...input, provider: { kind: "acpx", agent: "codex" } })).rejects.toThrow("profile is incompatible");
+  });
+
+  it("rejects the published Grok pack from before native effort admission", async () => {
+    const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
+    const current = manifest("b"), installed = manifest("a");
+    // Published builtin Grok profile 1. This pack predates grokEffort and
+    // grokDisableWebSearch in session.open; its ACPX interface version is 1.
+    installed.payload.acpxProfileDigests = { grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55" };
+    current.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
+    const execute = vi.fn();
+    await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: reseal(installed), immutable: true },
+      provider: { kind: "acpx", agent: "grok" } })).rejects.toThrow("selected ACPX provider profile is incompatible");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("reuses the current Grok profile across source-only changes and retains exact historical recovery authority", async () => {
+    const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
+    const current = manifest("b"), installed = manifest("a");
+    for (const pack of [current, installed]) pack.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
+    const execute = vi.fn();
+    const input = { runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: reseal(installed), immutable: true },
+      provider: { kind: "acpx" as const, agent: "grok" } };
+    await expect(verifyRemoteProviderPack(input)).resolves.toEqual(reseal(installed));
+    const historical = manifest("a");
+    historical.payload.acpxProfileDigests = { grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55" };
+    await expect(verifyRemoteProviderPack({ ...input, manifest: reseal(historical),
+      installation: { ...input.installation, manifest: reseal(historical) }, requireExactIdentity: true })).resolves.toEqual(reseal(historical));
+    expect(execute).not.toHaveBeenCalled();
   });
 
 });

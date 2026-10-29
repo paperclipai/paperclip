@@ -138,6 +138,7 @@ interface NativeRunSpanScopeState extends NativeRunSpanScope {
   context: unknown;
   attributes: Record<string, string | number | boolean>;
   ended: boolean;
+  persistRunLog: boolean;
 }
 
 const NOOP_SPAN: SpanHandle = {
@@ -323,6 +324,8 @@ export function createNativeRunTrace(input: {
       parentName?: string;
       startedAtMs?: number;
       attributes?: Record<string, string | number | boolean>;
+      /** False only when an existing durable diagnostic batch already contains the measurements. */
+      persistRunLog?: boolean;
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
@@ -364,6 +367,7 @@ export function createNativeRunTrace(input: {
       context,
       attributes,
       ended: false,
+      persistRunLog: options.persistRunLog !== false,
     };
     scopes.add(state);
     openScopes.add(state);
@@ -413,7 +417,7 @@ export function createNativeRunTrace(input: {
     });
     if (outcome === "failed") { try { state.span.setStatus({ code: 2 }); } catch {} }
     try { state.span.end(endedAtMs); } catch {}
-    await emitCompletedSpanEvent({
+    if (state.persistRunLog) await emitCompletedSpanEvent({
       name: state.name,
       parentName: state.parentName,
       startedAtMs: state.startedAtMs,
@@ -458,11 +462,12 @@ export function createNativeRunTrace(input: {
     );
   };
 
-  const record = async (span: NativeRunHistoricalSpan): Promise<void> => {
+  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean } = {}): Promise<void> => {
     const scope = start(span.name, {
       parentName: span.parentName,
       startedAtMs: span.startedAtMs,
       attributes: span.attributes,
+      persistRunLog: options.persistRunLog,
     });
     await end(scope, {
       endedAtMs: span.endedAtMs,
@@ -527,6 +532,22 @@ export function createNativeRunTrace(input: {
 }
 
 export type NativeRunTrace = ReturnType<typeof createNativeRunTrace>;
+
+/** Group already-normalized provider measurements without exporting provider attributes. */
+export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace, spans: NativeRunHistoricalSpan[]): Promise<void> {
+  if (!spans.length) return;
+  try {
+    const scope = trace.start("provider.runtime", { parentName: "native.session.execute",
+      startedAtMs: Math.min(...spans.map(span => span.startedAtMs)), persistRunLog: false });
+    try {
+      for (const span of spans) await trace.record({ name: span.name, parentName: "provider.runtime",
+        startedAtMs: span.startedAtMs, endedAtMs: span.endedAtMs, outcome: span.outcome }, { persistRunLog: false });
+    } finally {
+      await trace.end(scope, { endedAtMs: Math.max(...spans.map(span => span.endedAtMs)),
+        outcome: spans.some(span => span.outcome === "failed") ? "failed" : "ok" });
+    }
+  } catch { /* Diagnostics cannot replace the work's result. */ }
+}
 
 /** Emit preparation failure even when execution aborts before a native session exists. */
 export async function recordFailedSkillPreparation(input: {

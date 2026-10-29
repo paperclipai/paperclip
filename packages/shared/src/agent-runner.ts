@@ -6,10 +6,11 @@ export interface AgentRunnerAvailability {
   defaultRunner: AgentRunner;
 }
 
-export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" } | { provider: "acpx"; acpxAgent: "claude" | "pi" } | undefined {
+export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" } | { provider: "acpx"; acpxAgent: "claude" | "pi" | "grok" } | undefined {
   if (harness === "codex_local") return { provider: "codex" };
   if (harness === "claude_local") return { provider: "acpx", acpxAgent: "claude" };
   if (harness === "pi_local") return { provider: "acpx", acpxAgent: "pi" };
+  if (harness === "grok_local") return { provider: "acpx", acpxAgent: "grok" };
   if (harness === "opencode_local") return { provider: "opencode" };
   return undefined;
 }
@@ -29,6 +30,7 @@ function supportsLinuxLibc(libc?: "glibc" | "musl" | "unknown", version?: string
 
 export function paperclipRunnerSupportsPlatform(harness: string, platform: string, architecture: string, libc?: "glibc" | "musl" | "unknown", glibcVersion?: string): boolean {
   return !!paperclipRunnerProfileForHarness(harness)
+    && (harness !== "grok_local" || (platform === "linux" && architecture === "x64") || (platform === "darwin" && architecture === "arm64"))
     && !(["opencode_local", "pi_local"].includes(harness) && platform === "linux" && architecture === "arm64")
     && ((platform === "linux" && supportsLinuxLibc(libc, glibcVersion) && (architecture === "x64" || architecture === "arm64"))
       || (platform === "darwin" && (architecture === "arm64" || architecture === "x64")));

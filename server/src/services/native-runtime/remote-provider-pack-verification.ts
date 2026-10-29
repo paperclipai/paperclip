@@ -34,7 +34,7 @@ export type PackProvider = { kind: "opencode" } | { kind: "acpx"; agent: string 
  */
 function compatibleInstallation<T extends ProviderPackIdentity>(
   installation: ProviderPackInstallation, expected: T, packRoot: string,
-  provider: PackProvider, requireExactIdentity: boolean,
+  provider: PackProvider, requireExactIdentity: boolean, requireCurrentOpenCodeProxy: boolean,
 ): T {
   const actual = installation.manifest as T | null;
   const payload = actual?.payload;
@@ -56,6 +56,10 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
       throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack artifact identity is invalid");
     }
   }
+  if (provider.kind === "opencode" && requireCurrentOpenCodeProxy
+    && payload.artifacts.opencodeProxy?.sha256 !== expected.payload.artifacts.opencodeProxy?.sha256) {
+    throw new Error("runner_remote_provider_artifact_incompatible: installed proxy does not match the requested OpenCode diagnostics");
+  }
   if (provider.kind === "acpx") {
     const agent = provider.agent;
     const currentProfile = expected.payload.acpxProfileDigests?.[agent];
@@ -72,7 +76,7 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
   return structuredClone(actual);
 }
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false }: {
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -80,10 +84,11 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   installation?: ProviderPackInstallation;
   provider?: PackProvider;
   requireExactIdentity?: boolean;
+  requireCurrentOpenCodeProxy?: boolean;
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
-    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity);
+    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
   }
   const expected = Buffer.from(
     canonicalProviderPackJson(manifest),

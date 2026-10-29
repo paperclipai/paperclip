@@ -160,3 +160,52 @@ it.each([false, true])("retains an unknown transfer without retrying it when rec
   expect(JSON.parse(await readFile(`${receipt}.retention.json`, "utf8")).requests[0].status)
     .toBe(receiptFails ? "failed_or_unknown" : "accepted");
 });
+
+it("keeps protocol controller, report and cell archives disjoint inside the existing private prefix", () => {
+  const kinds = ["evidence", "report", "protocol-control", "protocol-report", "protocol-cell-native-codex--get-task-context"];
+  const keys = kinds.map(kind => privateArtifactKey(kind, "12345"));
+  expect(new Set(keys).size).toBe(kinds.length);
+  expect(keys.every(key => key.startsWith(`${PRIVATE_HISTORY_PREFIX}/campaigns/gha-12345-1/`))).toBe(true);
+  for (const kind of ["protocol-cell-", "protocol-cell-../report", "protocol-cell-a/b", `protocol-cell-${"a".repeat(201)}`]) {
+    expect(() => privateArtifactKey(kind, "12345")).toThrow();
+  }
+});
+
+it("gives independent shared-manifest downloaders separate immutable receipts", async () => {
+  const root = await temporary(), source = path.join(root, "source"), archive = path.join(root, "control.zip");
+  await mkdir(source); await writeFile(path.join(source, "controller-manifest.json"), '{"campaign":"synthetic"}');
+  await archivePrivateEvidence("pack", source, archive);
+  const config = configurationRunner(configurations()), receipts = new Map<string, unknown>(), downloads: string[] = [];
+  const runner = async (args: string[]) => {
+    if (args[1] === "get-object") {
+      downloads.push(args[args.indexOf("--key") + 1]!);
+      await copyFile(archive, args[args.indexOf("--cli-connect-timeout") - 1]!);
+      return { stdout: '{"VersionId":"manifest-version"}' };
+    }
+    if (args[1] === "put-object") {
+      expect(args).toEqual(expect.arrayContaining(["--if-none-match", "*", "--cache-control", "private, no-store"]));
+      const key = args[args.indexOf("--key") + 1]!;
+      if (receipts.has(key)) throw new Error("Immutable receipt already exists");
+      receipts.set(key, JSON.parse(await readFile(args[args.indexOf("--body") + 1]!, "utf8")));
+      return { stdout: '{"VersionId":"receipt-version"}' };
+    }
+    return config(args);
+  };
+  for (const receiptIdentity of ["protocol-live-mini--get-task-context", "protocol-live-acpx-claude--get-task-context", "report"]) {
+    const receipt = path.join(root, `${receiptIdentity}.json`);
+    await retainPrivateTransfer({ operation: "download", kind: "protocol-control", runId: "12345", receiptIdentity,
+      directory: path.join(root, receiptIdentity), bucket: "private-bucket", publisher: new BoundedHistoryPublisher(receipt, runner) },
+      receipt, () => new BoundedHistoryPublisher(`${receipt}.retention.json`, runner));
+    expect(await readFile(path.join(root, receiptIdentity, "controller-manifest.json"), "utf8")).toBe('{"campaign":"synthetic"}');
+  }
+  expect(new Set(downloads)).toEqual(new Set([privateArtifactKey("protocol-control", "12345")]));
+  expect(receipts.size).toBe(3);
+  expect([...receipts.values()]).toEqual(expect.arrayContaining([
+    expect.objectContaining({ receiptIdentity: "report", transfer: expect.objectContaining({ uri: expect.stringContaining("protocol-control.zip") }) }),
+  ]));
+  const receipt = path.join(root, "duplicate.json");
+  await expect(retainPrivateTransfer({ operation: "download", kind: "protocol-control", runId: "12345", receiptIdentity: "report",
+    directory: path.join(root, "duplicate"), bucket: "private-bucket", publisher: new BoundedHistoryPublisher(receipt, runner) },
+    receipt, () => new BoundedHistoryPublisher(`${receipt}.retention.json`, runner))).rejects.toThrow("receipt retention failed");
+  expect(receipts.size).toBe(3);
+});

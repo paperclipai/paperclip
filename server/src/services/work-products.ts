@@ -1,3 +1,5 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyApprovalQueueWork } from "./approval-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
@@ -273,7 +275,11 @@ export function workProductService(
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
-        if (data.type === "pull_request") await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+        await notifyNativeStatusReassessment(tx, { companyId, issueId });
+        if (data.type === "pull_request") {
+          await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+          await notifyApprovalQueueWork(tx, companyId);
+        }
         await validateExecutionWorkspace(tx, companyId, data.executionWorkspaceId);
         if (data.isPrimary) {
           await tx
@@ -308,8 +314,15 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+        await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: existing.issueId });
+        if ((patch.companyId && patch.companyId !== existing.companyId) || (patch.issueId && patch.issueId !== existing.issueId)) {
+          await notifyNativeStatusReassessment(tx, { companyId: patch.companyId ?? existing.companyId, issueId: patch.issueId ?? existing.issueId });
+        }
 
-        if (existing.type === "pull_request" || patch.type === "pull_request") await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
+        if (existing.type === "pull_request" || patch.type === "pull_request") {
+          await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
+          await notifyApprovalQueueWork(tx, existing.companyId);
+        }
 
         await validateExecutionWorkspace(tx, existing.companyId, patch.executionWorkspaceId);
 
@@ -378,6 +391,12 @@ export function workProductService(
       // prefix behind (which a retry would then duplicate). Mirrors the
       // per-writer transaction the batched issue/document writers use.
       await db.transaction(async (tx) => {
+        for (const scope of new Map(values.map(value => [value.issueId, { companyId: value.companyId, issueId: value.issueId }])).values()) {
+          await notifyNativeStatusReassessment(tx, scope);
+        }
+        for (const companyId of new Set(values.filter(value => value.type === "pull_request").map(value => value.companyId))) {
+          await notifyApprovalQueueWork(tx, companyId);
+        }
         for (const value of values) {
           if (value.type === "pull_request") await notifyTerminalWorkspaceWork(tx, `issue:${value.issueId}`);
         }
@@ -387,9 +406,13 @@ export function workProductService(
 
     remove: async (id: string) => {
       const row = await db.transaction(async tx => {
-        const [existing] = await tx.select({ type: issueWorkProducts.type, issueId: issueWorkProducts.issueId })
+        const [existing] = await tx.select({ type: issueWorkProducts.type, issueId: issueWorkProducts.issueId, companyId: issueWorkProducts.companyId })
           .from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
-        if (existing?.type === "pull_request") await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
+        if (existing) await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: existing.issueId });
+        if (existing?.type === "pull_request") {
+          await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
+          await notifyApprovalQueueWork(tx, existing.companyId);
+        }
         return tx.delete(issueWorkProducts).where(eq(issueWorkProducts.id, id))
           .returning().then(rows => rows[0] ?? null);
       });

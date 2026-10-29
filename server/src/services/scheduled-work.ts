@@ -1,3 +1,4 @@
+import { registerDeadlineWork } from "./deadline-work.js";
 import type { Db } from "@paperclipai/db";
 import { sql, type SQL } from "drizzle-orm";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -9,7 +10,9 @@ export function registerScheduledWork(
   options: {
     retryMs: number;
     tickTimers: () => Promise<unknown>;
-    tickRoutines: () => Promise<unknown>;
+    tickRoutines: (signal: AbortSignal) => Promise<unknown>;
+    nextRoutineRunAt: () => Promise<number | null>;
+    canRun: () => boolean;
   },
 ) {
   function register(queue: DeliveryQueue, work: () => Promise<unknown>, query: (now: Date) => SQL) {
@@ -30,12 +33,12 @@ export function registerScheduledWork(
     });
   }
 
-  const routines = register(DELIVERY_QUEUES.routineSchedules, options.tickRoutines, now => sql`
-    SELECT min(t.next_run_at) AS next_at
-    FROM routine_triggers t JOIN routines r ON r.id = t.routine_id AND r.company_id = t.company_id
-    JOIN companies c ON c.id = r.company_id
-    WHERE t.kind = 'schedule' AND t.enabled AND NOT t.archived
-      AND r.status = 'active' AND c.status = 'active' AND t.next_run_at > ${now.toISOString()}::timestamptz`);
+  const routines = registerDeadlineWork(coordinator, DELIVERY_QUEUES.routineSchedules, {
+    run: options.tickRoutines,
+    next: options.nextRoutineRunAt,
+    canRun: options.canRun,
+    retryMs: options.retryMs,
+  });
   const timers = register(DELIVERY_QUEUES.issueMonitors, options.tickTimers, now => sql`
     SELECT min(i.monitor_next_check_at) AS next_at
     FROM issues i JOIN companies c ON c.id = i.company_id

@@ -74,6 +74,17 @@ or open `/apps/chat/connect`. Complete that provider's endpoint setup, then
 open its settings (`/apps/chat/:endpointId/settings`). Follow identity linking
 as the intended sender before messaging the agent externally.
 
+### `delegated-configuration`
+
+Ask a standard agent to configure a disposable app or account from its assigned
+task. The agent uses REST or admitted native `search_api` / `call_api`, reuses
+saved accounts and drafts, and returns the exact saved setup link when human
+authentication, consent, credential entry or identity confirmation is required.
+Open that link as the addressed person. Personal ownership stays with that
+person; audit attribution stays with the acting agent. Existing agents retain
+their explicit grants and restrictions. See the [access companion](../agent-access-map/connection-setup.md)
+and [native admission contract](../agent-access-map/README.md#native-rest-transport).
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
@@ -220,6 +231,35 @@ reply in the originating conversation. Inspect an unlinked sender's denial and
 the endpoint's pause behavior. Repeat independently for each provider at issue;
 Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 
+### `delegated-configuration`
+
+Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
+uses production agent creation, persistent keys, run JWTs, native tool bindings,
+human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
+setup, ownership, attribution, scope, trust, work modes and revocation. The
+[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
+cover pending choices, consent precedence and failed grant loading with API mocks.
+These are separate from live provider setup and model success.
+
+Manual: Have the agent perform authorized setup, then open its saved handoff as
+the addressed person. Reload before completing the required human step; verify
+the same resource, saved access choices, human ownership and acting-agent audit
+remain. Complete the step, verify the exact task continues, and confirm that
+revoked authority or cancelled work prevents continuation. An ordinary bot-token
+repair or an unchanged credential must not complete a signing-key request.
+
+For Google, request a specific service set, leave and reopen setup, and inspect
+the addressed user's pending choices. Another user's or organization grant must
+not supply those choices. A newer actual consent supersedes the saved request;
+a token refresh does not. A failed grant read must not broaden the selection.
+For Vercel personal setup, verify the selected credential belongs to the
+responsible person and new bindings record the configuring human as creator.
+Agent-initiated API changes retain the acting agent in audit; the human callback
+retains its actual human actor.
+Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
+field-specific credential entry and saved rotation recovery, and the
+[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
+
 ## Gotchas
 
 - For connecting an assistant to Paperclip itself, use [Assistant connections (MCP)](./assistant-connections.md). This recipe's MCP-link journey connects Paperclip to an external app server.
@@ -260,18 +300,3 @@ admission at those boundaries. Verify a served deployment and provider settings,
 not only the catalog action count. Vercel preview requires an existing deployment;
 its provider makes the first deployment production, so an empty-project preview
 must fail before submission and explain the explicit production prerequisite.
-### `delegated-configuration`
-
-A fresh standard agent can use the existing REST API and default native
-`search_api` / `call_api` to perform requested configuration within its responsible
-user's authority. Personal ownership stays with that user; audit attribution stays
-with the acting agent. Existing agents retain their explicit grants and restrictions.
-Human authentication and identity confirmation open the exact saved setup; local
-host administration and action approval retain their own boundaries. See the
-operation inventory in the companion and the [qualification record](../../doc/plans/2026-10-13-connection-api-parity.md).
-
-Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
-uses normal creation defaults, persistent agent keys, run JWTs, native tool bindings,
-real database persistence, and deterministic provider fixtures. It separately checks
-user/agent revocation, trust, company/ownership scope, work modes and attribution.
-This is API reachability evidence, not a live provider setup or an LLM success rate.

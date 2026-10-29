@@ -262,7 +262,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "id": id,
                         "ok": false,
                         "error": {
-                            "code": "Q7Z9",
+                            "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
                             "message": "violet-circuit-4821",
                             "retryable": false,
                         },

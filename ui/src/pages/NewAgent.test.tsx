@@ -10,6 +10,42 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it.each([
+    ["claude_local", "Claude", "plugin"], ["codex_local", "OpenAI", "plugin"],
+    ["claude_local", "Claude", "sandbox"], ["codex_local", "OpenAI", "sandbox"],
+    ["claude_local", "Claude", "kubernetes"], ["codex_local", "OpenAI", "kubernetes"],
+  ] as const)("connects an inherited %s draft through the saved %s account under %s policy", async (adapter, provider, policy) => {
+    const id = "00000000-0000-4000-8000-000000000093";
+    const draft = { id, companyId: "company-1", name: "Atlas", role: "general", adapterType: "paperclip_runner",
+      adapterConfig: adapter === "claude_local" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" },
+      runtimeConfig: {}, lifecycleState: "paused", pauseReason: "setup", defaultEnvironmentId: null, status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: adapter, runner: "auto", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "remote" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: policy !== "kubernetes" });
+    settings.getGeneral.mockResolvedValue({ executionMode: policy === "kubernetes" ? "kubernetes" : "any" });
+    envApi.list.mockResolvedValue([{ id: "remote", name: "Remote", status: "active",
+      driver: policy === "plugin" ? "plugin" : "sandbox", config: policy === "plugin" ? {} : { provider: policy === "sandbox" ? "daytona" : "kubernetes" } }]);
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022",
+      companyId: "company-1", provider: adapter === "claude_local" ? "anthropic" : "openai", method: "subscription",
+      name: "Saved subscription", ownership: "shared", isDefault: false, status: "connected",
+    }] } as any);
+    await renderCurrentParams();
+    await click("AdvancedCustom Gateway");
+    expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).toBeTruthy();
+    await click(`${provider}API key`);
+    expect(container.querySelector('[aria-label="API key"]')).toBeTruthy();
+    await click(`${provider}Subscription`);
+    await click("Use saved subscription");
+    expect(container.textContent).toContain("Configure your agent");
+    expect(api.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", adapter, expect.objectContaining({ agentId: id, environmentId: "remote" }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledExactlyOnceWith("company-1", expect.objectContaining({ setupAgentId: id, defaultEnvironmentId: "remote" }));
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
   it("retains the selected account while a company requires approval before preparing the computer", async () => {
     settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
     envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
@@ -92,13 +128,14 @@ describe("New agent setup", () => {
     expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ setupAgentId: id, defaultEnvironmentId: "computer" }));
   });
 
-  it("waits for background preparation and tests the same saved computer after it completes", async () => {
+  it.each([null, "computer"])("waits for background preparation and tests the same saved computer (environment=%s)", async (defaultEnvironmentId) => {
     const id = "00000000-0000-4000-8000-000000000092";
     const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
-      runtimeConfig: {}, lifecycleState: "preparing", pauseReason: "setup", defaultEnvironmentId: "computer", status: "paused" };
+      runtimeConfig: {}, lifecycleState: "preparing", pauseReason: "setup", defaultEnvironmentId, status: "paused" };
     state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: id });
     api.get.mockResolvedValue(draft);
     settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
     envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
     await renderCurrentParams();
     expect(container.textContent).toContain("Preparing your agent computer");

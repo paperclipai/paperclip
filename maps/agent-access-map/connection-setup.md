@@ -4,6 +4,8 @@ Product map: [connection-setup](../feature-map/connection-setup.md).
 
 Feature ID: `connection-setup`.
 
+Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
+
 Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
 
 Connection operations reviewed in this working tree. The inventory was reconciled
@@ -247,9 +249,9 @@ Gaps: Agent invocation is denied by the stated policy. The authorized human or o
 
 API: `present` — `GET /api/tools/vercel-connect/callback`; browser/provider/MCP protocol.
 Agent access: `restricted` — browser authentication return.
-Policy: Provider state/signature or gateway-token verification, company and resource binding; browser returns require the configuring human. Agent-issued durable gateway tokens retain both issuer and responsible-user authority.
+Policy: Saved, unexpired Vercel OAuth state binds the company and connection to the addressed human or initiating actor/session. State is consumed once; expired, replayed and wrong-user returns fail. Personal grants require current active non-viewer company membership and retain the human creator. See [state validation](../../server/src/services/tool-access/oauth/state.ts) and [Vercel callback](../../server/src/services/tool-access/oauth/vercel-callback.ts).
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
-Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Verification: `not-run` — return as the addressed human, inspect the saved personal grant and creator, then reject wrong-user, expired, replayed and revoked-membership callbacks. This callback has source review, without live Vercel qualification.
 Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
 
 ### `get-tools-oauth-callback`

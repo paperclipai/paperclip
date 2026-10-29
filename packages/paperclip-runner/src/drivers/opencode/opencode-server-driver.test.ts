@@ -19,7 +19,7 @@ import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { getCACertificates } from "node:tls";
 import { basename, dirname, join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -36,6 +36,18 @@ import {
   OpenCodeServerDriver,
   openCodeServerDriverInternals,
 } from "./opencode-server-driver.js";
+
+const upstreamTransport = vi.hoisted(() => ({ endpoint: "", urls: [] as string[] }));
+vi.mock("node:https", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:https")>();
+  const http = await import("node:http");
+  return { ...actual, request: (...args: Parameters<typeof actual.request>) => {
+    if (!upstreamTransport.endpoint) return actual.request(...args);
+    upstreamTransport.urls.push(String(args[0]));
+    const options = args[1] as import("node:http").RequestOptions;
+    return http.request(upstreamTransport.endpoint, { ...options, agent: undefined }, args[2]);
+  } };
+});
 
 const roots: string[] = [];
 let fixtureRoot: string | undefined;
@@ -704,6 +716,81 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it.each(["explicit", "ambient"])("keeps OpenRouter upstream credentials out of the child while preserving exact provider/model routing (%s)", async source => {
+    await chmod(fixture, 0o755);
+    const key = "synthetic-upstream-openrouter-key";
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const received: Array<{ authorization?: string; body: unknown; referer?: string }> = [];
+    let redirect = false;
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        received.push({ authorization: request.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString("utf8")), referer: request.headers["http-referer"] as string });
+        if (redirect) response.writeHead(302, { location: "https://must-not-follow.invalid/" }).end();
+        else response.writeHead(200, { "content-type": "text/event-stream" }).end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-custody-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      if (source === "ambient") {
+        vi.stubEnv("OPENROUTER_API_KEY", key);
+        vi.stubEnv("no_proxy", undefined);
+        vi.stubEnv("NO_PROXY", "custody-bypass.invalid");
+      }
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        ...(source === "explicit" ? { environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: key, NO_PROXY: "custody-bypass.invalid" } } : {}) });
+      session = await driver.openSession({ runId: "custody", normalizedSessionId: "custody", workingDirectory: root });
+      const configText = await readFile(join(root, "custody", "config", "opencode", "opencode.json"), "utf8");
+      const config = JSON.parse(configText);
+      expect(config.model).toBe(`openrouter/${model}`);
+      expect(config.small_model).toBe(`openrouter/${model}`);
+      expect(Object.keys(config.provider)).toEqual(["openrouter"]);
+      expect(Object.keys(config.provider.openrouter.models)).toEqual([model]);
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      expect(configText).not.toContain(key);
+      const environmentText = await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8");
+      expect(JSON.parse(environmentText).keys).not.toContain("OPENROUTER_API_KEY");
+      expect(environmentText).not.toContain(key);
+      expect(JSON.parse(environmentText).noProxy).toBe("custody-bypass.invalid,127.0.0.1,localhost");
+      const persisted = await readFile(join(root, "custody", "data", "fake-provider-custody.json"), "utf8");
+      expect(persisted).not.toContain(key);
+      expect(JSON.parse(persisted)).toMatchObject({ providerOptions: { baseURL, apiKey } });
+      expect(baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
+      expect(apiKey).not.toBe(key);
+      const url = `${baseURL}/chat/completions`;
+      const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+      const payload = { model, messages: [{ role: "user", content: "synthetic" }] };
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify({ ...payload, model: "wrong-model" }) })).status).toBe(400);
+      expect(received).toHaveLength(0);
+      for (const [field, value] of Object.entries({ models: ["wrong-model"], route: "fallback", plugins: [{ id: "web" }], transforms: ["middle-out"] })) {
+        expect((await fetch(url, { method: "POST", headers, body: JSON.stringify({ ...payload, [field]: value }) })).status).toBe(400);
+        expect(received).toHaveLength(0);
+      }
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })).status).toBe(200);
+      expect(received).toEqual([{ authorization: `Bearer ${key}`, body: payload, referer: "https://paperclip.ing" }]);
+      expect(upstreamTransport.urls).toEqual(["https://openrouter.ai/api/v1/chat/completions"]);
+      redirect = true;
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })).status).toBe(502);
+      expect(upstreamTransport.urls).toHaveLength(2);
+      await session.close({ reason: "test" });
+      session = undefined;
+      await expect(fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })).rejects.toThrow();
+    } finally {
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      vi.unstubAllEnvs();
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
   it.each([["HTTP_PROXY", "file"], ["ALL_PROXY", "directory"]] as const)("uses the runtime's %s, %s trust, and NO_PROXY without changing global transport", async (proxySetting, trust) => {
     const requests: string[] = [];
     const outgoingProxy = createHttpServer((request, response) => {
@@ -910,7 +997,7 @@ describe("OpenCodeServerDriver", () => {
         "utf8",
       ),
     );
-    expect(environment.keys).toContain("OPENROUTER_API_KEY");
+    expect(environment.keys).not.toContain("OPENROUTER_API_KEY");
     expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
     expect(environment.keys).not.toContain("UNRELATED_SECRET");
     expect(environment.keys).not.toContain("PAPERCLIP_PROVIDER_TRACE_PATH");

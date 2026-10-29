@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -70,8 +71,9 @@ describe("native same-conversation chat attachment reuse", () => {
   );
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_REUSE_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
+    db = createDb(external ?? temporary!.connectionString);
     const storageRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-chat-reuse-"),
     );
@@ -295,6 +297,7 @@ describe("native same-conversation chat attachment reuse", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await temporary?.cleanup();
   });
 

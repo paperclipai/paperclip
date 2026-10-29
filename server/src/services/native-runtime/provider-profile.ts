@@ -1,5 +1,6 @@
+import { resolveGrokDisableWebSearch } from "../../vendor/paperclip-runner/index.js";
 import { agentHarnessType, normalizeClaudeRunnerOptions } from "@paperclipai/shared";
-import { resolveClaudeEffort, resolveQualifiedAcpxProfile } from "../../vendor/paperclip-runner/index.js";
+import { resolveClaudeEffort, resolveGrokEffort, resolveQualifiedAcpxProfile } from "../../vendor/paperclip-runner/index.js";
 import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -140,6 +141,8 @@ export type PaperclipRunnerNativeProviderInput =
       acpxSessionMode?: "agent" | "plan" | "ask";
       piThinkingLevel?: "off" | "low" | "high" | "max";
       claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+      grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+      grokDisableWebSearch?: boolean;
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -210,7 +213,8 @@ export function projectPaperclipRunnerTaskConfig(
   // The server resolves a connection's model namespace after task overrides.
   // Carry that model into durable input without allowing routing to change the harness.
   const model = optionalString(managedModel) ?? optionalString(task.model);
-  const supportsEffort = backend === "codex_app_server" || (backend === "acpx_runtime" && agentHarnessType("paperclip_runner", base) === "claude_local");
+  const grok = backend === "acpx_runtime" && agentHarnessType("paperclip_runner", base) === "grok_local";
+  const supportsEffort = backend === "codex_app_server" || grok || (backend === "acpx_runtime" && agentHarnessType("paperclip_runner", base) === "claude_local");
   const effortKey = supportsEffort
     ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
     : undefined;
@@ -220,7 +224,7 @@ export function projectPaperclipRunnerTaskConfig(
     delete config.effort;
   }
   if (model !== null) config.model = model;
-  if (effortKey !== undefined) config.modelReasoningEffort = task[effortKey];
+  if (effortKey !== undefined) config[grok ? "reasoningEffort" : "modelReasoningEffort"] = task[effortKey];
   return config;
 }
 
@@ -445,6 +449,12 @@ export function resolvePaperclipRunnerProviderProfile(
   try { if (candidate === "acpx" && agentHarnessType("paperclip_runner", config) === "claude_local") resolveClaudeEffort("claude", config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort); } catch (error) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_claude_effort_invalid", error instanceof Error ? error.message : "Invalid Claude effort");
   }
+  try { if (candidate === "acpx" && config.acpxAgent === "grok") resolveGrokEffort("grok", config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort); } catch (error) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_grok_effort_invalid", error instanceof Error ? error.message : "Invalid Grok effort");
+  }
+  try { if (candidate === "acpx" && config.acpxAgent === "grok") resolveGrokDisableWebSearch("grok", config.disableWebSearch); } catch (error) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_grok_search_invalid", error instanceof Error ? error.message : "Invalid Grok search policy");
+  }
   try { resolvePaperclipRunnerPiThinkingLevel(candidate, config.acpxAgent, config.piThinkingLevel); } catch (error) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_pi_thinking_invalid", error instanceof Error ? error.message : "Invalid Pi thinking level");
   }
@@ -566,7 +576,9 @@ export function resolvePaperclipRunnerProviderProfile(
       "Paperclip Runner ACPX requires a qualified agent profile.",
     );
   }
-  const selectedModel = model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
+  const selectedModel = acpxAgent === "grok" && model === "grok-build"
+    ? DEFAULT_ACPX_RUNNER_MODELS.grok
+    : model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
   try {
     resolveQualifiedAcpxProfile(acpxAgent, selectedModel);
   } catch (error) {
@@ -661,6 +673,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       model: profile.model,
       acpxAgent: profile.acpxAgent,
       ...(profile.acpxAgent === "claude" ? { claudeEffort: resolveClaudeEffort("claude", config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort) } : {}),
+      ...(profile.acpxAgent === "grok" ? { grokEffort: resolveGrokEffort("grok", config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort), grokDisableWebSearch: resolveGrokDisableWebSearch("grok", config.disableWebSearch) } : {}),
       ...(profile.acpxAgent === "pi" ? { piThinkingLevel: resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", config.piThinkingLevel) } : {}),
       ...(profile.acpxAgent === "cursor" ? {
         acpxSessionMode: resolvePaperclipRunnerCursorMode("acpx", "cursor", config.acpxSessionMode),

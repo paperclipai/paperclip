@@ -102,6 +102,9 @@ async function restorePointBoundary(cwd: string, repoUrl: string, headOnRemote: 
 
 /** Re-read the whole tree and every runtime/recovery consumer immediately before deletion. */
 export function expirationScope(workspace: Workspace) {
+  // Decode the three legacy keys together only after cheap native/pointer
+  // matches fail. Strict JSONPath leaves non-object inputs unmatched, as ->>
+  // did, while those inputs can still match an independent native binding.
   return sql`
     WITH RECURSIVE tree AS (
       SELECT id, status, completed_at, cancelled_at, updated_at FROM ${issues}
@@ -110,17 +113,24 @@ export function expirationScope(workspace: Workspace) {
       SELECT c.id, c.status, c.completed_at, c.cancelled_at, c.updated_at FROM ${issues} c
       JOIN tree p ON c.parent_id = p.id WHERE c.company_id = ${workspace.companyId}
     ), bound AS (
-      SELECT id, updated_at FROM ${issues}
+      SELECT id, updated_at, checkout_run_id, execution_run_id FROM ${issues}
       WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id}
+    ), legacy_issue_ids AS MATERIALIZED (
+      SELECT unnest(array_agg(id::text)) AS id FROM tree
     ), relevant_runs AS (
-      SELECT r.* FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
+      SELECT r.id, r.status, r.created_at, r.started_at, r.finished_at, r.controller_lease_expires_at
+      FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
         r.issue_id IN (SELECT id FROM tree) OR r.native_issue_id IN (SELECT id FROM tree)
         OR r.issue_id IN (SELECT id FROM bound) OR r.native_issue_id IN (SELECT id FROM bound)
-        OR r.context_snapshot->>'issueId' IN (SELECT id::text FROM tree)
-        OR r.context_snapshot->>'taskId' IN (SELECT id::text FROM tree)
-        OR r.context_snapshot->>'executionWorkspaceId' = ${workspace.id}
-        OR r.id IN (SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM ${issues}
-          WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id})
+        OR r.id IN (SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM bound)
+        OR EXISTS (
+          SELECT 1 FROM jsonb_to_record(
+            jsonb_path_query_first(r.context_snapshot, 'strict $ ? (@.type() == "object")')
+          ) context("issueId" text, "taskId" text, "executionWorkspaceId" text)
+          WHERE context."issueId" IN (SELECT id FROM legacy_issue_ids)
+            OR context."taskId" IN (SELECT id FROM legacy_issue_ids)
+            OR context."executionWorkspaceId" = ${workspace.id}
+        )
       )
     )`;
 }

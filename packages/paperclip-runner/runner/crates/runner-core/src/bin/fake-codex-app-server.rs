@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -722,6 +722,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--linger-after-turn-start");
     let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
+    let held_output_count = argument(&args, "--held-output-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=4096).contains(&held_output_count) {
+        return Err("--held-output-count must be between 1 and 4096".into());
+    }
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
         .iter()
@@ -1784,6 +1791,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
                     send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
+                    if let Some(release_file) = argument(&args, "--held-output-release-file") {
+                        let deadline = Instant::now() + Duration::from_secs(60);
+                        while !Path::new(&release_file).exists() {
+                            if Instant::now() >= deadline {
+                                return Err("held output was not released within 60 seconds".into());
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    for index in 0..held_output_count {
+                        send(json!({"method": "item/agentMessage/delta", "params": {
+                            "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "itemId": "held-output", "delta": format!("still computing {index} ")
+                        }}))?;
+                    }
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {

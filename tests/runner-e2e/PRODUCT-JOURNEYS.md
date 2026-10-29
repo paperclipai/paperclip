@@ -71,6 +71,12 @@ Cloud adapter admits at most 30 minutes and $10. Select `runner-codex-mini`
 explicitly for its `gpt-5.4-mini` pilot; existing profile defaults remain unchanged. There are no automatic
 story retries. One campaign may create at most one disposable workspace.
 
+Workspace contention can defer a child before provider execution. The journey
+keeps that run and follows only its unique, scoped durable replacement when the
+server proves that no provider work started. A scheduled replacement remains
+pending and consumes the run limit. It cannot satisfy completion; the child must
+still finish through native execution and pass the independent artifact checks.
+
 ## Evidence and lifecycle
 
 Results use the existing campaign/result schemas and dashboard. Each result
@@ -118,7 +124,8 @@ ownership manifests. An expired lease permits cleanup recovery, not reuse.
 Managed self-hosted instances are removed after every attempt. Existing Cloud
 stacks retain the QA account and declared baseline while removing verified
 run-owned fixtures. Successful disposable stacks are deleted. Failed disposable
-stacks are stopped and retained for 24 hours, then swept. Interrupted cleanup
+stacks are stopped and retained for up to 24 hours. The deployment provider
+declares earlier cleanup eligibility to leave time for its sweeper. Interrupted cleanup
 remains visible and retains exclusive stack ownership. QA identity and inbox
 never belong to disposable ownership.
 
@@ -129,6 +136,9 @@ request admission, setup/agent phase transitions, run observation, cost receipts
 trace IDs, and feedback collection. A normalized operations receipt belongs
 only to the onboarding attempt; descendants do not repeat shared setup charges.
 Unknown cost remains unknown. Raw feedback, traces, and ledgers stay private.
+Invocation evidence distinguishes native event inspection from a proven
+`provider_not_started` workspace deferral. Both require complete event reads.
+Pending replacements and contradictory execution evidence remain partial.
 
 The sibling **Operationalize eval runs** implementation currently admits local
 cells and binds its gateway to loopback. That is not Cloud reachability or budget

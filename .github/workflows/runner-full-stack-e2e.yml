@@ -187,6 +187,30 @@ jobs:
             echo '::notice title=Paid runner routing::Using a standard GitHub-hosted runner'
           fi
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Preflight reviewed report dependencies before paid admission
+        run: node tests/runner-e2e/prepare-report-lock.mjs
+
+      - name: Validate report dependency manifests offline
+        run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --offline
+
   target_lock:
     name: Resolve target pnpm lockfile
     needs: authorize
@@ -1273,6 +1297,9 @@ jobs:
         with:
           version: 9.15.4
 
+      - name: Apply reviewed reporting lock corrections
+        run: node tests/runner-e2e/prepare-report-lock.mjs
+
       - name: Install pinned reporting dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
 
@@ -1500,6 +1527,9 @@ jobs:
 
       # Use a job-local store and disable lifecycle scripts throughout install.
       # OIDC is available to every step, even before the AWS credential exchange.
+      - name: Apply reviewed publication lock corrections
+        run: node tests/runner-e2e/prepare-report-lock.mjs
+
       - name: Install pinned publication dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
 

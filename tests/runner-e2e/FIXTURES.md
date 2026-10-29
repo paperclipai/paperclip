@@ -1021,14 +1021,18 @@ The oracle rejects a missing or pending terminal intent.
 
 ## Feedback persistence (explicit only)
 
-`--suite feedback-persistence` selects two local native Claude/Codex cells.
+`--suite feedback-persistence` selects four native Claude/Codex cells across local and Daytona execution.
 Each creates one standard task through the browser, asks for two distinct
 synthetic feedback items, and requires the real `submit_complaint` and
-`submit_suggestion` tools. The five-minute case expects one task work run and
-disables automatic retries. Company and agent accounted-work budgets are $10.
+`submit_suggestion` tools. The case expects one task work run and disables
+automatic retries. Local attempts have five minutes; Daytona inherits the
+15-minute remote deadline. Company and agent accounted-work budgets are $10.
 Setup probes and any background work must also pass through the separately
 budgeted gateway when using an operations manifest. Local compute is unmetered.
-Cost and duration forecasts remain unmeasured until a retained live attempt.
+Daytona cells require an immutable image and the existing provider credential.
+Their ephemeral sandboxes carry the 60-minute provider lifetime. Historical local
+measurements remain separate; Daytona cost and time are unknown until measured.
+These registrations do not qualify remote behavior or change daily/weekly selections.
 The runner E2E maintainers own this manual case; `--all` excludes it.
 
 After collection and fixture teardown, the oracle reads the retained evidence
@@ -1043,5 +1047,6 @@ quality or survival after an abrupt worker kill.
 
 ```sh
 pnpm test:e2e:runner -- --list --suite feedback-persistence
+pnpm test:e2e:runner -- --list --suite feedback-persistence --environment daytona
 pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
 ```

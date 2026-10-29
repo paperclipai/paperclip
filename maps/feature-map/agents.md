@@ -34,8 +34,11 @@ Use New agent from the roster or `/agents/new`.
 Submitting the name creates an inactive record before adapter selection or account setup.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the
-same record. Final submission requests approval when required, then follows the
-existing preparation and verification lifecycle.
+same record. Open an unfinished agent from the roster to reach its header.
+The header shows Finish setup instead of Run or Resume, including during computer
+preparation and verification. Terminating agents cannot reopen setup. Final
+submission requests approval when required, then follows the existing preparation
+and verification lifecycle.
 
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
@@ -48,6 +51,21 @@ resource allocation waits for approval.
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+
+Open **Advanced** at `/agents/:agentId/advanced` for the complete agent
+[YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
+runtime setting, and adapter key; save, reload, and check the ordinary settings
+and Revisions. Try malformed YAML, a missing/unknown field, a removed nested key,
+and a concurrent settings edit. Errors must retain the draft; stale saves return
+a conflict. Unchanged secret markers must preserve their stored values. Navigating
+away with a draft must show the existing unsaved-change guard. **Reload saved**
+discards the draft. Also edit instruction text, skill pins, direct tool installs,
+channel settings/resources, permissions/trust/project boundaries, secret operations,
+and API key operations. Verify each result in its owning tab. Revision restore is
+an isolated save. Inherited access/history under `observed` is read-only. An
+interrupted multi-resource save must report partial progress, preserve returned
+one-time keys, and require reload before another save. Domain APIs retain their
+existing authorization; a multi-resource save is not atomic.
 
 For a low-trust agent, open **Permissions / Trust → Allowed projects**. An operator
 with agent-management permission can select additional projects and explicitly
@@ -99,6 +117,9 @@ For an agent-owned plugin environment, verify preparation before connecting,
 same-agent probes, account preservation after an environment change, failed
 selection-save retry, and switching back while the computer stops. Confirm the
 setup hold still blocks ordinary work and API key creation before finishing.
+Start through the name/adapter dialog with a managed-only or forced Kubernetes
+policy and a draft that inherits its environment. Once preparation completes,
+confirm the auth choices, Advanced gateway, and saved subscription remain usable.
 The [setup lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/setup.test.ts)
 exercise durable transitions with synthetic plugin resources; they do not prove
 live VM provisioning.
@@ -167,12 +188,16 @@ Selecting another runner must not silently discard security settings or change a
 recorded execution. Keep runner choice in Advanced and verify the next eligible
 run separately from historical transcripts.
 
-Existing legacy Claude and Codex agents on qualified default environments, or
+Existing legacy Claude, Codex, and Grok Build agents on qualified default environments, or
 probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
 pending edits and an environment-variable draft. An unsaved change to a different
 effective computer must disable the action and explain that the computer change
 must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
+Grok upgrade with an unset or `grok-build` model: it must use `grok-4.7`.
+Compare effective search policy before and after, including the implicit disabled
+default and explicit enabled search. Verify task model and effort changes use the
+Grok catalog and reach execution while retaining the account and search policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
 unqualified Daytona Paperclip Computer: click must probe, record qualification,
 refresh availability, and only then save. A failed probe or changed selection must

@@ -111,6 +111,15 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    nativeUnpresentedResponseIdx: index("heartbeat_runs_native_unpresented_response_idx")
+      .on(table.companyId, table.nativeIssueId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} in ('succeeded', 'failed', 'timed_out') AND ${table.finishedAt} is not null AND jsonb_typeof(${table.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`),
+    cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
+        AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+        AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE`),
     retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
       .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
         and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')
@@ -120,6 +129,8 @@ export const heartbeatRuns = pgTable(
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
         OR ${table.scopeKind} = 'issue'`,
     ),
+    scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
+      .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

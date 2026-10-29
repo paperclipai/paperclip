@@ -3032,6 +3032,7 @@ describe("IssueProperties", () => {
     };
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: baseMonitorState }),
       monitorAttemptCount: 1,
@@ -3045,6 +3046,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(252) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(132) } }),
       monitorNextCheckAt: new Date(at(192)),
@@ -3054,6 +3056,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
       monitorAttemptCount: 3,
@@ -3062,6 +3065,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
     }));
@@ -3070,6 +3074,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
     }));
@@ -3078,6 +3083,17 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
 
     renderMonitor(createIssue({
+      status: "blocked",
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Automatic checks paused");
+    expect(monitorRowText()).toContain("Check now to request a manual check");
+    expect(monitorRowText()).not.toMatch(/overdue|next tick/i);
+
+    renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy(),
       executionState: createExecutionState({ monitor: {
         ...baseMonitorState,

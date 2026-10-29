@@ -28,7 +28,9 @@ class Socket {
   onclose: (() => void) | null = null;
   onmessage: ((message: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: Array<{ type: string; revision?: number }> = [];
   constructor() { Socket.instances.push(this); }
+  send(encoded: string) { this.sent.push(JSON.parse(encoded)); }
   close() { this.readyState = 3; }
 }
 
@@ -101,6 +103,70 @@ describe("LiveUpdatesProvider connection recovery", () => {
       await act(async () => vi.advanceTimersByTimeAsync(1001));
     }
   }
+
+  it.each([false, true])("discovers a run started in the resync gap after acknowledgement (older read pending=%s)", async pending => {
+    vi.stubGlobal("WebSocket", Socket);
+    await renderPolling();
+    const socket = Socket.instances[0];
+    const deliver = async (type: string, extras: Record<string, unknown> = {}) => {
+      await act(async () => socket.onmessage?.({ data: JSON.stringify({ type, version: 1, ...extras }) }));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    };
+    await act(async () => socket.onopen?.());
+    await deliver("live.capabilities", { capabilities: ["run-interests"] });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    pollRead.mockClear();
+    let release!: (value: unknown) => void;
+    if (pending) pollRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await deliver("live.resync", { revision: socket.sent.at(-1)!.revision });
+    expect(pollRead).toHaveBeenCalledOnce();
+    const next = [{ id: "new-run", status: "running" }];
+    pollRead.mockResolvedValue(next);
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    if (pending) {
+      expect(pollRead).toHaveBeenCalledOnce();
+      await act(async () => release([]));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    expect(pollRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(["company-1", "idle-run-fixture"])).toEqual(next);
+  });
+
+  it.each(["unmount", "disconnect", "company", "session", "hidden"])("discards a queued resync-ack refresh after %s", async change => {
+    vi.stubGlobal("WebSocket", Socket);
+    await renderPolling();
+    const socket = Socket.instances[0];
+    const deliver = async (type: string, extras: Record<string, unknown> = {}) => {
+      await act(async () => socket.onmessage?.({ data: JSON.stringify({ type, version: 1, ...extras }) }));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    };
+    await act(async () => socket.onopen?.());
+    await deliver("live.capabilities", { capabilities: ["run-interests"] });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    let release!: (value: unknown) => void;
+    pollRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await deliver("live.resync", { revision: socket.sent.at(-1)!.revision });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    if (change === "unmount") await act(async () => root.unmount());
+    if (change === "disconnect") await act(async () => socket.onerror?.());
+    if (change === "company") { companySelection.id = "company-2"; await renderPolling(); }
+    if (change === "session") {
+      const next = { user: { id: "viewer" }, session: { id: "replacement", userId: "viewer" } };
+      sessionRead.mockResolvedValue(next);
+      await act(async () => client.setQueryData(queryKeys.auth.session, next));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    if (change === "hidden") await act(async () => {
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const reads = pollRead.mock.calls.length;
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => release([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(pollRead).toHaveBeenCalledTimes(reads);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
 
   it.each([null, []])("keeps setup polling, then stops known-empty polling after connection for %j", async (data) => {
     vi.stubGlobal("WebSocket", Socket);

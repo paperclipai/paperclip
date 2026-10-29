@@ -257,6 +257,34 @@ function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncr
   throw badRequest("Invalid local_encrypted secret material");
 }
 
+function resolveLocalEncryptedValue<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (cause) {
+    // This boundary contains only local key I/O and decryption, never database work.
+    throw new SecretProviderClientError({
+      code: "provider_unavailable", provider: "local_encrypted", operation: "resolveVersion",
+      message: cause instanceof Error ? cause.message : "Local encrypted secret could not be resolved",
+      cause,
+    });
+  }
+}
+
+/** Reuse one resolved key within a single batch; reload it for the next operation. */
+export function createLocalEncryptedCipher(mode: "read" | "write") {
+  const masterKey = mode === "write"
+    ? loadOrCreateMasterKey()
+    : resolveLocalEncryptedValue(() => loadOrCreateMasterKey(false));
+  return {
+    encrypt(value: string): StoredSecretVersionMaterial {
+      return encryptValue(masterKey, value);
+    },
+    decrypt(material: StoredSecretVersionMaterial): string {
+      return resolveLocalEncryptedValue(() => decryptValue(masterKey, asLocalEncryptedMaterial(material)));
+    },
+  };
+}
+
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
   descriptor() {
@@ -291,18 +319,7 @@ export const localEncryptedProvider: SecretProviderModule = {
     throw badRequest("local_encrypted does not support external reference secrets");
   },
   async resolveVersion(input) {
-    try {
-      const masterKey = loadOrCreateMasterKey(false);
-      return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
-    } catch (cause) {
-      // This boundary contains only local key I/O and decryption, never database
-      // work. Consumers can handle a vault outage without swallowing DB errors.
-      throw new SecretProviderClientError({
-        code: "provider_unavailable", provider: "local_encrypted", operation: "resolveVersion",
-        message: cause instanceof Error ? cause.message : "Local encrypted secret could not be resolved",
-        cause,
-      });
-    }
+    return createLocalEncryptedCipher("read").decrypt(input.material);
   },
   async deleteOrArchive() {
     // Secret metadata deletion is handled in Paperclip DB; the local key is shared and must remain.

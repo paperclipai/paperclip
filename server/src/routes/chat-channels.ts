@@ -346,7 +346,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   });
   router.post("/chat-endpoints/:endpointId/github/people/lookup", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/github/people/lookup"), validate(z.object({ login: z.string().min(1).max(44) }).strict()), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;
-    res.json(await github.lookupPerson(req.body.login));
+    res.json(await github.lookupPerson(endpointId(req), req.body.login));
   });
   router.post("/chat-endpoints/:endpointId/github/registration", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/github/registration"), validate(z.object({ name: z.string().trim().min(1).max(34), ownerType: z.enum(["personal", "organization"]).optional(), ownerLogin: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/).optional() }).strict().refine(value => value.ownerType !== "organization" || !!value.ownerLogin, "Enter the GitHub organization")), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;

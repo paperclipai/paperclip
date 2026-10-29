@@ -28,6 +28,16 @@ Unknown codes become `unrecognized`; raw bodies, messages, URLs, headers, and
 browser errors are excluded. Reports validate the receipt before rendering its
 explicit fields, and historical results may omit it.
 
+The optional `onboardingPreAcceptance` receipt captures only a failing first-task
+acceptance guard. Its closed version-1 fields are a known checkpoint, up to four
+distinct guard-violation codes, nonnegative integer task/attachment/document
+counts, a canonical-parent match boolean, and closed first-task/canonical-parent
+statuses (`missing` and `unknown` remain explicit). It excludes all identifiers,
+task text, document keys and bodies, filenames, URLs, credentials, and raw API
+responses. Validation rejects extra or inconsistent fields before report use;
+older results may omit the receipt. It preserves the original failure grade and
+does not attribute a product cause or authorize acceptance.
+
 ## Attended connection authentication
 
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
@@ -311,6 +321,17 @@ Per-attempt JSON snapshots, result copies, logs, Markdown, and text files stay
 in the retained Actions artifact. Credential redaction does not remove hidden
 reasoning or provider session identities, so a text extension never admits a
 file to the public bundle. Graded results remain in `normalized-results.json`.
+
+The normalized result may also contain the reviewed `taskChat` projection:
+task titles/briefs, complete saved comments, visible question/approval copy and
+recorded answers, agent display names, timestamps, and explicitly classified
+native assistant progress. It is captured only from the disposable fixture
+company and credential-redacted before retention. Only these presentation
+fields are admitted by the closed result validator. Arbitrary interaction
+payloads, tool arguments/results, provider/session identities, reasoning and
+raw event envelopes are excluded. No per-attempt snapshot or log becomes public
+as a consequence. Fixture authors must keep task conversation text public just
+as they do the visible content of marked screenshots.
 
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, broader boundary. Text is exact-value and key-shape scanned and

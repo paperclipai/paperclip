@@ -50,6 +50,14 @@ current access, task eligibility, pause and budget gates must still pass before
 one successor starts. Restarts reuse the receipt; they do not create another
 Retry generation or another external publication.
 
+Resuming a chat Retry preserves its exact authorized input batch. Independent
+board messages keep their own queue receipts and enter a separate turn. If an
+older queue merged those messages and dispatch refused the batch before any
+provider work, a new deliberate Retry can restore the undelivered receipts.
+Restoration requires the exact bootstrap failure, no execution or allocation,
+current chat authority, unchanged board input and no prior delivery. It records
+an audit event and retains the failed run and original skipped receipts.
+
 Several retained recovery holds can describe the same failed execution. A
 historical hold without a system recovery record uses the current exact Retry's
 workspace strategy for that run. It does not borrow another run's strategy or

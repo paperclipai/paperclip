@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
@@ -65,8 +66,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const externalTestDatabaseUrl = process.env.PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL;
-const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const testToolActionSigningSecret = "test-tool-action-signing-secret";
 
@@ -554,8 +555,9 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
-    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    if (externalTestDatabase) { db = createDb(externalTestDatabase); return; }
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
+    db = createDb(tempDb.connectionString);
   }, 90_000);
 
   afterEach(async () => {
@@ -3938,32 +3940,46 @@ rl.on("line", (line) => {
       });
       const rateToolName = (await gateway.listToolsForSession(session.token))
         .find((tool) => tool.connectionId === rateTool.connection.id)!.name;
-      await expect(gateway.executeTool({
-        sessionToken: session.token,
-        tool: rateToolName,
-        parameters: { key: "rate", value: "first" },
-      })).resolves.toMatchObject({ status: "completed" });
-      await gateway.executeTool({
-        sessionToken: session.token,
-        tool: rateToolName,
-        parameters: { key: "rate", value: "second" },
-      }).then(
-        () => {
-          throw new Error("Expected connected MCP call to be rate limited");
-        },
-        (error) => expectGatewayError(error, 429, "rate_limited"),
-      );
-      const [rateLimitedInvocation] = await db
-        .select()
-        .from(toolInvocations)
-        .where(eq(toolInvocations.toolName, rateToolName))
-        .then((rows) => rows.filter((row) => row.status === "rate_limited"));
-      expect(rateLimitedInvocation).toMatchObject({
-        connectionId: rateTool.connection.id,
-        providerType: "mcp_remote_http",
-        applicationKey: "rate-app",
-        errorCode: "rate_limited",
-      });
+      const rateClock = Date.now();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(rateClock);
+      try {
+        await expect(gateway.executeTool({
+          sessionToken: session.token,
+          tool: rateToolName,
+          parameters: { key: "rate", value: "first" },
+        })).resolves.toMatchObject({ status: "completed" });
+        await gateway.executeTool({
+          sessionToken: session.token,
+          tool: rateToolName,
+          parameters: { key: "rate", value: "second" },
+        }).then(
+          () => {
+            throw new Error("Expected connected MCP call to be rate limited");
+          },
+          (error) => expectGatewayError(error, 429, "rate_limited"),
+        );
+        const [rateLimitedInvocation] = await db
+          .select()
+          .from(toolInvocations)
+          .where(eq(toolInvocations.toolName, rateToolName))
+          .then((rows) => rows.filter((row) => row.status === "rate_limited"));
+        expect(rateLimitedInvocation).toMatchObject({
+          connectionId: rateTool.connection.id,
+          providerType: "mcp_remote_http",
+          applicationKey: "rate-app",
+          errorCode: "rate_limited",
+        });
+
+        vi.setSystemTime(rateClock + 60_000);
+        await expect(gateway.executeTool({
+          sessionToken: session.token,
+          tool: rateToolName,
+          parameters: { key: "rate", value: "next-window" },
+        })).resolves.toMatchObject({ status: "completed" });
+      } finally {
+        vi.useRealTimers();
+      }
 
       const otherTool = await createRemoteMcpTool(db, otherCompany.id, {
         applicationKey: "other-company-app",

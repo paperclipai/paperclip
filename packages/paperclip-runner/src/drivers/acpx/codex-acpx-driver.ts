@@ -151,6 +151,8 @@ export interface CodexAcpxDriverOptions {
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerPolicy?: { readOnly: boolean };
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
@@ -467,6 +469,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         mode: this.#options.mode,
         piThinkingLevel: this.#options.piThinkingLevel,
         claudeEffort: this.#options.claudeEffort,
+        grokEffort: this.#options.grokEffort, grokDisableWebSearch: this.#options.grokDisableWebSearch,
         providerPolicy: this.#options.providerPolicy,
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
@@ -1304,6 +1307,8 @@ class CodexAcpxSession implements HarnessSession {
         ...(identity.mode === undefined ? {} : { mode: identity.mode }),
         ...(identity.piThinkingLevel === undefined ? {} : { piThinkingLevel: identity.piThinkingLevel }),
         ...(identity.claudeEffort === undefined ? {} : { claudeEffort: identity.claudeEffort }),
+        ...(identity.grokEffort === undefined ? {} : { grokEffort: identity.grokEffort }),
+        ...(identity.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: identity.grokDisableWebSearch }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -2158,6 +2163,8 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
       )) ||
     (identity.mode !== undefined && !isProviderMode(identity.mode)) ||
     (identity.claudeEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(identity.claudeEffort)) ||
+    (identity.grokDisableWebSearch !== undefined && typeof identity.grokDisableWebSearch !== "boolean") ||
+    (identity.grokEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh"].includes(identity.grokEffort)) ||
     (identity.piThinkingLevel !== undefined && !["off", "low", "high", "max"].includes(identity.piThinkingLevel)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,

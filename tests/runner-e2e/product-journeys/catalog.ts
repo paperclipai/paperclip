@@ -9,7 +9,7 @@ export function preparationPreview(config: TargetConfig) {
     target: { id: config.id, mode: config.mode, executionEnvironment: config.executionEnvironment },
     journeys: config.journeys.map(id => productJourneys.find(journey => journey.id === id)!),
     configuration: config.baseline,
-    lifetime: config.mode === "existing-cloud" ? "persistent; clean run-owned resources only" : config.mode === "new-cloud" ? "disposable; delete on pass, retain failures for 24 hours" : "managed instance; remove after every attempt",
+    lifetime: config.mode === "existing-cloud" ? "persistent; clean run-owned resources only" : config.mode === "new-cloud" ? "disposable; delete on pass, retain failures up to 24 hours" : "managed instance; remove after every attempt",
     limits: config.limits, authentication: config.mode === "managed-self-hosted" ? "local-trusted" : "normal email-code sign-in",
     modelProfileId: config.modelProfileId ?? null,
     maxDisposableStacks: config.mode === "new-cloud" ? 1 : 0,

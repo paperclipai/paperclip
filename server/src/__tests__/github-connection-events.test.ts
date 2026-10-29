@@ -1,6 +1,9 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyPendingMigrations,
   activityLog,
   companies,
   connectionEventDeliveries,
@@ -21,7 +24,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_EVENTS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("GitHub connection event delivery", () => {
@@ -29,8 +33,9 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -44,6 +49,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -264,6 +270,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       credentialPolicy: "per_user",
       status: "active",
       enabled: true,
+      healthCheckedAt: new Date("2026-09-04T11:59:05.000Z"),
       config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } },
       transportConfig: {},
     });
@@ -329,11 +336,18 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
-    const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
-      throw new Error("fixture live subscriber failed");
-    });
-    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
-    unsubscribe();
+    const health = await startToolHealthWorker(db, companyId, currentTime);
+    try {
+      await health.expectDeadline(new Date("2026-09-04T12:14:05.000Z").getTime());
+      const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
+        throw new Error("fixture live subscriber failed");
+      });
+      try {
+        await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
+      } finally { unsubscribe(); }
+      await health.expectDeadline(currentTime.getTime() + 900_000 - (refreshed ? 60_000 : 0));
+      await health.expectQuiet();
+    } finally { await health.stop(); }
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
     expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: refreshed ? 3 : 4, webhookHealth: "healthy" });
     if (refreshed) {

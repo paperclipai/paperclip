@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
@@ -393,7 +394,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 connection.id,
                 connection.companyId,
               );
-              const [reauthorizationRequired] = await db
+              const [reauthorizationRequired] = await writeToolConnectionHealthChange(db, latestConnection, tx => tx
                 .update(toolConnections)
                 .set({
                   status: "draft",
@@ -417,7 +418,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                     eq(toolConnections.companyId, latestConnection.companyId),
                   ),
                 )
-                .returning();
+                .returning());
               await syncCredentialBindings(reauthorizationRequired);
               emitConnectionUpdated(
                 reauthorizationRequired,

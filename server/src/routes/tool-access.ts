@@ -687,9 +687,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const editableAgentIds: string[] = [];
     if (mutationCapable) {
       const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, connection.companyId));
-      for (const agent of companyAgents) {
-        const capability = await management.capability(req.actor, "connections:profiles", { ...resource, targetAgentId: agent.id }, { readContext: connectionRequestContext(req) });
-        if (capability.allowed) editableAgentIds.push(agent.id);
+      const capabilities = await management.describeAgentInstallCapabilities(req.actor, resource, companyAgents.map(agent => agent.id), { readContext: connectionRequestContext(req) });
+      for (let i = 0; i < companyAgents.length; i++) {
+        if (capabilities[i].allowed) editableAgentIds.push(companyAgents[i].id);
       }
     }
     return {

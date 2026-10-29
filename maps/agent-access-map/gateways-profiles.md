@@ -4,6 +4,8 @@ Product map: [gateways-profiles](../feature-map/gateways-profiles.md).
 
 Feature ID: `gateways-profiles`.
 
+Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
+
 Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
 
 Connection operations reviewed in this working tree. The inventory was reconciled

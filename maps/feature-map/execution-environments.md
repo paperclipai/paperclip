@@ -52,7 +52,17 @@ the live lease and cleanup is confirmed. Inspect `platformQualificationRecorded`
 and its diagnostic in the probe result: connection success alone does not mean
 the image has native runtime qualification.
 
-The measured record is server-owned, company-bound and tied to the effective
+Paperclip-managed Cloud images use the current platform-selected image without
+a saved qualification prerequisite. A missing, stale or revoked qualification
+does not block execution or pin an older snapshot. Runtime startup and the
+handshake detect real incompatibility. This exception excludes custom
+environments and active captured custom images.
+The active Cloud configuration must provision the sandbox provider. A stale
+managed marker alone keeps the normal qualification rules.
+An outdated captured image that execution ignores must not block discovery of
+the current managed image. A matching custom capture keeps qualification.
+
+For other images, the measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
 and snapshots without verified provider identities do not qualify. Daytona
 qualification creates by provider ID and binds native execution to that same ID;
@@ -71,6 +81,11 @@ qualification is not reused. A mutable-image connection can succeed while
 qualification remains absent. Assert ordinary agent and non-admin board probe
 requests are denied, and environment create/PATCH payloads cannot supply
 qualification metadata.
+For a managed Cloud image, replace the platform-selected snapshot while an old
+qualification remains. Discovery must still offer Paperclip Runner, and Test
+must check the runtime directly. Verify execution selects the replacement image
+and still reports a real provider startup failure. Keep a custom-image control
+that requires its existing qualification.
 This recipe and its [probe controls](../../server/src/__tests__/environment-probe.test.ts)
 are not claims that a live provider or agent-access journey ran for this map update.
 
@@ -90,6 +105,11 @@ data transfer is outside task execution. See the
 The [fake-provider integration](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 checks acquisition, SDK dispatch, scope denial, stop proof and deletion recovery.
 Its WebSocket is mocked; it does not qualify a live provider or a real Runner handshake.
+Controller replacement reuses a surviving plugin task's active lease and exact
+Runner identity. The integration checks reconnect without prepare, submit, or
+stop. The [continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+also covers real-process recovery after controller files are removed; deployed
+plugin and Daytona acceptance require their own evidence.
 
 For a same-run retry on a replacement plugin task, verify that the retained
 checkpoint loads before provider startup. The prior execution must have a stop

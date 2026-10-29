@@ -3,7 +3,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { agents, agentApiKeys, heartbeatRuns, runIdentityContexts, issues, projects, toolApplications, toolCatalogEntries, toolConnections, toolConnectionInstalls, toolProfiles, toolProfileEntries, toolProfileBindings, toolMcpGateways, aiConnectionPools, connectionGrants, routines, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
 import { authorizationService, canActorReadIssuePrivacy, canActorReadProjectPrivacy, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
-import { captureRunIdentity } from "./run-identity.js";
+import { captureRunIdentity, runIdentityTaskFields, type RunIdentityCapture } from "./run-identity.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectionManagementAction, ConnectionManagementResource } from "./connection-management-policy.js";
 
@@ -17,8 +17,24 @@ export type ConnectionManagementContext = {
   reauthorize: (continuation?: { afterHumanAction: true }) => Promise<void>;
 };
 
-type CapturedConnectionRun = Omit<Awaited<ReturnType<typeof captureRunIdentity>>, "context"> & { context: Awaited<ReturnType<typeof captureRunIdentity>>["context"] | null };
+type CapturedConnectionRun = RunIdentityCapture<"task_authorization">;
 const connectionReadRuns = new WeakMap<ConnectionManagementContext, CapturedConnectionRun>();
+
+type AuthorizationOptions = { targetAgentIds?: string[]; mutation?: boolean; afterHumanAction?: boolean; expandedProfile?: boolean; gatewayContextChecked?: boolean; readContext?: ConnectionManagementContext; capabilityProbe?: boolean };
+type PreparedAuthorization = {
+  actor: AuthorizationActor;
+  action: ConnectionManagementAction;
+  resource: ConnectionManagementResource;
+  options: AuthorizationOptions;
+  responsibleUserId: string | null;
+  workContext: ConnectionManagementContext["workContext"];
+  capturedRun: CapturedConnectionRun | undefined;
+  expandedTargets: Set<string>;
+  referencedConnections: string[];
+  currentGatewayResource: ConnectionManagementResource | undefined;
+  savedNonAiConnection: boolean;
+};
+type ConnectionCapability = { allowed: boolean; reason: string; operation: string };
 
 export function responsibleConnectionUser(actor: AuthorizationActor): string | null {
   return (actor.type === "agent" ? actor.onBehalfOfUserId : actor.userId) ?? null;
@@ -28,12 +44,12 @@ export function responsibleConnectionUser(actor: AuthorizationActor): string | n
 export function connectionManagementService(db: Db) {
   const authorization = authorizationService(db);
 
-  async function authorize(
+  async function prepareAuthorization(
     actor: AuthorizationActor,
     action: ConnectionManagementAction,
     resource: ConnectionManagementResource,
-    options: { targetAgentIds?: string[]; mutation?: boolean; afterHumanAction?: boolean; expandedProfile?: boolean; gatewayContextChecked?: boolean; readContext?: ConnectionManagementContext; capabilityProbe?: boolean } = {},
-  ): Promise<ConnectionManagementContext> {
+    options: AuthorizationOptions,
+  ): Promise<PreparedAuthorization> {
     const responsibleUserId = responsibleConnectionUser(actor);
     let workContext: ConnectionManagementContext["workContext"] = { runId: null, issueId: null, projectId: null };
     let capturedRun: CapturedConnectionRun | undefined;
@@ -51,12 +67,12 @@ export function connectionManagementService(db: Db) {
         const reusable = options.capabilityProbe && !options.afterHumanAction && options.readContext?.actor === actor && options.readContext.resource.companyId === resource.companyId
           ? connectionReadRuns.get(options.readContext) : undefined;
         const captured = reusable ?? (options.afterHumanAction ? await (async () => {
-          const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actor.runId!), eq(heartbeatRuns.agentId, actor.agentId!), eq(heartbeatRuns.companyId, resource.companyId)));
+          const [run] = await db.select(runIdentityTaskFields).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actor.runId!), eq(heartbeatRuns.agentId, actor.agentId!), eq(heartbeatRuns.companyId, resource.companyId)));
           if (!run || !["running", "succeeded"].includes(run.status)) throw forbidden("The originating run cannot continue this authentication");
           const [pending] = await db.select().from(runIdentityContexts).where(and(eq(runIdentityContexts.runId, run.id), eq(runIdentityContexts.status, "pending")));
           if (pending) throw forbidden("Run identity is being reconciled");
           return { run, context: null };
-        })() : await captureRunIdentity(db, { companyId: resource.companyId, agentId: actor.agentId, runId: actor.runId }));
+        })() : await captureRunIdentity(db, { companyId: resource.companyId, agentId: actor.agentId, runId: actor.runId }, { readScope: "task_authorization" }));
         capturedRun = captured;
         const { run, context } = captured;
         if ((context?.responsibleUserId ?? run.responsibleUserId) !== responsibleUserId) throw forbidden("Run responsible-user authority has changed");
@@ -72,6 +88,7 @@ export function connectionManagementService(db: Db) {
     const expandedTargets = new Set(options.targetAgentIds ?? []);
     const referencedConnections: string[] = [];
     let currentGatewayResource: ConnectionManagementResource | undefined;
+    let savedNonAiConnection = false;
     if (resource.gatewayId && !options.gatewayContextChecked) {
       const [gateway] = await db.select().from(toolMcpGateways).where(and(eq(toolMcpGateways.id, resource.gatewayId), eq(toolMcpGateways.companyId, resource.companyId)));
       if (!gateway) throw forbidden("Gateway is unavailable in this company");
@@ -142,6 +159,7 @@ export function connectionManagementService(db: Db) {
     if (resource.connectionId) {
       const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.id, resource.connectionId), eq(toolConnections.companyId, resource.companyId)));
       if (!connection) throw forbidden("Connection is unavailable in this company");
+      savedNonAiConnection = connection.connectionPurpose !== "ai";
       resource = { ...resource, selfServiceUserId: connection.createdByUserId,
         purpose: connection.connectionPurpose === "ai" ? "ai" : connection.connectionPurpose === "channel" ? "chat" : "tool",
         provider: typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey
@@ -222,34 +240,47 @@ export function connectionManagementService(db: Db) {
         if (issue.workMode === "skill_test" || ((options.mutation ?? action !== "connections:read") && issue.workMode !== "standard")) throw forbidden("Connection changes require a standard task");
       }
     }
+    return { actor, action, resource, options, responsibleUserId, workContext, capturedRun,
+      expandedTargets, referencedConnections, currentGatewayResource, savedNonAiConnection };
+  }
+
+  async function evaluateTarget(prepared: PreparedAuthorization, targetAgentId: string | undefined): Promise<AuthorizationDecision> {
+    const { actor, action, resource, responsibleUserId } = prepared;
+    const resolved = { ...resource, ...(targetAgentId ? { targetAgentId } : {}) };
+    const decision = await authorization.decide({ actor, action, resource: resolved, scope: { ...resolved } });
+    if (!decision.allowed) throw forbidden(decision.explanation, { reason: decision.reason, code: decision.code, operation: resource.operation });
+    if (Object.hasOwn(resource, "requestedProvider") && resource.requestedProvider !== resource.provider) {
+      const proposed = { ...resolved, provider: resource.requestedProvider };
+      const proposedDecision = await authorization.decide({ actor, action, resource: proposed, scope: { ...proposed } });
+      if (!proposedDecision.allowed) throw forbidden(proposedDecision.explanation, { reason: proposedDecision.reason, code: proposedDecision.code, operation: resource.operation });
+    }
+    if (actor.type === "agent" && actor.runId && (resolved.projectId || resolved.issueId)) {
+      const resourceTrust = await authorization.decide({ actor: { ...actor, runId: undefined }, action, resource: resolved, scope: { ...resolved } });
+      if (!resourceTrust.allowed) throw forbidden(resourceTrust.explanation);
+    }
+    if (targetAgentId) {
+      const [target] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, targetAgentId), eq(agents.companyId, resource.companyId)));
+      if (!target) throw forbidden("Target agent is outside this company");
+      // Explicitly enforce both principals even when unrelated authorization is in shadow mode.
+      // Existing human routes retain their domain-specific target authority.
+      // Delegation additionally checks both the acting agent and its human.
+      const principals: AuthorizationActor[] = actor.type === "agent" || resource.selfServiceAgentInstalls ? [actor] : [];
+      if (actor.type === "agent") principals.push({ type: "board", userId: responsibleUserId, source: "session", ignoreInstanceAdmin: true });
+      for (const principal of principals) {
+        const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } });
+        if (!targetDecision.allowed) throw forbidden(targetDecision.explanation);
+      }
+    }
+    return decision;
+  }
+
+  async function finishAuthorization(prepared: PreparedAuthorization): Promise<ConnectionManagementContext> {
+    const { actor, action, resource, options, responsibleUserId, workContext, capturedRun,
+      expandedTargets, referencedConnections, currentGatewayResource } = prepared;
     const targets = [...new Set([...expandedTargets, ...(resource.targetAgentId ? [resource.targetAgentId] : [])])];
     let decision: AuthorizationDecision | undefined;
     for (const targetAgentId of targets.length ? targets : [undefined]) {
-      const resolved = { ...resource, ...(targetAgentId ? { targetAgentId } : {}) };
-      decision = await authorization.decide({ actor, action, resource: resolved, scope: { ...resolved } });
-      if (!decision.allowed) throw forbidden(decision.explanation, { reason: decision.reason, code: decision.code, operation: resource.operation });
-      if (Object.hasOwn(resource, "requestedProvider") && resource.requestedProvider !== resource.provider) {
-        const proposed = { ...resolved, provider: resource.requestedProvider };
-        const proposedDecision = await authorization.decide({ actor, action, resource: proposed, scope: { ...proposed } });
-        if (!proposedDecision.allowed) throw forbidden(proposedDecision.explanation, { reason: proposedDecision.reason, code: proposedDecision.code, operation: resource.operation });
-      }
-      if (actor.type === "agent" && actor.runId && (resolved.projectId || resolved.issueId)) {
-        const resourceTrust = await authorization.decide({ actor: { ...actor, runId: undefined }, action, resource: resolved, scope: { ...resolved } });
-        if (!resourceTrust.allowed) throw forbidden(resourceTrust.explanation);
-      }
-      if (targetAgentId) {
-        const [target] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, targetAgentId), eq(agents.companyId, resource.companyId)));
-        if (!target) throw forbidden("Target agent is outside this company");
-        // Explicitly enforce both principals even when unrelated authorization is in shadow mode.
-        // Existing human routes retain their domain-specific target authority.
-        // Delegation additionally checks both the acting agent and its human.
-        const principals: AuthorizationActor[] = actor.type === "agent" || resource.selfServiceAgentInstalls ? [actor] : [];
-        if (actor.type === "agent") principals.push({ type: "board", userId: responsibleUserId, source: "session", ignoreInstanceAdmin: true });
-        for (const principal of principals) {
-          const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } });
-          if (!targetDecision.allowed) throw forbidden(targetDecision.explanation);
-        }
-      }
+      decision = await evaluateTarget(prepared, targetAgentId);
     }
     if (action === "connections:profiles" && resource.requestedInstallCompanyIds && !resource.selfServiceAgentInstalls) {
       await authorize(actor, "connections:configure", resource, options);
@@ -273,6 +304,15 @@ export function connectionManagementService(db: Db) {
     };
     if (capturedRun) connectionReadRuns.set(context, capturedRun);
     return context;
+  }
+
+  async function authorize(
+    actor: AuthorizationActor,
+    action: ConnectionManagementAction,
+    resource: ConnectionManagementResource,
+    options: AuthorizationOptions = {},
+  ): Promise<ConnectionManagementContext> {
+    return finishAuthorization(await prepareAuthorization(actor, action, resource, options));
   }
 
   async function authorizeBindingTarget(actor: AuthorizationActor, action: ConnectionManagementAction,
@@ -303,17 +343,96 @@ export function connectionManagementService(db: Db) {
     return authorize(actor, action, resolved, checkOptions);
   }
 
-  async function capability(...args: Parameters<typeof authorize>) {
+  function deniedCapability(error: unknown, operation: string): ConnectionCapability {
+    // Database/provider faults are not authorization denials.
+    if (!(error instanceof Error && "status" in error && error.status === 403)) throw error;
+    return { allowed: false, reason: error.message, operation };
+  }
+
+  async function capability(...args: Parameters<typeof authorize>): Promise<ConnectionCapability> {
     try {
       const context = await authorize(args[0], args[1], args[2], { ...args[3], capabilityProbe: true });
       return { allowed: true, reason: context.decision.reason, operation: args[2].operation };
     } catch (error) {
-      // Database/provider faults are not authorization denials.
-      if (!(error instanceof Error && "status" in error && error.status === 403)) throw error;
-      return { allowed: false, reason: error.message, operation: args[2].operation };
+      return deniedCapability(error, args[2].operation);
     }
   }
-  return { authorize, authorizeBindingTarget, capability };
+
+  /** Descriptions only: retained installation authority is checked once per
+   * call. Mutations and human continuations always start a fresh authorization.
+   * Complex resources and delegated actors retain the ordinary evaluator. */
+  async function describeAgentInstallCapabilities(
+    actor: AuthorizationActor,
+    resource: ConnectionManagementResource,
+    candidateAgentIds: readonly string[],
+    options: { readContext?: ConnectionManagementContext } = {},
+  ): Promise<ConnectionCapability[]> {
+    if (!candidateAgentIds.length) return [];
+    const candidates = [...candidateAgentIds];
+    const base = { ...resource, readOnly: false };
+    const probeOptions = { readContext: options.readContext, capabilityProbe: true, mutation: true };
+    const results: ConnectionCapability[] = [];
+    const describeRemaining = async (start: number) => {
+      for (let i = start; i < candidates.length; i++) {
+        results.push(await capability(actor, "connections:profiles", { ...base, targetAgentId: candidates[i] }, probeOptions));
+      }
+      return results;
+    };
+
+    let prepared: PreparedAuthorization;
+    try {
+      prepared = await prepareAuthorization(actor, "connections:profiles", { ...base, targetAgentId: candidates[0] }, probeOptions);
+    } catch (error) {
+      results.push(deniedCapability(error, base.operation));
+      return describeRemaining(1);
+    }
+    const resolved = prepared.resource;
+    const isCanonicalAgentId = (id: string) => isUuidLike(id) && id === id.toLowerCase();
+    const eligible = actor.type === "board" && prepared.savedNonAiConnection
+      && [resolved.profileId, resolved.gatewayId, resolved.routineId, resolved.projectId, resolved.issueId].every(id => id == null)
+      && !Object.hasOwn(resolved, "requestedProvider") && !Object.hasOwn(resolved, "requestedInstallCompanyIds")
+      && !resolved.selfServiceAgentInstalls
+      && !prepared.referencedConnections.length && !prepared.currentGatewayResource
+      && candidates.every(isCanonicalAgentId)
+      // A saved empty selector resolves against the current candidate in the
+      // ordinary evaluator. Such retained checks cannot be shared.
+      && [...prepared.expandedTargets].every(isCanonicalAgentId);
+    if (!eligible) {
+      // Consume the already prepared first evaluation. Restarting it can repeat
+      // recursive checks or run-identity reconciliation and its locking effects.
+      try {
+        const context = await finishAuthorization(prepared);
+        results.push({ allowed: true, reason: context.decision.reason, operation: base.operation });
+      } catch (error) {
+        results.push(deniedCapability(error, base.operation));
+      }
+      return describeRemaining(1);
+    }
+
+    let retainedDecision: AuthorizationDecision | undefined;
+    try {
+      for (const targetAgentId of prepared.expandedTargets) {
+        retainedDecision = await evaluateTarget(prepared, targetAgentId);
+      }
+    } catch (error) {
+      const denied = deniedCapability(error, base.operation);
+      return candidates.map(() => ({ ...denied }));
+    }
+    for (const targetAgentId of candidates) {
+      try {
+        // With no retained targets, the named candidate is the first policy
+        // target: a targetless preflight can incorrectly deny scoped grants.
+        const decision = prepared.expandedTargets.has(targetAgentId)
+          ? retainedDecision!
+          : await evaluateTarget(prepared, targetAgentId);
+        results.push({ allowed: true, reason: decision.reason, operation: base.operation });
+      } catch (error) {
+        results.push(deniedCapability(error, base.operation));
+      }
+    }
+    return results;
+  }
+  return { authorize, authorizeBindingTarget, capability, describeAgentInstallCapabilities };
 }
 
 /** A pending provider login can finish after a successful yielding run. This

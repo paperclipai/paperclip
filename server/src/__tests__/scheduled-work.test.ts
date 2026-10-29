@@ -36,10 +36,16 @@ function fixture(input: { routine?: number | null; monitor?: number | null; tick
   const coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => canRun, canReconcile: () => canReconcile, onError: errors });
   coordinators.push(coordinator);
   const tickTimers = vi.fn(input.tickTimers ?? (async () => {}));
-  const tickRoutines = vi.fn(input.tickRoutines ?? (async () => {}));
+  const tickRoutines = vi.fn(input.tickRoutines ?? (async () => {
+    if (deadlines.routine !== null && deadlines.routine <= Date.now()) deadlines.routine = null;
+  }));
+  const nextRoutineRunAt = vi.fn(async () => {
+    if (failRead) throw new Error("database unavailable");
+    return deadlines.routine;
+  });
   const workers = registerScheduledWork(coordinator, owner as unknown as Db,
-    { retryMs: 60_000, tickTimers, tickRoutines });
-  return { coordinator, workers, owner, deadlines, execute, tickTimers, tickRoutines, errors,
+    { retryMs: 60_000, tickTimers, tickRoutines, nextRoutineRunAt, canRun: () => canRun });
+  return { coordinator, workers, owner, deadlines, execute, nextRoutineRunAt, tickTimers, tickRoutines, errors,
     ready: () => Promise.all([workers.routines.ready, workers.timers.ready]),
     canRun: (value: boolean) => { canRun = value; }, canReconcile: (value: boolean) => { canReconcile = value; }, failRead: (value: boolean) => { failRead = value; } };
 }
@@ -60,16 +66,20 @@ describe("scheduled routine and monitor deadlines", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(f.tickTimers).toHaveBeenCalledTimes(2);
     expect(f.coordinator.nextWakeAt()).toBeNull();
-    expect(f.execute).toHaveBeenCalledTimes(4);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.nextRoutineRunAt).toHaveBeenCalledTimes(2);
     expect(idleWorkSnapshot().active).toBe(0);
     await vi.advanceTimersByTimeAsync(3_600_000);
-    expect(f.execute).toHaveBeenCalledTimes(4);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.nextRoutineRunAt).toHaveBeenCalledTimes(2);
   });
 
   it.each(["routine", "monitor"] as const)("rescans a %s deadline crossed during an earlier scan", async kind => {
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    const tick = vi.fn().mockImplementationOnce(() => held).mockResolvedValue(undefined);
+    const tick = vi.fn().mockImplementationOnce(() => held).mockImplementation(async () => {
+      if (kind === "routine") f.deadlines.routine = null;
+    });
     const now = Date.UTC(2020, 0, 1);
     const f = fixture({ [kind]: now + 10_000,
       ...(kind === "routine" ? { tickRoutines: tick } : { tickTimers: tick }) });
@@ -77,19 +87,28 @@ describe("scheduled routine and monitor deadlines", () => {
       await (kind === "routine" ? f.workers.timers.ready : f.workers.routines.ready);
       await vi.advanceTimersByTimeAsync(12_000);
     } finally { release(); await f.ready(); }
-    expect(f.coordinator.nextWakeAt()).toBe(Date.now());
-    await vi.advanceTimersByTimeAsync(1);
+    const expected = kind === "routine" ? now + 60_000 : Date.now();
+    expect(f.coordinator.nextWakeAt()).toBe(expected);
+    await vi.advanceTimersByTimeAsync(expected - Date.now() + 1);
     expect(tick).toHaveBeenCalledTimes(2);
     expect(f.coordinator.nextWakeAt()).toBeNull();
     expect(idleWorkSnapshot().active).toBe(0);
   });
 
-  it("leaves work already overdue at scan start for bounded heartbeat recovery", async () => {
-    const f = fixture({ routine: Date.UTC(2020, 0, 1) - 10_000 });
+  it("retains capped overdue work with bounded spacing, then disarms after completion", async () => {
+    const tick = vi.fn(async () => {});
+    const now = Date.UTC(2020, 0, 1);
+    const f = fixture({ routine: now - 10_000, tickRoutines: tick });
     await f.ready();
+    expect(f.coordinator.nextWakeAt()).toBe(now + 60_000);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(tick).toHaveBeenCalledTimes(1);
+    f.deadlines.routine = null;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(tick).toHaveBeenCalledTimes(2);
     expect(f.coordinator.nextWakeAt()).toBeNull();
     await vi.advanceTimersByTimeAsync(3_600_000);
-    expect(f.tickRoutines).toHaveBeenCalledTimes(1);
+    expect(tick).toHaveBeenCalledTimes(2);
     expect(idleWorkSnapshot().active).toBe(0);
   });
 
@@ -138,7 +157,8 @@ describe("scheduled routine and monitor deadlines", () => {
     expect(idleWorkSnapshot().active).toBe(0);
     f.canReconcile(false);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.nextRoutineRunAt).toHaveBeenCalledTimes(1);
     await f.coordinator.stop();
     f.canRun(true);
     await vi.advanceTimersByTimeAsync(3_600_000);
