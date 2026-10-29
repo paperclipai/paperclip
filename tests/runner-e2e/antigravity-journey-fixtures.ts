@@ -2,6 +2,7 @@ import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/dri
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../../packages/paperclip-runner/src/drivers/acpx/generated-profiles.js";
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { ConnectionBlock, ConnectionFailure } from "./connection-config.js";
@@ -193,17 +194,69 @@ export async function cleanupAntigravityJourney(input: {
   if (agent && agents.some(row => row.reportsTo === agent.id)) throw new ConnectionFailure("cleanup_agent_has_unowned_reports");
   if (agent) {
     cleanup.agent = false; cleanup.runs = false;
+    const requestedStops = new Map<string, string | null>();
+    const assertRunOwner = (run: Row, runId: string) => {
+      if (run.id !== runId || run.companyId !== resources.companyId || run.agentId !== agent.id
+        || (resources.issueId && run.issueId !== resources.issueId))
+        throw new ConnectionFailure("cleanup_run_owner_mismatch");
+    };
+    const nativeStop = (run: Row): { requestId?: string; intent?: Row } | undefined => {
+      if (run.runtimeMode !== "native") return;
+      const requestId = run.resultJson?.startupCancellation?.cancellationRequestId;
+      const intent = run.resultJson?.nativeCancellation;
+      if (requestId == null && intent == null) return;
+      if (typeof run.issueId !== "string" || !run.issueId || (resources.issueId && run.issueId !== resources.issueId)
+        || (requestId != null && (typeof requestId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(requestId))))
+        throw new ConnectionFailure("cleanup_native_stop_identity_mismatch");
+      if (intent != null && (intent.schema !== "paperclip.native-cancellation.v1" || typeof intent.intentId !== "string" || !intent.intentId
+        || intent.runId !== run.id || intent.companyId !== resources.companyId || intent.issueId !== run.issueId
+        || intent.scope !== "run" || intent.reasonCode !== "cancellation_run_only" || typeof intent.dispatched !== "boolean"
+        || !["pending", "acknowledged"].includes(intent.dispatchState) || typeof intent.intentAuditId !== "string" || !intent.intentAuditId
+        || (requestId != null && intent.intentId !== `native-cancellation:${requestId}`)
+        || (intent.dispatchState === "acknowledged" && (typeof intent.acknowledgementAuditId !== "string" || !intent.acknowledgementAuditId
+          || intent.acknowledgementAuditId === intent.intentAuditId))))
+        throw new ConnectionFailure("cleanup_native_stop_identity_mismatch");
+      return { ...(requestId == null ? {} : { requestId }), ...(intent == null ? {} : { intent }) };
+    };
+    const stopOwnedRun = async (run: Row) => {
+      const stop = nativeStop(run);
+      const retryOwner = run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure";
+      // A prior Stop advances the coordinator before its acknowledgement. Its
+      // public correlation is durable; recovery must replay the same request.
+      const resumeStop = run.runtimeMode === "native" && run.status === "failed" && stop?.intent != null;
+      // A UUID reservation alone is not retry authority. A terminal row with
+      // no durable native intent remains unconfirmed instead of issuing Stop.
+      if (!["queued", "running", "scheduled_retry"].includes(run.status) && !retryOwner && !resumeStop) return;
+      if (resources.issueId && run.issueId !== resources.issueId) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+      if (requestedStops.has(run.id)) return;
+      if (run.runtimeMode === "native") {
+        if (typeof run.issueId !== "string" || !run.issueId || (stop?.intent && !stop.requestId))
+          throw new ConnectionFailure("cleanup_native_stop_identity_mismatch");
+        const requestId = stop?.requestId ?? randomUUID();
+        await api.post(`/api/heartbeat-runs/${run.id}/cancel`, { cancellationRequestId: requestId });
+        requestedStops.set(run.id, requestId);
+      } else {
+        await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+        requestedStops.set(run.id, null);
+      }
+    };
+    const nativeStopAcknowledged = (run: Row) => {
+      const stop = nativeStop(run), requested = requestedStops.get(run.id);
+      if (requested == null && !stop) return true;
+      return run.status === "cancelled" && stop?.intent?.dispatchState === "acknowledged"
+        && (requested == null || stop.requestId === requested);
+    };
     await api.patch(`/api/agents/${agent.id}`, { status: "paused" });
     const runs = await api.get<Row[]>(`/api/companies/${resources.companyId}/heartbeat-runs?agentId=${agent.id}&limit=100`);
     for (const run of runs) {
       if (run.agentId !== agent.id || run.companyId !== resources.companyId) throw new ConnectionFailure("cleanup_run_owner_mismatch");
       if (!resources.runIds.includes(run.id)) resources.runIds.push(run.id);
       const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
-      if (observed.id !== run.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+      assertRunOwner(observed, run.id);
       await input.captureRun(observed);
       observeAntigravityRun(resources, observed, input.observers ?? new Map());
       await input.persistResources();
-      if (["queued", "running"].includes(run.status)) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+      await stopOwnedRun(observed);
     }
     await input.persistResources();
     const deadline = Date.now() + 60_000;
@@ -214,17 +267,19 @@ export async function cleanupAntigravityJourney(input: {
         if (resources.runIds.includes(run.id)) continue;
         resources.runIds.push(run.id);
         const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
-        if (observed.id !== run.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        assertRunOwner(observed, run.id);
         await input.captureRun(observed);
         observeAntigravityRun(resources, observed, input.observers ?? new Map());
         await input.persistResources();
-        if (["queued", "running"].includes(observed.status)) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+        await stopOwnedRun(observed);
       }
-      let retired = !latest.some(run => run.agentId === agent.id && ["queued", "running"].includes(run.status));
+      let retired = !latest.some(run => run.agentId === agent.id && ["queued", "running", "scheduled_retry"].includes(run.status));
       for (const runId of resources.runIds) {
         const run = await api.get<Row>(`/api/heartbeat-runs/${runId}`);
-        if (run.id !== runId || run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        assertRunOwner(run, runId);
         await input.captureRun(run);
+        await stopOwnedRun(run);
+        if (!nativeStopAcknowledged(run)) { retired = false; continue; }
         if (!isAntigravityRunAccountingSettled(run)) retired = false;
         const receipt = resources.processes[runId];
         if ((!receipt?.captured || receipt.journal.length < 2) && run.resultJson?.startupCancellation?.beforeNativeSelection === true) {

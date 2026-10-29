@@ -317,3 +317,162 @@ it("stops on combined reported and estimated known cost while retaining unknown 
     usage("first", { inputTokens: 100, outputTokens: 20, costUsd: 0, costStatus: "unpriced", billingType: "subscription" }),
   ], 1)).toMatchObject({ exceeded: false, costStatus: "unpriced", priceCoverageComplete: false, hardCurrencyCap: false });
 });
+
+function deferredOwnerCleanup(discovery: "initial" | "poll" | "transition" = "initial") {
+  const owned = resources(); owned.setupProbe = "retired"; owned.issueId = "66666666-6666-4666-8666-666666666666";
+  owned.processes[runId] = { captured: true, identityChanged: false, journal: [
+    { pid: 9000001, parent: 1, start: "2020-01-01T00:00:00Z" }, { pid: 9000002, parent: 9000001, start: "2020-01-01T00:00:00Z" },
+  ] };
+  const agent = { id: agentId, companyId, name: owned.agentName, status: "active" };
+  const run: Record<string, any> = { id: runId, companyId, agentId, issueId: owned.issueId, nativeIssueId: owned.issueId,
+    status: "failed", runtimeMode: "native", nativePhase: "retryable_failure", costAccountingPending: false,
+    contextSnapshot: { paperclipEnvironment: { leaseId: "owned-lease" } }, resultJson: {} };
+  const lease = { id: "owned-lease", companyId, heartbeatRunId: runId, environmentId, status: "released" };
+  const state = { listReads: 0, fullReads: 0, stopAtListReads: [] as number[], fullPatch: {} as Record<string, unknown>,
+    onStop: async (_body: Record<string, any>) => {} };
+  const acknowledge = (body: Record<string, any>, patch: Record<string, unknown> = {}) => {
+    run.status = "cancelled"; run.nativePhase = "terminal_failure";
+    run.resultJson = { startupCancellation: { cancellationRequestId: body.cancellationRequestId }, nativeCancellation: {
+      schema: "paperclip.native-cancellation.v1", intentId: `native-cancellation:${body.cancellationRequestId}`,
+      companyId, runId, issueId: owned.issueId, scope: "run", reasonCode: "cancellation_run_only", dispatched: false,
+      dispatchState: "acknowledged", intentAuditId: "owned-intent-audit", acknowledgementAuditId: "owned-ack-audit", ...patch,
+    } };
+  };
+  state.onStop = async body => { if (run.runtimeMode === "native") acknowledge(body); else { run.status = "cancelled"; run.resultJson = {}; } };
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [structuredClone(agent)];
+    if (route === `/api/agents/${agentId}`) return structuredClone(agent);
+    if (route.includes("heartbeat-runs?")) {
+      state.listReads++;
+      if (discovery === "poll" && state.listReads === 1) return [];
+      return [{ ...structuredClone(run), ...(discovery === "transition" ? { nativePhase: "committed" } : {}) }];
+    }
+    if (route === `/api/heartbeat-runs/${runId}`) {
+      state.fullReads++;
+      return { ...structuredClone(run), ...(discovery === "transition" && state.fullReads === 1 ? { nativePhase: "committed" } : {}), ...state.fullPatch };
+    }
+    if (route === "/api/environment-leases/owned-lease") return structuredClone(lease);
+    if (route === `/api/issues/${owned.issueId}`) return { id: owned.issueId, companyId, assigneeAgentId: agentId, status: "done" };
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error(`Unexpected deferred cleanup read ${route}`);
+  });
+  const post = vi.fn(async (route: string, body: Record<string, any> = {}) => {
+    expect(route).toBe(`/api/heartbeat-runs/${runId}/cancel`);
+    expect(owned.runIds).toContain(runId);
+    if (run.runtimeMode === "native") expect(body.cancellationRequestId).toMatch(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu);
+    else expect(body.cancellationRequestId).toBeUndefined();
+    state.stopAtListReads.push(state.listReads); await state.onStop(body); return structuredClone(run);
+  });
+  const remove = vi.fn(), cleanup = { agent: false, runs: false, connectionPreserved: false };
+  const start = () => cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(async () => { agent.status = "paused"; }), delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig({ ...fixture(), retainAgent: true }), resources: owned, cleanup, captureRun: async () => {}, persistResources: async () => {} });
+  return { owned, run, lease, state, post, remove, cleanup, acknowledge, start };
+}
+
+it.each(["initial", "poll"] as const)("owned deferred cleanup stops a failed native retry at %s discovery and waits for acknowledgement and lease retirement", async discovery => {
+  vi.useFakeTimers();
+  const f = deferredOwnerCleanup(discovery); f.lease.status = "active";
+  let release!: () => void; const stop = new Promise<void>(resolve => { release = resolve; });
+  f.state.onStop = async body => { await stop; f.acknowledge(body, { dispatched: discovery === "initial" }); };
+  const outcome: { done: boolean; error?: unknown } = { done: false };
+  const operation = f.start().then(() => { outcome.done = true; }, error => { outcome.error = error; });
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.post).toHaveBeenCalledOnce(); expect(f.state.stopAtListReads).toEqual([discovery === "initial" ? 1 : 2]);
+    expect(outcome.done).toBe(false); expect(f.cleanup.runs).toBe(false); expect(f.cleanup.agent).toBe(false);
+    release(); await vi.advanceTimersByTimeAsync(0);
+    expect(outcome.done).toBe(false); expect(f.cleanup.runs).toBe(false);
+    f.lease.status = "released"; await vi.advanceTimersByTimeAsync(300); await operation;
+    expect(outcome.error).toBeUndefined(); expect(outcome.done).toBe(true);
+    expect(f.cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true }); expect(f.owned.retained).toBe(true); expect(f.remove).not.toHaveBeenCalled();
+  } finally { release(); f.lease.status = "released"; await vi.advanceTimersByTimeAsync(61_000); await operation; vi.useRealTimers(); }
+});
+
+it.each(["initial", "poll"] as const)("owned deferred cleanup requires Stop despite already retired processes, released lease and settled accounting (%s)", async discovery => {
+  const f = deferredOwnerCleanup(discovery); await f.start();
+  expect(f.post).toHaveBeenCalledOnce(); expect(f.state.stopAtListReads).toEqual([discovery === "initial" ? 1 : 2]);
+  expect(f.cleanup.runs).toBe(true);
+});
+
+it("owned deferred cleanup observes a known run's transition into retry ownership", async () => {
+  const f = deferredOwnerCleanup("transition"); await f.start();
+  expect(f.state.fullReads).toBeGreaterThanOrEqual(2); expect(f.post).toHaveBeenCalledOnce(); expect(f.cleanup.runs).toBe(true);
+});
+
+it.each(["initial", "poll"] as const)("owned deferred cleanup stops a scheduled retry at %s discovery", async discovery => {
+  vi.useFakeTimers();
+  try {
+    const f = deferredOwnerCleanup(discovery); Object.assign(f.run, { status: "scheduled_retry", runtimeMode: "legacy", nativePhase: null });
+    let error: unknown; const operation = f.start().catch(caught => { error = caught; });
+    await vi.advanceTimersByTimeAsync(61_000); await operation;
+    expect(error).toBeUndefined(); expect(f.post).toHaveBeenCalledOnce(); expect(f.state.stopAtListReads).toEqual([discovery === "initial" ? 1 : 2]); expect(f.cleanup.runs).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each([
+  ["failed", "native", "terminal_failure"], ["failed", "legacy", "retryable_failure"],
+  ["succeeded", "native", "retryable_failure"], ["cancelled", "native", "retryable_failure"], ["timed_out", "native", "retryable_failure"],
+])("owned deferred cleanup does not Stop ordinary terminal %s/%s/%s", async (status, runtimeMode, nativePhase) => {
+  const f = deferredOwnerCleanup(); Object.assign(f.run, { status, runtimeMode, nativePhase });
+  await f.start(); expect(f.post).not.toHaveBeenCalled(); expect(f.cleanup.runs).toBe(true);
+});
+
+it.each(["id", "companyId", "agentId", "issueId"])("owned deferred cleanup rejects foreign hydrated %s before Stop", async field => {
+  const f = deferredOwnerCleanup(); f.state.fullPatch[field] = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  await expect(f.start()).rejects.toThrow(/owner_mismatch/u); expect(f.post).not.toHaveBeenCalled(); expect(f.cleanup.agent).toBe(false);
+});
+
+it.each(["pending", "foreign_run", "foreign_company", "foreign_issue", "missing_audit", "same_audit", "stale_intent", "accounting_pending", "stop_error"])("owned deferred cleanup keeps failure when Stop proof is %s", async scenario => {
+  vi.useFakeTimers();
+  try {
+    const f = deferredOwnerCleanup();
+    f.state.onStop = async body => {
+      if (scenario === "stop_error") throw new Error("synthetic Stop rejected");
+      f.acknowledge(body, scenario === "pending" ? { dispatchState: "pending" }
+        : scenario === "foreign_run" ? { runId: agentId } : scenario === "foreign_company" ? { companyId: agentId }
+        : scenario === "foreign_issue" ? { issueId: agentId } : scenario === "missing_audit" ? { acknowledgementAuditId: "" }
+        : scenario === "same_audit" ? { acknowledgementAuditId: "owned-intent-audit" }
+        : scenario === "stale_intent" ? { intentId: "native-cancellation:ffffffff-ffff-4fff-8fff-ffffffffffff" } : {});
+      if (scenario === "accounting_pending") f.run.costAccountingPending = true;
+    };
+    let error: unknown; const operation = f.start().catch(caught => { error = caught; });
+    await vi.advanceTimersByTimeAsync(61_000); await operation;
+    expect(f.post).toHaveBeenCalledOnce(); expect(error).toBeDefined(); expect(f.cleanup.agent).toBe(false); expect(f.cleanup.runs).toBe(false); expect(f.remove).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it("owned deferred cleanup recovers a pending native Stop with its original request identity", async () => {
+  const f = deferredOwnerCleanup(), requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  f.acknowledge({ cancellationRequestId: requestId }, { dispatchState: "pending", acknowledgementAuditId: null });
+  f.run.status = "failed";
+  await f.start(); expect(f.post).toHaveBeenCalledOnce(); expect(f.post.mock.calls[0]![1]).toEqual({ cancellationRequestId: requestId });
+  expect(f.cleanup.runs).toBe(true);
+});
+
+it("owned deferred cleanup preserves cancelled unknown-accounting debt without a new Stop", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = deferredOwnerCleanup(); Object.assign(f.run, { status: "cancelled", costAccountingPending: true });
+    let error: unknown; const operation = f.start().catch(caught => { error = caught; });
+    await vi.advanceTimersByTimeAsync(61_000); await operation;
+    expect(error).toBeDefined(); expect(f.post).not.toHaveBeenCalled(); expect(f.cleanup.runs).toBe(false); expect(f.cleanup.agent).toBe(false);
+  } finally { vi.useRealTimers(); }
+});
+
+it("owned deferred cleanup retains a terminal native reservation without inventing Stop authority", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = deferredOwnerCleanup(); f.run.nativePhase = "terminal_failure";
+    f.run.resultJson = { startupCancellation: { cancellationRequestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } };
+    let error: unknown; const operation = f.start().catch(caught => { error = caught; });
+    await vi.advanceTimersByTimeAsync(61_000); await operation;
+    expect(error).toBeDefined(); expect(f.post).not.toHaveBeenCalled(); expect(f.cleanup.runs).toBe(false); expect(f.cleanup.agent).toBe(false); expect(f.remove).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it("owned deferred cleanup reuses a reservation-only UUID while its native retry is eligible", async () => {
+  const f = deferredOwnerCleanup(), requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  f.run.resultJson = { startupCancellation: { cancellationRequestId: requestId } };
+  await f.start(); expect(f.post).toHaveBeenCalledOnce(); expect(f.post.mock.calls[0]![1]).toEqual({ cancellationRequestId: requestId });
+  expect(f.cleanup.runs).toBe(true);
+});
