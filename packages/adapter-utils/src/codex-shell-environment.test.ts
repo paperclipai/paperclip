@@ -6,6 +6,8 @@ it("admits assigned service secrets by name while retaining unassigned secret ex
   const names = codexShellEnvironmentKeys({ ...assigned, HOST_API_TOKEN: "host-canary" }, assigned, false);
   expect(names).toEqual(expect.arrayContaining(Object.keys(assigned)));
   expect(names).not.toContain("HOST_API_TOKEN");
+  expect(names).not.toContain("PAPERCLIP_GITHUB_BROKER_TOKEN");
+  expect(names).not.toContain("PAPERCLIP_GITHUB_BRIDGE_TOKEN");
   for (const value of Object.values(assigned)) expect(JSON.stringify(names)).not.toContain(value);
 });
 
@@ -13,11 +15,30 @@ it("keeps Codex authentication, observability and runtime transports out of the 
   const configured = {
     SLACK_BOT_TOKEN: "assigned", OPENAI_API_KEY: "openai", CODEX_API_KEY: "codex",
     PAPERCLIP_AI_PROVIDER_KEY: "managed", OTEL_EXPORTER_OTLP_HEADERS: "authorization=export",
-    PAPERCLIP_GITHUB_BROKER_TOKEN: "broker", PAPERCLIP_NATIVE_MCP_TOKEN: "mcp",
+    PAPERCLIP_NATIVE_MCP_TOKEN: "mcp",
   };
   const names = codexShellEnvironmentKeys(configured, configured, true);
   expect(names).toContain("SLACK_BOT_TOKEN");
   for (const key of Object.keys(configured).filter(key => key !== "SLACK_BOT_TOKEN")) expect(names).not.toContain(key);
+});
+
+it("preserves controller-issued GitHub broker authentication in CLI shells without opting in other runtime secrets", () => {
+  const environment = {
+    PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3100",
+    PAPERCLIP_GITHUB_BROKER_TOKEN: "run-capability",
+    PAPERCLIP_GITHUB_BRIDGE_TOKEN: "bridge-authentication",
+    PAPERCLIP_GITHUB_OTHER_TOKEN: "unrelated-runtime-secret",
+    PAPERCLIP_NATIVE_MCP_TOKEN: "mcp-secret",
+    GH_TOKEN: "ambient-github-secret",
+  };
+  const names = codexShellEnvironmentKeys(environment, {}, false);
+  expect(names).toEqual(expect.arrayContaining([
+    "PAPERCLIP_GITHUB_BROKER_URL", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+  ]));
+  expect(names).not.toContain("PAPERCLIP_GITHUB_OTHER_TOKEN");
+  expect(names).not.toContain("PAPERCLIP_NATIVE_MCP_TOKEN");
+  expect(names).not.toContain("GH_TOKEN");
+  for (const value of Object.values(environment)) expect(JSON.stringify(names)).not.toContain(value);
 });
 
 it("does not turn a configured glob into permission to inherit other secrets", () => {

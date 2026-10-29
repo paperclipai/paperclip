@@ -6,11 +6,48 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
+import { codexShellEnvironmentKeys } from "./codex-shell-environment.js";
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it.each([
+    ["git", false], ["gh", false], ["git", true], ["gh", true],
+  ] as const)("authenticates %s after the local Codex shell environment filter (bridge: %s)", async (program, withBridge) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-github-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin);
+    await mkdir(realBin);
+    await writeFile(path.join(bin, program), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, program), `#!${process.execPath}\nprocess.stdout.write(process.env.GH_TOKEN || 'unauthenticated');`, { mode: 0o700 });
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.headers["x-paperclip-github-capability"] as string);
+      if (req.headers.authorization !== `Bearer ${withBridge ? "bridge-authentication" : "run-capability"}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "managed-operation-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const launchEnvironment = githubBrokerEnvironment({
+      PATH: `${bin}:${realBin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+      GH_CONFIG_DIR: root,
+      ...(withBridge ? { PAPERCLIP_GITHUB_BRIDGE_TOKEN: "bridge-authentication" } : {}),
+    }, { url: `http://127.0.0.1:${port}`, token: "run-capability" });
+    const keys = new Set(codexShellEnvironmentKeys(launchEnvironment, launchEnvironment, false));
+    const shellEnvironment = Object.fromEntries(Object.entries(launchEnvironment).filter(([key]) => keys.has(key)));
+    const result = await exec(path.join(bin, program), [], { env: shellEnvironment });
+    expect(result.stdout).toBe("managed-operation-token");
+    expect(result.stderr).toBe("");
+    expect(requests).toEqual(["run-capability"]);
+  });
+
   it.each(["repository", "command"])("uses explicit %s identity for local commits without managed credentials", async (identitySource) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-identity-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

@@ -194,11 +194,14 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     vi.stubEnv("DATABASE_URL", "postgres://operator:host-password@host/private");
     vi.stubEnv("HOST_DATABASE_PASSWORD", "host-password");
     const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity,
-      env: { SLACK_BOT_TOKEN: "assigned-tool-token", OPENAI_API_KEY: "provider-key-canary" },
+      env: { SLACK_BOT_TOKEN: "assigned-tool-token", OPENAI_API_KEY: "provider-key-canary",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: "github-run-capability", PAPERCLIP_GITHUB_BRIDGE_TOKEN: "github-bridge-capability" },
     });
     const policy = commandArgs.find(arg => arg.startsWith("shell_environment_policy.include_only="));
     const keys = policy ? JSON.parse(policy.slice(policy.indexOf("=") + 1)) : [];
     expect(keys).toContain("SLACK_BOT_TOKEN");
+    expect(keys).toContain("PAPERCLIP_GITHUB_BROKER_TOKEN");
+    expect(keys).toContain("PAPERCLIP_GITHUB_BRIDGE_TOKEN");
     if (withIdentity) expect(keys).toEqual(expect.arrayContaining([
       "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     ]));
@@ -207,6 +210,8 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     expect(keys).not.toContain("HOST_DATABASE_PASSWORD");
     expect(commandArgs.join(" ")).not.toContain("assigned-run-token");
     expect(commandArgs.join(" ")).not.toContain("assigned-tool-token");
+    expect(commandArgs.join(" ")).not.toContain("github-run-capability");
+    expect(commandArgs.join(" ")).not.toContain("github-bridge-capability");
   });
 
   it("collects stopped-provider instruction edits before a throwing remote restore", async () => {

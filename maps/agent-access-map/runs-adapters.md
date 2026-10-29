@@ -142,6 +142,17 @@ host secrets retain their separate paths. Source/control evidence:
 and the adapter executor regressions. Live delivery remains a separate check
 under `runs-adapters/validation`.
 
+Managed GitHub is a specific exception to the runtime-secret exclusion above.
+Legacy Codex ACP and CLI shells retain the controller-issued
+`PAPERCLIP_GITHUB_BROKER_TOKEN` and `PAPERCLIP_GITHUB_BRIDGE_TOKEN` names when
+present in the run environment. The launcher uses them to request credentials
+per operation; existing run identity and connection checks remain authoritative.
+Unrelated runtime secrets stay excluded. Source/control coverage is in the
+[shell policy tests](../../packages/adapter-utils/src/codex-shell-environment.test.ts),
+[launcher tests](../../packages/adapter-utils/src/github-launcher.test.ts), and
+the ACP and CLI executor regressions. These controls do not establish live
+private-repository authentication.
+
 Scoped source review: [test authorization and resolution](../../server/src/routes/agents.ts)
 requires same-company `agents:create`, saved-agent update access when supplied,
 allowed environment selection, and normal secret/responsible-user checks. An

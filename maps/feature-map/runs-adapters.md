@@ -157,6 +157,13 @@ The assigned secret must reach shell tools; an unassigned host token and Codex's
 own login keys must remain unavailable. Verify the same delivery without an
 agent identity. Shell-policy metadata must contain names rather than values.
 
+For Legacy Codex with managed GitHub, check both ACP and CLI shell execution.
+Run `gh auth status` and `git ls-remote origin` against an authorized private
+repository. The managed launchers must obtain credentials without
+`capability_missing`. Check this separately from MCP tools and project cloning.
+The policy must include the broker token names without their values. Runs without
+managed GitHub must not gain broker token names.
+
 Choose Codex as the harness; the UI displays its name/icon for both runners.
 Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
 New Codex agents default to the native runner on supported macOS or GNU/Linux

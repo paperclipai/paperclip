@@ -361,6 +361,13 @@ saved request or prevent a later deliberate Retry.
 
 ## Run projection
 
+Legacy Codex runs, including ACP, preserve the controller-issued GitHub broker
+capability in the shell environment policy. The managed `git` and `gh` launchers
+use it to request credentials for each operation. Shell policies include only the
+broker variable names; capability values are never serialized into Codex arguments
+or `CODEX_CONFIG`. MCP tools and project cloning resolve access separately, so
+their success alone does not verify shell authentication.
+
 The resolved token is leased at run start as an audited class-3 secret and is
 projected only into the child process:
 

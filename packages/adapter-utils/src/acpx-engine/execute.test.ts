@@ -692,6 +692,8 @@ describe("shared ACPX engine runtime behavior", () => {
       const { meta } = await runExecutor({ agent: "codex", stateDir: path.join(root, "state"), env: {
         CODEX_HOME: path.join(root, "codex-home"),
         SLACK_BOT_TOKEN: "assigned-tool-token", OPENAI_API_KEY: "provider-key-canary",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: "github-run-capability",
+        PAPERCLIP_GITHUB_BRIDGE_TOKEN: "github-bridge-capability",
         OTEL_EXPORTER_OTLP_HEADERS: "authorization=export-secret-canary",
       } }, {
         ...(withIdentity ? {
@@ -701,6 +703,8 @@ describe("shared ACPX engine runtime behavior", () => {
       });
       const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG ?? "{}"));
       expect(config.shell_environment_policy?.include_only).toContain("SLACK_BOT_TOKEN");
+      expect(config.shell_environment_policy.include_only).toContain("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      expect(config.shell_environment_policy.include_only).toContain("PAPERCLIP_GITHUB_BRIDGE_TOKEN");
       if (withIdentity) expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
         "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
       ]));
@@ -709,6 +713,8 @@ describe("shared ACPX engine runtime behavior", () => {
       }
       expect(JSON.stringify(config)).not.toContain("assigned-run-token");
       expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
+      expect(JSON.stringify(config)).not.toContain("github-run-capability");
+      expect(JSON.stringify(config)).not.toContain("github-bridge-capability");
     } finally { vi.unstubAllEnvs(); }
   });
 
