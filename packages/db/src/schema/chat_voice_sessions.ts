@@ -36,6 +36,8 @@ export const chatVoiceSessions = pgTable("chat_voice_sessions", {
   uniqueIndex("chat_voice_sessions_request_uq").on(t.companyId, t.callerId, t.idempotencyKey),
   uniqueIndex("chat_voice_sessions_live_caller_task_uq").on(t.companyId, t.callerId, t.issueId).where(sql`${t.state} not in ('ended', 'failed', 'expired')`),
   index("chat_voice_sessions_expiry_idx").on(t.state, t.expiresAt),
+  index("chat_voice_sessions_report_window_idx").on(t.endedAt, t.id)
+    .where(sql`${t.state} in ('ended', 'failed', 'expired') and ${t.providerSessionId} is not null`),
   foreignKey({ columns: [t.companyId, t.endpointId], foreignColumns: [chatEndpoints.companyId, chatEndpoints.id], name: "chat_voice_sessions_endpoint_fk" }),
   foreignKey({ columns: [t.companyId, t.conversationId], foreignColumns: [chatConversations.companyId, chatConversations.id], name: "chat_voice_sessions_conversation_fk" }),
   foreignKey({ columns: [t.companyId, t.issueId], foreignColumns: [issues.companyId, issues.id], name: "chat_voice_sessions_issue_fk" }),

@@ -11,7 +11,8 @@ vi.mock("./client", async (importOriginal) => ({
   api: mockApi,
 }));
 
-import { issuesApi } from "./issues";
+import type { IssueThreadInteraction } from "@paperclipai/shared";
+import { acceptedResolutionMatches, answeredResolutionMatches, issuesApi } from "./issues";
 import { ApiError } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
@@ -242,5 +243,102 @@ describe("issuesApi.list", () => {
         note: "Please cover the race condition.",
       },
     );
+  });
+});
+
+describe("interaction resolution replay", () => {
+  const alreadyResolved = () =>
+    new ApiError("Interaction has already been resolved", 409, {
+      error: "Interaction has already been resolved",
+      code: "interaction_already_resolved",
+    });
+  const outage = () => new ApiError("Paperclip is restarting", 503, { error: "tenant_app_unavailable" });
+
+  beforeEach(() => {
+    mockApi.get.mockReset();
+    mockApi.post.mockReset();
+  });
+
+  it("treats already-resolved after a transient failure as success when the resolution matches", async () => {
+    const accepted = { id: "interaction-1", status: "accepted" };
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([accepted]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-1")).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-1")).resolves.toEqual(accepted);
+    expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/interactions");
+  });
+
+  it("retries the verification when reading the card back also hits the outage", async () => {
+    const accepted = { id: "interaction-6", status: "accepted" };
+    mockApi.post
+      .mockRejectedValueOnce(outage())
+      .mockRejectedValueOnce(alreadyResolved())
+      .mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockRejectedValueOnce(outage()).mockResolvedValue([accepted]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).rejects.toMatchObject({ status: 503 });
+    // The decision landed, but the read-back is still down: stay retryable.
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-6")).resolves.toEqual(accepted);
+  });
+
+  it("keeps the conflict when the card was resolved differently", async () => {
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([{ id: "interaction-2", status: "rejected" }]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-2")).rejects.toBeInstanceOf(ApiError);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-2")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("keeps the conflict when someone else accepted different checkbox options", async () => {
+    const savedByOther = {
+      id: "interaction-4",
+      kind: "request_checkbox_confirmation",
+      status: "accepted",
+      result: { version: 1, outcome: "accepted", selectedOptionIds: ["b"] },
+    };
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([savedByOther]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-4", { selectedOptionIds: ["a"] })).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-4", { selectedOptionIds: ["a"] })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("treats already-resolved as success when the saved checkbox options are ours", async () => {
+    const saved = {
+      id: "interaction-5",
+      kind: "request_checkbox_confirmation",
+      status: "accepted",
+      result: { version: 1, outcome: "accepted", selectedOptionIds: ["b", "a"] },
+    };
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([saved]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-5", { selectedOptionIds: ["a", "b"] })).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-5", { selectedOptionIds: ["a", "b"] })).resolves.toEqual(saved);
+  });
+
+  it("matches answers and suggested-task selections exactly", () => {
+    const answers = [{ questionId: "q1", optionIds: ["x"], otherText: null }];
+    const answered = {
+      kind: "ask_user_questions",
+      status: "answered",
+      result: { version: 1, answers },
+    } as unknown as IssueThreadInteraction;
+    expect(answeredResolutionMatches(answered, answers)).toBe(true);
+    expect(answeredResolutionMatches(answered, [{ questionId: "q1", optionIds: ["y"] }])).toBe(false);
+
+    const suggested = {
+      kind: "suggest_tasks",
+      status: "accepted",
+      payload: { tasks: [{ clientKey: "t1" }, { clientKey: "t2" }] },
+      result: { version: 1, skippedClientKeys: ["t2"] },
+    } as unknown as IssueThreadInteraction;
+    expect(acceptedResolutionMatches(suggested, { selectedClientKeys: ["t1"] })).toBe(true);
+    expect(acceptedResolutionMatches(suggested, { selectedClientKeys: ["t1", "t2"] })).toBe(false);
+    expect(acceptedResolutionMatches(suggested, undefined)).toBe(false);
+  });
+
+  it("keeps the conflict when no transient failure came first", async () => {
+    mockApi.post.mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([{ id: "interaction-3", status: "answered" }]);
+    await expect(issuesApi.respondToInteraction("issue-1", "interaction-3", { answers: [] })).rejects.toMatchObject({ status: 409 });
+    expect(mockApi.get).not.toHaveBeenCalled();
   });
 });

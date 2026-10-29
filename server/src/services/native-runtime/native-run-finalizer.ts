@@ -1,4 +1,8 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
+import { readRequiredQualityReview } from "../required-quality-review.js";
 import { pendingNativeGovernance } from "./native-governance.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
@@ -377,6 +381,7 @@ async function recordRetryableFailure(input: {
           : input.failureCode;
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -407,6 +412,8 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus && input.failureScope === "workspace") {
       await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
     }
+    if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
+    if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -664,8 +671,11 @@ async function projectCommittedRun(input: {
   const now = new Date();
   const [updatedRun] = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     return tx
       .update(heartbeatRuns)
       .set({
@@ -965,6 +975,7 @@ export async function repairCommittedNativeChatResponse(
         const authorizationReason = await resolveChatRunPresentationAuthorizationReason(tx, input);
         const resolved = resolveHeartbeatRunResponse({ resultJson: monitorResult });
         if (!resolved.text) return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id }, { authorizationReason, completionReply: true }, tx);
         await tx.update(heartbeatRuns).set({
@@ -1019,6 +1030,7 @@ export async function repairCommittedNativeChatResponse(
           finalAgentMessage,
         });
         if (!resolved.text || resolved.decision.commentAction !== "create") return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id },
           { authorizationReason: "internal_agent_write", completionReply: true }, tx);
@@ -1062,6 +1074,7 @@ export async function repairCommittedNativeChatResponse(
       });
       if (!resolved.text || resolved.decision.commentAction !== "create")
         return false;
+      await notifyChatRunMilestones(tx, input);
       const comment = await issueService(db).addComment(
         input.issueId,
         resolved.text,
@@ -1430,7 +1443,9 @@ export async function finalizeNativeRun(input: {
       authoritativeIssue.executionRunId !== run.id && authoritativeIssue.checkoutRunId !== run.id
       ? await readNativeMonitorDelivery(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id })
       : null;
+    const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
     let proposedDecision = resolveNativeFinalizerStatus({
+      requiredQualityReviewSatisfied: qualityReview.satisfied,
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,
@@ -1676,8 +1691,11 @@ export async function finalizeNativeRun(input: {
         .returning();
       const [updatedRun] = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
+        if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+        if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
+        await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         return projectRun(tx);
       });
       if (

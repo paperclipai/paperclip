@@ -87,9 +87,9 @@ vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: vi
 
 describe("Copilot build-owned installation", () => {
   it("admits the current profile with environment launch preparation", () => {
-    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(71);
+    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(74);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:b7a25fe627daf3857ac8097d9a374b1ba15355176389b92457838bf19e9d91bd");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:c3e059a6c68afa2216f0315d85be084126c91d9bdbe21c2e65790fb2fc577fcd");
   });
 
   it("preserves v70 while binding historical Grok recovery decoding in v71", async () => {

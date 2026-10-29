@@ -51,7 +51,7 @@ describe("managed GitHub launchers", () => {
     else cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
     const configRoot = path.join(root, "config");
     if (failure === "config-unwritable") await writeFile(configRoot, "not a directory");
-    const result = await exec(path.join(bin, "git"), ["status", "--porcelain"], { cwd: root, env: {
+    const result = await exec(path.join(bin, "git"), ["remote"], { cwd: root, env: {
       ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-must-not-leak" }, { url: `http://127.0.0.1:${port}`, token: "private-capability" }),
       GH_CONFIG_DIR: configRoot, PATH: `${bin}:${process.env.PATH}`,
     } });
@@ -182,4 +182,50 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
   });
+  it("keeps local Git commands off the broker and still asks for the rest", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-skip-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed");
+    await mkdir(bin);
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    let posts = 0;
+    const server = createServer((_req, res) => {
+      posts++;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: {
+        GH_TOKEN: "managed-token", GIT_AUTHOR_NAME: "Managed", GIT_AUTHOR_EMAIL: "managed@example.test",
+        GIT_COMMITTER_NAME: "Managed", GIT_COMMITTER_EMAIL: "managed@example.test",
+      } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }), PATH: `${bin}:${process.env.PATH}` };
+    const git = async (...args: string[]) => {
+      const before = posts;
+      const { stdout } = await exec(path.join(bin, "git"), args, { cwd: root, env }).catch(() => ({ stdout: "" }));
+      return { stdout: stdout.trim(), posts: posts - before };
+    };
+    for (const args of [
+      ["init", "-q", "repo"],
+      ["-C", "repo", "status", "--short"],
+      ["-C", "repo", "-c", "core.quotepath=off", "--no-pager", "diff"],
+      ["--git-dir=repo/.git", "rev-parse", "--git-dir"],
+      ["--git-dir", "repo/.git", "--work-tree", "repo", "status"],
+      ["-C", "repo", "config", "user.useConfigOnly"],
+      ["--version"],
+    ]) expect((await git(...args)).posts, args.join(" ")).toBe(0);
+    expect((await git("-C", "repo", "config", "user.useConfigOnly")).stdout).toBe("true");
+    for (const args of [
+      ["-C", "repo", "remote"],
+      ["-C", "repo", "var", "GIT_AUTHOR_IDENT"],
+      ["-C", "repo", "fetch", "--dry-run"],
+      ["-C", "repo", "-c", "alias.noop=!true", "noop"],
+      ["-C", "repo", "--unknown-option", "status"],
+      ["-C"],
+    ]) expect((await git(...args)).posts, args.join(" ")).toBe(1);
+    expect((await git("-C", "repo", "var", "GIT_AUTHOR_IDENT")).stdout).toMatch(/^Managed <managed@example.test>/);
+    expect((await git("-C", "repo", "commit", "--allow-empty", "-m", "Managed work")).posts).toBe(1);
+    expect((await git("-C", "repo", "log", "-1", "--format=%an <%ae>")).stdout).toBe("Managed <managed@example.test>");
+  }, 20_000);
 });

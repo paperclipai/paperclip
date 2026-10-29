@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
@@ -20,18 +21,19 @@ vi.mock("../services/github-fetch.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/github-fetch.js")>(),
   ghFetch: vi.fn(async () => new Response(null, { status: 404 })),
 }));
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PROJECT_GIT_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit project Git authorization", () => {
   let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   const { seed, grant, switchTo } = githubCredentialsFixture(() => db);
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-project-git-authorization-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-project-git-authorization-");
+    db = createDb(external ?? database!.connectionString);
     await db.insert(authUsers).values(["A", "B"].map(id => ({
       id, name: id, email: `${id}@example.invalid`, createdAt: new Date(), updatedAt: new Date(),
     })));
   }, 30_000);
-  afterAll(async () => { await database?.cleanup(); }, 60_000);
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); }, 60_000);
     async function projectAuthorizationFixture() {
       const input = await seed();
       const selected = await grant(input, "A");

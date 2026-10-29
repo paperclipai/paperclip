@@ -335,6 +335,17 @@ const fields = {
       }),
     ),
   ),
+  taskChat: optional(closedShape({
+    schema: oneOf("paperclip.runner-e2e.task-chat/v1"), capturedAt: date,
+    status: oneOf("complete", "partial", "unavailable"),
+    missing: array(oneOf("agent-names", "task-discovery", "chat-discovery", "task-read", "comments", "interactions", "progress", "thread-projection", "capture")),
+    threads: array(closedShape({ issueId: string, identifier: nullable(string), title: string,
+      status: oneOf("complete", "partial"), messages: array(closedShape({ id: string, at: nullable(date),
+        role: oneOf("user", "agent", "system"), author: string,
+        kind: oneOf("description", "comment", "interaction", "answer", "progress"), body: string,
+      })),
+    })),
+  })),
   firstTask: optional(shape({
     caseId: string, nonce: string, onboardingIssueId: string, agentId: string,
     source: optional(shape({ sha: string, ref: string, dirty: boolean })),

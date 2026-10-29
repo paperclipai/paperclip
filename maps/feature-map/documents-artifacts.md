@@ -26,6 +26,14 @@ Agent access: [companion](../agent-access-map/documents-artifacts.md).
 
 Open a document from the task thread or document side panel.
 
+Coordinator decision receipts also open a pinned reviewed revision alongside
+the matching task interaction. Historical tabs retain their revision identity
+independently of the current document tab. Missing revisions are explicit and
+never silently replaced with the latest document.
+When a decision in one task reviews another task's document, the center pane
+keeps the originating conversation while the sidebar opens the document owner's
+exact revision. An inaccessible owner never falls back to the origin task's document.
+
 ### `task-output`
 
 Open an attachment, output card, or file link from a task.
@@ -44,6 +52,11 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `task-document`
 
 Automated: [documents service](../../server/src/__tests__/documents-service.test.ts), [annotations](../../server/src/__tests__/document-annotations-service.test.ts), and [revision restore](../../server/src/__tests__/issue-document-restore-routes.test.ts) cover server contracts.
+
+[Exact revision panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.test.tsx)
+checks pinned content and missing-revision behavior; this component test does not
+prove end-to-end conversation scrolling. Open a resolved receipt after making a
+new revision and verify the earlier body plus matching interaction in the browser.
 
 Manual: Edit a paragraph, save, reload, and compare revisions. Add an annotation to a specific selection and inspect it after another edit. Resolve it through the supported action. Restore a disposable revision and confirm the new current document and history agree.
 
@@ -66,6 +79,8 @@ Automated: [artifact page](../../ui/src/pages/Artifacts.test.tsx) covers groupin
 Manual: Find the task’s output through search and grouping, open its stack, page through results, and reload a direct stack link. Confirm the same file/content appears as from the task.
 
 ## Gotchas
+
+- In Coordinator, saved plan cards use document chronology, so a plan written before its output appears first even when both writes share one native run. Authored issue-document links use the same compact sidebar-link surface and retain revision/annotation targets. Classic run embedding is unchanged. The UI does not remove or deduplicate canonical plan content.
 
 - A local path is not automatically an uploaded artifact accessible to another user.
 - A preview screenshot is not proof that download bytes or revision references are correct.

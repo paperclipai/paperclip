@@ -169,6 +169,23 @@ export function documentService(db: Db) {
       return row ? mapIssueDocumentRow(row, true) : null;
     },
 
+    /** Bounded receipt read: never load every historical body for one revision. */
+    getIssueDocumentRevision: async (issueId: string, rawKey: string, revisionId: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      const [revision] = await db.select({
+        id: documentRevisions.id, companyId: documentRevisions.companyId,
+        documentId: documentRevisions.documentId, issueId: issueDocuments.issueId, key: issueDocuments.key,
+        revisionNumber: documentRevisions.revisionNumber, title: documentRevisions.title,
+        format: documentRevisions.format, body: documentRevisions.body, changeSummary: documentRevisions.changeSummary,
+        createdByAgentId: documentRevisions.createdByAgentId, createdByUserId: documentRevisions.createdByUserId,
+        createdByRunId: documentRevisions.createdByRunId, createdAt: documentRevisions.createdAt,
+      }).from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
+        .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
+      return revision ?? null;
+    },
+
     listIssueDocumentRevisions: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db

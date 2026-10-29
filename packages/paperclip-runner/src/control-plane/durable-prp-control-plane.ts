@@ -377,12 +377,33 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
   };
 }
 
-function checkpointState(records: ReadonlyMap<string, string>) {
-  const header: unknown = JSON.parse(records.get("header") ?? "null");
+function parseCheckpointHeader(contents: string): Record<string, unknown> & {
+  runnerVersion: string; runnerDigest: string;
+  state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
+} {
+  const header: unknown = JSON.parse(contents);
   if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2"].includes(String(header.schema))
     || typeof header.runnerVersion !== "string" || !header.runnerVersion
     || typeof header.runnerDigest !== "string" || !runnerDigestPattern.test(header.runnerDigest)
     || !isRecord(header.state) || !exactIdentity(header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  return { ...header, runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest,
+    state: { ...header.state, identity: header.state.identity } };
+}
+
+/** Bounded header evidence for rollout policy, not permission to restore or attach.
+ * Full restoration still validates every record through decodeDurablePrpCheckpoint. */
+export function inspectDurablePrpCheckpointHeader(contents: string): DurableRecoveryIdentity | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+      || header.state.checkpointEventPolicy !== "control-v1"
+      || ![coreStateSchema, transitionCoreStateSchema].includes(String(header.state.schema))) return null;
+    return { ...header.state.identity };
+  } catch { return null; }
+}
+
+function checkpointState(records: ReadonlyMap<string, string>) {
+  const header = parseCheckpointHeader(records.get("header") ?? "null");
   const read = (key: string): unknown => {
     const value = records.get(key);
     if (value === undefined) throw new Error("native_runner_checkpoint_incomplete");
@@ -3908,6 +3929,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_RUNNER_HOME_MODE",
+  "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME",
   "ACPX_CLAUDE_INCLUDE_USER_SETTINGS",
   "CLAUDE_CONFIG_DIR",
   "XDG_CONFIG_HOME",

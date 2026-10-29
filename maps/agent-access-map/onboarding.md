@@ -96,6 +96,11 @@ testing an existing agent; interactive account login additionally requires a
 board user and owner-bound session. An agent's right to hire is not login or
 instance-environment administration authority.
 
+A name-only, held setup has no provider selection yet, so the wizard omits its
+runner choice until the provider is chosen. The existing board-only setup and
+saved-agent update permissions remain; normal runner compatibility validation
+is unchanged. No runnable legacy fallback is created.
+
 Scoped source-only runtime preparation: the existing authorized adapter test
 prepares the default Claude CLI in its already acquired sandbox when the image
 version is too old for the selected model. It installs a pinned package into a

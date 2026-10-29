@@ -1,3 +1,8 @@
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
   budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
@@ -42,6 +47,11 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   );
   await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
   await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+  await notifyScheduledRetryCancellation(tx, { companyId: companyId });
+  await notifyInstructionCommit(tx, { companyId: companyId });
+  await notifyDirectoryCleanup(tx, { companyId: companyId });
+  await notifyInstructionCollection(tx, { companyId: companyId });
+  await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

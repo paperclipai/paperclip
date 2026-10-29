@@ -234,6 +234,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
         PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
+        PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/environment/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
@@ -241,16 +242,19 @@ describe("resolveExecutionRunAdapterConfig", () => {
         env: {
           PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "secret-api-key", version: "latest" },
           PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
+          PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/agent/claude",
           AGENT_ONLY: "agent-only",
         },
       },
       projectEnv: {
         PAPERCLIP_API_KEY: "project-api-key",
+        paperclip_runner_prepared_harness_home: "/project/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_PROJECT: "project-cloud",
         PROJECT_ONLY: "project-only",
       },
       routineEnv: {
         PAPERCLIP_API_KEY: "routine-api-key",
+        PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/routine/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ROUTINE: "routine-cloud",
         ROUTINE_ONLY: "routine-only",
       },

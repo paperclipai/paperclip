@@ -182,7 +182,7 @@ export async function regenerateRunnerDashboard(input: {
     }),
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: normalized.presentation?.title ?? "Runner Full-Stack E2E",
+    title: normalized.presentation?.title ?? "E2E tests",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,

@@ -1,3 +1,4 @@
+import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
@@ -82,7 +83,6 @@ import {
 } from "../hot-restart.js";
 import { serverVersion } from "../../version.js";
 import { adapterExecutionControls, waitForAdapterStop } from "../adapter-execution-control.js";
-import { readRunCancellation } from "../run-cancellation.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 
 import type { environmentService } from "../environments.js";
@@ -390,6 +390,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     startNextQueuedRunForAgent,
   } = dependencies;
+  const scheduledRetryCancellation = createScheduledRetryCancellationRecovery(db, cancelRunInternal);
 
   async function enqueueProcessLossRetry(
     run: typeof heartbeatRuns.$inferSelect,
@@ -1946,41 +1947,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
-    await preserveCancelledNativeWorkspaces(db);
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean }) {
+    if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
-    // A parked retry has no executor to finish a cancellation after a restart
-    // or a failed status write. Consume its durable intent through normal run
-    // control; the guarded CAS and terminal settlement make competing sweeps
-    // safe, and dispatch cannot promote a fenced retry in the meantime.
-    const interruptedRetryCancellations = await db.select().from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') = 'object'`,
-      ))
-      .orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id))
-      .limit(20);
-    for (const run of interruptedRetryCancellations) {
-      const cancellation = readRunCancellation(run.resultJson);
-      if (!cancellation?.expected) continue;
-      try {
-        await cancelRunInternal(run.id, cancellation.reason, {
-          expectedStatus: "scheduled_retry",
-          errorCode: readNonEmptyString(parseObject(run.resultJson?.startupCancellation).errorCode) ?? "cancelled",
-          resultJson: parseObject(run.resultJson),
-        });
-      } catch (error) {
-        // Leave the durable intent for the next bounded periodic sweep.
-        logger.warn({ err: error, runId: run.id }, "failed to finish interrupted retry cancellation");
-      }
-    }
+    if (!opts?.skipScheduledRetryCancellation) await scheduledRetryCancellation.sweep();
     // Recovery never launches a provider or infers stopped ownership from
     // terminal status. Uncaptured local copies require durable stop evidence.
-    await instructionCopies.recoverStopped().catch(error => {
+    if (!opts?.skipStoppedInstructionCollection) await instructionCopies.recoverStopped().catch(error => {
       logger.warn({ err: error }, "failed to recover stopped instruction copies");
     });
-    await instructionCopies.recoverCaptured().catch(error => {
+    await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit, skipDirectoryCleanup: opts?.skipInstructionDirectoryCleanup }).catch(error => {
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
     });
 
@@ -1988,6 +1965,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // reconciler reads the durable workspace barrier and persisted runtime
     // mode, never the current feature flag.
     await reconcileNativeFinalizations(db, undefined, {
+      skipObsoletePolicyReviews: opts?.skipObsoletePolicyReviews,
       environmentRuntime,
       pluginWorkerManager: dependencies.pluginWorkerManager,
       onWorkspaceSettled: settleRecoveredNativeWorkspace,
@@ -2600,6 +2578,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   return {
+    registerScheduledRetryCancellationWork: scheduledRetryCancellation.register,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,
     prepareHotRestartShutdown,

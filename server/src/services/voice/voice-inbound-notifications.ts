@@ -5,9 +5,11 @@ export function voiceInboundScope(hint: string): VoiceInboundScope | undefined {
   if (hint === "*") return undefined;
   const [kind, id, extra] = hint.split(":");
   if (!id || extra !== undefined || !["admission", "session", "endpoint", "connection", "company"].includes(kind))
-    throw new Error("Invalid inbound voice cleanup scope");
+    throw new Error("Invalid inbound voice scope");
   return { kind: kind as VoiceInboundScope["kind"], id };
 }
-export function notifyVoiceInbound(tx: object, scope?: VoiceInboundScope) {
-  return notifyDeliveryWork(tx, DELIVERY_QUEUES.voiceInboundCleanup, scope ? `${scope.kind}:${scope.id}` : "*");
+export async function notifyVoiceInbound(tx: object, scope?: VoiceInboundScope) {
+  const hint = scope ? `${scope.kind}:${scope.id}` : "*";
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.voiceInboundCleanup, hint);
+  if (scope?.kind === "admission") await notifyDeliveryWork(tx, DELIVERY_QUEUES.voiceInboundRetention, hint);
 }

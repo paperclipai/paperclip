@@ -47,6 +47,13 @@ import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
 
+// These page fixtures exercise Classic task behavior. Preference identity and
+// persistence have their own hook tests; keep their readiness explicit here.
+const coordinatorPreference = vi.hoisted(() => ({ enabled: false, loaded: true }));
+vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => coordinatorPreference,
+}));
+
 const mockGrokBotApi = vi.hoisted(() => ({ stop: vi.fn().mockResolvedValue({ stopped: true }) }));
 vi.mock("../api/grokBot", () => ({ grokBotApi: mockGrokBotApi }));
 
@@ -124,6 +131,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockDecisionsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  get: vi.fn(),
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -1323,6 +1331,7 @@ describe("IssueDetail", () => {
   }
 
   beforeEach(() => {
+    Object.assign(coordinatorPreference, { enabled: false, loaded: true });
     localStorage.clear();
     sessionStorage.clear();
     mockPanelState.panelVisible = true;
@@ -1526,7 +1535,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(1));
     expect(getLastProjectId(issue.companyId)).toBe("original-project");
     await act(async () => failedUpdate.reject(new Error("Project save failed")));
-    await waitForAssertion(() => expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Task update failed" })));
+    await waitForAssertion(() => expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn't update the task" })));
     expect(getLastProjectId(issue.companyId)).toBe("original-project");
     await act(async () => properties.onUpdate({ projectId }));
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(2));
@@ -1534,6 +1543,61 @@ describe("IssueDetail", () => {
     await act(async () => successfulUpdate.resolve({ ...issue, projectId }));
     await waitForAssertion(() => expect(getLastProjectId(issue.companyId)).toBe(projectId ?? ""));
     expect(getLastProjectId("company-2")).toBeUndefined();
+  });
+
+  it("waits for the personal workspace preference before exposing task controls", async () => {
+    coordinatorPreference.loaded = false;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await flushReact();
+    expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="issue-detail-header"]')?.textContent).toContain(createIssue().title);
+    coordinatorPreference.loaded = true;
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+  });
+
+  it("uses Coordinator task presentation and panel scope without changing the Classic preference", async () => {
+    coordinatorPreference.enabled = true;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableStreamlinedUi: false,
+      enableClassicTaskInterface: true,
+    });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).toBeNull();
+    await waitForAssertion(() => expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props).toMatchObject({ accountScope: "coordinator:user-1" }));
+    coordinatorPreference.enabled = false;
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
+  });
+
+  it("does not post after the account changes while comment queries cancel", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "account-a" } });
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Account A retained text" }));
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onAdd: (body: string) => Promise<void> };
+    let release!: () => void;
+    const cancellation = new Promise<void>(resolve => { release = resolve; });
+    const cancel = vi.spyOn(queryClient, "cancelQueries").mockReturnValue(cancellation);
+    let pending!: Promise<unknown>;
+    try {
+      await act(async () => { pending = props.onAdd("Account A retained text").catch(error => error); });
+      await waitForAssertion(() => expect(cancel).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, { user: { id: "account-b" } });
+        release();
+      });
+      const result = await pending;
+      expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ name: "AbortError" });
+      await waitForAssertion(() => expect((mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.comments ?? []).some((comment: IssueComment) => comment.body === "Account A retained text")).toBe(false));
+    } finally { release(); cancel.mockRestore(); }
   });
 
   it("keeps an existing conversation on its agent-addressed route", async () => {
@@ -1615,6 +1679,63 @@ describe("IssueDetail", () => {
     await act(async () => props.onAdd("Research only"));
     expect(mockIssuesApi.update).toHaveBeenNthCalledWith(2, canonical.id, { workMode: "ask" });
     expect(mockIssuesApi.addComment).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("saves chat model preferences before the ordered message (existing conversation: %s)", async (existing) => {
+    const agent = createAgent();
+    const canonical = createIssue({ assigneeAgentId: agent.id, conversationAgentId: agent.id, conversationUserId: "user-1", status: "in_review" });
+    const ensureIssue = vi.fn().mockResolvedValue(canonical);
+    const calls: string[] = [];
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    mockIssuesApi.update.mockClear().mockImplementation(async () => { calls.push("settings"); return canonical; });
+    mockIssuesApi.addComment.mockClear().mockImplementation(async () => { calls.push("comment"); return createIssueComment(); });
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: existing ? canonical : null, ensureIssue }} />));
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => props.onAdd("Outline the launch", undefined, undefined, undefined, "model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
+    expect(ensureIssue).toHaveBeenCalledOnce();
+    expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.id, { assigneeAdapterOverrides: { adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "high" } } });
+    expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Outline the launch", undefined, undefined, undefined, "model-message");
+    expect(calls).toEqual(["settings", "comment"]);
+  });
+
+  it("does not send a chat message when its selected model preferences fail to save", async () => {
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1" });
+    mockIssuesApi.update.mockRejectedValueOnce(new Error("Settings could not be saved"));
+    mockIssuesApi.addComment.mockClear();
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: null, ensureIssue: async () => canonical }} />));
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await act(async () => expect(props.onAdd("Outline the launch", undefined, undefined, undefined, "failed-model-message", { model: "gpt-6-astra", effort: "high", fast: false })).rejects.toThrow("Settings could not be saved"));
+    expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
+  });
+
+  it("does not send or restore a conversation cache after the account changes during its model save", async () => {
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "account-a" });
+    const settingsSave = createDeferred<Issue>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "account-a" } });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    mockIssuesApi.update.mockClear().mockReturnValueOnce(settingsSave.promise);
+    mockIssuesApi.addComment.mockClear();
+    await act(async () => renderIssueView(<TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} />));
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = props.onAdd("Outline the launch", undefined, undefined, undefined, "changed-account-message", { model: "gpt-6-astra", effort: "high", fast: false }).catch((error: unknown) => error);
+    });
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledOnce());
+    const currentAccountIssue = { ...canonical, title: "Current account cache" };
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "account-b" } });
+      queryClient.setQueryData(queryKeys.issues.detail(canonical.id), currentAccountIssue);
+      settingsSave.resolve(canonical);
+    });
+    expect(await pending).toMatchObject({ name: "AbortError" });
+    expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.issues.detail(canonical.id))).toEqual(currentAccountIssue);
   });
 
   it("opens artifact cards in the shared gallery at the selected image without duplicating attachments", async () => {
@@ -2277,6 +2398,25 @@ describe("IssueDetail", () => {
       status: "in_progress",
       recordedAt: 200,
     });
+  });
+
+  it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {
+    coordinatorPreference.enabled = enabled;
+    mockLocation.hash = "#decision-recorded-1";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: true, enableStreamlinedUi: false });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockDecisionsApi.get.mockResolvedValue({
+      id: "recorded-1", companyId: "company-1", originIssueId: "issue-1", originAgentId: "agent-1", originRunId: "run-1",
+      title: "Choose launch channels", body: "Prepare the approved blog first.", status: "decided", executionStatus: "succeeded",
+      chosenOptionId: "blog", options: [{ id: "blog", label: "Own blog first", effects: [] }],
+      inputs: [{ id: "reason", label: "Reason" }], inputValues: { reason: "The copy is approved" },
+      targetSnapshots: {}, metadata: {}, executions: [], continuationPolicy: "none",
+    });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector("#decision-recorded-1")?.textContent).toContain("The copy is approved"));
+    expect(container.querySelector("#decision-recorded-1")?.textContent).toContain("Own blog first");
+    expect(container.querySelector("#decision-recorded-1")?.textContent).toContain("Prepare the approved blog first.");
+    await waitForAssertion(() => expect(document.activeElement?.id).toBe("decision-recorded-1"));
   });
 
   it("opens a closed desktop pane and routes an ordinary document to its own tab on direct load", async () => {

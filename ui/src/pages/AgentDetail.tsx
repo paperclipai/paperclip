@@ -14,7 +14,7 @@ import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { usePageVisibility } from "../lib/page-visibility";
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
@@ -154,6 +154,8 @@ import {
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
+
+const AgentAdvancedTab = lazy(() => import("./AgentAdvancedTab").then(module => ({ default: module.AgentAdvancedTab })));
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -821,8 +823,9 @@ export function AgentDetail() {
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
   const prepareAgentNavigation = useCallback(() => {
+    if (activeView === "advanced" && configSaving) return false;
     return confirmAgentConfigNavigation(configDirty);
-  }, [configDirty]);
+  }, [activeView, configDirty, configSaving]);
   const agentQuery = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
@@ -979,6 +982,7 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (activeView === "advanced" && (configSaving || configDirty)) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
@@ -991,7 +995,7 @@ export function AgentDetail() {
       navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, location.search]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, legacyAuditSection, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1301,7 +1305,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            actionsDisabled={agentAction.isPending}
+            actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
             hasPendingNavigationChanges={configDirty}
@@ -1506,6 +1510,20 @@ export function AgentDetail() {
 
       {activeView === "revisions" && (
         <AgentRevisionsTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
+      )}
+
+      {activeView === "advanced" && (
+        <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>}>
+          <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={setConfigDirty} onSavingChange={setConfigSaving}
+            onSaved={updated => {
+              const nextRef = agentRouteRef(updated);
+              const currentKey = [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null];
+              void queryClient.cancelQueries({ queryKey: currentKey, exact: true });
+              queryClient.setQueryData(currentKey, { ...agent, ...updated });
+              queryClient.setQueryData([...queryKeys.agents.detail(nextRef), lookupCompanyId ?? null], { ...agent, ...updated });
+              if (nextRef !== routeAgentRef) navigate(`/agents/${nextRef}/advanced`, { replace: true });
+            }} />
+        </Suspense>
       )}
 
       {activeView === "run-detail" && (
@@ -1881,21 +1899,6 @@ export function AgentOverview({
             )}
           </div>
         )}
-      </section>
-
-      <section className="space-y-3" aria-labelledby="agent-audit-links-heading">
-        <h3 id="agent-audit-links-heading" className="text-sm font-medium">Audit</h3>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {(["activity", "runs", "costs", "budgets"] as const).map((section) => (
-            <Link
-              key={section}
-              to={agentScopedAuditHref(agent.id, section)}
-              className="rounded-lg border border-border px-3 py-2 text-sm font-medium capitalize hover:bg-accent"
-            >
-              {section}
-            </Link>
-          ))}
-        </div>
       </section>
     </div>
   );

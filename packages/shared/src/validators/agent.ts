@@ -174,6 +174,7 @@ export const updateAgentSchema = objectWithoutDefaults(
     permissions: z.never().optional(),
     runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });

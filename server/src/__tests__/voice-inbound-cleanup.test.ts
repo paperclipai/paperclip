@@ -59,7 +59,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   async function admission(patch: Partial<typeof chatVoiceInboundCalls.$inferInsert> = {}, writer = db) {
-    const id = randomUUID();
+    const id = patch.id ?? randomUUID();
     return writer.transaction(async tx => {
       await notifyVoiceInbound(tx, { kind: "admission", id });
       return (await tx.insert(chatVoiceInboundCalls).values({ id, companyId, endpointId, providerSessionId: randomUUID(), state: "awaiting_approval", approvalCode: "123456", generation: 1, credentialFingerprint: "test", toolTokenHash: "a".repeat(64), requestFingerprint: id, expiresAt: new Date(Date.now() - 1), ...patch }).returning())[0];
@@ -260,19 +260,33 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     enabled = true; await settled(); expect(terminate).toHaveBeenCalledOnce(); await quiet();
   });
   it("pages backlog fairly while a failed provider retains its own retry", async () => {
-    const broken = await admission();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: false });
+    const broken = await admission({ id: "00000000-0000-4000-8000-000000000001" });
     for (let i = 0; i < 104; i++) await admission();
-    const other = await fixture(), last = await admission({ companyId: other.companyId, endpointId: other.endpointId });
+    const other = await fixture(), last = await admission({ id: "ffffffff-ffff-4fff-bfff-ffffffffffff", companyId: other.companyId, endpointId: other.endpointId });
     let failed = true;
     terminate.mockImplementation(async call => { if (call.id === broken.id && failed) throw new Error("provider unavailable"); return true; });
     await start();
-    expect(terminate.mock.calls.slice(0, 25).some(([call]) => call.id === last.id)).toBe(true);
-    // waitFor already advances fake time. Extra one-second jumps can reach
-    // the failed provider's retry while ordinary database writes are pending.
-    await vi.waitFor(() => {
-      expect(terminate.mock.calls.filter(([call]) => call.id !== broken.id)).toHaveLength(105);
-    }, { timeout: 5000 });
+    expect(terminate.mock.calls).toHaveLength(25);
+    expect(terminate.mock.calls.some(([call]) => call.id === last.id)).toBe(false);
+    const [pending] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, broken.id));
+    const retryAt = pending.cleanupNextAttemptAt!.getTime();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(terminate).toHaveBeenCalledTimes(50), { interval: 0 });
+    const otherPosition = terminate.mock.calls.findIndex(([call]) => call.id === last.id);
+    expect(otherPosition).toBeGreaterThanOrEqual(25);
+    expect(otherPosition).toBeLessThan(50);
+    for (let pass = 0; pass < 20; pass++) {
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt() !== null || idleWorkSnapshot().active === 0).toBe(true), { interval: 0 });
+    }
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { interval: 0 });
+    expect(terminate.mock.calls.filter(([call]) => call.id !== broken.id)).toHaveLength(105);
+    expect(terminate.mock.calls.filter(([call]) => call.id === broken.id)).toHaveLength(1);
+    expect(Date.now()).toBeLessThan(retryAt);
     expect(errors).toHaveLength(1); failed = false;
-    await settled(); errors.length = 0; await quiet();
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
+    expect(terminate.mock.calls.filter(([call]) => call.id === broken.id)).toHaveLength(2);
+    errors.length = 0; await quiet();
   });
 });

@@ -1,5 +1,43 @@
 # Paperclip evaluation guide
 
+The public directory calls full-product testing **E2E tests**. Suites describe
+what is tested; deployment targets describe which app instance was tested.
+QA smoke is a named selection of existing journeys against QA, and appears in
+the same campaign history as other E2E runs. Agent execution (local or Daytona),
+provider, model and profile are independent filters. Browser-only journeys need
+no agent or model. Historical records without target metadata remain explicitly
+"Not recorded" rather than being assigned an inferred environment.
+
+The history sidebar includes the current suite catalog and retained historical
+suites. Each suite has its latest matching run and latest full run, with full
+coverage determined from the recorded suite definition, selection and execution
+counts. An unexecuted full selection remains unfinished, and a subset
+can pass without qualifying as a full suite run; failed full selections remain
+visible. Changing a model filter does not redefine the suite's recorded coverage.
+Existing `runner-e2e` URLs, test IDs, commands, and measurement timestamps remain
+stable. **Runner protocol evals** remain a separate category because they test
+the runner/provider against a mock control plane.
+
+Sidebar suite links open that suite's campaign history with other filters cleared.
+The Suite dropdown combines with the current filters instead. Explicit URLs retain
+their selected filters; when a suite is absent from a preset, the empty state
+explains the combination and links to the suite's runs.
+Active filters have blue borders and tinted fields. The filter toolbar counts
+active values, including a count beside More filters for collapsed controls.
+Reset all filters clears every campaign filter and the sidebar suite search.
+
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs`
+exercises the history UI using synthetic metadata and Chromium, with no model calls. It checks suite coverage, correlated
+suite/target/model/execution filters, saved QA selections, URL history and mobile
+navigation. Install the existing Playwright Chromium dependency before running.
+For presentation-only refreshes,
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-refresh.ts --history <history.json> --output <directory>`
+renders an existing history file. Its optional `--public-campaign`, `--public-url` and
+`--preset` arguments import a reviewed public measurement without replacing
+existing campaigns. Private Cloud bundles are rejected. The output contains
+only index HTML and history/pointer JSON; it does not upload evidence or change
+retained campaign bundles.
+
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
 two natural-language task scenarios into local native Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
@@ -338,6 +376,12 @@ imply an application URL. Public projections can retain the reviewed URL in
 and startup evidence under Diagnostics. Optional `presentation` metadata in a
 retained campaign supplies its title, description, notes, and evidence links
 inside the shared report shell when the dashboard is regenerated.
+
+Standard runner Product E2E attempts also retain a sanitized `taskChat` recording
+for Test details: task briefs, complete saved messages, requests and answers,
+and native agent progress. Related task threads are separate; incomplete capture
+is labeled. This automatic capture runs before teardown on success and failure.
+See the [Product E2E evidence contract](../tests/runner-e2e/README.md#evidence-and-cleanup).
 
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)

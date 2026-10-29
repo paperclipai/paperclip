@@ -580,6 +580,12 @@ test.describe("Board send delivery refresh", () => {
     const sends: Record<string, unknown>[] = [];
     let attachmentId = "";
     let privateComment: { id: string } | undefined;
+    // The lost send resends on its own; hold that resend until the waiting
+    // state has been checked.
+    let releaseResend!: () => void;
+    const resendReleased = new Promise<void>((resolve) => {
+      releaseResend = resolve;
+    });
     await page.route(
       `**/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       async (route) => {
@@ -598,7 +604,8 @@ test.describe("Board send delivery refresh", () => {
           );
           return route.abort("connectionreset");
         }
-        if (sends.length === 2)
+        if (sends.length === 2) {
+          await resendReleased;
           return fulfill(
             route,
             {
@@ -613,6 +620,7 @@ test.describe("Board send delivery refresh", () => {
             },
             409,
           );
+        }
         return fulfill(
           route,
           {
@@ -653,15 +661,15 @@ test.describe("Board send delivery refresh", () => {
       .getByRole("button", { name: "Send to channel", exact: true })
       .last()
       .click();
+    // A lost response waits and resends on its own with the same identity.
     await expect(
-      banner.getByText("Delivery result not confirmed", { exact: true }),
+      banner.getByText("Sending when reconnected…", { exact: true }),
     ).toBeVisible();
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
-    await banner
-      .getByRole("button", { name: "Retry safely", exact: true })
-      .click();
+    await expect.poll(() => sends.length).toBe(2);
+    releaseResend();
     await expect(
       banner.getByText("Update was not sent", { exact: true }),
     ).toBeVisible();
@@ -735,7 +743,11 @@ test.describe("Board send delivery refresh", () => {
       const statusReads: string[] = [];
       let terminal = false;
       const publicationsPath = `/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`;
-      const storageKey = `paperclip:board-send:v1:${JSON.stringify([seed.companyId, issue.id, endpointId, conversationId])}`;
+      const session = await json<{ user: { id: string } }>(
+        await request.get("/api/auth/get-session"),
+        "read receipt owner",
+      );
+      const storageKey = `paperclip:board-send:v2:${JSON.stringify([session.user.id, seed.companyId, issue.id, endpointId, conversationId])}`;
       await page.route("**/api/instance/settings/experimental", (route) =>
         fulfill(route, { enableChatConnectors: true }),
       );
@@ -1028,6 +1040,10 @@ test.describe("Board send delivery refresh", () => {
       let canonicalAttachmentReadsAfterSend = 0;
       let canonicalCommentReadsAfterSend = 0;
       let status = "streaming";
+      let releaseResend!: () => void;
+      const resendReleased = new Promise<void>((resolve) => {
+        releaseResend = resolve;
+      });
       await page.route("**/api/instance/settings/experimental", (route) =>
         fulfill(route, { enableChatConnectors: true }),
       );
@@ -1132,6 +1148,13 @@ test.describe("Board send delivery refresh", () => {
             await route.abort("failed");
             return;
           }
+          if (outcome === "response_lost" && sends === 2) {
+            // The automatic resend is still in flight when the page reloads;
+            // the browser drops it.
+            await resendReleased;
+            await route.abort("failed").catch(() => {});
+            return;
+          }
           await fulfill(
             route,
             { id: publicationId, state: "streaming", attempts: 1 },
@@ -1182,21 +1205,30 @@ test.describe("Board send delivery refresh", () => {
         ).toHaveCount(0);
       };
       if (outcome === "response_lost") {
+        // The lost send resends on its own with the same identity.
+        await expect(
+          page.getByText("Sending when reconnected…", { exact: true }),
+        ).toBeVisible();
+        await expect.poll(() => submittedPayloads.length).toBe(2);
+        expect(submittedPayloads[1]).toEqual(submittedPayloads[0]);
+        // A send restored after reload has an unknown outcome and waits for
+        // an explicit, same-identity retry.
+        await page.reload();
+        releaseResend();
         await expect(
           page.getByText("Delivery result not confirmed", { exact: true }),
         ).toBeVisible();
-        await page.reload();
         await expect(
           page.getByRole("textbox", { name: "Board update", exact: true }),
         ).toBeDisabled();
         await expectRetainedFiles();
-        expect(sends).toBe(1);
+        expect(sends).toBe(2);
         expect(reads).toBe(0);
         await page
           .getByRole("button", { name: "Retry safely", exact: true })
           .click();
-        await expect.poll(() => submittedPayloads.length).toBe(2);
-        expect(submittedPayloads[1]).toEqual(submittedPayloads[0]);
+        await expect.poll(() => submittedPayloads.length).toBe(3);
+        expect(submittedPayloads[2]).toEqual(submittedPayloads[0]);
       } else {
         await expect(
           page.getByText("Publishing to channel", { exact: true }).first(),
@@ -1258,7 +1290,10 @@ test.describe("Board send delivery refresh", () => {
           page.getByRole("textbox", { name: "Board update", exact: true }),
         ).toHaveCount(0, { timeout: 8_000 });
       }
-      expect(sends).toBe(outcome === "response_lost" ? 2 : 1);
+      // response_lost: the lost send, its automatic resend, and the explicit
+      // retry after reload, all with one identity.
+      const expectedSends = outcome === "response_lost" ? 3 : 1;
+      expect(sends).toBe(expectedSends);
       expect(canonicalCommentReadsAfterSend).toBeGreaterThan(0);
       expect(canonicalAttachmentReadsAfterSend).toBeGreaterThan(0);
       await expect(
@@ -1280,7 +1315,7 @@ test.describe("Board send delivery refresh", () => {
       await expect(
         newFiles.getByRole("checkbox", { name: "internal-only.txt" }),
       ).toBeEnabled();
-      expect(sends).toBe(outcome === "response_lost" ? 2 : 1);
+      expect(sends).toBe(expectedSends);
     });
   }
 });

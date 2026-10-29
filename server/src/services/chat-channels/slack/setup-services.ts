@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../../chat-run-milestone-notifications.js";
 import { chatIdentityLinks, chatExternalPrincipals, companyMemberships, toolConnections, type Db } from "@paperclipai/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { conflict, forbidden, notFound } from "../../../errors.js";
@@ -46,6 +47,7 @@ export function createSlackSetupServices(db: Db, options: SetupServicesOptions) 
       const links = await tx.select().from(chatIdentityLinks).where(and(eq(chatIdentityLinks.companyId, record.endpoint.companyId), eq(chatIdentityLinks.principalId, principal.id))).for("update");
       if (links.some(link => link.status === "linked" && link.paperclipUserId !== actor.userId) || links.some(link => link.endpointId === endpointId && link.status === "revoked")) throw conflict("This Slack account has an existing link", { code: "chat_identity_link_conflict" });
       if (links.some(link => link.endpointId === endpointId && link.status === "linked")) return;
+      await notifyChatRunMilestones(tx, { companyId: record.endpoint.companyId });
       await tx.insert(chatIdentityLinks).values({ companyId: record.endpoint.companyId, endpointId, principalId: principal.id,
         paperclipUserId: actor.userId, status: "linked", confirmedAt: new Date() })
         .onConflictDoUpdate({ target: [chatIdentityLinks.endpointId, chatIdentityLinks.principalId], set: {

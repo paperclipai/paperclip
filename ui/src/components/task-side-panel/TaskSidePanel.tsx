@@ -1,3 +1,5 @@
+import { CoordinatorConversationTasksPanel } from "@/components/coordinator/CoordinatorConversationTasksPanel";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
@@ -93,6 +95,7 @@ import {
 } from "@/lib/task-side-panel-state";
 import { cn } from "@/lib/utils";
 import { TaskDocumentPanel } from "./TaskDocumentPanel";
+import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { TaskWorkspaceFilePanel } from "./TaskWorkspaceFilePanel";
 import { TaskSkillPanel } from "./TaskSkillPanel";
 
@@ -246,7 +249,14 @@ function useTaskSidePanelFileRouting() {
   };
 }
 
-export function TaskSidePanel({
+export function TaskSidePanel(props: TaskSidePanelProps) {
+  // Restoration happens once in the stateful host. A preference/account
+  // change must replace that host before its persistence callback can write
+  // the previous scope's tabs under the new scope's storage key.
+  return <TaskSidePanelForScope key={JSON.stringify([props.accountScope, props.issue.companyId, props.issue.id])} {...props} />;
+}
+
+function TaskSidePanelForScope({
   pluginPanels = EMPTY_PLUGIN_PANELS,
   openedPluginPanelKeys,
   dismissedPluginPanelKeys,
@@ -281,11 +291,13 @@ export function TaskSidePanel({
   openSkillName,
   onSkillOpened,
 }: TaskSidePanelProps) {
+  const location = useLocation();
   const handleScroll = useScrollbarWhileScrolling();
   // Agent Chat: agent chats swap the conversation issue's own panels for
   // agent-scoped ones — the agent's tasks lead, and Artifacts lists the
   // agent's output. With the flag off a chat keeps the issue's own panels.
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
   const conversationAgentId = agentChatEnabled ? issue.conversationAgentId ?? null : null;
   const showRelatedTasks = showSubtasksTab && !conversationAgentId;
   const viewer = useTaskSidePanelFileRouting();
@@ -313,25 +325,27 @@ export function TaskSidePanel({
   const handledDocumentRequestRef = useRef<number | undefined>(undefined);
   const initialState = useMemo(() => {
     const restored = restoredRef.current?.state;
-    let tabs = restored?.tabs ?? (conversationAgentId
+    let tabs = coordinatorWorkspaceEnabled
+      ? restoredRef.current?.userInteracted ? restored?.tabs ?? [] : []
+      : restored?.tabs ?? (conversationAgentId
       ? [taskPanelAgentTasksTab()]
       : issue.conversationAgentId ? [taskPanelArtifactsTab()] : [taskPanelPropertiesTab()]);
     // A tab saved while Agent Chat was on has nothing to render without it;
     // a chat left with no tabs falls back to its Agent-Chat-off default.
     if (!conversationAgentId) {
       const kept = tabs.filter((tab) => tab.payload.kind !== "agent-tasks");
-      if (kept.length === 0 && tabs.length > 0 && issue.conversationAgentId) tabs = [taskPanelArtifactsTab()];
+      if (!coordinatorWorkspaceEnabled && kept.length === 0 && tabs.length > 0 && issue.conversationAgentId) tabs = [taskPanelArtifactsTab()];
       else tabs = kept;
     }
     // Chats used to open on Artifacts by default; move an untouched default
     // onto the agent's tasks. An Artifacts tab the user chose to keep stays.
-    if (conversationAgentId && !restoredRef.current?.userInteracted
+    if (!coordinatorWorkspaceEnabled && conversationAgentId && !restoredRef.current?.userInteracted
       && tabs.length === 1 && tabs[0]!.id === "artifacts") {
       tabs = [taskPanelAgentTasksTab()];
     }
     if (!initialSubtasksAvailableRef.current) {
       tabs = tabs.filter((tab) => tab.payload.kind !== "subtasks");
-    } else if (!subtasksDismissedRef.current) {
+    } else if (!coordinatorWorkspaceEnabled && !subtasksDismissedRef.current) {
       tabs = insertSubtasksAfterProperties(tabs);
     }
     const requestedActive = restored?.activeTabId ?? "properties";
@@ -377,6 +391,7 @@ export function TaskSidePanel({
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
     if (!openBrowserId) return;
+    if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
     setLauncherOpen(false);
     controller.openTab(taskPanelBrowserTab(openBrowserId));
   }, [openBrowserId, controller.openTab]);
@@ -397,6 +412,7 @@ export function TaskSidePanel({
 
   useEffect(() => {
     if (!openSkillId) return;
+    if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
     setLauncherOpen(false);
     controller.openTab(taskPanelSkillTab(openSkillId, openSkillName ?? "Skill"));
     onSkillOpened?.(openSkillId);
@@ -408,7 +424,7 @@ export function TaskSidePanel({
       if (hasSubtasksTab) controller.closeTab("subtasks");
       return;
     }
-    if (!hasSubtasksTab && !subtasksDismissedRef.current) {
+    if (!coordinatorWorkspaceEnabled && !hasSubtasksTab && !subtasksDismissedRef.current) {
       controller.resetTabs({
         tabs: insertSubtasksAfterProperties(controller.tabs),
         activeTabId: controller.activeTabId,
@@ -421,6 +437,7 @@ export function TaskSidePanel({
     controller.tabs,
     hasSubtasksTab,
     subtasksAvailable,
+    coordinatorWorkspaceEnabled,
   ]);
 
   useEffect(() => {
@@ -444,30 +461,36 @@ export function TaskSidePanel({
   // Surface a newly materialized plan exactly once until the user takes manual
   // control of the tab set. Persisted empty/custom states therefore stay put.
   useEffect(() => {
-    if (!planDocument || autoPlanHandledRef.current || userInteractedRef.current) return;
+    if (coordinatorWorkspaceEnabled || !planDocument || autoPlanHandledRef.current || userInteractedRef.current) return;
     autoPlanHandledRef.current = true;
     controller.openTab(taskPanelDocumentTab("plan", documentDisplayTitle(planDocument)));
-  }, [controller.openTab, planDocument]);
+  }, [controller.openTab, planDocument, coordinatorWorkspaceEnabled]);
 
   useEffect(() => {
     if (!documentDeepLink || handledDocumentRequestRef.current === documentDeepLink.requestId) return;
+    const parsedTarget = parseDocumentAnnotationHash(location.hash);
+    const target = parsedTarget?.documentKey === documentDeepLink.documentKey ? parsedTarget : null;
+    const documentIssueId = target?.documentIssueId && target.documentIssueId !== issue.id ? target.documentIssueId : undefined;
     if (
       documentDeepLink.documentKey === "plan" &&
-      planDocument === null
+      planDocument === null && !target?.revisionId && !documentIssueId
     ) return;
-    const document = documents.find((candidate) => candidate.key === documentDeepLink.documentKey);
+    const document = documentIssueId ? undefined : documents.find((candidate) => candidate.key === documentDeepLink.documentKey);
     const label = document ? documentDisplayTitle(document) : documentDeepLink.documentKey === "plan" ? "Plan" : documentDeepLink.documentKey;
     // A refresh must not replay a link after the user selects another tab.
     handledDocumentRequestRef.current = documentDeepLink.requestId;
-    controller.openTab(taskPanelDocumentTab(documentDeepLink.documentKey, label));
-  }, [controller.openTab, documentDeepLink, documents, planDocument]);
+    if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
+    controller.openTab(taskPanelDocumentTab(documentDeepLink.documentKey, label, target?.revisionId, documentIssueId));
+  }, [controller.openTab, documentDeepLink, documents, planDocument, location.hash, issue.id]);
 
   // Existing URL-backed workspace links remain the external integration API.
   useEffect(() => {
     if (!fileTabsEnabled) return;
     if (viewer.state) {
+      if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
       controller.openTab(taskPanelWorkspaceFileTab(viewer.state));
     } else if (viewer.browse) {
+      if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
       controller.openTab(taskPanelFilesTab());
       controller.updateTab("files", {
         payload: {
@@ -496,9 +519,9 @@ export function TaskSidePanel({
     handledArtifactsRequestRef.current = artifactsOpenRequestId;
     // Background outputs add a discoverable tab without interrupting the
     // current document, file, or launcher. Opening the pane is a user action.
-    controller.openTab(taskPanelArtifactsTab(), false);
+    if (!coordinatorWorkspaceEnabled) controller.openTab(taskPanelArtifactsTab(), false);
     onArtifactsOpened?.(artifactsOpenRequestId);
-  }, [artifactsOpenRequestId, controller.openTab, onArtifactsOpened]);
+  }, [artifactsOpenRequestId, controller.openTab, onArtifactsOpened, coordinatorWorkspaceEnabled]);
 
   useEffect(() => {
     if (!openAttachment) return;
@@ -600,7 +623,7 @@ export function TaskSidePanel({
 
   const documentByKey = useMemo(() => new Map(documents.map((document) => [document.key, document])), [documents]);
   const visualTabs = useMemo<SidePanelTabItem[]>(() => controller.tabs.map((tab) => {
-    const document = tab.payload.kind === "issue-document" ? documentByKey.get(tab.payload.documentKey) : null;
+    const document = tab.payload.kind === "issue-document" && (!tab.payload.documentIssueId || tab.payload.documentIssueId === issue.id) ? documentByKey.get(tab.payload.documentKey) : null;
     const browserIndex = browsersQuery.data?.findIndex((browser) => tab.payload.kind === "browser" && (browser.id === tab.payload.browserId || browser.sessionId === tab.payload.browserId)) ?? -1;
     const browserLabel = browserIndex >= 0 && (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${browserIndex + 1}` : null;
     return {
@@ -612,7 +635,7 @@ export function TaskSidePanel({
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
     };
-  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, browsersQuery.data]);
+  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, browsersQuery.data, issue.id]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = conversationAgentId ? [
@@ -807,7 +830,9 @@ export function TaskSidePanel({
     );
   } else if (activeTab.payload.kind === "agent-tasks") {
     content = conversationAgentId ? (
-      <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />
+      coordinatorWorkspaceEnabled
+        ? <CoordinatorConversationTasksPanel conversationIssueId={issue.id} />
+        : <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />
     ) : null;
   } else if (activeTab.payload.kind === "artifacts" && conversationAgentId) {
     content = <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />;
@@ -818,13 +843,14 @@ export function TaskSidePanel({
       if (viewer.state || viewer.browse) viewer.close();
     }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
-    content = activeTab.payload.documentKey === "plan" ? (
+    content = activeTab.payload.documentKey === "plan" && !activeTab.payload.revisionId && !activeTab.payload.documentIssueId ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />
     ) : (
       <TaskDocumentPanel
-        issueId={issue.id}
+        issueId={activeTab.payload.documentIssueId ?? issue.id}
         documentKey={activeTab.payload.documentKey}
-        initialDocument={documentByKey.get(activeTab.payload.documentKey)}
+        revisionId={activeTab.payload.revisionId}
+        initialDocument={!activeTab.payload.documentIssueId || activeTab.payload.documentIssueId === issue.id ? documentByKey.get(activeTab.payload.documentKey) : undefined}
       />
     );
   } else if (activeTab.payload.kind === "attachment") {

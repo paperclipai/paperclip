@@ -365,6 +365,7 @@ export interface RunnerE2EResult {
   }>;
   productJourney?: import("./product-journeys/types.js").JourneyEvidence;
   firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  taskChat?: import("./task-chat.js").TaskChatEvidence;
   providerConnection?: import("./connection-evidence.js").ConnectionEvidence;
   githubReviewJourney?: import("./github-review-evidence.js").GitHubReviewJourneyEvidence;
   completionQuality?: import("./completion-quality.js").CompletionQualityRecord[];
@@ -477,6 +478,9 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string | null;
   model: string | null;
+  /** Absent in older records; never infer the application from the worker. */
+  targetUrl?: string;
+  runtimeMode?: RunnerE2EResult["runtimeMode"];
   status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
@@ -500,6 +504,8 @@ export interface RunnerE2EHistoryCampaign {
   billing: RunnerE2EAggregateBillingSummary;
   suites: RunnerE2ESuiteSummary[];
   executions: RunnerE2EHistoryExecution[];
+  /** A named case selection, independent of suite and deployment target. */
+  preset?: string;
 }
 
 export interface RunnerE2EHistoryIndex {

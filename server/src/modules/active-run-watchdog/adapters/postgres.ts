@@ -1,3 +1,5 @@
+import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { and, asc, desc, eq, gt, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -337,6 +339,8 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     };
 
     const transactionResult = await db.transaction(async (tx) => {
+      await notifyInstructionCollection(tx, { companyId, runId: input.run.id });
+      await notifyCancelledWorkspacePreservation(tx, { companyId, runId: input.run.id });
       const [updatedRun] = await tx
         .update(heartbeatRuns)
         .set({

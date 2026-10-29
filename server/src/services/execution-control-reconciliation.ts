@@ -1,3 +1,5 @@
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
@@ -183,6 +185,8 @@ export async function reconcileAbandonedExecutionControl(
                 updatedAt: now,
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
+          await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+          await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyExecutionRunWork(tx);
           const [updatedRun] = await tx
             .update(heartbeatRuns)

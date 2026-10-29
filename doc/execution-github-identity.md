@@ -14,6 +14,8 @@ Delegated work and interactions persist their originating context. Retries retai
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.
 
+A `git` command that never uses the network does not ask the broker. The launcher reads past the global options, such as `-C` and `-c`, and checks the subcommand against a short list (for example `status`, `diff`, `log`, `rev-parse`, `add`, `config`, `branch`, `checkout`). An unknown subcommand or option still asks. `commit` and `var` still ask, because the managed author comes from the broker answer. The launcher keeps no broker answer between invocations and never writes a credential to a file.
+
 GitHub credential capture reads the current task, project, and retained trust
 policy bindings without transferring saved prompts, runner profiles, results,
 or log excerpts. It keeps the existing task/run lock order and accepted-identity
