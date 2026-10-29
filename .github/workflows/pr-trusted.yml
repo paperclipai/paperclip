@@ -339,6 +339,9 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
+      - name: Verify repository-wide CLI guidance safety
+        run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
+
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
 

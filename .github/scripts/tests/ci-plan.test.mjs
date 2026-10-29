@@ -45,6 +45,23 @@ test("source inspected across package boundaries selects its consumers", () => {
   assert.ok(selectedTasks(plan(["ui/public/app-logos/example.svg"])).has("ci:workspaces-b"));
 });
 
+test("repository-wide guidance guards run uncached for every scanned UI file type", () => {
+  const source = readFileSync(new URL("server/src/__tests__/cli-invocation-safety.test.ts", root), "utf8");
+  const extensions = [...source.split("const SCAN_EXTENSIONS = new Set([")[1].split("]);")[0].matchAll(/"(\.[a-z]+)"/g)]
+    .map((match) => match[1]);
+  assert.ok(extensions.length > 0);
+  for (const extension of extensions) {
+    for (const folder of ["ui/src/components", "ui/src/pages", "ui/src/hooks", "ui/public"]) {
+      assert.ok(plan([`${folder}/guidance${extension}`]).jobs.typecheck_release_registry.run);
+    }
+  }
+  assert.equal(config.tasks["//#ci:typecheck"].cache, false);
+  const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
+  const job = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
+  assert.match(job, /- name: Verify repository-wide CLI guidance safety\n        run: pnpm exec vitest run --project @paperclipai\/server server\/src\/__tests__\/cli-invocation-safety.test.ts/);
+  assert.ok(!job.includes("uses: ./.github/actions/run-ci-task"));
+});
+
 test("shared contracts, runtime prompts, protocol inputs and fixtures reach consumers", () => {
   const shared = selectedTasks(plan(["packages/shared/src/types/issue.ts"]));
   for (const task of ["ci:server", "ci:db", "ci:workspaces-a", "ci:workspaces-b", "ci:serialized", "ci:e2e"]) {

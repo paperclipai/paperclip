@@ -189,6 +189,8 @@ with a valid plan publishes affected and scheduled job counts with input reasons
 in its job summary. Required aggregates reject failed, cancelled, and unexpectedly
 skipped selected suites; the verify aggregate includes serialized tests and the
 canary dry run.
+The uncached typecheck job also runs the repository-wide CLI guidance safety
+guard. It still scans UI changes when unrelated server shards are omitted.
 
 General and serialized test suites and the standalone Rust suite use Turbo's
 content-addressed cache. An execution adapter maps selected lanes to the existing
