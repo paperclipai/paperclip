@@ -78,6 +78,53 @@ async function save(page: Page) {
   await expect(page.getByRole("alert")).toHaveCount(0);
 }
 
+test("Secrets shows masked inline variables and preserves them when another variable is saved", async ({ page, request }) => {
+  const { company, agent, url } = await setup(request);
+  const secret = await json(await request.post(`/api/companies/${company.id}/secrets`, { data: {
+    name: "Release credential", value: "disposable-reference-credential",
+  } }));
+  await json(await request.patch(`/api/agents/${agent.id}`, { data: { adapterConfig: {
+    command: "true",
+    env: {
+      RELEASE_WEBHOOK: { type: "plain", value: "disposable-inline-credential" },
+      SHARED_TOKEN: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    },
+  } } }));
+
+  await page.goto(`${url}/secrets`);
+  const variableNames = () => page.getByRole("textbox", { name: "Variable name", exact: true })
+    .evaluateAll(elements => elements.map(element => (element as HTMLInputElement).value).sort());
+  await expect(page.getByRole("heading", { name: "Environment variables", exact: true })).toBeVisible();
+  await expect.poll(variableNames).toEqual(["RELEASE_WEBHOOK", "SHARED_TOKEN"]);
+  await expect(page.getByLabel("Variable value", { exact: true })).toHaveValue("***REDACTED***");
+  await expect(page.getByText("Release credential", { exact: true }).first()).toBeVisible();
+  expect(await page.locator("body").textContent()).not.toContain("disposable-inline-credential");
+  const before = await json(await request.get(`/api/agents/${agent.id}/configuration`));
+  expect(before.configurationRevision).toMatch(/^[a-f0-9]{64}$/);
+
+  await page.getByRole("button", { name: "Add variable", exact: true }).click();
+  await page.getByRole("textbox", { name: "Variable name", exact: true }).last().fill("RELEASE_CHANNEL");
+  await page.getByLabel("Variable value", { exact: true }).last().fill("drafts");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+  const config = await json(await request.get(`/api/agents/${agent.id}/configuration`));
+  expect(config.adapterConfig.env).toMatchObject({
+    RELEASE_WEBHOOK: { type: "plain", value: "***REDACTED***" },
+    SHARED_TOKEN: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    RELEASE_CHANNEL: { type: "plain", value: "***REDACTED***" },
+  });
+  await page.reload();
+  await expect.poll(variableNames).toEqual(["RELEASE_CHANNEL", "RELEASE_WEBHOOK", "SHARED_TOKEN"]);
+  await expect(page.getByLabel("Variable value", { exact: true }).first()).toHaveValue("***REDACTED***");
+  await page.getByRole("button", { name: "Remove RELEASE_CHANNEL", exact: true }).click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+  const after = await json(await request.get(`/api/agents/${agent.id}/configuration`));
+  // The server's opaque revision includes the actual hidden values. Returning
+  // to the same revision proves they survived both saves without reading them.
+  expect(after.configurationRevision).toBe(before.configurationRevision);
+});
+
 test("Advanced YAML persists settings and commands through their real resource APIs", async ({ page, request, toolProvider }, info) => {
   test.setTimeout(120_000);
   const { company, agent, url } = await setup(request);

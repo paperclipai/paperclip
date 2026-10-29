@@ -1451,6 +1451,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   workspaceSeedCacheDirectory?: string;
   workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
@@ -1546,6 +1547,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
     workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceRepositories: input.workspaceRepositories,

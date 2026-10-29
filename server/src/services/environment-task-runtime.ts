@@ -346,10 +346,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         for(const owner of owners) {
           const receipt=remoteTerminationReceipt(owner,{providerLeaseId:taskId,state:"stopped"});
           if(!receipt) continue;
-          await db.update(environmentLeases).set({
+          await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
             ...(owner.status === "retained" ? {status:"released" as const,releasedAt:new Date(),cleanupStatus:"success" as const}:{}),
             metadata:sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({remoteExecutionTermination:receipt,runnerTaskExecutionStopped:true})}::jsonb`,
-          }).where(eq(environmentLeases.id,owner.id));
+          }).where(eq(environmentLeases.id,owner.id)), { companyId: owner.companyId, runId: owner.heartbeatRunId ?? undefined });
         }
       }
       await db.update(environmentLeases).set({

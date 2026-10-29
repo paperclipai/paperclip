@@ -9,6 +9,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { assertSkillSnapshotPath } from "./skill-snapshot.js";
 import { repositorySkillFrontmatter } from "./skill-repository-package.js";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
+import { noteSkillVersionCacheChange } from "./skill-version-retention-notifications.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { beginRunPhase } from "./execution-preparation-timing.js";
 
@@ -70,12 +71,13 @@ export async function ensureSkillCacheDirectory(directory: string, create = fals
 }
 
 export async function touchSkillVersionCache(companyId: string, skillId: string, versionId: string, now = Date.now()) {
-  const { access } = skillVersionCachePaths(companyId, skillId, versionId);
+  const { access, directory } = skillVersionCachePaths(companyId, skillId, versionId);
   await ensureSkillCacheDirectory(path.dirname(access), true);
   const temporary = `${access}.${randomUUID()}.tmp`;
   try {
     await fs.writeFile(temporary, JSON.stringify({ version: 1, lastUsedAt: now }), { flag: "wx", mode: 0o600 });
     await fs.rename(temporary, access);
+    noteSkillVersionCacheChange(directory, { source: "access", occurredAt: now });
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
@@ -97,9 +99,12 @@ export async function lastUsedAt(filename: string): Promise<number | null> {
 
 // A terminal run can still own provider execution or recovery. Only fully settled
 // runs release their pins; resume preparation reacquires the same cache lock.
-export async function protectedVersions(db: Db, companyId: string): Promise<Set<string> | null> {
+export async function protectedVersions(db: Db, companyId: string): Promise<{ versions: Set<string> | null; leaseDeadlines: Map<string, number> }> {
   const rows = await db.select({
     id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
+    leaseDeadline: sql<number | null>`case when ${heartbeatRuns.status} in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
+      and ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.controllerLeaseExpiresAt} > now()
+      then extract(epoch from ${heartbeatRuns.controllerLeaseExpiresAt}) * 1000 end`,
     pins: sql<unknown>`${heartbeatRuns.contextSnapshot}->'skillVersions'`,
     // Avoid loading large execution inputs for runs with the modern pin map.
     legacyInput: sql<unknown>`case when ${heartbeatRuns.runtimeMode} = 'native'
@@ -121,7 +126,13 @@ export async function protectedVersions(db: Db, companyId: string): Promise<Set<
             and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))
     )`));
   const versions = new Set<string>();
-  for (const { pins, legacyInput, id, agentId, nativeIssueId } of rows) {
+  const leaseDeadlines = new Map<string, number>();
+  const unknown = () => ({ versions: null, leaseDeadlines });
+  for (const { pins, legacyInput, id, agentId, nativeIssueId, leaseDeadline } of rows) {
+    const add = (version: string) => {
+      versions.add(version);
+      if (leaseDeadline !== null) leaseDeadlines.set(version, Math.min(leaseDeadlines.get(version) ?? Infinity, Number(leaseDeadline)));
+    };
     if (legacyInput != null) {
       // Older native runs captured the complete selection in their immutable
       // execution input before contextSnapshot.skillVersions was introduced.
@@ -131,25 +142,25 @@ export async function protectedVersions(db: Db, companyId: string): Promise<Set<
         const input = parseNativeExecutionInput(legacyInput);
         if (!("runtimeContext" in input) || input.binding.companyId !== companyId
           || input.binding.runId !== id || input.binding.agentId !== agentId
-          || input.binding.issueId !== nativeIssueId) return null;
+          || input.binding.issueId !== nativeIssueId) return unknown();
         for (const skill of input.runtimeContext.skills) {
           // Unversioned skills have their own captured asset bundle; they do
           // not reference a directory under __versions__.
           if (skill.versionId === null) continue;
-          if (!uuid.test(skill.versionId)) return null;
-          versions.add(skill.versionId);
+          if (!uuid.test(skill.versionId)) return unknown();
+          add(skill.versionId);
         }
         continue;
-      } catch { return null; }
+      } catch { return unknown(); }
     }
     // Legacy/incomplete preparation is not proof that no skill is in use.
-    if (!pins || typeof pins !== "object" || Array.isArray(pins)) return null;
+    if (!pins || typeof pins !== "object" || Array.isArray(pins)) return unknown();
     for (const version of Object.values(pins)) {
-      if (typeof version !== "string" || !uuid.test(version)) return null;
-      versions.add(version);
+      if (typeof version !== "string" || !uuid.test(version)) return unknown();
+      add(version);
     }
   }
-  return versions;
+  return { versions, leaseDeadlines };
 }
 
 function validateInventory(inventory: CompanySkillVersionFileInventoryEntry[]) {

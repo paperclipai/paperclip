@@ -415,6 +415,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
+    #[cfg(unix)]
+    let mut notifications =
+        crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
@@ -649,6 +652,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
         store.save(&state)?;
+        #[cfg(unix)]
+        if let Some(notifications) = notifications.as_mut() {
+            notifications.poll(&config, &mut state, &store);
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 
@@ -818,6 +825,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 return Err(DurableRunnerError::invalid(
                     "active connection lease expired; durable state is preserved",
                 ));
+            }
+            #[cfg(unix)]
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {

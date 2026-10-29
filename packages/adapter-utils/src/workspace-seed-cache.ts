@@ -7,12 +7,18 @@ import { assertWorkspaceManifestDiskSpace } from "./workspace-manifest.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import type { WorkspaceDurableSeedPaths } from "./sandbox-managed-runtime.js";
 
-export function workspaceSeedGeneration(baseline: DirectorySnapshot, git: GitWorkspaceSnapshot | null, repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = []): string {
+export function workspaceSeedGeneration(baseline: DirectorySnapshot, git: GitWorkspaceSnapshot | null, repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [], scope: "workspace" | "company" = "workspace"): string {
   const identity = (snapshot: GitWorkspaceSnapshot | null): unknown => snapshot && ({
-    head: snapshot.headCommit, branch: snapshot.branchName, origin: snapshot.originUrl,
+    head: snapshot.headCommit, ...(scope === "workspace" ? { branch: snapshot.branchName } : {}), origin: snapshot.originUrl,
     repositories: snapshot.repositories?.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) })),
   });
-  return createHash("sha256").update("verified-seed-v1\0").update(JSON.stringify([directorySnapshotSha256(baseline), identity(git), repositories.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) }))])).digest("hex");
+  return createHash("sha256").update(scope === "company" ? "verified-company-seed-v1\0" : "verified-seed-v1\0").update(JSON.stringify([directorySnapshotSha256(baseline), identity(git), repositories.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) }))])).digest("hex");
+}
+
+export function workspaceSeedCloneSnapshot(snapshot: GitWorkspaceSnapshot): GitWorkspaceSnapshot {
+  return { ...snapshot, branchName: null,
+    ...(snapshot.repositories ? { repositories: snapshot.repositories.map(repository => ({ ...repository, snapshot: workspaceSeedCloneSnapshot(repository.snapshot) })) } : {}),
+  };
 }
 async function digest(file: string): Promise<string> {
   const hash = createHash("sha256");

@@ -2086,6 +2086,7 @@ export class PaperclipRunnerToolAuthority {
       const updated = await issueService(tx).update(this.binding.issueId, {
         blockedByIssueIds,
         actorAgentId: this.binding.agentId,
+        actorRunId: this.binding.runId,
       }, tx);
       if (!updated) throw new Error("paperclip_runner_task_not_found");
       return {

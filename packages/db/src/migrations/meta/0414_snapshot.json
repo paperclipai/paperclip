@@ -1,5 +1,5 @@
 {
-  "id": "74263e79-b32a-4fd7-9128-389b9b271a25",
+  "id": "27c9008c-60e3-449b-9630-9e4977fad444",
   "prevId": "5690a14a-f9cc-41a6-af51-c27f688f4ef6",
   "version": "7",
   "dialect": "postgresql",
@@ -1341,6 +1341,39 @@
             },
             {
               "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_entity_created_idx": {
+          "name": "activity_log_company_entity_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -48677,18 +48710,6 @@
         },
         "archived_at": {
           "name": "archived_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion_claim_token": {
-          "name": "deletion_claim_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion_claim_expires_at": {
-          "name": "deletion_claim_expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

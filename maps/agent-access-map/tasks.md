@@ -84,7 +84,7 @@ Gaps: Bounded native search and one-page CLI local match are not complete compan
 
 ### `read-task-and-summaries`
 
-API: `present` — GET /api/issues/{id} (optional `view=core` omits related enrichment); GET /api/companies/{companyId}/issues/summaries?ids=... .
+API: `present` — GET /api/issues/{id} (optional `view=core` includes saved document/work-product cards and omits recovery and related-task enrichment); GET /api/companies/{companyId}/issues/summaries?ids=... .
 
 Agent access: `partial` — REST/CLI issue get; native get_task_context reads CURRENT task only; call_api for eligible arbitrary task/summaries. No dedicated summaries CLI/tool.
 

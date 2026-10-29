@@ -4261,7 +4261,7 @@ registry.registerPath({
   path: "/api/issues/{id}",
   tags: ["issues"],
   summary: "Get an issue",
-  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("core").optional().describe("Core task fields without related enrichment.") }) },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("core").optional().describe("Task fields with saved document and work-product cards, without recovery or related-task enrichment and without provider refresh.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 

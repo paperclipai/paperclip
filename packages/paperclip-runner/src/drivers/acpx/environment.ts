@@ -129,6 +129,8 @@ export function createSanitizedAcpxSpawnInput(
     "all_proxy",
     "RUST_BACKTRACE",
     "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_NATIVE_MCP_URL",
     ...(environment === undefined ? [] : ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]),
     ...credentialNames,

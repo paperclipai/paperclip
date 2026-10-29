@@ -1,3 +1,4 @@
+import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export type RetainedNativeSessionCleanupScope = {
@@ -7,8 +8,9 @@ export type RetainedNativeSessionCleanupScope = {
   agentId?: string;
 };
 
-export function notifyRetainedNativeSessionCleanup(tx: object, scope: RetainedNativeSessionCleanupScope) {
-  return notifyDeliveryWork(tx, DELIVERY_QUEUES.retainedNativeSessionCleanup, JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId, agentId: scope.agentId }));
+export async function notifyRetainedNativeSessionCleanup(tx: object, scope: RetainedNativeSessionCleanupScope) {
+  await notifySkillVersionRetention(tx, scope.companyId);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.retainedNativeSessionCleanup, JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId, agentId: scope.agentId }));
 }
 
 

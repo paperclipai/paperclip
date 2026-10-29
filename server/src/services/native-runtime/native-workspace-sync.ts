@@ -837,6 +837,7 @@ async function prepareRuntime(input: {
     onWorkspaceCheckpoint: input.onCheckpoint,
     workspaceSeedCacheDirectory: input.seedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
+    workspaceSeedCacheScope: "company",
     runtimeSpan: input.onPhase,
   }));
 }
@@ -1006,7 +1007,7 @@ export async function prepareNativeWorkspaceSync(input: {
       hasPriorStamp: priorStamp !== null,
     });
     const seedCacheCompanyDirectory = path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"));
-    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, requireSafeSegment(input.workspaceId, "workspace_id"));
+    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, "shared-v1");
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
