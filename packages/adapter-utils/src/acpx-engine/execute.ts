@@ -12,7 +12,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { parseFrontmatterMarkdown } from "@paperclipai/shared";
+import { parseFrontmatterMarkdown, resolveNeutralizedManagedAiEnv } from "@paperclipai/shared";
 import { fileURLToPath } from "node:url";
 import type {
   AdapterBillingType,
@@ -229,7 +229,6 @@ type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
  * fingerprint scoping the warm handle uses — so one session can never read
  * another session's staged credentials: a different agent/task/config hashes to
  * a different key, misses this cache, and stages its own home.
- *
  * Remote sessions are never held in the warm-handle cache (their agent process
  * lives behind a per-run process-session bridge, torn down each run and resumed
  * via `session/load`); the only thing that survives between their runs is the
@@ -703,6 +702,7 @@ export function finalizeLaunchEnvironment(
   options: {
     acpxAgent: string;
     inheritHostEnvironment: boolean;
+    materializesChildEnvironment?: boolean;
     inheritedEnv?: NodeJS.ProcessEnv;
     platform?: typeof process.platform;
   },
@@ -2593,6 +2593,7 @@ async function buildRuntime(input: {
       runtimeEnv = finalizeLaunchEnvironment(env, [], {
         acpxAgent,
         inheritHostEnvironment: !useRemoteProcessSession,
+        materializesChildEnvironment: !executionTargetIsRemote,
       }).env;
     }
   } catch (err) {
@@ -2786,6 +2787,7 @@ function resolveRuntimeEnv(
   acpxAgent: string,
   options: {
     inheritHostEnvironment: boolean;
+    materializesChildEnvironment?: boolean;
     inheritedEnv?: NodeJS.ProcessEnv;
     platform?: typeof process.platform;
   },
@@ -2804,11 +2806,14 @@ function resolveRuntimeEnv(
     env,
     (options.platform ?? process.platform) === "win32",
   );
-  const finalEnv = Object.fromEntries(
+  const stringEnv = Object.fromEntries(
     Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const finalEnv = options.materializesChildEnvironment === true
+    ? resolveNeutralizedManagedAiEnv(stringEnv)
+    : stringEnv;
   // codex-acp supports both key names, but ACP clients must select its
   // api-key authentication method during session creation. Without this
   // request, the server advertises authentication and rejects session/new even
@@ -5911,6 +5916,5 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
   };
 }
-
 
 export const execute = createAcpxEngineExecutor();

@@ -10,6 +10,7 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  MANAGED_AI_NEUTRALIZED_ENV_KEYS,
   aiConnectionMetadataSchema, aiRoutingHarness,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
@@ -29,38 +30,7 @@ export function isAiConnectionBusy(error: unknown): error is HttpError {
     (error.details as { code?: unknown } | undefined)?.code === "ai_connection_busy";
 }
 
-// Blank values intentionally override inherited credentials in CLI child environments.
-export const AI_AUTH_ENV_KEYS = [
-  "COPILOT_GITHUB_TOKEN",
-  "PAPERCLIP_AI_PROVIDER_KEY", "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS",
-  "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
-  "HERMES_HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-  "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
-
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "CODEX_API_KEY",
-  "OPENROUTER_API_KEY",
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-  "CODEX_HOME",
-  "GROK_HOME",
-  "CLAUDE_CONFIG_DIR",
-  "OPENCODE_AUTH_JSON",
-  "OPENCODE_CONFIG_CONTENT",
-  "OPENCODE_CONFIG",
-  "OPENCODE_CONFIG_DIR",
-  "PAPERCLIP_OPENCODE_PROVIDERS",
-  "PAPERCLIP_PI_PROVIDERS",
-  "ANTHROPIC_BASE_URL",
-  "OPENAI_BASE_URL",
-  "XAI_BASE_URL",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CODE_USE_FOUNDRY",
-] as const;
+export const AI_AUTH_ENV_KEYS = MANAGED_AI_NEUTRALIZED_ENV_KEYS;
 export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
   const result = {
     ...(env && typeof env === "object" ? (env as Record<string, unknown>) : {}),
