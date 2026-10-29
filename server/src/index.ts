@@ -2333,28 +2333,18 @@ async function startServerWithDatabaseTeardown(
   };
   } catch (error) {
     if (startupListenerBound) {
-      await new Promise<void>((resolveClose) => {
-        try {
-          server.close((closeError?: Error) => {
-            if (
-              closeError &&
-              (closeError as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
-            ) {
-              logger.error(
-                { err: closeError },
-                "failed to close HTTP listener after startup failure",
-              );
-            }
-            resolveClose();
-          });
-        } catch (closeError) {
-          logger.error(
-            { err: closeError },
-            "failed to close HTTP listener after startup failure",
-          );
-          resolveClose();
-        }
-      });
+      // A plain server.close() waits for every open connection. A proxy or a
+      // streaming client can hold one open indefinitely, and then this startup
+      // never rejects, the process never exits and the supervisor never
+      // restarts it. Close the remaining connections after the grace period.
+      try {
+        await closeHttpListenerForShutdown({ server, signal: "startup_failure", log: logger });
+      } catch (closeError) {
+        logger.error(
+          { err: closeError },
+          "failed to close HTTP listener after startup failure",
+        );
+      }
     }
     throw error;
   }

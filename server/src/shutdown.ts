@@ -53,7 +53,8 @@ type ShutdownHttpListener = {
  */
 export async function closeHttpListenerForShutdown(input: {
   server: ShutdownHttpListener;
-  signal: "SIGINT" | "SIGTERM";
+  /** The shutdown signal, or `startup_failure` when startup failed after the listener bound. */
+  signal: "SIGINT" | "SIGTERM" | "startup_failure";
   timeoutMs?: number;
   log: ShutdownLogger;
 }): Promise<"closed" | "timed_out" | "not_listening"> {
