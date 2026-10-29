@@ -606,8 +606,35 @@ describe("git workspace sync", () => {
     await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
       remoteDir: sandbox, baseSha: published, exportRef, bundlePath, shallowPath, forceFullBundle: true,
     })]);
-    expect(await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
-      baseSha: published, shallowPath })).toBe(published);
+    const tracePath = path.join(root, "git-trace.json");
+    const previousTrace = process.env.GIT_TRACE2_EVENT;
+    process.env.GIT_TRACE2_EVENT = tracePath;
+    const gitStarts = async () => (await readFile(tracePath, "utf8")).trim().split("\n")
+      .filter((line) => JSON.parse(line).event === "start").length;
+    try {
+      expect(await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
+        baseSha: published, shallowPath })).toBe(published);
+      const uniqueStarts = await gitStarts();
+      await rm(tracePath);
+      await writeFile(shallowPath, `${published}\n`.repeat(12));
+      expect(await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
+        baseSha: published, shallowPath })).toBe(published);
+      // Duplicate sender metadata must not multiply host subprocess work.
+      expect(await gitStarts()).toBeLessThanOrEqual(uniqueStarts + 4);
+      await rm(tracePath);
+      await writeFile(shallowPath, `${published}\n`.repeat(2000));
+      await expect(fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
+        baseSha: published, shallowPath })).rejects.toThrow("byte limit");
+      await expect(stat(tracePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(shallowPath, Array.from({ length: 257 }, (_, i) =>
+        (i + 1).toString(16).padStart(40, "0")).join("\n"));
+      await expect(fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
+        baseSha: published, shallowPath })).rejects.toThrow("boundary limit");
+      await expect(stat(tracePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+      else process.env.GIT_TRACE2_EVENT = previousTrace;
+    }
     expect(await git(host, ["rev-list", "HEAD"])).toBe(before);
     expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
 
@@ -616,6 +643,10 @@ describe("git workspace sync", () => {
       importedRef: createImportedGitRef("invalid"), baseSha: published, shallowPath }))
       .rejects.toThrow("Invalid Git shallow boundaries");
     expect(await git(host, ["rev-list", "HEAD"])).toBe(before);
+    await writeFile(path.join(sandbox, ".git", "shallow"), `${published}\n`.repeat(2000));
+    await expect(execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+      remoteDir: sandbox, baseSha: published, exportRef, bundlePath, shallowPath, forceFullBundle: true,
+    })])).rejects.toThrow("byte limit");
   });
 
   it("falls back to a full self-contained bundle when the sandbox lacks baseSha", async () => {

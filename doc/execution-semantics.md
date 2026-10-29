@@ -716,6 +716,9 @@ restore exports those boundaries with the full bundle. The host unpacks it in
 a temporary bare repository and uses Git's shallow fetch protocol to import it.
 This preserves existing host ancestry and connectivity checks. File restore and
 the normal concurrent-work merge must still finish before run finalization.
+The boundary metadata has a 64 KiB transfer/read budget and at most 256 unique
+commits. Duplicate entries do not repeat host Git probes. The shallow import
+shares a 60-second Git command budget; oversized metadata fails before import.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the

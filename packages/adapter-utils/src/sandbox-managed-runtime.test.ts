@@ -4288,7 +4288,7 @@ describe("sandbox git-bundle export transport", () => {
     expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
   });
 
-  it("retries the full bundle through the native branch when the delta misses its prerequisite", async () => {
+  it.each([false, true])("retries the full bundle through the native branch when the delta misses its prerequisite (concurrent host commit: %s)", async (concurrentHostCommit) => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
     cleanupDirs.push(rootDir);
@@ -4321,6 +4321,12 @@ describe("sandbox git-bundle export transport", () => {
     // bundle names that boundary commit as a prerequisite the host no longer
     // holds, so the import fails and forces the full-bundle retry.
     await git(localWorkspaceDir, ["reset", "--hard", firstCommit]);
+    if (concurrentHostCommit) {
+      await writeFile(path.join(localWorkspaceDir, "host-only.txt"), "concurrent host commit\n");
+      await git(localWorkspaceDir, ["add", "host-only.txt"]);
+      await git(localWorkspaceDir, ["commit", "-m", "host work after reset"]);
+    }
+    const hostHead = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
     await git(localWorkspaceDir, ["reflog", "expire", "--expire=now", "--all"]);
     await git(localWorkspaceDir, ["gc", "--prune=now"]);
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
@@ -4337,6 +4343,13 @@ describe("sandbox git-bundle export transport", () => {
     // The full bundle was self-contained: the host repository now holds the
     // sandbox head commit.
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${sandboxHead}^{commit}`])).resolves.toBe("");
+    if (concurrentHostCommit) {
+      expect(await readFile(path.join(localWorkspaceDir, "host-only.txt"), "utf8")).toBe("concurrent host commit\n");
+      expect(await readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).toBe("from sandbox\n");
+      expect((await git(localWorkspaceDir, ["rev-list", "--parents", "-1", "HEAD"])).split(" ").slice(1))
+        .toEqual([hostHead, sandboxHead]);
+      expect(await git(localWorkspaceDir, ["fsck", "--connectivity-only"])).not.toContain("missing");
+    }
   });
 
   it("reports the real transferred bytes for the native git-history export and workspace restore", async () => {

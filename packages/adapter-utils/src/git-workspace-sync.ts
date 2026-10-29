@@ -689,6 +689,9 @@ export async function deleteLocalGitRef(input: {
   }).catch(() => undefined);
 }
 
+export const GIT_SHALLOW_MAX_BYTES = 64 * 1024;
+export const GIT_SHALLOW_MAX_BOUNDARIES = 256;
+
 export async function fetchGitBundleIntoLocalRef(input: {
   localDir: string;
   bundlePath: string;
@@ -703,10 +706,21 @@ export async function fetchGitBundleIntoLocalRef(input: {
     return input.baseSha;
   }
 
+  if (input.shallowPath && (await fs.stat(input.shallowPath)).size > GIT_SHALLOW_MAX_BYTES) {
+    throw new Error("Git shallow metadata exceeds its byte limit");
+  }
   const shallow = input.shallowPath ? await fs.readFile(input.shallowPath, "utf8") : "";
+  if (Buffer.byteLength(shallow) > GIT_SHALLOW_MAX_BYTES) throw new Error("Git shallow metadata exceeds its byte limit");
   if (shallow.trim()) {
-    const boundaries = shallow.trim().split("\n");
-    const objectFormat = (await runLocalGit(input.localDir, ["rev-parse", "--show-object-format"])).stdout.trim();
+    const boundaries = [...new Set(shallow.trim().split("\n"))];
+    if (boundaries.length > GIT_SHALLOW_MAX_BOUNDARIES) throw new Error("Git shallow metadata exceeds its boundary limit");
+    const deadline = Date.now() + 60_000;
+    const importGit = (cwd: string, args: string[], options: NonNullable<Parameters<typeof runLocalGit>[2]> = {}) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("Git shallow history import timed out");
+      return runLocalGit(cwd, args, { ...options, timeout: Math.min(options.timeout ?? 15_000, remaining) });
+    };
+    const objectFormat = (await importGit(input.localDir, ["rev-parse", "--show-object-format"])).stdout.trim();
     const oid = objectFormat === "sha256" ? /^[a-f0-9]{64}$/ : /^[a-f0-9]{40}$/;
     if (!boundaries.every((boundary) => oid.test(boundary))) throw new Error("Invalid Git shallow boundaries");
     const staging = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-bundle-"));
@@ -715,8 +729,8 @@ export async function fetchGitBundleIntoLocalRef(input: {
       // carrying the sender's boundaries, then let ordinary Git fetch negotiate
       // which boundaries the host actually needs. Never overwrite host shallow
       // metadata or disable connectivity checks.
-      await runLocalGit(input.localDir, ["clone", "--bare", "--shared", input.localDir, staging], { timeout: 60_000 });
-      const advertised = await runLocalGit(staging, ["bundle", "unbundle", input.bundlePath], {
+      await importGit(input.localDir, ["clone", "--bare", "--shared", input.localDir, staging], { timeout: 60_000 });
+      const advertised = await importGit(staging, ["bundle", "unbundle", input.bundlePath], {
         timeout: 60_000, maxBuffer: 1024 * 1024,
       });
       const head = advertised.stdout.split("\n").find((line) => line.endsWith(` ${input.exportRef}`))?.split(" ")[0];
@@ -725,12 +739,18 @@ export async function fetchGitBundleIntoLocalRef(input: {
         if (error.code !== "ENOENT") throw error;
         return "";
       })).trim().split("\n").filter(Boolean);
+      const knownCommits = new Map<string, boolean>();
       const hasCommit = async (commit: string): Promise<boolean> => {
+        if (knownCommits.has(commit)) return knownCommits.get(commit)!;
         try {
-          await runLocalGit(staging, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+          await importGit(staging, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+          knownCommits.set(commit, true);
           return true;
         } catch (error) {
-          if ((error as { code?: unknown }).code === 1) return false;
+          if ((error as { code?: unknown }).code === 1) {
+            knownCommits.set(commit, false);
+            return false;
+          }
           throw error;
         }
       };
@@ -739,7 +759,7 @@ export async function fetchGitBundleIntoLocalRef(input: {
         // Keep that connection when possible; adding its boundary unconditionally
         // would hide a real merge-base and reject concurrent host changes.
         if (!await hasCommit(boundary)) continue; // An unrelated tip is not in this bundle.
-        const parents = await runLocalGit(staging, ["rev-parse", `${boundary}^@`]);
+        const parents = await importGit(staging, ["rev-parse", `${boundary}^@`]);
         let missingParent = false;
         for (const parent of parents.stdout.trim().split("\n").filter(Boolean)) {
           if (!await hasCommit(parent)) {
@@ -750,8 +770,8 @@ export async function fetchGitBundleIntoLocalRef(input: {
         if (missingParent) retainedBoundaries.push(boundary);
       }
       if (retainedBoundaries.length) await fs.writeFile(path.join(staging, "shallow"), `${[...new Set(retainedBoundaries)].join("\n")}\n`);
-      await runLocalGit(staging, ["update-ref", input.exportRef, head]);
-      await runLocalGit(input.localDir, ["fetch", "--force", "--update-shallow", staging, `${input.exportRef}:${input.importedRef}`], {
+      await importGit(staging, ["update-ref", input.exportRef, head]);
+      await importGit(input.localDir, ["fetch", "--force", "--update-shallow", staging, `${input.exportRef}:${input.importedRef}`], {
         timeout: 60_000, maxBuffer: 1024 * 1024,
       });
     } finally {
@@ -812,6 +832,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
   const statusPath = input.statusPath ? shellQuote(input.statusPath) : null;
   const cleanupParts = [
     `rm -f ${bundlePath}`,
+    ...(input.shallowPath ? [`rm -f ${shellQuote(input.shallowPath)}`] : []),
     ...(statusPath ? [`rm -f ${statusPath}`] : []),
     `git -C ${remoteDir} update-ref -d ${exportRef} >/dev/null 2>&1 || true`,
   ];
@@ -823,7 +844,10 @@ export function buildRemoteGitDeltaBundleScript(input: {
     `rm -f ${bundlePath}`,
     ...(input.shallowPath ? [
       `shallow_file=$(git -C ${remoteDir} rev-parse --path-format=absolute --git-path shallow)`,
-      `if [ -f "$shallow_file" ]; then cp "$shallow_file" ${shellQuote(input.shallowPath)}; else : > ${shellQuote(input.shallowPath)}; fi`,
+      `if [ -f "$shallow_file" ]; then`,
+      `  dd if="$shallow_file" of=${shellQuote(input.shallowPath)} bs=${GIT_SHALLOW_MAX_BYTES + 1} count=1 2>/dev/null`,
+      `else : > ${shellQuote(input.shallowPath)}; fi`,
+      `[ "$(wc -c < ${shellQuote(input.shallowPath)})" -le ${GIT_SHALLOW_MAX_BYTES} ] || { printf '%s\\n' 'Git shallow metadata exceeds its byte limit' >&2; exit 1; }`,
     ] : []),
     // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
     // baseSha as a prerequisite the importer (host) must already hold. That
