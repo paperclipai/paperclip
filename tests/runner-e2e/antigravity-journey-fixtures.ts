@@ -20,6 +20,8 @@ export function isAntigravityRunAccountingSettled(run: Row) {
 export interface AntigravityJourneyResources {
   version: 1; executionId: string; origin: string; companyId: string; environmentId: string; connectionId: string;
   agentName: string; agentId?: string; issueId?: string; issueIdentifier?: string; runIds: string[];
+  /** Intended harness; the ordinary name-only wizard creates a held provisional draft. */
+  agentCreationRequest?: { setupId: string; companyId: string; agentName: string; provider: "antigravity"; creatorUserId: string; origin: string };
   retained: boolean; setupProbe: "not_started" | "pending" | "retired" | "retirement_unconfirmed"; processes: Record<string, AntigravityProcessReceipt>;
   noLaunch?: Record<string, AntigravityNoLaunchReceipt>;
   sourceProvenance?: { head: string; trackedDiffSha256: string; untrackedSourceSha256: string; untrackedSourceFileCount: number; suiteDefinitionHash: string; dirty: boolean };
@@ -145,7 +147,7 @@ export async function prepareAntigravityJourney(api: ConnectionApi, config: Anti
 export function parseAntigravityOwnedResources(input: unknown, config: AntigravityJourneyConfig): AntigravityJourneyResources {
   const v = input as Partial<AntigravityJourneyResources> | null;
   const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-  const allowed = ["version", "executionId", "origin", "companyId", "environmentId", "connectionId", "agentName", "agentId", "issueId", "issueIdentifier", "runIds", "retained", "setupProbe", "processes", "noLaunch", "sourceProvenance"];
+  const allowed = ["version", "executionId", "origin", "companyId", "environmentId", "connectionId", "agentName", "agentId", "agentCreationRequest", "issueId", "issueIdentifier", "runIds", "retained", "setupProbe", "processes", "noLaunch", "sourceProvenance"];
   if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(key => !allowed.includes(key)) || v.version !== 1 || v.executionId !== ANTIGRAVITY_JOURNEY_EXECUTION
     || v.origin !== config.target.baseURL || v.companyId !== config.target.companyId || v.environmentId !== config.target.environmentId
     || v.connectionId !== config.savedConnection.id || !/^Antigravity QA [a-f0-9]{12}$/.test(v.agentName ?? "")
@@ -157,6 +159,13 @@ export function parseAntigravityOwnedResources(input: unknown, config: Antigravi
       || (receipt.primaryOwner !== undefined && (!validAntigravityPrimaryOwner(receipt.primaryOwner) || receipt.primaryOwner.runId !== runId))
       || !Array.isArray(receipt.journal) || receipt.journal.length > 1000 || receipt.journal.some(process => !Number.isSafeInteger(process.pid)
         || process.pid <= 1 || !Number.isSafeInteger(process.parent) || process.parent < 0 || typeof process.start !== "string" || !Number.isFinite(Date.parse(process.start)))))
+    throw new ConnectionFailure("invalid_antigravity_owned_resources");
+  const creation = v.agentCreationRequest;
+  if (creation !== undefined && (!creation || typeof creation !== "object" || Array.isArray(creation)
+    || Object.keys(creation).length !== 6 || Object.keys(creation).some(key => !["setupId", "companyId", "agentName", "provider", "creatorUserId", "origin"].includes(key))
+    || typeof creation.setupId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(creation.setupId) || (v.agentId !== undefined && v.agentId !== creation.setupId)
+    || creation.companyId !== v.companyId || creation.agentName !== v.agentName || creation.provider !== "antigravity"
+    || creation.creatorUserId !== config.savedConnection.ownerUserId || creation.origin !== v.origin))
     throw new ConnectionFailure("invalid_antigravity_owned_resources");
   if (v.noLaunch !== undefined && (!v.noLaunch || typeof v.noLaunch !== "object" || Array.isArray(v.noLaunch)
     || Object.entries(v.noLaunch).some(([runId, receipt]) => !v.runIds!.includes(runId) || !receipt || typeof receipt !== "object" || Array.isArray(receipt)
@@ -183,10 +192,36 @@ export async function cleanupAntigravityJourney(input: {
 }) {
   const { api, config, resources, cleanup } = input;
   cleanup.connectionPreserved = false;
+  let pendingDraft: Row | undefined;
+  if (!resources.agentId && resources.agentCreationRequest) {
+    cleanup.agent = false;
+    const creation = resources.agentCreationRequest;
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(creation.setupId)
+      || creation.companyId !== resources.companyId || creation.agentName !== resources.agentName || creation.origin !== resources.origin
+      || creation.creatorUserId !== config.savedConnection.ownerUserId || creation.provider !== "antigravity")
+      throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+    let draft: Row;
+    try { draft = await api.get<Row>(`/api/agents/${creation.setupId}?companyId=${resources.companyId}`); }
+    catch (error) {
+      if (error instanceof ConnectionFailure && error.message === "api_status_404")
+        throw new ConnectionFailure("cleanup_agent_creation_unconfirmed");
+      throw error;
+    }
+    if (!draft || draft.id !== creation.setupId || draft.companyId !== resources.companyId || draft.name !== resources.agentName
+      || draft.createdByUserId !== creation.creatorUserId)
+      throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+    pendingDraft = draft;
+  }
   if (resources.agentId) cleanup.agent = false;
   if (resources.runIds.length) cleanup.runs = false;
   const agents = await api.get<Row[]>(`/api/companies/${resources.companyId}/agents`);
   const named = agents.filter(agent => agent.name === resources.agentName);
+  if (pendingDraft) {
+    if (named.length !== 1 || named[0]!.id !== pendingDraft.id || named[0]!.companyId !== resources.companyId)
+      throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+    resources.agentId = pendingDraft.id;
+    await input.persistResources();
+  }
   if (!resources.agentId && named.length) throw new ConnectionFailure("cleanup_requires_agent_creation_receipt");
   const agent = agents.find(agent => agent.id === resources.agentId);
   if (agent && (agent.companyId !== resources.companyId || agent.name !== resources.agentName || named.length !== 1))

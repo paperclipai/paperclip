@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Request, type Route } from "@playwright/test";
 import { ConnectionFailure } from "./connection-config.js";
 import { ConnectionApi } from "./connection-target.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
@@ -18,6 +18,65 @@ export interface AntigravityJourneyFlowInput {
   observeRun(run: Row): Promise<void>;
   beforeAdmission(): Promise<void>;
   assertActive(): void;
+}
+
+export async function captureAntigravityAgentDraft(page: Page, resources: AntigravityJourneyResources,
+  persistResources: () => Promise<void>, submit: () => Promise<void>, expectedCreatorUserId: string): Promise<Row> {
+  const matches = (url: URL) => /^\/api\/companies\/[^/]+\/agents$/u.test(url.pathname);
+  let captured: Request | undefined;
+  let rejectRoute!: (error: unknown) => void;
+  const routeFailure = new Promise<never>((_resolve, reject) => { rejectRoute = reject; });
+  const handler = async (route: Route) => {
+    const request = route.request();
+    try {
+      if (request.method() !== "POST") { await route.continue(); return; }
+      const url = new URL(request.url());
+      let body: Row;
+      try { body = request.postDataJSON(); } catch { throw new ConnectionFailure("agent_creation_request_mismatch"); }
+      if (captured || url.origin !== resources.origin || url.pathname !== `/api/companies/${resources.companyId}/agents`
+        || !body || typeof body !== "object" || Array.isArray(body) || body.name !== resources.agentName
+        || typeof body.setupId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(body.setupId)
+        || typeof expectedCreatorUserId !== "string" || !expectedCreatorUserId)
+        throw new ConnectionFailure("agent_creation_request_mismatch");
+      const witness = { setupId: body.setupId, companyId: resources.companyId, agentName: resources.agentName,
+        provider: "antigravity" as const, creatorUserId: expectedCreatorUserId, origin: resources.origin };
+      if ((resources.agentId && resources.agentId !== witness.setupId) || (resources.agentCreationRequest
+        && Object.entries(witness).some(([key, value]) => resources.agentCreationRequest![key as keyof typeof witness] !== value)))
+        throw new ConnectionFailure("agent_creation_request_mismatch");
+      captured = request;
+      resources.agentCreationRequest = witness;
+      resources.retained = true;
+      await persistResources();
+      // Continue the ordinary UI request unchanged only after its recovery identity is durable.
+      await route.continue();
+    } catch (error) {
+      await route.abort("failed").catch(() => {});
+      rejectRoute(error);
+    }
+  };
+  let primary: unknown;
+  await page.route(matches, handler);
+  try {
+    const creation = page.waitForResponse(response => response.request() === captured);
+    const receipt = Promise.race([creation, routeFailure]);
+    // A submit failure must not leave a later response timeout unhandled.
+    void receipt.catch(() => {});
+    await Promise.race([submit(), routeFailure]);
+    const created = await receipt;
+    if (!created.ok()) throw new ConnectionFailure("agent_draft_creation_failed");
+    const draft = await created.json();
+    if (!draft || typeof draft !== "object" || Array.isArray(draft) || !resources.agentCreationRequest || draft.id !== resources.agentCreationRequest.setupId
+      || draft.companyId !== resources.companyId || draft.name !== resources.agentName || draft.createdByUserId !== expectedCreatorUserId)
+      throw new ConnectionFailure("agent_creation_receipt_mismatch");
+    return draft;
+  } catch (error) { primary = error; throw error; }
+  finally {
+    try { await page.unroute(matches, handler); }
+    catch (error) {
+      if (!primary && !page.isClosed()) throw error;
+      if (primary instanceof Error) Object.assign(primary, { agentCreationRouteCleanupFailed: true });
+    }
+  }
 }
 
 export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInput) {
@@ -40,12 +99,8 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   const nameDialog = page.getByRole("dialog", { name: "Meet your next agent", exact: true });
   await expect(nameDialog.getByRole("button", { name: "Choose adapter", exact: true })).toBeDisabled();
   await nameDialog.getByRole("textbox", { name: "Agent name", exact: true }).fill(resources.agentName);
-  const creation = page.waitForResponse(response => response.request().method() === "POST" && new URL(response.url()).pathname === `/api/companies/${company.id}/agents`);
-  await nameDialog.getByRole("button", { name: "Choose adapter", exact: true }).click();
-  const created = await creation;
-  if (!created.ok()) throw new ConnectionFailure("agent_draft_creation_failed");
-  const draft = await created.json();
-  if (draft.companyId !== company.id || draft.name !== resources.agentName || typeof draft.id !== "string") throw new ConnectionFailure("agent_creation_receipt_mismatch");
+  const draft = await captureAntigravityAgentDraft(page, resources, input.persistResources,
+    () => nameDialog.getByRole("button", { name: "Choose adapter", exact: true }).click(), config.savedConnection.ownerUserId);
   resources.agentId = draft.id; evidence.agentId = draft.id; evidence.cleanup.agent = false;
   await input.persistResources();
   await input.phase("picker_selection");

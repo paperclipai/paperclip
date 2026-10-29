@@ -1,16 +1,81 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
-import { runAntigravityJourneyCampaign } from "./antigravity-journey-launch.js";
+import { createAntigravityResourceWriter, runAntigravityJourneyCampaign } from "./antigravity-journey-launch.js";
+import type { AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { ConnectionFailure } from "./connection-config.js";
 
 const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn(), cleanup: vi.fn(), reportOutput: "", failBranding: false }));
+const journalFs = vi.hoisted(() => ({ directory: "", fault: "", events: [] as string[], snapshots: [] as unknown[],
+  gate: undefined as { entered(): void; wait: Promise<void>; used: boolean } | undefined }));
+vi.mock("node:fs/promises", async original => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  const owned = (file: unknown) => typeof file === "string" && journalFs.directory !== "" && file.startsWith(`${journalFs.directory}/`);
+  const fail = (stage: string) => {
+    if (journalFs.fault !== stage) return false;
+    journalFs.fault = "";
+    return true;
+  };
+  const recordWrite = async (data: unknown) => {
+    journalFs.events.push("write");
+    journalFs.snapshots.push(JSON.parse(String(data)));
+    if (journalFs.gate && !journalFs.gate.used) {
+      journalFs.gate.used = true;
+      journalFs.gate.entered();
+      await journalFs.gate.wait;
+    }
+  };
+  return { ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      if (owned(args[0])) {
+        await recordWrite(args[1]);
+        if (fail("write")) {
+          await actual.writeFile(args[0], '{"interrupted":', args[2]);
+          throw new Error("fixture journal write failed");
+        }
+      }
+      return actual.writeFile(...args);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      const directory = args[0] === journalFs.directory;
+      if (!directory && !owned(args[0])) return handle;
+      journalFs.events.push(directory ? "directory-open" : "file-open");
+      return new Proxy(handle, { get(target, key) {
+        if (key === "writeFile") return async (...writeArgs: Parameters<typeof handle.writeFile>) => {
+          await recordWrite(writeArgs[0]);
+          if (fail("write")) {
+            await target.writeFile('{"interrupted":');
+            throw new Error("fixture journal write failed");
+          }
+          return target.writeFile(...writeArgs);
+        };
+        if (key === "sync") return async () => {
+          const stage = directory ? "directory-sync" : "file-sync";
+          journalFs.events.push(stage);
+          if (fail(stage)) throw new Error(`fixture journal ${stage} failed`);
+          return target.sync();
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+    },
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      if (owned(args[1])) {
+        journalFs.events.push("rename");
+        if (fail("rename")) throw new Error("fixture journal rename failed");
+      }
+      return actual.rename(...args);
+    },
+  };
+});
 vi.mock("./antigravity-journey-config.js", async original => ({ ...await original<typeof import("./antigravity-journey-config.js")>(),
   loadAntigravityJourneyConfig: async () => scenario.config }));
 vi.mock("./antigravity-journey-fixtures.js", async original => ({ ...await original<typeof import("./antigravity-journey-fixtures.js")>(),
@@ -47,6 +112,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const outputs: string[] = [];
 let originalExitCode: typeof process.exitCode;
 beforeEach(() => {
+  journalFs.directory = ""; journalFs.fault = ""; journalFs.events = []; journalFs.snapshots = []; journalFs.gate = undefined;
   originalExitCode = process.exitCode;
   scenario.authReads = 0; scenario.prepare.mockReset(); scenario.flow.mockReset(); scenario.close.mockReset();
   scenario.cleanup.mockReset();
@@ -68,6 +134,65 @@ afterEach(async () => {
 });
 
 const executions = () => selectRunnerExecutions(parseRunnerSelectors(["--id", ANTIGRAVITY_JOURNEY_EXECUTION]), runnerMatrix);
+async function resourceJournal() {
+  const directory = await mkdtemp(path.join(tmpdir(), "antigravity-owned-journal-"));
+  outputs.push(directory);
+  const file = path.join(directory, "owned-resources.json");
+  const resources: AntigravityJourneyResources = { version: 1, executionId: ANTIGRAVITY_JOURNEY_EXECUTION,
+    origin: scenario.config.target.baseURL, companyId: scenario.config.target.companyId, environmentId: scenario.config.target.environmentId,
+    connectionId: scenario.config.savedConnection.id, agentName: "Antigravity QA abcdef123456", runIds: [], retained: false,
+    setupProbe: "not_started", processes: {} };
+  await writeFile(file, JSON.stringify(resources), { mode: 0o600 });
+  journalFs.directory = directory;
+  return { directory, file, resources, persist: createAntigravityResourceWriter(file) };
+}
+it.each(["write", "file-sync", "rename"])("preserves the previous real ownership journal when replacement %s fails", async fault => {
+  const f = await resourceJournal();
+  const previous = await readFile(f.file, "utf8");
+  f.resources.agentId = "66666666-6666-4666-8666-666666666666";
+  journalFs.fault = fault;
+  await expect(f.persist(f.resources)).rejects.toThrow(`fixture journal ${fault} failed`);
+  expect(await readFile(f.file, "utf8")).toBe(previous);
+  expect(await readdir(f.directory)).toEqual(["owned-resources.json"]);
+  await f.persist(f.resources);
+  expect(JSON.parse(await readFile(f.file, "utf8")).agentId).toBe(f.resources.agentId);
+});
+it("requires private synced replacement and directory sync before ownership journaling succeeds", async () => {
+  const f = await resourceJournal();
+  await f.persist(f.resources);
+  expect((await stat(f.file)).mode & 0o777).toBe(0o600);
+  expect(journalFs.events).toEqual(["file-open", "write", "file-sync", "rename", "directory-open", "directory-sync"]);
+  journalFs.fault = "directory-sync";
+  f.resources.agentId = "66666666-6666-4666-8666-666666666666";
+  await expect(f.persist(f.resources)).rejects.toThrow("fixture journal directory-sync failed");
+  expect(JSON.parse(await readFile(f.file, "utf8")).agentId).toBe(f.resources.agentId);
+  expect(await readdir(f.directory)).toEqual(["owned-resources.json"]);
+});
+it("serializes real ownership replacements and captures each snapshot before later mutations", async () => {
+  const f = await resourceJournal();
+  let entered!: () => void, release!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  journalFs.gate = { entered, wait: new Promise<void>(resolve => { release = resolve; }), used: false };
+  const first = f.persist(f.resources);
+  await waiting;
+  const pending = (await readdir(f.directory)).filter(file => file !== "owned-resources.json");
+  const pendingModes = await Promise.all(pending.map(async file => (await stat(path.join(f.directory, file))).mode & 0o777));
+  f.resources.agentId = "66666666-6666-4666-8666-666666666666";
+  const second = f.persist(f.resources);
+  f.resources.issueId = "88888888-8888-4888-8888-888888888888";
+  const third = f.persist(f.resources);
+  release();
+  await Promise.all([first, second, third]);
+  expect(pending).toHaveLength(1);
+  expect(pendingModes).toEqual([0o600]);
+  expect(journalFs.snapshots).toHaveLength(3);
+  expect(journalFs.snapshots[0]).not.toHaveProperty("agentId");
+  expect(journalFs.snapshots[1]).toMatchObject({ agentId: f.resources.agentId });
+  expect(journalFs.snapshots[1]).not.toHaveProperty("issueId");
+  expect(journalFs.snapshots[2]).toMatchObject({ agentId: f.resources.agentId, issueId: f.resources.issueId });
+  expect(JSON.parse(await readFile(f.file, "utf8"))).toMatchObject({ agentId: f.resources.agentId, issueId: f.resources.issueId });
+  expect(journalFs.events).toEqual(Array.from({ length: 3 }, () => ["file-open", "write", "file-sync", "rename", "directory-open", "directory-sync"]).flat());
+});
 it("blocks a measured attempt after assisted board login before agent or provider setup and retains a valid failed report", async () => {
   const output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot }); outputs.push(output);
   expect(scenario.prepare).not.toHaveBeenCalled(); expect(scenario.flow).not.toHaveBeenCalled();

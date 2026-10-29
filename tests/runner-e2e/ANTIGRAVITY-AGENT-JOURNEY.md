@@ -242,9 +242,18 @@ safe provenance; any public projection remains the existing sanitizer's allowlis
 
 ## Cleanup and interrupted recovery
 
-The campaign journals `owned-resources.json` as measured creation succeeds,
-before later task dispatch. The receipt binds target/company, execution/attempt
-and immutable created resources. Cleanup stops only owned active work, verifies
+Before forwarding the ordinary wizard's draft POST unchanged, the campaign
+journals only its future `setupId`, exact company/name/origin, intended harness
+and preflight browser-user identity. It does not store the full request body or
+credentials. The private journal serializes snapshots, fsyncs a private temporary
+file, atomically renames it, and fsyncs its directory; failure aborts forwarding.
+The response must match that future ID and creator. If the response is lost,
+recovery reads that exact ID, verifies company/name/creator and uniqueness, then
+persists the verified ID before cleanup mutations. A pending creation returning
+404 remains unconfirmed; a name match alone grants no ownership. Existing
+receipts with a known response and no new optional witness remain supported.
+The receipt binds target/company, execution/attempt and immutable created
+resources before later task dispatch. Cleanup stops only owned active work, verifies
 settlement and native retirement, then pauses/removes the owned agent according
 to `retainAgent`. Supplied company/environment/browser identity and saved Google
 connection/default grant remain intact and are reverified. It never revokes a

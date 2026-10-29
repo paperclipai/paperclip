@@ -1,6 +1,9 @@
 /** Credential-free calibration of the measured selectors in a real browser.
  * Synthetic loopback HTML is deliberately not live Antigravity qualification. */
 import { createServer } from "node:http";
+import { captureAntigravityAgentDraft } from "./antigravity-journey-flow.js";
+import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
+import type { AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
 import { chromium, type Page } from "@playwright/test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
@@ -121,8 +124,55 @@ export async function runAntigravityBrowserCalibration(page: Page) {
     createRoot(document.getElementById('artifact-root')).render(<ArtifactCalibration />);
   ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
     loader: { ".svg": "dataurl" }, define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent" });
-  const server = createServer((request, response) => {
+  // Render the shipped wizard and actual agentsApi: only the selected-company
+  // context is fixed. All draft creation crosses the real browser POST boundary.
+  const creationCompanyId = "33333333-3333-4333-8333-333333333333", creatorUserId = "synthetic-user";
+  const creationName = "Antigravity QA 0123456789ab";
+  const creationBundle = await build({ stdin: { loader: "tsx", resolveDir: path.resolve(import.meta.dirname, "../../ui"), contents: `
+    import React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+    import { AgentBasicsDialog } from './src/components/new-agent/AgentBasicsDialog';
+    const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    createRoot(document.getElementById('creation-root')).render(<QueryClientProvider client={cache}>
+      <AgentBasicsDialog open onClose={() => {}} onContinue={() => {}} />
+    </QueryClientProvider>);
+  ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
+    loader: { ".svg": "dataurl" }, define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent",
+    plugins: [{ name: "selected-company-calibration", setup(build) {
+      build.onResolve({ filter: /CompanyContext$/ }, () => ({ path: "selected-company", namespace: "calibration" }));
+      build.onLoad({ filter: /.*/, namespace: "calibration" }, () => ({ contents: `export const useCompany = () => ({ selectedCompanyId: '${creationCompanyId}' });`, loader: "js" }));
+    } }] });
+  let persistedCreation: Record<string, unknown> | undefined;
+  let creationMode: "normal" | "lost-response" | "wrong-response-id" | "foreign-response-creator" | "malformed-response" = "normal";
+  const receivedCreatePaths: string[] = [];
+  const creationRequests: Array<{ body: Record<string, any>; raw: string; durableBeforeForward: boolean }> = [];
+  const server = createServer(async (request, response) => {
     const name = new URL(request.url ?? "/", "http://localhost").pathname.slice(1);
+    if (request.method === "POST" && /^api\/companies\/[^/]+\/agents$/u.test(name)) receivedCreatePaths.push(name);
+    if (name === "creation-client.js") { response.writeHead(200, { "Content-Type": "text/javascript" }).end(creationBundle.outputFiles[0]!.text); return; }
+    if (name === "creation") { response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><html><body><div id="creation-root"></div><script src="/creation-client.js"></script></body></html>'); return; }
+    if (name === "api/instance/settings/experimental") { response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ enableNativeRunner: true })); return; }
+    if (name === "api/adapters") { response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify([{ type: "paperclip_runner", loaded: true, candidateHarnesses: [{ agent: "antigravity", model }] }])); return; }
+    if (name === `api/companies/${creationCompanyId}/agents`) {
+      if (request.method === "POST") {
+        let raw = ""; for await (const chunk of request) raw += chunk;
+        const body = JSON.parse(raw);
+        const expected = { setupId: body.setupId, companyId: creationCompanyId, agentName: body.name, provider: "antigravity", creatorUserId, origin: `http://${request.headers.host}` };
+        creationRequests.push({ body, raw, durableBeforeForward: persistedCreation != null && Object.keys(persistedCreation).length === 6 && Object.entries(expected).every(([key, value]) => persistedCreation![key] === value) });
+        // Simulate a committed row whose response is lost, without re-sending
+        // the POST or invoking any agent/provider work.
+        if (creationMode === "lost-response") {
+          response.writeHead(201, { "Content-Type": "application/json", "Content-Length": "1000" });
+          response.flushHeaders(); response.write('{"id":');
+          setTimeout(() => response.destroy(), 25); return;
+        }
+        if (creationMode === "malformed-response") { response.writeHead(201, { "Content-Type": "application/json" }).end("{"); return; }
+        response.writeHead(201, { "Content-Type": "application/json" }).end(JSON.stringify({ ...body, id: creationMode === "wrong-response-id" ? artifactId : body.setupId,
+          companyId: creationCompanyId, createdByUserId: creationMode === "foreign-response-creator" ? "another-user" : creatorUserId, lifecycleState: "draft" })); return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify([{ id: followupId, companyId: creationCompanyId, role: "ceo", status: "idle" }])); return;
+    }
     if (/^api\/attachments\/[^/]+\/content$/u.test(name)) {
       const referer = String(request.headers.referer ?? "");
       const bytes = referer.includes("artifact-bad-download") ? Buffer.from("C".repeat(artifactBytes.length)) : name.includes(followupId) ? followupBytes : artifactBytes;
@@ -140,8 +190,128 @@ export async function runAntigravityBrowserCalibration(page: Page) {
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  let removeCreationObserver: (() => void) | undefined;
   try {
     const visit = async (fixture: string) => page.goto(`${origin}/${fixture}`);
+    const creationResources = (): AntigravityJourneyResources => ({ version: 1, executionId: ANTIGRAVITY_JOURNEY_EXECUTION, origin, companyId: creationCompanyId,
+      environmentId: artifactId, connectionId: followupId, agentName: creationName, runIds: [], processes: {}, retained: false, setupProbe: "not_started" });
+    const beginCreation = async () => {
+      await visit("creation");
+      const dialog = page.getByRole("dialog", { name: "Meet your next agent", exact: true });
+      await dialog.getByRole("textbox", { name: "Agent name", exact: true }).fill(creationName);
+      return () => dialog.getByRole("button", { name: "Choose adapter", exact: true }).click();
+    };
+    const originalPostBodies: string[] = [];
+    const observeCreation = (request: import("@playwright/test").Request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === `/api/companies/${creationCompanyId}/agents`) originalPostBodies.push(request.postData()!);
+    };
+    page.on("request", observeCreation); removeCreationObserver = () => page.off("request", observeCreation);
+    const owned = creationResources(), submit = await beginCreation();
+    let writes = 0;
+    const draft = await captureAntigravityAgentDraft(page, owned, async () => { writes++; persistedCreation = structuredClone((owned as any).agentCreationRequest); }, submit, creatorUserId);
+    assert.equal(writes, 1, "persist the safe creation identity once before network forwarding");
+    assert.equal(creationRequests.length, 1);
+    assert.equal(creationRequests[0]!.durableBeforeForward, true, "creation witness must be durable before the server receives the unchanged POST");
+    assert.deepEqual((owned as any).agentCreationRequest, { setupId: draft.id, companyId: creationCompanyId, agentName: creationName, provider: "antigravity", creatorUserId, origin });
+    assert.equal(creationRequests[0]!.raw, originalPostBodies[0], "forward the original UI POST body without mutation");
+    assert.equal(creationRequests[0]!.body.setupId, draft.id);
+    assert.equal(creationRequests[0]!.body.metadata.setupAdapterPending, true);
+    assert.equal(creationRequests[0]!.body.runtimeConfig.heartbeat.enabled, false);
+    assert.equal(JSON.stringify(persistedCreation).includes("runtimeConfig"), false);
+    await page.getByRole("dialog", { name: "Choose an adapter", exact: true }).waitFor({ state: "visible" });
+    await page.locator('input[type="radio"][value="antigravity_runtime"]').waitFor({ state: "attached" });
+    // A storage barrier proves that request forwarding joins the durable write.
+    const gateOwned = creationResources(), gateSubmit = await beginCreation(), beforeGate = creationRequests.length;
+    let releaseWrite!: () => void, enteredWrite!: () => void;
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const writeEntered = new Promise<void>(resolve => { enteredWrite = resolve; });
+    const gated = captureAntigravityAgentDraft(page, gateOwned, async () => {
+      enteredWrite(); await writeGate; persistedCreation = structuredClone((gateOwned as any).agentCreationRequest);
+    }, gateSubmit, creatorUserId);
+    try { await writeEntered; assert.equal(creationRequests.length, beforeGate, "do not forward while persistence is blocked"); }
+    finally { releaseWrite(); }
+    await gated;
+    assert.equal(creationRequests.at(-1)!.durableBeforeForward, true);
+    assert.equal(creationRequests.at(-1)!.raw, originalPostBodies.at(-1));
+    const storageOwned = creationResources(), storageSubmit = await beginCreation(), beforeStorageFailure = creationRequests.length;
+    const storageError = new Error("synthetic creation receipt storage unavailable");
+    await assert.rejects(captureAntigravityAgentDraft(page, storageOwned, async () => { throw storageError; }, storageSubmit, creatorUserId), error => error === storageError);
+    assert.equal(creationRequests.length, beforeStorageFailure, "failed persistence must abort before any server commit");
+    for (const mode of ["wrong-response-id", "foreign-response-creator", "malformed-response"] as const) {
+      creationMode = mode; persistedCreation = undefined;
+      const wrong = creationResources(), wrongSubmit = await beginCreation();
+      await assert.rejects(captureAntigravityAgentDraft(page, wrong, async () => { persistedCreation = structuredClone((wrong as any).agentCreationRequest); }, wrongSubmit, creatorUserId));
+      assert.equal(creationRequests.at(-1)!.durableBeforeForward, true);
+      assert.equal((wrong as any).agentCreationRequest.setupId, creationRequests.at(-1)!.body.setupId);
+      assert.equal(wrong.agentId, undefined, "an untrusted response cannot replace the exact request identity");
+    }
+    creationMode = "lost-response"; persistedCreation = undefined;
+    const lost = creationResources(), lostSubmit = await beginCreation(), beforeLost = creationRequests.length;
+    page.setDefaultTimeout(1500);
+    try {
+      await assert.rejects(captureAntigravityAgentDraft(page, lost, async () => { persistedCreation = structuredClone((lost as any).agentCreationRequest); }, lostSubmit, creatorUserId));
+      assert.equal(creationRequests.length, beforeLost + 1, "a lost response must not replay creation");
+      assert.equal(creationRequests.at(-1)!.durableBeforeForward, true);
+      assert.equal((lost as any).agentCreationRequest.setupId, creationRequests.at(-1)!.body.setupId);
+      assert.equal(lost.agentId, undefined);
+    } finally { page.setDefaultTimeout(10000); }
+    creationMode = "normal";
+    for (const patch of [{ setupId: "not-a-uuid" }, { name: "Existing user agent" }, { setupId: undefined }, { company: artifactId }]) {
+      const malformed = creationResources(); const before: number = receivedCreatePaths.length;
+      let malformedWrites = 0;
+      await assert.rejects(captureAntigravityAgentDraft(page, malformed, async () => { malformedWrites++; }, async () => {
+        await page.evaluate(({ route, body }) => { void fetch(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); },
+          { route: `/api/companies/${"company" in patch ? patch.company : creationCompanyId}/agents`, body: { setupId: artifactId, name: creationName, ...patch } });
+      }, creatorUserId));
+      assert.equal(malformedWrites, 0); assert.equal(receivedCreatePaths.length, before, "reject an invalid create identity before forwarding");
+      assert.equal((malformed as any).agentCreationRequest, undefined);
+    }
+    // A durable subset must never absorb unrelated fields from an outgoing body.
+    const privateBodyOwned = creationResources(); let privateWrite: string | undefined;
+    await captureAntigravityAgentDraft(page, privateBodyOwned, async () => {
+      persistedCreation = structuredClone((privateBodyOwned as any).agentCreationRequest); privateWrite = JSON.stringify(privateBodyOwned);
+    }, async () => {
+      await page.evaluate(({ route, body }) => { void fetch(route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); },
+        { route: `/api/companies/${creationCompanyId}/agents`, body: { setupId: artifactId, name: creationName, runtimeConfig: { env: { SYNTHETIC_PRIVATE_VALUE: "must-never-be-persisted" } } } });
+    }, creatorUserId);
+    assert.equal(privateWrite!.includes("must-never-be-persisted"), false);
+    assert.equal(creationRequests.at(-1)!.body.runtimeConfig.env.SYNTHETIC_PRIVATE_VALUE, "must-never-be-persisted", "the original request still forwards unchanged");
+    const submitError = new Error("synthetic ordinary submit failure");
+    await assert.rejects(captureAntigravityAgentDraft(page, creationResources(), async () => {}, async () => { throw submitError; }, creatorUserId), error => error === submitError);
+    const abortedOwned = creationResources(), abortSubmit = await beginCreation(), beforeAbort = creationRequests.length;
+    const abortError = new Error("synthetic route abort cleanup failure");
+    const failingAbortPage = new Proxy(page, { get(target, key) {
+      if (key === "route") return (url: any, handler: any) => target.route(url, (route, request) => handler(new Proxy(route, { get(owner, operation) {
+        if (operation === "abort") return async (...args: any[]) => { await owner.abort(...args); throw abortError; };
+        const value = Reflect.get(owner, operation); return typeof value === "function" ? value.bind(owner) : value;
+      } }), request));
+      if (key === "unroute") return (url: any) => target.unroute(url);
+      const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    await assert.rejects(captureAntigravityAgentDraft(failingAbortPage, abortedOwned, async () => { throw storageError; }, abortSubmit, creatorUserId), error => error === storageError);
+    assert.equal(creationRequests.length, beforeAbort, "an abort-cleanup error cannot forward an unjournaled create");
+    const teardownError = new Error("synthetic route teardown failure");
+    const failingTeardownPage = new Proxy(page, { get(target, key) {
+      if (key === "unroute") return async () => { throw teardownError; };
+      const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    try {
+      await assert.rejects(captureAntigravityAgentDraft(failingTeardownPage, creationResources(), async () => {}, async () => { throw submitError; }, creatorUserId), error => error === submitError);
+    } finally { await page.unrouteAll({ behavior: "wait" }); }
+    const teardownOwned = creationResources(), teardownSubmit = await beginCreation();
+    try {
+      await assert.rejects(captureAntigravityAgentDraft(failingTeardownPage, teardownOwned, async () => {
+        persistedCreation = structuredClone((teardownOwned as any).agentCreationRequest);
+      }, teardownSubmit, creatorUserId), error => error === teardownError);
+      assert.equal(creationRequests.at(-1)!.durableBeforeForward, true);
+      assert.equal((teardownOwned as any).agentCreationRequest.setupId, creationRequests.at(-1)!.body.setupId);
+    } finally { await page.unrouteAll({ behavior: "wait" }); }
+    // After every error, a new ordinary wizard request still passes exactly one
+    // interceptor. This also detects a leaked route from the failed attempt.
+    const afterFailure = creationResources(), afterSubmit = await beginCreation(); let afterWrites = 0;
+    await captureAntigravityAgentDraft(page, afterFailure, async () => { afterWrites++; persistedCreation = structuredClone((afterFailure as any).agentCreationRequest); }, afterSubmit, creatorUserId);
+    assert.equal(afterWrites, 1); assert.equal(creationRequests.at(-1)!.durableBeforeForward, true);
+    removeCreationObserver(); removeCreationObserver = undefined;
     await visit("dashboard"); await openAntigravityAgentFromRoster(page, agent, 300);
     assert.equal(new URL(page.url()).pathname, "/owned-agent");
     for (const fixture of ["artifact", "artifact-compact", "artifact-button-row"]) {
@@ -201,8 +371,9 @@ export async function runAntigravityBrowserCalibration(page: Page) {
       try { await assertAntigravityFileActivity(page, "synthetic-run", 300); } catch { rejected = true; }
       assert.ok(rejected, `${fixture}: ${await page.locator("body").innerText()}`);
     }
-    console.log("PASS Antigravity browser calibration: production rich/compact artifact cards and rows, exact attachment viewer/download identity+61/119B, hidden/duplicate/wrong-ID/size/bytes rejection, both task sidebar layouts; More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; exact run-bound completed read/edit/write, stale-first-only rejection/current-run mixed-history acceptance, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
+    console.log("PASS Antigravity browser calibration: production AgentBasicsDialog/agentsApi safe creation witness durable before unchanged POST, persistence gate/failure, lost201-body recovery identity, malformed/foreign request and response rejection, no raw-body/env persistence, abort/unroute primary-error preservation; production rich/compact artifact cards and rows, exact attachment viewer/download identity+61/119B, hidden/duplicate/wrong-ID/size/bytes rejection, both task sidebar layouts; More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; exact run-bound completed read/edit/write, stale-first-only rejection/current-run mixed-history acceptance, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
   } finally {
+    removeCreationObserver?.();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 }

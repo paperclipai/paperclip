@@ -147,7 +147,7 @@ fixture setup. Every one of the 47 numbered steps appears once below.
 | A04 | Roster has New Agent | measured / agent-roster | observation | Correct roster creation control visible |
 | A05 | Click New Agent; name required | measured / name-agent | retain | Visible dialog and disabled adapter action |
 | A06 | Enter distinct name | measured / name-agent | retain | Attempt-owned name enables continuation |
-| A07 | Choose adapter | measured / normal-picker | retain | Ordinary grid; Advanced remains collapsed |
+| A07 | Choose adapter | measured / normal-picker | retain + recovery regression | Ordinary grid, Advanced collapsed; durable request identity before forwarding; response bound to future ID/creator |
 | A08 | Scroll to Google card | measured / normal-picker | observation | Google Antigravity card outside Advanced |
 | A09 | Select Google card | measured / select-antigravity | retain | Configuration action becomes enabled |
 | A10 | Configure agent | measured / google-connection | retain | Google-specific connection choices |
@@ -227,8 +227,15 @@ prices survive packaging as unknown cost rather than free work. No recurrence
 is requested.
 
 Supplied company, environment, browser user, saved Google connection and default
-grant are retained. The new measured agent, task and any owned active work are
-journaled incrementally. Teardown cancels/stops only owned work, waits for
+grant are retained. The ordinary draft POST is forwarded unchanged only after
+its safe identity subset is durably journaled: future setup ID, company/name,
+origin, intended harness and preflight creator. Serialized private temp-file
+fsync, atomic rename and directory fsync keep later interruptions from truncating
+that identity. A lost response can be recovered only by exact-ID and creator
+readback with unique company/name binding; pending 404 stays unconfirmed. No
+historical source request is inferred or reconstructed from a later agent row.
+The new measured agent, task and any owned active work are journaled incrementally.
+Teardown cancels/stops only owned work, waits for
 settlement and physical retirement, then removes or pauses/retains the owned
 agent as declared. Retained task history is inspectable; it does not authorize
 future dispatch. A forced interruption retains a private ownership receipt for

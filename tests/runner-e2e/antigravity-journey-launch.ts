@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, loadAntigravityJourneyConfig } from "./antigravity-journey-config.js";
@@ -15,6 +15,32 @@ import { ConnectionApi, connectionDelay, verifyConnectionTarget } from "./connec
 import { FixtureRegistry } from "./fixture-registry.js";
 import { assertSecretFree, sanitizeJson } from "./redaction.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
+
+export function createAntigravityResourceWriter(file: string) {
+  let writes = Promise.resolve();
+  return async (resources: AntigravityJourneyResources) => {
+    const text = JSON.stringify(sanitizeJson(resources, []), null, 2) + "\n";
+    assertSecretFree(text, [], "owned-resources.json");
+    const next = writes.catch(() => {}).then(async () => {
+      const directory = path.dirname(file), parent = await lstat(directory);
+      if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o077)
+        || (process.getuid && parent.uid !== process.getuid())) throw new ConnectionFailure("unsafe_antigravity_resource_directory");
+      const existing = await lstat(file).catch(error => { if (error.code === "ENOENT") return; throw error; });
+      if (existing && (!existing.isFile() || existing.isSymbolicLink() || (existing.mode & 0o077)
+        || (process.getuid && existing.uid !== process.getuid()))) throw new ConnectionFailure("unsafe_antigravity_resource_file");
+      const temporary = path.join(directory, `.owned-resources-${randomBytes(12).toString("hex")}.tmp`);
+      const handle = await open(temporary, "wx", 0o600);
+      try {
+        try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
+        await rename(temporary, file);
+        const parentHandle = await open(directory, "r");
+        try { await parentHandle.sync(); } finally { await parentHandle.close(); }
+      } finally { await rm(temporary, { force: true }); }
+    });
+    writes = next;
+    await next;
+  };
+}
 
 type Row = Record<string, any>;
 /** Known charges are an observed stop threshold. Missing subscription prices
@@ -82,7 +108,8 @@ export async function runAntigravityJourneyCampaign(input: {
     let api: ConnectionApi | undefined;
     let operationOnly = Boolean(input.preflight || input.recoverFile), operationPassed = false;
     const assertActive = () => { if (signal.aborted) throw new ConnectionBlock("blocked_target", campaignSignal.aborted ? "test_interrupted" : "journey_deadline_reached"); };
-    const persistResources = () => save("owned-resources.json", resources);
+    const writeResources = createAntigravityResourceWriter(path.join(output, "owned-resources.json"));
+    const persistResources = () => writeResources(resources);
     const captureRun = async (run: Row) => {
       if (typeof run.id !== "string" || run.companyId !== resources.companyId || run.agentId !== resources.agentId)
         throw new ConnectionFailure("observed_run_owner_mismatch");
@@ -185,7 +212,7 @@ export async function runAntigravityJourneyCampaign(input: {
       evidence.outcome = error instanceof ConnectionBlock ? error.reason : "failed";
       result.failureClass = error instanceof ConnectionBlock ? "permanent_infrastructure" : "candidate_failure";
       if (resources.setupProbe === "pending") resources.setupProbe = "retirement_unconfirmed";
-      if (evidence.phase === "recovery") { result.cleanup = "failed"; result.failureClass = "cleanup_failure"; resources.retained = Boolean(resources.agentId); }
+      if (evidence.phase === "recovery") { result.cleanup = "failed"; result.failureClass = "cleanup_failure"; resources.retained = Boolean(resources.agentId || resources.agentCreationRequest); }
       result.error = error instanceof ConnectionBlock ? error.code : error instanceof ConnectionFailure ? error.message
         : error instanceof Error && /^antigravity_evidence_[a-z0-9_]+$/.test(error.message) ? error.message : `${evidence.phase}_failed`;
       let failureScreenshot = false;
@@ -209,7 +236,7 @@ export async function runAntigravityJourneyCampaign(input: {
       try { await fixtures?.teardown(); if (result.cleanup !== "failed") result.cleanup = "passed"; }
       catch (error) { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure";
         const code = error instanceof AggregateError && error.errors[0] instanceof ConnectionFailure ? error.errors[0].message : "fixture_cleanup_failed";
-        result.error = `${result.error ? `${result.error}; ` : ""}${code}`; resources.retained = Boolean(resources.agentId); await persistResources(); }
+        result.error = `${result.error ? `${result.error}; ` : ""}${code}`; resources.retained = Boolean(resources.agentId || resources.agentCreationRequest); await persistResources(); }
       try { await browser?.close(); }
       catch { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
       result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);

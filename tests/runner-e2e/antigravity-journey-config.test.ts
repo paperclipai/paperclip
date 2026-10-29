@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
+import { ConnectionFailure } from "./connection-config.js";
 import { antigravityNoLaunchReceipt, cleanupAntigravityJourney, observeAntigravityRun, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources, type AntigravityProcessObservers } from "./antigravity-journey-fixtures.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { ConnectionApi } from "./connection-target.js";
@@ -475,4 +476,87 @@ it("owned deferred cleanup reuses a reservation-only UUID while its native retry
   f.run.resultJson = { startupCancellation: { cancellationRequestId: requestId } };
   await f.start(); expect(f.post).toHaveBeenCalledOnce(); expect(f.post.mock.calls[0]![1]).toEqual({ cancellationRequestId: requestId });
   expect(f.cleanup.runs).toBe(true);
+});
+
+function interruptedAgentCreation() {
+  const owned = resources(); delete owned.agentId;
+  const witness = { setupId: agentId, companyId, agentName: owned.agentName, provider: "antigravity", creatorUserId: "synthetic-user", origin: owned.origin };
+  (owned as any).agentCreationRequest = witness;
+  let lifecycleState = "draft", persisted = false;
+  const record = () => ({ id: agentId, companyId, name: owned.agentName, createdByUserId: "synthetic-user", lifecycleState });
+  const get = vi.fn(async (route: string): Promise<Record<string, any> | Record<string, any>[]> => {
+    if (route === `/api/companies/${companyId}/agents`) return [record()];
+    if (route === `/api/agents/${agentId}?companyId=${companyId}`) return record();
+    if (route.includes("heartbeat-runs?")) return [];
+    if (route === `/api/agents/${agentId}`) return record();
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error(`Unexpected creation recovery read ${route}`);
+  });
+  const patch = vi.fn(async (route: string) => {
+    expect(route).toBe(`/api/agents/${agentId}`); expect(persisted).toBe(true); lifecycleState = "paused";
+  });
+  const post = vi.fn(async (route: string) => { expect(route).toBe(`/api/agents/${agentId}/terminate`); lifecycleState = "terminated"; });
+  const remove = vi.fn();
+  const persistResources = vi.fn(async () => { expect(owned.agentId).toBe(agentId); persisted = true; });
+  return { owned, witness, record, get, patch, post, remove, persistResources };
+}
+it("parses the minimal pre-forward creation witness without storing the UI request body", () => {
+  const f = interruptedAgentCreation();
+  expect(parseAntigravityOwnedResources(f.owned, parseAntigravityJourneyConfig(fixture()))).toMatchObject({ agentCreationRequest: f.witness });
+});
+it("recovers a committed UI draft by exact setupId before any pause or purge", async () => {
+  const f = interruptedAgentCreation(), cleanup = { agent: false, runs: false, connectionPreserved: false };
+  await cleanupAntigravityJourney({ api: { get: f.get, patch: f.patch, post: f.post, delete: f.remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: f.owned, cleanup, persistResources: f.persistResources, captureRun: async () => {} });
+  expect(f.owned.agentId).toBe(agentId);
+  expect(f.get).toHaveBeenCalledWith(`/api/agents/${agentId}?companyId=${companyId}`);
+  expect(f.persistResources).toHaveBeenCalled(); expect(f.remove).toHaveBeenCalledWith(`/api/agents/${agentId}`);
+  expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true });
+});
+it.each([
+  ["foreign company", { companyId: environmentId }], ["different name", { agentName: "Antigravity QA fedcba987654" }],
+  ["wrong provider", { provider: "codex" }], ["noncanonical setup UUID", { setupId: "NOT-A-UUID" }],
+  ["uppercase setup UUID", { setupId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }],
+  ["foreign origin", { origin: "http://127.0.0.1:9999" }], ["foreign creator", { creatorUserId: "another-user" }], ["missing creator", { creatorUserId: undefined }],
+  ["extra private payload", { rawBody: { runtimeConfig: { env: { PRIVATE_VALUE: "never-store" } } } }],
+  ["mismatched known agent", { setupId: environmentId }],
+])("rejects a %s creation witness before recovery", (_label, patch) => {
+  const f = interruptedAgentCreation();
+  (f.owned as any).agentCreationRequest = { ...f.witness, ...patch };
+  if (_label === "mismatched known agent") f.owned.agentId = agentId;
+  expect(() => parseAntigravityOwnedResources(f.owned, parseAntigravityJourneyConfig(fixture()))).toThrow("invalid_antigravity_owned_resources");
+});
+it.each(["company", "name", "id", "creator", "missing-creator", "same-name-only", "duplicate-name"])("does not reclaim a creation draft with mismatched %s", async field => {
+  const f = interruptedAgentCreation(), originalGet = f.get.getMockImplementation()!;
+  f.get.mockImplementation(async route => {
+    if (route === `/api/companies/${companyId}/agents` && field === "same-name-only") return [{ ...f.record(), id: environmentId }];
+    if (route === `/api/companies/${companyId}/agents` && field === "duplicate-name") return [f.record(), { ...f.record(), id: environmentId }];
+    if (route === `/api/agents/${agentId}?companyId=${companyId}`) return { ...f.record(),
+      ...(field === "company" ? { companyId: environmentId } : field === "name" ? { name: "Existing user agent" } : field === "id" ? { id: environmentId } : field === "creator" ? { createdByUserId: "another-user" } : field === "missing-creator" ? { createdByUserId: undefined } : {}) };
+    return originalGet(route);
+  });
+  await expect(cleanupAntigravityJourney({ api: { get: f.get, patch: f.patch, post: f.post, delete: f.remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: f.owned, cleanup: { agent: false, runs: false, connectionPreserved: false },
+    persistResources: f.persistResources, captureRun: async () => {} })).rejects.toThrow(/cleanup_.*(?:mismatch|unconfirmed)/u);
+  expect(f.patch).not.toHaveBeenCalled(); expect(f.post).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled();
+});
+it("keeps a witnessed404 unconfirmed rather than treating an in-flight creation as absent", async () => {
+  const f = interruptedAgentCreation(), cleanup = { agent: false, runs: false, connectionPreserved: false };
+  f.get.mockImplementation(async route => {
+    if (route === `/api/companies/${companyId}/agents`) return [];
+    if (route === `/api/agents/${agentId}?companyId=${companyId}`) throw new ConnectionFailure("api_status_404");
+    throw new Error(`Unexpected witnessed404 read ${route}`);
+  });
+  await expect(cleanupAntigravityJourney({ api: { get: f.get, patch: f.patch, post: f.post, delete: f.remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: f.owned, cleanup, persistResources: f.persistResources, captureRun: async () => {} }))
+    .rejects.toThrow(/cleanup_agent_creation_unconfirmed/u);
+  expect(f.patch).not.toHaveBeenCalled(); expect(f.post).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled();
+  expect(cleanup.agent).toBe(false); expect(cleanup.runs).toBe(false);
+});
+it("does not mutate a recovered draft if its exact identity cannot be persisted", async () => {
+  const f = interruptedAgentCreation(); f.persistResources.mockRejectedValue(new Error("owned creation receipt write failed"));
+  await expect(cleanupAntigravityJourney({ api: { get: f.get, patch: f.patch, post: f.post, delete: f.remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: f.owned, cleanup: { agent: false, runs: false, connectionPreserved: false },
+    persistResources: f.persistResources, captureRun: async () => {} })).rejects.toThrow("owned creation receipt write failed");
+  expect(f.patch).not.toHaveBeenCalled(); expect(f.post).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled();
 });
