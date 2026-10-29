@@ -11,10 +11,12 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(async () => null),
 }));
 
+const mockAccessDecide = vi.hoisted(() => vi.fn(async () => ({ allowed: true }) as { allowed: boolean; reason?: string }));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
-    decide: vi.fn(async () => ({ allowed: true })),
+    decide: mockAccessDecide,
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({ getById: vi.fn(async () => null) }),
@@ -112,6 +114,7 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.count.mockResolvedValue(0);
     mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockAccessDecide.mockResolvedValue({ allowed: true });
   });
 
   it("passes a UUID parentId straight to the service without consulting getByIdentifier", async () => {
@@ -160,6 +163,28 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ error: "parent_not_found", identifier: "PAP-99999999" });
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
+  it("returns the same 404 for an identifier the caller cannot read", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValueOnce(
+      { id: parentUuid, identifier: parentIdentifier, companyId: "company-1" } as unknown as Awaited<
+        ReturnType<(typeof mockIssueService)["getByIdentifier"]>
+      >,
+    );
+    mockAccessDecide.mockImplementation(async (input: unknown) =>
+      (input as { action?: string }).action === "issue:read"
+        && (input as { resource?: { issueId?: string } }).resource?.issueId === parentUuid
+        ? { allowed: false, reason: "deny_issue_private" }
+        : { allowed: true });
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query({ parentId: parentIdentifier });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "parent_not_found", identifier: parentIdentifier });
     expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 

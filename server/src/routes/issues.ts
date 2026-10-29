@@ -8055,24 +8055,29 @@ export function issueRoutes(
   // `parentId`, `parentIssueId` and `descendantOf` point at an issue, so they
   // also accept a human identifier (e.g. "PAP-4382"). Resolve it to the UUID
   // before the UUID validation; any other value still reaches that validation
-  // unchanged and gets its 422.
+  // unchanged and gets its 422. An issue the caller cannot read gets the same
+  // 404 as a missing one, so the filter cannot be used to probe for issues.
   async function resolveIssueIdentifierQueryParams(
-    query: Request["query"],
+    req: Request,
     companyId: string,
   ): Promise<
     | { ok: true; query: Record<string, unknown> }
     | { ok: false; body: { error: string; identifier: string } }
   > {
-    const resolved: Record<string, unknown> = { ...query };
+    const resolved: Record<string, unknown> = { ...req.query };
     for (const name of ["parentId", "parentIssueId", "descendantOf"] as const) {
-      const raw = query[name];
+      const raw = req.query[name];
       if (typeof raw !== "string") continue;
       const trimmed = raw.trim();
       if (trimmed.length === 0 || isUuidLike(trimmed)) continue;
       const identifier = normalizeIssueReferenceIdentifier(trimmed);
       if (!identifier) continue;
       const issue = await svc.getByIdentifier(identifier);
-      if (!issue || issue.companyId !== companyId) {
+      if (
+        !issue
+        || issue.companyId !== companyId
+        || !(await decideIssueAccess(req, issue, "issue:read")).allowed
+      ) {
         return {
           ok: false,
           body: {
@@ -8633,7 +8638,7 @@ export function issueRoutes(
       });
       return;
     }
-    const identifierQuery = await resolveIssueIdentifierQueryParams(req.query, companyId);
+    const identifierQuery = await resolveIssueIdentifierQueryParams(req, companyId);
     if (!identifierQuery.ok) {
       res.status(404).json(identifierQuery.body);
       return;
@@ -8893,7 +8898,7 @@ export function issueRoutes(
       return;
     }
 
-    const countIdentifierQuery = await resolveIssueIdentifierQueryParams(req.query, companyId);
+    const countIdentifierQuery = await resolveIssueIdentifierQueryParams(req, companyId);
     if (!countIdentifierQuery.ok) {
       res.status(404).json(countIdentifierQuery.body);
       return;
