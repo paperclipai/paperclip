@@ -356,7 +356,8 @@ test("every PR reader restores the crate after the dependency cache and marks it
 
 test("the Verify Paperclip Runner job restores the crate only in the lanes that build it", () => {
   const body = job(prWorkflow, "verify_paperclip_runner");
-  const lanes = [...body.matchAll(/- lane_label: (.+)\n\s+command: (.+)\n(\s+release_crate: (true)\n)?/g)].map(([, label, , , flag]) => [label, flag === "true"]);
+  const lanes = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
+    .verify_paperclip_runner.map((entry) => [entry.lane_label, entry.release_crate === true]);
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],

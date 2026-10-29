@@ -169,6 +169,59 @@ fails, or the diff is empty or may be truncated, the PR runs full CI. A
 notes-only PR stacked above other PRs also runs full CI, because its own diff
 does not include the lower PRs' code.
 
+For ordinary full-scope PRs, the routing job further selects affected suites
+using `turbo.json` and `.github/ci-task-matrix.json`. It downloads the planner
+and both definitions from one canonical master revision, without executing PR
+code. The comparison covers the tested merge commit. Both rename paths count;
+failed, empty, malformed, or potentially truncated comparisons select the full
+suite. Unclassified files also select full CI. Stack verification retains the
+existing scope policy and runs all suites whenever that policy requires them.
+Changes to global inputs, including the task graph, package scripts, workflows,
+and execution helpers, force full execution and disable result-cache restore and
+save for the entire PR diff. Later pushes cannot reuse results created under
+changed cache definitions.
+
+The repository variable `CI_INCREMENTAL_MODE` accepts `enabled` (the default),
+`shadow` (report selections but execute everything), or `full`. Add the `full-ci`
+label to force all checks on one PR. Authorized `profile-ci` runs also execute
+everything. Forced and shadow runs bypass task-result caches. Every routing run
+with a valid plan publishes affected and scheduled job counts with input reasons
+in its job summary. Required aggregates reject failed, cancelled, and unexpectedly
+skipped selected suites; the verify aggregate includes serialized tests and the
+canary dry run.
+The uncached typecheck job also runs the repository-wide CLI guidance safety
+guard. It still scans UI changes when unrelated server shards are omitted.
+
+General and serialized test suites and the standalone Rust suite use Turbo's
+content-addressed cache. An execution adapter maps selected lanes to the existing
+package scripts and their declared inputs. It selects tracked and non-ignored
+source files, so generated build outputs do not invalidate later task results.
+The test scripts keep responsibility
+for their build prerequisites. GitHub Actions stores
+these results in the PR's own cache scope, so a later push can reuse unchanged
+tasks without giving PRs write access to master caches. Input hashes include
+the relevant source trees, fixtures, scripts, manifests, resolved lockfile,
+environment, toolchain, and checkout path. Unclassified tracked file contents
+also enter the execution key, including changes inherited from a newer base.
+Revision-stamped builds, registry smoke tests, browser suites, and Runner lanes
+that perform integration checks retain their original uncached commands. The
+post-merge release verification workflow continues to execute the full suite.
+
+Inspect a proposed selection locally with `node .github/scripts/ci-plan.mjs origin/master HEAD`.
+Run the planner and workflow-contract tests with
+`node --test .github/scripts/tests/ci-plan.test.mjs`, and the real cache proof
+with `node --test scripts/ci/cache.integration.test.mjs` after installing dependencies.
+The separate Incremental CI qualification workflow exercises candidate changes
+on GitHub-hosted runners before the trusted master workflows adopt them.
+
+When a suite starts reading another package, asset, or runtime prompt, update
+its inputs in `turbo.json`. This includes filesystem reads as well as imports.
+Server tests inspect selected UI files, shared tests inspect UI logos, and Runner
+static/Vitest lanes include server integration tests. Keep those dependencies
+explicit. When changing shard layout, update `.github/ci-task-matrix.json` and
+the full fallback matrices in `pr-trusted.yml`; the contract tests require them
+to agree. Add new cache-affecting environment settings to `globalEnv`.
+
 The routing Fleet has two warm On-Demand runners and a four-runner ceiling.
 Test fleets cannot consume its runner slots. Hosted test queues therefore do
 not block AWS runner selection. A manual dispatch of `ci-routing.yml` on master

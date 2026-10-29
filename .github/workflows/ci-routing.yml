@@ -8,6 +8,8 @@ on:
         value: ${{ jobs.gate.outputs.runner }}
       full_ci:
         value: ${{ jobs.gate.outputs.full_ci }}
+      plan:
+        value: ${{ jobs.gate.outputs.plan }}
       profile_ci:
         value: ${{ jobs.gate.outputs.profile_ci }}
 
@@ -22,6 +24,7 @@ jobs:
     runs-on: ${{ vars.AWS_CI_ENABLED == 'true' && vars.AWS_CI_ROUTING_USER_IDS_SOURCE != '' && vars.AWS_CI_TRUSTED_USER_IDS == vars.AWS_CI_ROUTING_USER_IDS_SOURCE && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && ((github.event_name == 'pull_request' && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.pull_request.user.id)) && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.sender.id))) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.actor_id)))) && 'runs-on/fleet=paperclip-ci-routing-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
+      plan: ${{ steps.plan.outputs.plan }}
       runner: ${{ steps.route.outputs.runner }}
       full_ci: ${{ steps.scope.outputs.full_ci }}
       profile_ci: ${{ steps.profile.outputs.profile_ci }}
@@ -256,6 +259,8 @@ jobs:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PROFILE_CI: ${{ steps.profile.outputs.profile_ci }}
+          FORCE_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          CI_INCREMENTAL_MODE: ${{ vars.CI_INCREMENTAL_MODE || 'enabled' }}
           STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -326,11 +331,49 @@ jobs:
             reason='release notes only'
           fi
 
-          if [[ "${PROFILE_CI:-false}" == 'true' ]]; then
+          if [[ "${PROFILE_CI:-false}" == 'true' || "${FORCE_FULL_CI:-false}" == 'true' || "${CI_INCREMENTAL_MODE:-enabled}" == 'full' ]]; then
             full_ci='true'
-            reason='profile-ci requests the complete PR suite'
+            reason='profile-ci, full-ci or full mode requests the complete PR suite'
           fi
 
           echo "full_ci=$full_ci" >> "$GITHUB_OUTPUT"
           echo "::notice title=PR CI scope::$reason; full_ci=$full_ci"
 
+
+      - name: Plan affected CI tasks from trusted definitions
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_CI: ${{ steps.scope.outputs.full_ci }}
+          PROFILE_CI: ${{ steps.profile.outputs.profile_ci }}
+          FORCE_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          CI_INCREMENTAL_MODE: ${{ vars.CI_INCREMENTAL_MODE || 'enabled' }}
+          STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          fallback() { echo 'plan=' >> "$GITHUB_OUTPUT"; exit 0; }
+          [[ "$FULL_CI" == 'true' ]] || fallback
+          [[ "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
+          trusted="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" || fallback
+          [[ "$trusted" =~ ^[0-9a-f]{40}$ ]] || fallback
+          directory="$(mktemp -d)"
+          trap 'rm -rf "$directory"' EXIT
+          for file in .github/scripts/ci-plan.mjs .github/ci-task-matrix.json turbo.json; do
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "/repos/paperclipai/paperclip/contents/$file?ref=$trusted" \
+              > "$directory/${file##*/}" || fallback
+          done
+          gh api "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$EVENT_MERGE_SHA" \
+            > "$directory/comparison.json" || fallback
+          if [[ "$PROFILE_CI" == 'true' || "$FORCE_FULL_CI" == 'true' ]]; then
+            export CI_FORCE_REASON='Full suite requested by label'
+          elif [[ "$STACK_JSON" != 'null' && -n "$STACK_JSON" ]]; then
+            export CI_FORCE_REASON='Stack verification includes lower pull requests'
+          fi
+          export CI_TASK_CONFIG="$directory/turbo.json"
+          export CI_TASK_MATRIX="$directory/ci-task-matrix.json"
+          export CI_COMPARISON="$directory/comparison.json"
+          node "$directory/ci-plan.mjs" || fallback
