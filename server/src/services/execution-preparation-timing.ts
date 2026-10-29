@@ -83,6 +83,7 @@ export type ExecutionPhase =
   | "workspace_sync.source_root" | "workspace_sync.repositories" | "workspace_sync.ignore_rules"
   | "workspace_sync.seed_generation" | "workspace_sync.seed_lookup" | "workspace_sync.seed_publish"
   | "workspace_sync.seed_cache_copy" | "workspace_sync.seed_cache_sync" | "workspace_sync.seed_cache_hash"
+  | "workspace_sync.seed_cache_capacity" | "workspace_sync.seed_cache_evict" | "workspace_sync.seed_cache_locked_publish"
   | "workspace_sync.git_clone" | "workspace_sync.git_archive" | "workspace_sync.seed_replay" | "workspace_sync.seed_persist"
   | "workspace_sync.git_index_refresh"
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
@@ -252,6 +253,9 @@ const workspaceSyncDetailPhases = {
   "workspace.seed_cache_copy": "workspace_sync.seed_cache_copy",
   "workspace.seed_cache_sync": "workspace_sync.seed_cache_sync",
   "workspace.seed_cache_hash": "workspace_sync.seed_cache_hash",
+  "workspace.seed_cache_capacity": "workspace_sync.seed_cache_capacity",
+  "workspace.seed_cache_evict": "workspace_sync.seed_cache_evict",
+  "workspace.seed_cache_locked_publish": "workspace_sync.seed_cache_locked_publish",
   "workspace.git_clone": "workspace_sync.git_clone",
   "workspace.git_archive": "workspace_sync.git_archive",
   "workspace.git_index_refresh": "workspace_sync.git_index_refresh",

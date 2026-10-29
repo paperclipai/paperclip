@@ -237,20 +237,20 @@ export async function publishWorkspaceSeedGeneration(
       assertWorkspaceManifestDiskSpace(company, incomingBytes);
       return "available";
     };
-    const initialCapacity = await capacity();
+    const initialCapacity = await measure("workspace.seed_cache_capacity", capacity);
     if (initialCapacity === "existing") return true;
     let incomingBytes = 4096;
     for (const archive of [seed.workspaceArchivePath, seed.gitArchivePath]) if (archive) incomingBytes += (await fs.lstat(archive)).size;
     if (incomingBytes > configuredLimits.workspaceBytes) return false;
     const plan = { generation, incomingBytes, limits, eviction, now: options.now?.() ?? Date.now() };
-    if (initialCapacity === false && !await evictSeedGenerations(company, root, { ...plan, apply: false })) return false;
+    if (initialCapacity === false && !await measure("workspace.seed_cache_evict", () => evictSeedGenerations(company, root, { ...plan, apply: false }))) return false;
     if (options.verify && !await options.verify()) return false;
-    return await withDirectoryMergeLock(company, async () => {
+    return await withDirectoryMergeLock(company, () => measure("workspace.seed_cache_locked_publish", async () => {
       const lockedCompany = await fs.lstat(company);
       if (!lockedCompany.isDirectory() || lockedCompany.isSymbolicLink()
         || lockedCompany.dev !== companyStat.dev || lockedCompany.ino !== companyStat.ino) return false;
-      await evictSeedGenerations(company, root, { ...plan, apply: true });
-      const currentCapacity = await capacity();
+      await measure("workspace.seed_cache_evict", () => evictSeedGenerations(company, root, { ...plan, apply: true }));
+      const currentCapacity = await measure("workspace.seed_cache_capacity", capacity);
       if (currentCapacity !== "available") return currentCapacity === "existing";
       await fs.mkdir(root, { recursive: true, mode: 0o700 });
       const temporary = path.join(root, `.pending-${randomUUID()}`);
@@ -271,6 +271,6 @@ export async function publishWorkspaceSeedGeneration(
         await fs.rename(temporary, path.join(root, generation));
         return true;
       } finally { await fs.rm(temporary, { recursive: true, force: true }); }
-    });
+    }));
   } catch { return false; }
 }

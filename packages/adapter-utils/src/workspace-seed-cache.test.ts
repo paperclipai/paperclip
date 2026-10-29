@@ -95,6 +95,50 @@ it.each(["companyGenerations", "companyWorkspaces"] as const)("serializes distin
   expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
 });
 
+it("keeps company-lock contention outside the locked-publication span", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), release = deferred<void>(), verified = deferred<void>();
+  const spans: string[][] = [[], []];
+  const runtimeSpan = (index: number) => async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    spans[index].push(name);
+    if (index === 0 && name === "workspace.seed_cache_locked_publish") {
+      entered.resolve();
+      await release.promise;
+    }
+    return work();
+  };
+  const first = publishWorkspaceSeedGeneration(path.join(f.company, "first"), generation(1), f.seed, {
+    companyDirectory: f.company, runtimeSpan: runtimeSpan(0),
+  });
+  let second: Promise<boolean> | undefined;
+  try {
+    await entered.promise;
+    second = publishWorkspaceSeedGeneration(path.join(f.company, "second"), generation(2), f.seed, {
+      companyDirectory: f.company, runtimeSpan: runtimeSpan(1),
+      verify: async () => { verified.resolve(); return true; },
+    });
+    await verified.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(spans[1]).toContain("workspace.seed_cache_capacity");
+    expect(spans[1]).not.toContain("workspace.seed_cache_locked_publish");
+  } finally {
+    release.resolve();
+    await Promise.all([first, second]);
+  }
+  expect(await first).toBe(true);
+  expect(await second).toBe(true);
+  for (const names of spans) {
+    expect(names).toContain("workspace.seed_cache_locked_publish");
+    expect(names).toContain("workspace.seed_cache_evict");
+    expect(names).toContain("workspace.seed_cache_sync");
+    expect(names).toContain("workspace.seed_cache_hash");
+  }
+  for (const [name, index] of [["first", 1], ["second", 2]] as const) {
+    const cached = await readWorkspaceSeedGeneration(path.join(f.company, name), generation(index), { companyDirectory: f.company });
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  }
+});
+
 it("applies the company byte cap across workspace roots", async () => {
   const f = await fixture();
   const options = { companyDirectory: f.company, limits: { companyBytes: 4500 } };
