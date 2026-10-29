@@ -486,6 +486,45 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(result.data.credentials).toBe("private-history-fixture-value");
   });
 
+  it.each(["call_api", "create_case"])("retains bounded %s schema-denial guidance through persistence and replay", async operationId => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `api-${identity.runId}`,
+    }, { onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const payload = {
+      provider: "codex", code: "semantic_tool_denied", operationId, callId: "schema-denied",
+      message: `provider arguments for ${operationId} failed JSON Schema validation`, paperclipExecuted: false,
+      inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /required (missing title).",
+    };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "harness.diagnostic", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload,
+    };
+    await port.appendEvent(event);
+    expect(observed[0]?.payload).toEqual(payload);
+    expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+    expect(port.normalizeReplayPayload(payload)).toEqual(port.normalizeReplayPayload(observed[0]!.payload));
+    const saved = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(saved).toHaveLength(1);
+    expect((saved[0]!.payload?.prpEvent as unknown as PrpEvent).payload).toEqual(payload);
+    await expect(port.appendEvent({ ...event, payload: {
+      ...payload, inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /properties/title/type.",
+    } })).rejects.toThrow();
+  });
+
   it("redacts identity private material before persisting native events and checkpoints", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();

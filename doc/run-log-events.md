@@ -190,6 +190,8 @@ Its optional `inputSchemaGuidance` retains the same safe repair guidance sent to
 the provider: at most three authorized schema locations within 512 bytes.
 It includes no rejected arguments, submitted values, or unknown input keys.
 The rejected call does not create a semantic input event or execution receipt.
+Validated runner diagnostics retain this scalar metadata even when the operation
+is an API or case tool. API request and response bodies keep their existing redaction.
 
 Before interrupting a Codex turn, the runner durably records a
 `harness.diagnostic` event with code `provider_interrupt_requested`, the stop
