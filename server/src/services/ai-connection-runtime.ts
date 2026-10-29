@@ -3,7 +3,7 @@ import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credent
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, rename, lstat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -202,6 +202,95 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
+const MANAGED_AI_HOME_CLAIM_FILE = ".paperclip-home-claim.json";
+export const MANAGED_AI_STABLE_HOME_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+async function pidStartTimeMs(pid: number): Promise<number | undefined> {
+  try {
+    return (await lstat(`/proc/${pid}`)).ctimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+async function claimOwnerGone(claim: { pid?: unknown; startedAtMs?: unknown }): Promise<boolean> {
+  const pid = claim.pid;
+  if (typeof pid !== "number") return true;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+  if (typeof claim.startedAtMs !== "number") return false;
+  const currentStartedAtMs = await pidStartTimeMs(pid);
+  return currentStartedAtMs !== undefined && Math.abs(currentStartedAtMs - claim.startedAtMs) > 2000;
+}
+
+async function isOwnedPrivateDirectory(target: string): Promise<boolean> {
+  try {
+    const stat = await lstat(target);
+    return stat.isDirectory() && stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function writeManagedAiHomeClaim(
+  baseDir: string,
+  claim: { pid: number; claimedAt: number; startedAtMs?: number; retryPending?: true },
+): Promise<void> {
+  await writeFile(path.join(baseDir, MANAGED_AI_HOME_CLAIM_FILE), JSON.stringify(claim), { mode: 0o600 });
+}
+
+async function reclaimStaleManagedAiHome(baseDir: string, now: () => number): Promise<boolean> {
+  if (!(await isOwnedPrivateDirectory(baseDir))) return false;
+  let claim: { pid?: unknown; claimedAt?: unknown; startedAtMs?: unknown; retryPending?: unknown } | undefined;
+  try {
+    claim = JSON.parse(await readFile(path.join(baseDir, MANAGED_AI_HOME_CLAIM_FILE), "utf8"));
+  } catch {}
+  if (claim?.retryPending) return false;
+  const claimedAt = typeof claim?.claimedAt === "number" ? claim.claimedAt : undefined;
+  const expired = claimedAt !== undefined && now() - claimedAt >= MANAGED_AI_STABLE_HOME_STALE_AFTER_MS;
+  if (!expired || !(await claimOwnerGone(claim ?? {}))) return false;
+  const graveyard = `${baseDir}.stale-${process.pid}-${now()}`;
+  try {
+    await rename(baseDir, graveyard);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  await rm(graveyard, { recursive: true, force: true });
+  return true;
+}
+
+export async function claimManagedAiHome(
+  baseDir: string,
+  now: () => number = Date.now,
+): Promise<{ home: string; stable: boolean }> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(baseDir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (attempt === 0 && (await reclaimStaleManagedAiHome(baseDir, now))) continue;
+      break;
+    }
+    try {
+      const startedAtMs = await pidStartTimeMs(process.pid);
+      await writeManagedAiHomeClaim(baseDir, {
+        pid: process.pid,
+        claimedAt: now(),
+        ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      });
+    } catch {
+      await rm(baseDir, { recursive: true, force: true }).catch(() => {});
+      break;
+    }
+    return { home: baseDir, stable: true };
+  }
+  return { home: await mkdtemp(`${baseDir}-`), stable: false };
+}
+
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
@@ -312,12 +401,9 @@ export async function prepareManagedAiRuntime(
       }
       throw unprocessable("The AI credential changed during preparation; retry this execution");
     })();
-    home = await mkdtemp(
-      path.join(
-        os.tmpdir(),
-        `paperclip-ai-${input.companyId}-${selection.grant.id}-`,
-      ),
-    );
+    ({ home } = await claimManagedAiHome(
+      path.join(os.tmpdir(), `paperclip-ai-${input.companyId}-${selection.grant.id}`),
+    ));
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
     const env: Record<string, unknown> = {
@@ -480,11 +566,16 @@ export async function prepareManagedAiRuntime(
               // The rotated secret revision invalidates quota caches without
               // rejecting an otherwise valid in-flight reconnect.
             }));
-            for (let attempt = 0; ; attempt++) {
-              try { await writeBack(); break; }
-              catch (error) {
-                if (attempt >= 2 || (error as NodeJS.ErrnoException)?.code !== WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) throw error;
+            try {
+              for (let attempt = 0; ; attempt++) {
+                try { await writeBack(); break; }
+                catch (error) {
+                  if (attempt >= 2 || (error as NodeJS.ErrnoException)?.code !== WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) throw error;
+                }
               }
+            } catch (error) {
+              if (home) await writeManagedAiHomeClaim(home, { pid: process.pid, claimedAt: Date.now(), retryPending: true }).catch(() => {});
+              throw error;
             }
           }
         }
