@@ -96,7 +96,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         // Bind each object to its own verb. A denied write or "create no files"
         // cannot suppress a separate requested report in this same clause.
         const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index)
-          .split(/\b(?:and(?:\s+then)?|then)\s+(?:also\s+)?(?:update|edit|bump|read|review|modify|inspect|change)\b/iu, 1)[0];
+          .split(/\b(?:and(?:\s+then)?|then)\s+(?:also\s+)?(?:update|edit|bump|read|review|modify|inspect|change|include|wire)\b/iu, 1)[0];
         // An explicit attachment/export request can refer to the file by
         // pronoun. It still requires publication when its name is omitted.
         const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
@@ -104,7 +104,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
         const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu.test(output);
         const inline = inlineDestination || /\b(?:its|the) contents\b/iu.test(output);
-        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
+        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:(?:a|an|any)\s+)?(?:downloadable|attached|download(?:\s+link)?)/iu.test(output)
           && /\b(?:(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)|download link)\b/iu.test(output));
         const inlineOnly = inlineDestination && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
           && !/\bas (?:an? )?attachment\b/iu.test(output);
@@ -113,11 +113,11 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           const suffix = output.slice(match.index + match[0].length);
           // "Create no files" is a prohibition, even though it contains a creation
           // verb. Negate this object only; another explicit output can still count.
-          if (/\b(?:no|zero|without(?:\s+any)?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
+          if (/\b(?:no|zero|without(?:\s+(?:any|a|an))?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
           // "Write a summary of this PDF" names input, not a requested file.
           // Explicit export destinations still count after such input references.
-          const destination = /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu.test(prefix);
-          if (!destination && /\b(?:of|about|on|from|using|for|with)\b/iu.test(prefix)) return false;
+          const destination = /\b(?:as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*(?:[^\s]*\/)?$/iu.test(prefix);
+          if (!destination && /\b(?:of|about|on|from|using|for|with|to|that|which|read(?:s|ing)?|pars(?:e|es|ing))\b/iu.test(prefix)) return false;
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
           return true;
         });
