@@ -67,9 +67,8 @@ const plugin = definePlugin({
 
     // Expose the current company-scoped plugin config so UI components can read
     // operator settings from the canonical config store.
-    ctx.data.register("plugin-config", async (params) => {
-      const companyId = typeof params.companyId === "string" ? params.companyId : "";
-      const config = companyId ? await ctx.config.get(companyId) : null;
+    ctx.data.register("plugin-config", async () => {
+      const config = await ctx.config.get();
       return {
         showFilesInSidebar: config?.showFilesInSidebar === true,
         commentAnnotationMode: config?.commentAnnotationMode ?? "both",

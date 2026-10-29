@@ -95,6 +95,19 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Bridge data calls require board access; bridge actions accept authenticated board
+or agent callers. Both legacy and URL-keyed endpoints authorize the top-level
+company before dispatch. For company-scoped calls, routes and the worker SDK
+overwrite handler `params.companyId` with that authorized company. Other parameters
+and immutable action actor context remain separate. Omitted company scope requires
+instance admin access and preserves global handler parameters.
+
+Evidence: automated HTTP actor fixtures in
+`server/src/__tests__/plugin-routes-authz.test.ts` cover all four bridge endpoints,
+conflicting and malformed nested company values, allowed scope and denied scope.
+`packages/plugins/sdk/tests/worker-rpc-host.test.ts` independently exercises worker
+dispatch and global calls. These fixtures do not qualify live agent credentials.
+
 Gaps: Actual plugin tool use exists; a contributed UI route alone does not prove that
 plugin's API/tool coverage.
 

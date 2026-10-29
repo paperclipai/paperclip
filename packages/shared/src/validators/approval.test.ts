@@ -20,6 +20,11 @@ describe("approval validators", () => {
     expect(requestApprovalRevisionSchema.parse({}).decisionNote).toBeUndefined();
   });
 
+  it("accepts optional external decision actor ids for board-authenticated integrations", () => {
+    expect(resolveApprovalSchema.parse({ decidedByUserId: "telegram:tigom007" }).decidedByUserId)
+      .toBe("telegram:tigom007");
+  });
+
   it("normalizes escaped line breaks in approval comments and decision notes", () => {
     expect(addApprovalCommentSchema.parse({ body: "Looks good\\n\\nApproved." }).body)
       .toBe("Looks good\n\nApproved.");

@@ -628,17 +628,6 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     return Object.freeze({ actor, companyId });
   }
 
-  function paramsWithHostCompanyScope(
-    params: Record<string, unknown>,
-    context: PluginPerformActionContext,
-    options?: TestHarnessPerformActionOptions,
-  ): Record<string, unknown> {
-    if (Object.prototype.hasOwnProperty.call(options ?? {}, "companyId")) {
-      return context.companyId ? { ...params, companyId: context.companyId } : { ...params };
-    }
-    return params;
-  }
-
   function normalizeLocalFolderRelativePath(relativePath: string): string {
     const parts: string[] = [];
     for (const segment of relativePath.split(/[\\/]+/)) {
@@ -2693,7 +2682,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
       const context = actionContextFor(params, options);
-      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
+      return await handler(params, context) as T;
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);

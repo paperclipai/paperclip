@@ -16,7 +16,7 @@ const manifest = {
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
-  it("passes immutable authenticated actor context and overrides caller company scope", async () => {
+  it("passes immutable authenticated actor context and preserves plugin-owned params", async () => {
     const harness = createTestHarness({ manifest });
 
     harness.ctx.actions.register("inspect", async (params, context) => ({
@@ -52,7 +52,7 @@ describe("createTestHarness action context", () => {
       },
     );
 
-    expect(result.paramsCompanyId).toBe("host-company");
+    expect(result.paramsCompanyId).toBe("spoofed-company");
     expect(result.companyId).toBe("host-company");
     expect(result.actor).toEqual({
       type: "user",
@@ -63,6 +63,14 @@ describe("createTestHarness action context", () => {
     });
     expect(result.contextFrozen).toBe(true);
     expect(result.actorFrozen).toBe(true);
+  });
+
+  it("does not inject host company scope into action params", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.ctx.actions.register("inspect", async (params, context) => ({ params, companyId: context.companyId }));
+
+    await expect(harness.performAction("inspect", { value: true }, { companyId: "host-company" }))
+      .resolves.toEqual({ params: { value: true }, companyId: "host-company" });
   });
 
   it("keeps existing one-argument action handlers compatible", async () => {

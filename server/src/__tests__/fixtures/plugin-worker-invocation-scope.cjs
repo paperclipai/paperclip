@@ -1,6 +1,7 @@
 const readline = require("node:readline");
 
 let nextRequestId = 1;
+let expiredInvocationId;
 const pendingNested = new Map();
 
 function send(message) {
@@ -51,7 +52,33 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     params: nestedParams,
   };
 
-  if (mode === "echo") {
+  if (mode === "stateCompany") {
+    nestedRequest.method = "state.get";
+    nestedRequest.params = {
+      scopeKind: "company",
+      scopeId: requestedCompanyId,
+      stateKey: "probe",
+    };
+  }
+
+  if (mode === "stateInstance") {
+    nestedRequest.method = "state.get";
+    nestedRequest.params = {
+      scopeKind: "instance",
+      stateKey: "probe",
+    };
+  }
+
+  if (mode === "configCompany") {
+    nestedRequest.method = "config.get";
+    nestedRequest.params = {
+      companyId: requestedCompanyId,
+    };
+  }
+
+  if (params.staleInvocation) {
+    nestedRequest.paperclipInvocationId = expiredInvocationId;
+  } else if (mode === "echo") {
     nestedRequest.paperclipInvocationId = invocationId;
   } else if (mode === "unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
@@ -105,6 +132,11 @@ rl.on("line", (line) => {
   }
 
   if (["getData", "performAction", "resourceLifecycle", "workspaceOperation"].includes(method)) {
+    if (message.params?.params?.mode === "rememberInvocation") {
+      expiredInvocationId = message.paperclipInvocation?.id;
+      send({ jsonrpc: "2.0", id: message.id, result: expiredInvocationId });
+      return;
+    }
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

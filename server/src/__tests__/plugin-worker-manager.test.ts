@@ -396,6 +396,94 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("allows authorized proactive worker host calls during an active invocation", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: handlers,
+    });
+
+    try {
+      await handle.start();
+
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "omit",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-1" });
+
+      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-1" });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("allows authorized proactive state calls during an active invocation", async () => {
+    const stateGet = vi.fn(async () => ({ ok: true }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["plugin.state.read"],
+      services: {
+        state: {
+          get: stateGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: handlers,
+    });
+
+    try {
+      await handle.start();
+
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "stateCompany",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ ok: true });
+
+      expect(stateGet).toHaveBeenCalledWith({
+        scopeKind: "company",
+        scopeId: "company-1",
+        stateKey: "probe",
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
@@ -494,15 +582,126 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
-  it("rejects missing or unknown invocation ids while a company invocation is active", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-2" }));
+  it("allows expired invocation ids only for authorized background config and plugin state calls", async () => {
+    const configGet = vi.fn(async (params: { companyId?: string | null }) => ({
+      companyId: params.companyId,
+    }));
+    const stateGet = vi.fn(async (params: { scopeKind: string; scopeId?: string | null; stateKey: string }) => ({
+      scopeKind: params.scopeKind,
+      scopeId: params.scopeId ?? null,
+    }));
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }));
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read"],
+      capabilities: ["companies.read", "plugin.state.read"],
       services: {
         companies: {
           get: companiesGet,
         },
+        config: {
+          get: configGet,
+        },
+        state: {
+          get: stateGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+
+      const expiredId = await handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "rememberInvocation" },
+      } as HostToWorkerMethods["getData"][0]);
+      expect(expiredId).toEqual(expect.any(String));
+      handle.setProactiveCompanyScopes(["company-a"]);
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        params: {
+          mode: "unknown",
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        params: {
+          mode: "configCompany",
+          staleInvocation: true,
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        companyId: "company-a",
+      });
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        params: {
+          mode: "stateCompany",
+          staleInvocation: true,
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        scopeKind: "company",
+        scopeId: "company-a",
+      });
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        params: {
+          mode: "stateInstance",
+          staleInvocation: true,
+          requestedCompanyId: "company-a",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        scopeKind: "instance",
+        scopeId: null,
+      });
+      handle.setProactiveCompanyScopes([]);
+      for (const mode of ["configCompany", "stateCompany"]) {
+        await expect(handle.call("getData", {
+          key: "probe",
+          params: { mode, staleInvocation: true, requestedCompanyId: "company-a" },
+        } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        });
+      }
+      expect(configGet).toHaveBeenCalledTimes(1);
+      expect(stateGet).toHaveBeenCalledTimes(2);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects missing or unknown invocation ids while a company invocation is active", async () => {
+    const companiesGet = vi.fn(async () => ({ id: "company-2" }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read", "plugin.state.read", "secrets.read-ref"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+        config: { get: companiesGet },
+        state: { get: companiesGet },
+        secrets: { resolve: companiesGet },
       } as unknown as HostServices,
     });
     const handle = createPluginWorkerHandle("test.plugin", {
@@ -533,6 +732,18 @@ describe("plugin-worker-manager stderr failure context", () => {
         });
       }
 
+      expect(companiesGet).not.toHaveBeenCalled();
+      for (const mode of ["omit", "unknown", "configCompany", "stateCompany"]) {
+        for (const hostMethod of ["companies.get", "secrets.resolve"]) {
+          await expect(handle.call("getData", {
+            key: "probe",
+            companyId: "company-1",
+            params: { mode, hostMethod, requestedCompanyId: "company-1" },
+          } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+            code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+          });
+        }
+      }
       expect(companiesGet).not.toHaveBeenCalled();
     } finally {
       await handle.stop().catch(() => undefined);

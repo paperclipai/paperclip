@@ -114,6 +114,7 @@ describe("worker performAction context", () => {
     let nextRequestId = 1;
     const plugin = definePlugin({
       async setup(ctx) {
+        ctx.data.register("inspect", async (params) => params);
         ctx.actions.register("inspect", async (params, context) => ({
           paramsCompanyId: params.companyId,
           actor: context.actor,
@@ -166,6 +167,26 @@ describe("worker performAction context", () => {
         databaseNamespace: null,
       })).resolves.toMatchObject({ ok: true });
 
+      for (const companyId of ["other-company", { id: "other-company" }, null, undefined, "authorized-company"]) {
+        await expect(callWorker("getData", {
+          key: "inspect",
+          companyId: "authorized-company",
+          params: { companyId, view: "compact" },
+        })).resolves.toEqual({ companyId: "authorized-company", view: "compact" });
+        await expect(callWorker("performAction", {
+          key: "inspect",
+          companyId: "authorized-company",
+          params: { companyId },
+        })).resolves.toMatchObject({ paramsCompanyId: "authorized-company", companyId: null });
+      }
+      for (const companyId of [undefined, null]) {
+        await expect(callWorker("getData", {
+          key: "inspect",
+          companyId,
+          params: { companyId: "plugin-owned-company", view: "compact" },
+        })).resolves.toEqual({ companyId: "plugin-owned-company", view: "compact" });
+      }
+
       await expect(callWorker("performAction", {
         key: "inspect",
         params: { companyId: "spoofed-company" },
@@ -179,6 +200,29 @@ describe("worker performAction context", () => {
           companyId: null,
         },
         companyId: null,
+      });
+
+      await expect(callWorker("performAction", {
+        key: "inspect",
+        companyId: "authorized-company",
+        params: { companyId: "plugin-owned-company" },
+        actorContext: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+      })).resolves.toEqual({
+        paramsCompanyId: "authorized-company",
+        actor: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+        companyId: "authorized-company",
       });
     } finally {
       worker.stop();
@@ -212,7 +256,7 @@ describe("worker invocation scope propagation", () => {
             });
           }
           const company = await ctx.companies.get(String(params.requestedCompanyId));
-          return { label: params.label, company };
+          return { label: params.label, company, hasCompanyId: Object.hasOwn(params, "companyId") };
         });
       },
     });
@@ -318,6 +362,7 @@ describe("worker invocation scope propagation", () => {
       await expect(companyBRequest).resolves.toEqual({
         label: "b",
         company: { id: "company-b" },
+        hasCompanyId: true,
       });
       await companyAExpectation;
 
@@ -1222,7 +1267,7 @@ describe("Durable lifecycle inbox RPC", () => {
     });
     try {
       await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe", "agents.lifecycle.manage"], entrypoints: {} }, config: {}, databaseNamespace: null });
-      expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
+      expect((await call("getData", { key: "drain", companyId: "company-a", params: { companyId: "company-a" } }) as { result: unknown }).result).toEqual([event]);
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
