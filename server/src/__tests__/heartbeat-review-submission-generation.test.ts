@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, afterEach } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
@@ -131,6 +131,45 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toMatchObject({ dispatched: false });
     expect(invoke).not.toHaveBeenCalled();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0].status).toBe("cancelled");
+  });
+
+  it.each(["present", "before accounting", "before handoff"] as const)("rechecks dependency-blocked comment proof %s at both provider gates", async phase => {
+    const f = await seed();
+    await db.update(issues).set({ assigneeAgentId: f.source.agentId }).where(eq(issues.id, f.issueId));
+    const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "Unfinished dependency", status: "todo" }).returning();
+    await issueService(db).update(f.issueId, { blockedByIssueIds: [blocker.id] });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: "board", body: "Please answer while the dependency remains unfinished." }).returning();
+    const service = heartbeatService(db);
+    try {
+      const run = await service.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: "board",
+        contextSnapshot: { issueId: f.issueId, commentId: comment.id, wakeCommentId: comment.id, wakeReason: "issue_commented", source: "issue.comment" } });
+      expect(run?.contextSnapshot?.reviewerAssignmentGeneration).toEqual(expect.any(String));
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+      const reservation = await reserveRunBudget(db, f.companyId, run!.id, null);
+      if (phase === "before accounting") await issueService(db).removeComment(comment.id);
+      let removed = false;
+      const observed = new Proxy(db, { get(target, key) {
+        if (key !== "transaction") return Reflect.get(target, key);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await Reflect.apply(target.transaction, target, args);
+          if (phase === "before handoff" && !removed && result?.kind === "value" && result.value?.claim) {
+            removed = true; await issueService(db).removeComment(comment.id);
+          }
+          return result;
+        };
+      } });
+      const invoke = vi.fn(async () => null);
+      const result = await createRunDispatch(observed).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId,
+        runId: run!.id, expectedStatus: "running", reservationId: reservation.id,
+        enforceContinuationOwnership: false, dispatch: invoke });
+      if (phase === "present") { expect(result).toMatchObject({ dispatched: true }); expect(invoke).toHaveBeenCalledOnce(); }
+      else { expect(result).toMatchObject({ dispatched: false, cancellation: { errorCode: "issue_dependencies_blocked" } }); expect(invoke).not.toHaveBeenCalled(); }
+      if (phase === "before handoff") expect(removed).toBe(true);
+      expect((await issueService(db).listDependencyReadiness(f.companyId, [f.issueId])).get(f.issueId)?.isDependencyReady).toBe(false);
+    } finally { await service.drainActiveRunExecutions(); }
   });
 
 });

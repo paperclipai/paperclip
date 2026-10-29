@@ -86,6 +86,27 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { await service.drainActiveRunExecutions(); await tree.releaseHold(f.companyId, f.issueId, hold.id, { actor }); }
   });
 
+  it("answers a verified comment through the queue while review dependencies remain blocked", async () => {
+    const { f, busy, marker } = await monitored();
+    await db.update(issues).set({ assigneeAgentId: f.source.agentId }).where(eq(issues.id, f.issueId));
+    const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "Unfinished dependency", status: "todo" }).returning();
+    await issueService(db).update(f.issueId, { blockedByIssueIds: [blocker.id] });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: "board", body: "Please answer while the dependency remains blocked." }).returning();
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    try {
+      const run = await service.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: "board",
+        contextSnapshot: { issueId: f.issueId, commentId: comment.id, wakeCommentId: comment.id, wakeReason: "issue_commented", source: "issue.comment" } });
+      expect(run?.contextSnapshot?.reviewerAssignmentGeneration).toEqual(expect.any(String));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+      await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      expect((await service.getRun(run!.id))).toMatchObject({ status: "succeeded", errorCode: null });
+      expect(await readFile(marker, "utf8")).toBe("started");
+      expect((await issueService(db).listDependencyReadiness(f.companyId, [f.issueId])).get(f.issueId)?.isDependencyReady).toBe(false);
+    } finally { await service.drainActiveRunExecutions(); }
+  });
+
   it.each(["present", "before accounting", "before handoff"] as const)("rechecks paused comment proof %s at the provider gates", async phase => {
     const { f } = await monitored();
     const tree = issueTreeControlService(db);

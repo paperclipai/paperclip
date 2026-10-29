@@ -1888,6 +1888,9 @@ Source eligibility preserves both proven bootstrap failures and the existing leg
 conversation-continuation contract. Cleanup and reconciliation checks apply to both.
 Stamped cross-agent reviewers recheck current authority at both provider gates;
 only continuations that require the assignee execution lock must own that lock.
+Verified reviewer comments retain the dependency-blocked interaction exception at
+both provider gates. Each gate checks the persisted comment and wake provenance;
+ordinary review work remains blocked by unfinished dependencies.
 
 
 
