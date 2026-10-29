@@ -496,8 +496,11 @@ describe("automatic retained workspace recovery", () => {
     expect((await Promise.all(observed)).some(rows => rows.some(row => row.status === "succeeded"))).toBe(true);
   });
 
-  it("re-enters only the existing finalizer for an accepted result, once per intent, preserving failure history", async () => {
-    const f = await seed();
+  it.each(["retain_on_failure", "reuse_by_environment", "reuse_by_execution_workspace"] as const)("re-enters only the accepted result finalizer for %s, preserving files and failure history", async leasePolicy => {
+    const f = await seed("native", true, "keep_running");
+    await db.update(environmentLeases).set({ leasePolicy }).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted" }).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.runId));
     const contractId = randomUUID(), resultId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
@@ -510,7 +513,24 @@ describe("automatic retained workspace recovery", () => {
     await db.update(nativeRunFinalizations).set({ resultId, attempt: 3, failureCode: "native_workspace_sync_out_retry_exhausted" })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     expect(await resumePreservedResultFinalization(db, f.companyId, f.runId)).toBe(false);
+    const priorAction = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ ownerType: "system", evidence: { ...priorAction.evidence,
+      systemRecovery: failSystemRecovery(createSystemRecovery(f.runId),
+        new SystemRecoveryFailure("source_binding_invalid", "service_required")),
+      workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked",
+        stage: "verifying_stop", attempt: 1, attemptLimit: 6, requestIds: [] },
+    } }).where(eq(issueRecoveryActions.id, f.actionId));
+    const request = { ...f.input, actorId: "board", idempotencyKey: randomUUID() };
+    await requestWorkspaceRecovery(request);
+    const admitted = await action(f.actionId);
+    await requestWorkspaceRecovery(request);
+    expect(await action(f.actionId)).toEqual(admitted);
+    expect(admitted.ownerType).toBe("system");
     await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
     const attempts = await Promise.all([resumePreservedResultFinalization(db, f.companyId, f.runId),
       resumePreservedResultFinalization(db, f.companyId, f.runId)]);
     expect(attempts.filter(Boolean)).toHaveLength(1);

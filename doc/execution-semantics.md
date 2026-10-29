@@ -1585,6 +1585,13 @@ and obtains a fresh stop receipt. An interrupted legacy run does not need an
 accepted native result. A successful `workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+A reusable lease can also owe native copyback: the export-repair action must
+select its exact immutable descriptor and the finalizer's accepted successful
+result under the same company, task, run and completion contract. Lease reuse
+policy alone does not discharge that persistence obligation. Ordinary reusable
+sources without this proof remain ineligible. The preservation owner still
+requires an independently stopped, exclusively bound allocation and no host writer;
+it saves files and resumes the existing finalizer without another provider turn.
 
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery
