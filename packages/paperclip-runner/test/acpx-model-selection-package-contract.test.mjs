@@ -161,6 +161,9 @@ for (const includeUserSettings of [false, true]) for (const resume of [false, tr
   const created = f.requests.find(r => r.method === "session/new");
   const restored = f.requests.find(r => r.method === (resume ? "session/resume" : "session/load"));
   assert.ok(restored, "the provider session reconnects");
+  assert.equal(created.params._meta.claudeCode.options.model, selectedModel);
+  assert.equal(created.params._meta.claudeCode.options.maxTurns, 5);
+  assert.deepEqual(created.params._meta.systemPrompt, { append: "Fixture instructions" });
   assert.deepEqual(created.params._meta.claudeCode.options.allowedTools, ["mcp__fixture__*"]);
   assert.deepEqual(created.params._meta.claudeCode.options.settingSources, includeUserSettings ? ["user", "project", "local"] : ["project", "local"]);
   assert.deepEqual(restored.params._meta, created.params._meta, "reconnect must preserve the requested native launch settings");
