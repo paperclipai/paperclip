@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -194,22 +194,40 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
-  it("accepts a Claude browser code and stores its token only in the attempt home", async () => {
-    const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
+  it("accepts a Claude browser code and leaves the refreshable login only in the attempt home", async () => {
+    const url = "https://claude.com/cai/oauth/authorize?code=true&client_id=cid&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=0123456789abcdef";
     const home = await fakeCli("claude", [
-      'printf "Welcome to Claude Code\\nOpening browser to sign in…\\nBrowser didn\x27t open? Use the url below to sign in (c to copy)\\n"',
-      `printf '%s\\n' '${url}'`,
-      'printf "Paste code here if prompted >\\n"',
+      '[ "$1 $2" = "auth login" ] || exit 11',
+      'umask 077',
+      'printf "Opening browser to sign in…\nIf the browser didn\x27t open, visit: "',
+      `printf '%s\n' '${url}'`,
+      'printf "Paste code here if prompted > "',
       'read -r entered',
-      'printf "✓ Long-lived authentication token created successfully!\\n\\nYour OAuth token (valid for 1 year):\\n\\nsk-ant-oat01-AAAABBBBCCCCDDDDEEEE11112222FFFFGGGG_HHHH-IIII\\n\\nStore this token securely. You won\x27t be able to see it again.\\n"',
+      '[ "$entered" = "fixture-code" ] || exit 12',
+      `printf '%s' '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-access","refreshToken":"sk-ant-ort01-refresh","expiresAt":1893456000000,"scopes":["user:inference"]}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"`,
+      'printf "Login successful.\n"',
     ].join("\n"));
     const login = startLocalBrowserLogin("anthropic", home);
     await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
     login.submitCode?.("fixture-code");
     await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5000 });
     const credential = JSON.parse(await readFile(path.join(home, ".credentials.json"), "utf8"));
-    expect(credential.claudeAiOauth.accessToken).toMatch(/^sk-ant-oat01-/);
-    expect((await stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);
+    expect(credential.claudeAiOauth.refreshToken).toMatch(/^sk-ant-ort01-/);
+    expect(JSON.stringify(login)).not.toContain("sk-ant-");
+  });
+
+  it("fails a Claude sign-in that exits without writing a credential", async () => {
+    const url = "https://claude.com/cai/oauth/authorize?code=true&client_id=cid&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=0123456789abcdef";
+    const home = await fakeCli("claude", [
+      'printf "If the browser didn\x27t open, visit: "',
+      `printf '%s\n' '${url}'`,
+      'printf "Paste code here if prompted > "',
+      'read -r entered',
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
+    login.submitCode?.("fixture-code");
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
   });
 
   it("terminates the local provider process when sign-in is cancelled", async () => {

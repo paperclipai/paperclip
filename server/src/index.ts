@@ -22,6 +22,11 @@ import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-w
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
 import { timeStartupRecovery } from "./startup-recovery-timing.js";
+import {
+  aiConnectionService,
+  CLAUDE_CREDENTIAL_RENEWAL_INTERVAL_MS,
+  CLAUDE_CREDENTIAL_RENEWAL_STARTUP_DELAY_MS,
+} from "./services/ai-connections.js";
 import { skillSourceSyncService } from "./services/skill-source-sync.js";
 import {
   SKILL_VERSION_RETENTION_INTERVAL_MS,
@@ -1323,6 +1328,24 @@ async function startServerWithDatabaseTeardown(
   nativeHarnessBackupExpirationInterval.unref?.();
   const nativeHarnessBackupExpirationStartup = setTimeout(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS);
   nativeHarnessBackupExpirationStartup.unref?.();
+  const aiConnections = aiConnectionService(db as any);
+  let claudeCredentialRenewalInFlight = false;
+  const sweepClaudeCredentialRenewals = () => {
+    if (claudeCredentialRenewalInFlight || heartbeatSchedulerStopped || isWarmStandby()) return;
+    claudeCredentialRenewalInFlight = true;
+    trackHeartbeatSchedulerWork(aiConnections.renewDueClaudeCredentials()
+      .then((result) => {
+        if (result.attempted > 0) logger.info(result, "background Claude token renewal ran");
+      })
+      .catch((err) => {
+        logger.error({ err }, "background Claude token renewal failed");
+      })
+      .finally(() => { claudeCredentialRenewalInFlight = false; }));
+  };
+  const claudeCredentialRenewalInterval = setInterval(sweepClaudeCredentialRenewals, CLAUDE_CREDENTIAL_RENEWAL_INTERVAL_MS);
+  claudeCredentialRenewalInterval.unref?.();
+  const claudeCredentialRenewalStartup = setTimeout(sweepClaudeCredentialRenewals, CLAUDE_CREDENTIAL_RENEWAL_STARTUP_DELAY_MS);
+  claudeCredentialRenewalStartup.unref?.();
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -2219,6 +2242,8 @@ async function startServerWithDatabaseTeardown(
     clearInterval(nativeHarnessBackupExpirationInterval);
     clearTimeout(nativeHarnessBackupExpirationStartup);
     clearTimeout(nativeHarnessBackupExpirationContinuation);
+    clearInterval(claudeCredentialRenewalInterval);
+    clearTimeout(claudeCredentialRenewalStartup);
     unsubscribeNativeRunnerEvidence();
     await skillVersionRetention.dispose();
     await skillSourceSync.stop();

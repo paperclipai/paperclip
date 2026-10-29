@@ -143,6 +143,13 @@ export interface RunSetupTokenLoginOptions extends LoginRunnerLifecycleOptions {
    */
   onCredential?: SetupTokenCredentialSink;
   /**
+   * For a login command that writes its own credential file, such as
+   * `claude auth login`. After a clean exit the runner awaits this check instead
+   * of binding a token from the stream, and reports success only when it
+   * resolves true. A rejection or a false result ends the run as a failure.
+   */
+  verifyCredential?: () => Promise<boolean>;
+  /**
    * The settle delay in milliseconds between the code write and the terminator
    * write. Defaults to {@link CODE_SUBMIT_SETTLE_MS}. A test sets it to 0.
    */
@@ -201,7 +208,8 @@ export async function runSetupTokenLogin(
   driver: SetupTokenPtyDriver,
   options: RunSetupTokenLoginOptions,
 ): Promise<SetupTokenLoginResult> {
-  const { onPrompt, provideCode, onCredential, timeoutMs, signal } = options;
+  const { onPrompt, provideCode, verifyCredential, timeoutMs, signal } = options;
+  const onCredential = verifyCredential ? undefined : options.onCredential;
   const command = options.command ?? CLAUDE_SETUP_TOKEN_COMMAND;
   const codeSubmitSettleMs = options.codeSubmitSettleMs ?? CODE_SUBMIT_SETTLE_MS;
   const log = options.log ?? (() => {});
@@ -374,6 +382,17 @@ export async function runSetupTokenLogin(
     if (exitCode !== 0) {
       log("[paperclip] Setup-token login command ended with a non-zero exit code.");
       return result("failure", exitCode);
+    }
+
+    if (verifyCredential) {
+      const verified = await verifyCredential().catch(() => false);
+      if (!verified) {
+        log("[paperclip] Setup-token login: the credential file was not usable; treating the run as a failure.");
+        return result("failure", exitCode);
+      }
+      credentialDelivered = true;
+      log("[paperclip] Setup-token login command ended successfully.");
+      return result("success", exitCode);
     }
 
     // The command exited cleanly. Deliver the bound token through the mandatory

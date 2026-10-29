@@ -348,7 +348,7 @@ describe("setup-token production transport binding", () => {
     // The remote release ran and failed, so the reaper counts a failure and keeps
     // the durable cleanup record for a later retry.
     expect(releaseRunLease).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ released: 0, failed: 1 });
+    expect(result).toEqual({ released: 0, failed: 1, deferred: 0 });
     expect(store.removed).not.toContain("orphan-session");
     expect(store.rows.has("orphan-session")).toBe(true);
   });
@@ -375,7 +375,7 @@ describe("setup-token production transport binding", () => {
 
     const result = await service.reap(Date.now());
 
-    expect(result).toEqual({ released: 1, failed: 0 });
+    expect(result).toEqual({ released: 1, failed: 0, deferred: 0 });
     expect(sandbox.releasedLeaseIds).toEqual(["lease-orphan"]);
     expect(store.removed).toContain("orphan-session");
   });

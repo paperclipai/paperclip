@@ -14,13 +14,28 @@ type Run = typeof heartbeatRuns.$inferSelect;
  * continuation is retryable rather than an opaque `setup_failed`. */
 export const CONTROLLER_LEASE_LOST_FAILURE_CODE = "controller_lease_lost";
 
+const LEASE_LOST_MESSAGE = "Legacy controller lease lost";
+
+/** True for a run that lost its lease before dispatch. Builds that predate the
+ * dedicated code recorded the same stop as a bootstrap `setup_failed` with
+ * only the message, so runs they left behind must read the same way. */
+export function isControllerLeaseLostRun(
+  run: { errorCode?: string | null; error?: string | null; resultJson?: unknown },
+): boolean {
+  if (run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE) return true;
+  if (run.errorCode !== "setup_failed" || run.error !== LEASE_LOST_MESSAGE) return false;
+  const recovery = (run.resultJson as { executionRecovery?: { kind?: unknown; providerWorkStarted?: unknown } } | null | undefined)
+    ?.executionRecovery;
+  return recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** Abort reason for a lost lease, so completion can attribute the stop. */
 export class LegacyControllerLeaseLostError extends Error {
   constructor(
     readonly leaseLossCause: LegacyControllerLeaseLossCause,
     readonly leaseLossTiming?: LegacyControllerLeaseLossTiming,
   ) {
-    super("Legacy controller lease lost");
+    super(LEASE_LOST_MESSAGE);
     this.name = "LegacyControllerLeaseLostError";
   }
 }

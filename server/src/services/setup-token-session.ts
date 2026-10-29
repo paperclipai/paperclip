@@ -315,44 +315,95 @@ export interface SetupTokenReapResult {
   released: number;
   /** The reapable records whose lease release failed. The row stays for a retry. */
   failed: number;
+  /**
+   * The reapable records this sweep did not try: a record in its backoff window,
+   * or a record that failed `SETUP_TOKEN_REAP_MAX_ATTEMPTS` times in a row.
+   */
+  deferred: number;
+}
+
+/** The release attempts one record gets before the reaper stops retrying it. */
+export const SETUP_TOKEN_REAP_MAX_ATTEMPTS = 5;
+const SETUP_TOKEN_REAP_BACKOFF_BASE_MS = 60_000;
+const SETUP_TOKEN_REAP_ERROR_LOG_CHARS = 200;
+
+/**
+ * The in-memory retry state of the reaper. It keys on the public session id. A
+ * restart clears it, so a record gets a fresh set of attempts after a restart.
+ */
+export type SetupTokenReapRetryState = Map<string, { attempts: number; nextAttemptAt: number }>;
+
+function describeReapError(err: unknown): string {
+  const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  return text.length > SETUP_TOKEN_REAP_ERROR_LOG_CHARS
+    ? `${text.slice(0, SETUP_TOKEN_REAP_ERROR_LOG_CHARS)}...`
+    : text;
 }
 
 /**
  * The shared setup-token reap logic. It reads the durable store and releases any
  * lease whose session is terminal, past its deadline, or already consumed. It
  * runs after a restart and on the scheduler interval, so it frees a lease that a
- * crash left behind (SR-4). A release failure stays retryable: the sweep leaves
- * the record for a later run. The standalone reaper and the in-flight session
- * service both call this function, so both flows use one reap convention.
+ * crash left behind (SR-4). A record with no lease has nothing to release, so
+ * the sweep only clears its row. A release failure stays retryable with an
+ * exponential backoff. The sweep logs the error for each failed attempt, and
+ * stops after `SETUP_TOKEN_REAP_MAX_ATTEMPTS` attempts, so a record that can
+ * never release does not retry for ever. The standalone reaper and the in-flight
+ * session service both call this function, so both flows use one reap
+ * convention.
  */
 export async function reapSetupTokenLeases(
   deps: {
     store: Pick<SetupTokenCleanupStore, "listReapable" | "remove">;
     leases: Pick<SetupTokenLeaseManager, "releaseById">;
     log?: (line: string) => void;
+    retryState?: SetupTokenReapRetryState;
   },
   now: number,
 ): Promise<SetupTokenReapResult> {
   const log = deps.log ?? (() => {});
+  const retryState = deps.retryState ?? new Map();
   const records = await deps.store.listReapable(now);
+  const listed = new Set(records.map(record => record.sessionId));
+  for (const sessionId of retryState.keys()) {
+    if (!listed.has(sessionId)) retryState.delete(sessionId);
+  }
   let released = 0;
   let failed = 0;
+  let deferred = 0;
   for (const record of records) {
+    const retry = retryState.get(record.sessionId);
+    if (retry && (retry.attempts >= SETUP_TOKEN_REAP_MAX_ATTEMPTS || retry.nextAttemptAt > now)) {
+      deferred += 1;
+      continue;
+    }
     try {
-      await deps.leases.releaseById(record.leaseId);
+      if (record.leaseId !== "") await deps.leases.releaseById(record.leaseId);
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
         ownerUserId: record.ownerUserId,
         adapterType: record.adapterType,
       });
+      retryState.delete(record.sessionId);
       released += 1;
-    } catch {
+    } catch (err) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      const attempts = (retry?.attempts ?? 0) + 1;
+      retryState.set(record.sessionId, {
+        attempts,
+        nextAttemptAt: now + SETUP_TOKEN_REAP_BACKOFF_BASE_MS * 2 ** (attempts - 1),
+      });
+      const outcome = attempts >= SETUP_TOKEN_REAP_MAX_ATTEMPTS
+        ? "the reaper stops retrying this record until the server restarts"
+        : "it stays retryable";
+      log(
+        `[paperclip] Setup-token reaper: the release of lease ${record.leaseId} for session ${record.sessionId} ` +
+          `failed (attempt ${attempts} of ${SETUP_TOKEN_REAP_MAX_ATTEMPTS}); ${outcome}. ${describeReapError(err)}`,
+      );
     }
   }
-  return { released, failed };
+  return { released, failed, deferred };
 }
 
 /** A per-key start rate limiter. It matches the invite-rate-limit shape. */
@@ -752,6 +803,7 @@ export class SetupTokenSessionService {
   private readonly factory: SetupTokenLoginProcessFactory;
   private readonly leases: SetupTokenLeaseManager;
   private readonly store: SetupTokenCleanupStore;
+  private readonly reapRetryState: SetupTokenReapRetryState = new Map();
   private readonly completeCredential: SetupTokenSecretWriter;
   private readonly rateLimiter: SetupTokenRateLimiter;
   private readonly caps: SetupTokenSessionCaps;
@@ -1424,7 +1476,10 @@ export class SetupTokenSessionService {
    * scheduled reaper calls the same {@link reapSetupTokenLeases} logic.
    */
   async reap(now: number = this.now()): Promise<SetupTokenReapResult> {
-    return reapSetupTokenLeases({ store: this.store, leases: this.leases, log: this.log }, now);
+    return reapSetupTokenLeases(
+      { store: this.store, leases: this.leases, log: this.log, retryState: this.reapRetryState },
+      now,
+    );
   }
 
   /**

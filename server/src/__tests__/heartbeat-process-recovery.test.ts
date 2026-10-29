@@ -60,6 +60,7 @@ import {
   chatMessageLinks,
   chatPublications,
   companyMemberships,
+  connectionGrants,
   companySecretBindings,
   companySecrets,
   companySkills,
@@ -2158,8 +2159,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ).toBe(false);
       const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
       expect(retries).toHaveLength(1);
-      // One bounded transient retry, instead of escalating `setup_failed`.
-      expect(retries[0]).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1 });
+      // A wait that does not spend the failure budget, instead of escalating `setup_failed`.
+      expect(retries[0]).toMatchObject({ scheduledRetryReason: "controller_lease_lost", scheduledRetryAttempt: 1 });
       expect(
         await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId))
           .then((rows) => rows[0]?.status),
@@ -7029,6 +7030,136 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         (event) => event.action === "issue.successful_run_handoff_escalated",
       ),
     ).toBe(true);
+  });
+
+  it("keeps retrying a run that lost its controller lease after the failure budget is spent instead of blocking the issue", async () => {
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "controller_lease_lost",
+      runError: "Legacy controller lease lost (renewal_deadline)",
+    });
+    await db.update(heartbeatRuns)
+      .set({ scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+
+    const retryRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({ agentId, status: "scheduled_retry", scheduledRetryReason: "controller_lease_lost" });
+    expect(await selectRecoveryIssueById(issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+  });
+
+  it("treats a lease loss stored as a plain setup failure by an older build like a controller lease loss", async () => {
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "setup_failed",
+      runError: "Legacy controller lease lost",
+      resultJson: {
+        stopReason: "adapter_failed",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        conversationContinuation: "continue_conversation_v1",
+      },
+    });
+    await db.update(heartbeatRuns)
+      .set({ scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+
+    const retryRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({ agentId, status: "scheduled_retry", scheduledRetryReason: "controller_lease_lost" });
+    expect(await selectRecoveryIssueById(issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+  });
+
+  it("does not use the lease loss lane for a setup failure with the same text when provider work may have started", async () => {
+    const { runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "setup_failed",
+      runError: "Legacy controller lease lost",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+    });
+    await db.update(heartbeatRuns)
+      .set({ scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const retryRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toBeNull();
+  });
+
+  async function seedClaudeLoginFailure(grantStatus: "active" | "needs_reauthorization" | null) {
+    const fixture = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "claude_auth_required",
+      runError: "Claude login required",
+      livenessState: "blocked",
+    });
+    if (grantStatus === null) return fixture;
+    const applicationId = randomUUID();
+    const connectionId = randomUUID();
+    const grantId = randomUUID();
+    await db.insert(toolApplications).values({
+      id: applicationId, companyId: fixture.companyId, applicationKey: `ai:${applicationId}`, name: "Claude", type: "mcp_http", status: "active",
+    });
+    await db.insert(toolConnections).values({
+      id: connectionId, companyId: fixture.companyId, applicationId, name: "Claude login", uid: `ai-${connectionId}`,
+      connectionPurpose: "ai", transport: "runtime_auth", authKind: "oauth", status: "active", enabled: true,
+      config: { ai: { provider: "anthropic", method: "subscription" } },
+    });
+    await db.insert(connectionGrants).values({
+      id: grantId, companyId: fixture.companyId, connectionId, kind: "organization", status: grantStatus,
+    });
+    const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        ...(run?.contextSnapshot ?? {}),
+        aiConnection: {
+          connectionId, grantId, provider: "anthropic", method: "subscription", mode: "shared",
+          identity: `${grantId}:shared:${"0".repeat(16)}`,
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    return fixture;
+  }
+
+  it("leaves an issue in place while its Claude login waits for a reconnect", async () => {
+    const { agentId, runId, issueId } = await seedClaudeLoginFailure("needs_reauthorization");
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(await selectRecoveryIssueById(issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+    expect(await selectRecoveryActionsForIssue(issueId)).toHaveLength(0);
+  });
+
+  it("starts an issue again by itself once its Claude login was reconnected", async () => {
+    const { agentId, runId, issueId } = await seedClaudeLoginFailure("active");
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
+    expect(await selectRecoveryIssueById(issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+  });
+
+  it("still moves an issue to blocked when the run had no managed Claude login", async () => {
+    const { issueId } = await seedClaudeLoginFailure(null);
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(await selectRecoveryIssueById(issueId)).toMatchObject({ status: "blocked" });
   });
 
   it("retries an interrupted corrective successful-run handoff instead of escalating it", async () => {

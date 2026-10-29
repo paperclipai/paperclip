@@ -9,7 +9,7 @@ const recoveryContextKeys = [
   "dispositionRepairAttempt", "dispositionRepairFingerprint", "legacyDispositionEpisode",
   "reviewPathRecoveryAttempt", "reviewPathConsumedRef", "interactionId", "approvalId",
   "clearReason", "monitorAttemptCount", "wakeCommentIds", "wakeCommentId", "commentId",
-  "externalChatContinuation", "paperclipWake", "paperclipWorkspace",
+  "externalChatContinuation", "aiConnection", "paperclipWake", "paperclipWorkspace",
 ] as const;
 
 export const recoveryRunContextColumn = sql<Record<string, unknown> | null>`

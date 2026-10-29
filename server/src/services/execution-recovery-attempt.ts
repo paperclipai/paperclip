@@ -28,7 +28,7 @@ function savedAccounting(run: RetryRun): ExecutionRetryAccounting | null {
 
 function historicalFailureCount(run: RetryRun): number {
   if (run.scheduledRetryReason === "max_turns_continuation" || run.scheduledRetryReason === "issue_disposition_repair") return 0;
-  if (run.scheduledRetryReason === "ai_connection_busy" || run.scheduledRetryReason === "ai_connection_pool_wait") {
+  if (run.scheduledRetryReason === "ai_connection_busy" || run.scheduledRetryReason === "ai_connection_pool_wait" || run.scheduledRetryReason === "controller_lease_lost" || run.scheduledRetryReason === "ai_credential_renewed") {
     const saved = count(run.contextSnapshot?.failureRetriesBeforeAiConnectionWait);
     if (saved !== null) return saved;
   }
@@ -42,7 +42,7 @@ function historicalFailureCount(run: RetryRun): number {
 
 export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccounting {
   const saved = savedAccounting(run);
-  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"].includes(run.scheduledRetryReason ?? "");
+  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "controller_lease_lost", "ai_credential_renewed"].includes(run.scheduledRetryReason ?? "");
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
@@ -57,7 +57,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 }
 
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
-  if (reason === "workspace_busy" || reason === "ai_connection_busy" || reason === "ai_connection_pool_wait") {
+  if (reason === "workspace_busy" || reason === "ai_connection_busy" || reason === "ai_connection_pool_wait" || reason === "controller_lease_lost" || reason === "ai_credential_renewed") {
     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
   }
   const accounting = executionRetryAccounting(run);
@@ -67,6 +67,6 @@ export function executionRetryAttemptCount(run: RetryRun, reason: string): numbe
 export function accountingForScheduledRetry(run: RetryRun, reason: string, attempt: number): ExecutionRetryAccounting {
   const accounting = executionRetryAccounting(run);
   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
-  else if (reason !== "workspace_busy" && reason !== "ai_connection_busy" && reason !== "ai_connection_pool_wait") accounting.failureRetries = attempt;
+  else if (reason !== "workspace_busy" && reason !== "ai_connection_busy" && reason !== "ai_connection_pool_wait" && reason !== "controller_lease_lost" && reason !== "ai_credential_renewed") accounting.failureRetries = attempt;
   return accounting;
 }

@@ -26,7 +26,7 @@ import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
-import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, isControllerLeaseLostRun } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
@@ -566,6 +566,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const CONTROLLER_LEASE_LOST_MAX_BACKOFF_MS = 10 * 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -730,14 +731,25 @@ export function classifyAdapterFailureForRecovery(
 
 type ContinuationRetryClassification = {
   kind:
+    | "awaiting_reconnect"
     | "transient_infra"
     | "non_retryable"
     | "deliberate_wait_without_target"
     | "default";
   maxAttempts: number;
   baseBackoffMs: number;
+  maxBackoffMs?: number;
   errorCode: string | null;
 };
+
+function hasManagedAiConnection(latestRun: LatestIssueRun): boolean {
+  const attribution = parseObject(parseObject(latestRun?.contextSnapshot).aiConnection);
+  return (
+    typeof attribution.identity === "string" &&
+    typeof attribution.connectionId === "string" &&
+    typeof attribution.grantId === "string"
+  );
+}
 
 export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
@@ -748,6 +760,27 @@ export function classifyContinuationFailure(
       kind: "deliberate_wait_without_target",
       maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
       baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  // A signed-out login is the user's to restore, and the reconnect request is already open. The task keeps its
+  // place and starts again by itself once the credential changes; it is never moved to blocked for it.
+  if (errorCode === "claude_auth_required") {
+    return {
+      kind: "awaiting_reconnect",
+      maxAttempts: Number.MAX_SAFE_INTEGER,
+      baseBackoffMs: 0,
+      errorCode,
+    };
+  }
+  // The host stopped while the run waited to start (sleep, stall). The work did not fail, so waiting longer is
+  // the only cost and the task is never moved to blocked for it. Older builds stored this as `setup_failed`.
+  if (isControllerLeaseLostRun(latestRun ?? {})) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: Number.MAX_SAFE_INTEGER,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      maxBackoffMs: CONTROLLER_LEASE_LOST_MAX_BACKOFF_MS,
       errorCode,
     };
   }
@@ -967,6 +1000,13 @@ export function recoveryService(
     transientRetryBudgetSpent?: (
       run: typeof heartbeatRuns.$inferSelect,
     ) => boolean;
+    /**
+     * How a finished run's sign-in failure relates to the credential now. A run that failed on sign-in waits for
+     * "renewed" (the user reconnected or the credential was renewed) before it starts again.
+     */
+    aiAuthFailureState?: (
+      run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "startedAt" | "createdAt" | "contextSnapshot">,
+    ) => Promise<"renewed" | "needs_reauthorization" | "current">;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
   },
@@ -5623,7 +5663,12 @@ export function recoveryService(
         continue;
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
-        const classification = classifyContinuationFailure(latestRun);
+        const baseClassification = classifyContinuationFailure(latestRun);
+        // Without a managed login there is nothing to renew or reconnect, so waiting would strand the issue.
+        const classification: ContinuationRetryClassification =
+          baseClassification.kind === "awaiting_reconnect" && !hasManagedAiConnection(latestRun)
+            ? { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode: baseClassification.errorCode }
+            : baseClassification;
 
         if (
           classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE
@@ -5647,6 +5692,19 @@ export function recoveryService(
             result.skipped += 1;
           }
           continue;
+        }
+
+        if (classification.kind === "awaiting_reconnect") {
+          const state = await deps.aiAuthFailureState?.({
+            companyId: issue.companyId,
+            startedAt: latestRun?.startedAt ?? null,
+            createdAt: latestRun?.createdAt ?? new Date(),
+            contextSnapshot: latestRun?.contextSnapshot ?? null,
+          }).catch(() => "current" as const);
+          if (state !== "renewed") {
+            result.skipped += 1;
+            continue;
+          }
         }
 
         if (classification.kind === "non_retryable") {
@@ -5707,9 +5765,10 @@ export function recoveryService(
 
           if (classification.baseBackoffMs > 0 && latestFinishedAt) {
             const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay =
-              classification.baseBackoffMs *
-              Math.pow(2, Math.max(0, consecutive - 1));
+            const requiredDelay = Math.min(
+              classification.maxBackoffMs ?? Number.POSITIVE_INFINITY,
+              classification.baseBackoffMs * Math.pow(2, Math.max(0, consecutive - 1)),
+            );
             if (elapsed < requiredDelay) {
               result.skipped += 1;
               continue;

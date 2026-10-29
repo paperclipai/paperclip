@@ -19,6 +19,21 @@ export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
+export const CONTROLLER_LEASE_LOST_RETRY_REASON = "controller_lease_lost";
+export const AI_CREDENTIAL_RENEWED_RETRY_REASON = "ai_credential_renewed";
+
+/**
+ * Retries after a cause outside the work: the host stopped, or a credential was renewed while the run held the old
+ * one. They never spend the failure budget, because the work itself did not fail.
+ */
+export function isFreeRetryReason(retryReason: string | null | undefined): boolean {
+  return retryReason === CONTROLLER_LEASE_LOST_RETRY_REASON || retryReason === AI_CREDENTIAL_RENEWED_RETRY_REASON;
+}
+
+/** Retries that wait for the AI subscription; the issue execution lock stays with the run while it waits. */
+export function isWaitRetryReason(retryReason: string | null | undefined): boolean {
+  return retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON;
+}
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";

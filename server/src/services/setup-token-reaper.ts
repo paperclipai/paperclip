@@ -6,6 +6,7 @@ import {
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
   type SetupTokenReapResult,
+  type SetupTokenReapRetryState,
 } from "./setup-token-session.js";
 import {
   createProductionSetupTokenCleanupStore,
@@ -31,12 +32,13 @@ export interface SetupTokenReaperDeps {
 /**
  * Builds the standalone setup-token reaper. One sweep reaps every reapable
  * record: it releases the lease and clears the row. A failed release stays
- * retryable, so the next sweep retries it.
+ * retryable with a backoff, up to a fixed number of attempts.
  */
 export function createSetupTokenReaper(deps: SetupTokenReaperDeps) {
   const now = deps.now ?? Date.now;
+  const retryState: SetupTokenReapRetryState = new Map();
   async function sweep(): Promise<SetupTokenReapResult> {
-    return reapSetupTokenLeases({ store: deps.store, leases: deps.leases, log: deps.log }, now());
+    return reapSetupTokenLeases({ store: deps.store, leases: deps.leases, log: deps.log, retryState }, now());
   }
   return { sweep };
 }

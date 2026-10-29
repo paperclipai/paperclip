@@ -208,7 +208,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.delete(companies);
   });
 
-  function boundRetries() {
+  function boundRetries(overrides: Partial<HeartbeatRetryDependencies> = {}) {
     const state = createHeartbeatRunState(db);
     const deps = {
       ...callbacks(), getRun: state.getRun, getAgent: state.getAgent,
@@ -217,7 +217,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       getAgentInvokability: (agent: Agent | null | undefined) => evaluateAgentInvokabilityFromDb(db, agent),
       runDispatch: createRunDispatch(db),
     };
-    return { retries: extracted.createHeartbeatRetries(db, deps), deps };
+    return { retries: extracted.createHeartbeatRetries(db, { ...deps, ...overrides }), deps };
   }
 
   async function fixture() {
@@ -280,6 +280,57 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await boundRetries().retries.scheduleBoundedRetry(run.id, { now })).toMatchObject({ outcome: "scheduled", run: { id: successor.id }, reusedExisting: true });
     expect(first.deps.appendRunEvent).toHaveBeenCalledTimes(1);
     expect(second.deps.appendRunEvent).toHaveBeenCalledTimes(1);
+  });
+
+  async function failedWith(errorCode: string, over: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const f = await fixture();
+    const [run] = await db.update(heartbeatRuns).set({ errorCode, ...over }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    return { ...f, run };
+  }
+
+  it("keeps waiting for a host that lost its controller lease without spending the failure budget", async () => {
+    // Two failure retries are already spent, so the old rule would give up and block the task.
+    const first = await failedWith("controller_lease_lost", { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" });
+    const { retries } = boundRetries();
+    const one = await retries.scheduleBoundedRetryForRun(first.run, first.agent, { now, random: () => 0 });
+    expect(one).toMatchObject({ outcome: "scheduled", run: { scheduledRetryReason: "controller_lease_lost", scheduledRetryAttempt: 1 } });
+    if (one.outcome !== "scheduled") throw new Error("Expected retry");
+    expect(one.dueAt.getTime() - now.getTime()).toBe(30_000);
+
+    // The wait grows with each lost lease and stops growing at ten minutes; it never reports exhaustion.
+    const later = await failedWith("controller_lease_lost", { scheduledRetryAttempt: 9, scheduledRetryReason: "controller_lease_lost" });
+    const nine = await retries.scheduleBoundedRetryForRun(later.run, later.agent, { now, random: () => 0 });
+    expect(nine).toMatchObject({ outcome: "scheduled", run: { scheduledRetryReason: "controller_lease_lost", scheduledRetryAttempt: 10 } });
+    if (nine.outcome !== "scheduled") throw new Error("Expected retry");
+    expect(nine.dueAt.getTime() - now.getTime()).toBe(10 * 60_000);
+  });
+
+  it("waits for a host that lost its controller lease even when an older build stored it as a setup failure", async () => {
+    const { run, agent } = await failedWith("setup_failed", {
+      error: "Legacy controller lease lost",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+    });
+    const { retries } = boundRetries();
+    const result = await retries.scheduleBoundedRetryForRun(run, agent, { now, random: () => 0 });
+    expect(result).toMatchObject({ outcome: "scheduled", run: { scheduledRetryReason: "controller_lease_lost", scheduledRetryAttempt: 1 } });
+  });
+
+  it("restarts a run at once when it failed to sign in with a token that was renewed after it began", async () => {
+    const { retries } = boundRetries({ aiAuthFailureState: async () => "renewed" });
+    const { run, agent } = await failedWith("claude_auth_required", { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" });
+    const result = await retries.scheduleBoundedRetryForRun(run, agent, { now, random: () => 0 });
+    expect(result).toMatchObject({ outcome: "scheduled", run: { scheduledRetryReason: "ai_credential_renewed", scheduledRetryAttempt: 1 } });
+    if (result.outcome !== "scheduled") throw new Error("Expected retry");
+    expect(result.dueAt.getTime() - now.getTime()).toBe(5_000);
+  });
+
+  it("does not spend a retry while the login waits for the user to sign in", async () => {
+    const { retries } = boundRetries({ aiAuthFailureState: async () => "needs_reauthorization" });
+    const { run, agent, companyId } = await failedWith("claude_auth_required");
+    const result = await retries.scheduleBoundedRetryForRun(run, agent, { now, random: () => 0 });
+    expect(result).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, run.id)))).toHaveLength(0);
   });
 
   it("promotes only due retries and publishes after commit", async () => {

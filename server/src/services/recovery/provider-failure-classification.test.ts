@@ -27,11 +27,29 @@ describe("classifyAdapterFailureForRecovery", () => {
   });
   it("retries a continuation whose host lost the controller lease before dispatch", () => {
     expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
-      .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
+      .toMatchObject({ kind: "transient_infra", maxAttempts: Number.MAX_SAFE_INTEGER, maxBackoffMs: 10 * 60_000 });
     expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never).kind)
       .toBe("non_retryable");
   });
-  it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
+  it("reads a lease loss that an older build stored as a bootstrap setup failure as a lost controller lease", () => {
+    const stored = (providerWorkStarted: boolean) => ({
+      errorCode: "setup_failed", error: "Legacy controller lease lost",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted } },
+    });
+    expect(classifyContinuationFailure(stored(false) as never))
+      .toMatchObject({ kind: "transient_infra", maxAttempts: Number.MAX_SAFE_INTEGER, maxBackoffMs: 10 * 60_000 });
+    expect(classifyContinuationFailure(stored(true) as never).kind).toBe("non_retryable");
+  });
+  it("keeps waiting for a lost controller lease instead of giving up after a fixed number of tries", () => {
+    const classification = classifyContinuationFailure({ errorCode: "controller_lease_lost", resultJson: null } as never);
+    expect(classification.maxAttempts).toBeGreaterThan(1_000);
+    expect(classification.maxBackoffMs).toBeLessThanOrEqual(10 * 60_000);
+  });
+  it("waits for a Claude reconnect instead of treating the sign-in failure as final", () => {
+    const run = { errorCode: "claude_auth_required", ...classifyRunLiveness({ runStatus: "failed", issue: null, errorCode: "claude_auth_required", authenticationRepairRequested: true }) };
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "awaiting_reconnect", maxAttempts: Number.MAX_SAFE_INTEGER });
+  });
+  it.each(["acpx_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
     const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });
     const run = { errorCode, ...classification };
     expect(isAiAuthenticationBlocked(run)).toBe(true);

@@ -12,6 +12,8 @@ export const recoveryRunResultColumn = sql<Record<string, unknown> | null>`
     when ${heartbeatRuns.resultJson} is null then null
     when ${heartbeatRuns.errorCode} in ('adapter_failed', 'provider_quota', 'configuration_incomplete')
       then ${heartbeatRuns.resultJson}
+    when ${heartbeatRuns.errorCode} = 'setup_failed' and ${heartbeatRuns.error} = 'Legacy controller lease lost'
+      then ${heartbeatRuns.resultJson}
     else (
       select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
       from jsonb_each(case when jsonb_typeof(${heartbeatRuns.resultJson}) = 'object'

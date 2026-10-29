@@ -95,6 +95,13 @@ function hardWrap(text: string, width: number): string {
 }
 
 describe("parseSetupTokenPrompt", () => {
+  it("reads the sign-in prompt of `claude auth login` (2.1.302 live capture)", () => {
+    const result = parseSetupTokenPrompt(readFixture("auth-login-prompt.txt"));
+    expect(result?.url).toMatch(/^https:\/\/claude\.com\/cai\/oauth\/authorize\?code=true&/);
+    expect(result?.url).toContain("scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference");
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
   it("returns the exact claude.com URL and prompt from a complete output", () => {
     const result = parseSetupTokenPrompt(completeOutput(CLAUDE_COM_URL));
     expect(result).not.toBeNull();

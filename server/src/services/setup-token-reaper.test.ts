@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSetupTokenReaper } from "./setup-token-reaper.js";
 import {
+  SETUP_TOKEN_REAP_MAX_ATTEMPTS,
   isTerminalSessionState,
   type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
@@ -108,7 +109,8 @@ describe("setup-token reaper", () => {
         if (attempt === 1) throw new Error("provider down");
       },
     });
-    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+    let clock = NOW;
+    const reaper = createSetupTokenReaper({ store, leases, now: () => clock });
 
     // First sweep: the release rejects, so the record stays for a retry.
     const first = await reaper.sweep();
@@ -116,7 +118,8 @@ describe("setup-token reaper", () => {
     expect(first.failed).toBe(1);
     expect(store.rows.has("orphan-2")).toBe(true);
 
-    // Second sweep: the release confirms, so the record clears.
+    // Second sweep, after the backoff: the release confirms, so the record clears.
+    clock += 60_000;
     const second = await reaper.sweep();
     expect(second.released).toBe(1);
     expect(second.failed).toBe(0);
@@ -141,5 +144,77 @@ describe("setup-token reaper", () => {
     const second = await reaper.sweep();
     expect(second.released).toBe(0);
     expect(second.failed).toBe(0);
+  });
+  it("clears a record that has no lease without a release call", async () => {
+    // A record with an empty lease id has nothing to release. The old sweep called
+    // the release with an empty id, which always failed.
+    const store = createMemoryStore();
+    store.seed({ sessionId: "no-lease", leaseId: "", state: "cancelled" });
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result).toEqual({ released: 1, failed: 0, deferred: 0 });
+    expect(leases.releaseByIdCalls).toHaveLength(0);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("logs the release error, backs off, and stops retrying a release that never succeeds", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "stuck-1", leaseId: "lease-stuck", state: "failed" });
+    const leases = createFakeLeases({
+      releaseImpl: async () => {
+        throw new Error("driver cannot reach the sandbox");
+      },
+    });
+    const lines: string[] = [];
+    let clock = NOW;
+    const reaper = createSetupTokenReaper({ store, leases, now: () => clock, log: (line) => lines.push(line) });
+
+    // The sweep inside the backoff window does not try the record again.
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 1, deferred: 0 });
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0, deferred: 1 });
+    expect(leases.releaseByIdCalls).toHaveLength(1);
+
+    for (let attempt = 2; attempt <= SETUP_TOKEN_REAP_MAX_ATTEMPTS; attempt += 1) {
+      clock += 60_000 * 2 ** (attempt - 2);
+      expect(await reaper.sweep()).toEqual({ released: 0, failed: 1, deferred: 0 });
+    }
+    expect(leases.releaseByIdCalls).toHaveLength(SETUP_TOKEN_REAP_MAX_ATTEMPTS);
+
+    // After the cap the record stays in the store but the reaper never tries it again.
+    clock += 24 * 60 * 60_000;
+    expect(await reaper.sweep()).toEqual({ released: 0, failed: 0, deferred: 1 });
+    expect(leases.releaseByIdCalls).toHaveLength(SETUP_TOKEN_REAP_MAX_ATTEMPTS);
+    expect(store.rows.has("stuck-1")).toBe(true);
+
+    // One log line for each real attempt, with the real error and the ids.
+    expect(lines).toHaveLength(SETUP_TOKEN_REAP_MAX_ATTEMPTS);
+    expect(lines[0]).toContain("driver cannot reach the sandbox");
+    expect(lines[0]).toContain("lease-stuck");
+    expect(lines[0]).toContain("stuck-1");
+    expect(lines[SETUP_TOKEN_REAP_MAX_ATTEMPTS - 1]).toContain("stops retrying");
+  });
+
+  it("forgets the retry state of a record that left the store", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "gone-1", leaseId: "lease-gone", state: "failed" });
+    let fail = true;
+    const leases = createFakeLeases({
+      releaseImpl: async () => {
+        if (fail) throw new Error("provider down");
+      },
+    });
+    let clock = NOW;
+    const reaper = createSetupTokenReaper({ store, leases, now: () => clock });
+
+    await reaper.sweep();
+    store.rows.clear();
+    await reaper.sweep();
+    // A new record that reuses the id starts with a fresh attempt count.
+    store.seed({ sessionId: "gone-1", leaseId: "lease-gone", state: "failed" });
+    fail = false;
+    expect(await reaper.sweep()).toEqual({ released: 1, failed: 0, deferred: 0 });
   });
 });

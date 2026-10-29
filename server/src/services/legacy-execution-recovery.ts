@@ -16,6 +16,7 @@ import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeR
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { isControllerLeaseLostRun } from "./legacy-controller-lease.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
@@ -43,7 +44,7 @@ export const legacyReconciliationRunFields = {
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "error" | "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -73,6 +74,10 @@ export function legacyExecutionNeedsReconciliation(
   // exhaustion needs workspace repair, not reconciliation of provider actions
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // A lost controller lease and a refused sign-in are not failed attempts at the work. When the provider never
+  // started, a repeat cannot replay anything and must not wait for a person to reconcile it.
+  if ((isControllerLeaseLostRun(run) || run.errorCode === "claude_auth_required") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(

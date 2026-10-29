@@ -369,6 +369,48 @@ describe("runSetupTokenLogin", () => {
     expect((seen as unknown as Buffer).every((byte) => byte === 0)).toBe(true);
   });
 
+  it("reports success from verifyCredential for a command that writes its own credential file", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
+    const verifyCredential = vi.fn(async () => true);
+    const result = await runSetupTokenLogin(fake.driver, {
+      command: "claude auth login",
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      verifyCredential,
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("success");
+    expect(result.credentialDelivered).toBe(true);
+    expect(verifyCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails when verifyCredential finds no usable credential file", async () => {
+    for (const verifyCredential of [async () => false, async () => { throw new Error("no file"); }]) {
+      const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
+      const result = await runSetupTokenLogin(fake.driver, {
+        onPrompt: () => {},
+        provideCode: async () => BROWSER_CODE,
+        verifyCredential,
+        timeoutMs: 1000,
+      });
+      expect(result.outcome).toBe("failure");
+      expect(result.credentialDelivered).toBe(false);
+    }
+  });
+
+  it("does not verify the credential file after a nonzero exit", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 1 });
+    const verifyCredential = vi.fn(async () => true);
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      verifyCredential,
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("failure");
+    expect(verifyCredential).not.toHaveBeenCalled();
+  });
+
   it("exposes the fixed setup-token command", () => {
     expect(CLAUDE_SETUP_TOKEN_COMMAND).toBe("claude setup-token");
   });

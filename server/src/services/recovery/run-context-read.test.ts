@@ -49,6 +49,7 @@ describe.skipIf(!support.supported)("recovery context PostgreSQL projection", ()
       approvalId: randomUUID(), clearReason: "resolved", monitorAttemptCount: 4,
       wakeCommentIds: [randomUUID(), randomUUID()], wakeCommentId: randomUUID(), commentId: randomUUID(),
       externalChatContinuation: true,
+      aiConnection: { connectionId: randomUUID(), grantId: randomUUID(), provider: "anthropic", identity: "grant:shared:0123456789abcdef" },
     };
     const context = { ...evidence, paperclipWake: { externalInteractionContinuation: true, prompt: payload },
       paperclipWorkspace: { mode: "shared_workspace", instructions: payload }, executionContinuation: { prompt: payload }, paperclipTaskMarkdown: payload };
