@@ -941,3 +941,25 @@ the host restarts that resource with a new socket. Do not remove its lock marker
 while daemon work might still be running. The socket and its parent must be private,
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
+
+## ACPX controller replacement regression tests
+
+`src/control-plane/acpx-controller-recovery.test.ts` runs the production Rust
+Runner and authenticated PRP controller with a scripted ACPX peer. It covers
+active-turn reconnection, checkpoint restoration after deleting controller
+storage, native transport adoption and old-controller finalization, completion
+while disconnected, a provider crash, and an explicitly closed provider.
+It builds the debug Runner before execution and requires Cargo and a POSIX host.
+No model credentials, provider requests, application server or database are used.
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+  src/control-plane/acpx-controller-recovery.test.ts --maxWorkers=1
+```
+
+The failure controls distinguish a lost provider from a controller outage;
+matching a diagnostic after explicit close does not identify the cause of a
+hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
+Daytona deployment continuity need their own evidence. See the
+[remote continuity guide](../../doc/testing-native-remote-continuity.md) and the
+[Daytona Product E2E suite](../../tests/runner-e2e/README.md).

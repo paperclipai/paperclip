@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, it, vi } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
 import { DurablePrpControlPlane, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
 import { GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
@@ -19,11 +19,16 @@ const digest = (path: string) => "sha256:" + createHash("sha256").update(readFil
 const identity = { runnerInstanceId: "runner-acpx-recovery", environmentLeaseId: "lease-acpx-recovery",
   runId: "run-1", normalizedSessionId: "session-1", turnId: "durable-turn-1", itemId: "item-1" };
 const expectedRunnerVersion = "0.3.0";
-const expectedRunnerDigest = digest(binary);
+let expectedRunnerDigest: string;
 
-// A scripted ACPX protocol peer, not a model/provider acceptance test. The real
-// runner, backend, private journals, authenticated WebSocket and checkpoint codec
-// execute unchanged. No credentials or provider network calls are used.
+beforeAll(() => {
+  if (!process.env.PAPERCLIP_ACPX_REPRO_BINARY) {
+    execFileSync("cargo", ["build", "--locked", "--manifest-path", resolve(packageRoot, "runner/Cargo.toml"),
+      "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { timeout: 120_000, stdio: "pipe" });
+  }
+  expectedRunnerDigest = digest(binary);
+}, 120_000);
+
 function sidecarSource(root: string) {
   return [
     "const fs = require('node:fs'); const net = require('node:net'); const rl = require('node:readline');",
@@ -38,7 +43,7 @@ function sidecarSource(root: string) {
     " const ports = fences.map(s=>s.address().port); fences[2].close();",
     " fs.appendFileSync(root+'/launches.jsonl', JSON.stringify({pid:process.pid, ports})+'\\n');",
     " const reply = (r,result) => send({protocolVersion,id:r.id,ok:true,result});",
-    " rl.createInterface({input:process.stdin}).on('line', line => {",
+    " const lines=rl.createInterface({input:process.stdin}); lines.on('close',()=>process.exit(0)); lines.on('line', line => {",
     "  const r=JSON.parse(line), p=r.params || {};",
     "  switch(r.command) {",
     "   case 'initialize': reply(r,{protocolVersion,sidecarPid:process.pid,profile:{agent:'claude'},capabilities:{persistentSessions:true,exactModelVerification:true,permissions:'runner_policy',semanticTools:'runner_bridge',structuredInput:'paperclip.question_set.v1'}});break;",
@@ -91,6 +96,7 @@ async function fixture() {
     "--reconnect-grace-ms","15000","--reconnect-delay-ms","25","--acpx-launch-authority-digest","sha256:"+"d".repeat(64),
     "--acpx-sidecar-command",process.execPath,"--acpx-sidecar-command-sha256",digest(process.execPath),
     "--acpx-sidecar-script",script,"--acpx-sidecar-script-sha256",digest(script)];
+  const startedAt = new Date().toISOString();
   const child = spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:ticket},stdio:["ignore","ignore","pipe"],detached:true});
   const exit = once(child,"exit");
   child.stderr!.on("data",bytes=>{diagnostics=(diagnostics+String(bytes)).slice(-4096);});
@@ -100,6 +106,7 @@ async function fixture() {
     controller.queueCommand(type,payload,id,true);
     await vi.waitFor(()=>{
       expect(child.exitCode,"runner exit; "+diagnostics).toBeNull();
+      expect(child.signalCode,"runner signal; "+diagnostics).toBeNull();
       expect(["completed","failed"]).toContain(controller.getCommand(id)?.status);
     },{timeout:8000});
     return controller.getCommand(id)!;
@@ -116,7 +123,7 @@ async function fixture() {
     rmSync(stateDirectory,{recursive:true,force:true});
     decodeDurablePrpCheckpoint(checkpoint.records).restoreSessionDirectory(root);
   };
-  return {root,child,exit,command,ready,
+  return {root,child,exit,command,ready,startedAt,
     controller:()=>controller,
     stopController:stopped,
     restoreCheckpoint,
@@ -135,9 +142,18 @@ async function fixture() {
       await exit;
       try {
         for (const line of readFileSync(resolve(root,"launches.jsonl"),"utf8").trim().split("\n")) {
-          try { process.kill(JSON.parse(line).pid,"SIGKILL"); } catch { /* This test's sidecar already stopped. */ }
+          const launch = JSON.parse(line) as { pid: number; ports: number[] };
+          await vi.waitFor(async () => {
+            for (const port of launch.ports.slice(0, 2)) await new Promise<void>((resolveFree, reject) => {
+              const probe = createNetServer();
+              probe.once("error", reject);
+              probe.listen(port, "127.0.0.1", () => probe.close(error => error ? reject(error) : resolveFree()));
+            });
+          }, { timeout: 3_000 });
         }
-      } catch { /* The sidecar did not start. */ }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       rmSync(root,{recursive:true,force:true});
     },
   };
@@ -178,7 +194,7 @@ it.runIf(!process.env.PAPERCLIP_ACPX_REPRO_BINARY)("adopts the live ACPX executi
       resumeProviderSession:{driverSessionId:"record-1",providerSessionId:"agent-1"},
       runnerProcessLauncher:launcher,controlPlaneRegistration:run.adoptController,
       runnerReconnectGraceMs:10000,
-      adoptExistingRunner:{pid:run.child.pid!,processGroupId:run.child.pid!,startedAt:new Date().toISOString(),
+      adoptExistingRunner:{pid:run.child.pid!,processGroupId:run.child.pid!,startedAt:run.startedAt,
         isAlive:()=>{try{process.kill(run.child.pid!,0);return true;}catch{return false;}},
         signal:signal=>{try{process.kill(-run.child.pid!,signal);return true;}catch{return false;}}},
     };
@@ -230,8 +246,6 @@ it("distinguishes a provider-process crash from controller replacement",async()=
     await run.stopController();
     writeFileSync(resolve(run.root,"action"),"exit");
     await vi.waitFor(()=>expect(readFileSync(resolve(run.root,"exit-receipt"),"utf8")).toBe(String(pid)),{timeout:3000});
-    // The disconnected runner may not have reaped its child yet. A zombie PID
-    // still answers kill(pid, 0); prove actual process-lifetime release instead.
     await vi.waitFor(async()=>{
       for(const port of run.launches()[0].ports.slice(0,2)) await new Promise<void>((resolveFree,reject)=>{
         const probe=createNetServer();probe.once("error",reject);
@@ -245,7 +259,7 @@ it("distinguishes a provider-process crash from controller replacement",async()=
   }finally{await run.cleanup();}
 },20000);
 
-it("reproduces the hosted snapshot error after an explicit provider close",async()=>{
+it("requires a surviving provider when requesting a live snapshot after explicit close",async()=>{
   const run=await fixture();
   try{
     await run.ready();
