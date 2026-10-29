@@ -710,6 +710,12 @@ The directory merge still preserves host-only
 file changes under its existing rules. A changed host branch requires recovery.
 An intentional reset to an ancestor exports a full Git bundle so restore keeps
 the actual sandbox tip; an empty delta is reserved for an unchanged tip.
+A full Git bundle from a shallow repository still omits history before its
+shallow boundaries. When a delta import cannot satisfy its history, sandbox
+restore exports those boundaries with the full bundle. The host unpacks it in
+a temporary bare repository and uses Git's shallow fetch protocol to import it.
+This preserves existing host ancestry and connectivity checks. File restore and
+the normal concurrent-work merge must still finish before run finalization.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the

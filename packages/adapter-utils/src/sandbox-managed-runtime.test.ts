@@ -932,6 +932,50 @@ describe("sandbox managed runtime", () => {
     expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
   });
 
+  it("restores a separately fetched shallow branch whose boundary the host lacks", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-shallow-restore-"));
+    cleanupDirs.push(root);
+    const host = path.join(root, "host");
+    const remote = path.join(root, "remote");
+    const origin = path.join(root, "origin");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "base\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const baseline = await git(host, ["rev-parse", "HEAD"]);
+    await git(root, ["clone", host, origin]);
+    await git(origin, ["config", "user.name", "Paperclip Test"]);
+    await git(origin, ["config", "user.email", "test@paperclip.dev"]);
+    for (const content of ["published", "review fix"]) {
+      await writeFile(path.join(origin, "tracked.txt"), content);
+      await git(origin, ["commit", "-am", content]);
+    }
+    const publishedHead = await git(origin, ["rev-parse", "HEAD"]);
+    const prepared = await prepareSandboxManagedRuntime({
+      ...sandboxRuntimeInput(sandboxSpec("shallow", remote), "test-adapter", makeFilesystemClient(), host),
+      workspaceRestoreRetryDelaysMs: [],
+    });
+    // Like checking out a PR in a fresh task workspace: only its tip is fetched,
+    // and the sandbox still has its independent original shallow boundary.
+    await git(remote, ["fetch", "--depth=1", origin, publishedHead]);
+    await git(remote, ["checkout", "--detach", "FETCH_HEAD"]);
+    await writeFile(path.join(remote, "evidence.txt"), "saved result\n");
+    await writeFile(path.join(host, "local-only.txt"), "concurrent host work\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("review fix");
+    expect(await readFile(path.join(host, "evidence.txt"), "utf8")).toBe("saved result\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("concurrent host work\n");
+    expect(await git(host, ["cat-file", "-t", publishedHead])).toBe("commit");
+    // Imported shallow history must not truncate the host's existing history.
+    expect(await git(host, ["rev-parse", "HEAD^"])).toBe(baseline);
+    expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
+  });
+
   it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
     cleanupDirs.push(rootDir);

@@ -2041,6 +2041,8 @@ export async function prepareSandboxManagedRuntime(input: {
                   const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
                   const exportRef = createRemoteGitExportRef("sandbox");
                   const localBundlePath = path.join(tempDir, "git-delta.bundle");
+                  const remoteShallowPath = path.posix.join(runtimeRootDir, "git-shallow.txt");
+                  const localShallowPath = path.join(tempDir, "git-shallow.txt");
 
                   // Export the sandbox history and import it into the host workspace.
                   // The delta bundle assumes the host holds the bundle's boundary
@@ -2057,6 +2059,7 @@ export async function prepareSandboxManagedRuntime(input: {
                         bundlePath: remoteGitBundle,
                         statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
                         forceFullBundle,
+                        shallowPath: forceFullBundle ? remoteShallowPath : undefined,
                       }))}`,
                       { timeoutMs: input.spec.timeoutMs },
                     );
@@ -2099,6 +2102,10 @@ export async function prepareSandboxManagedRuntime(input: {
                       await fs.writeFile(localBundlePath, bundleBuffer);
                     }
                     await input.client.remove(remoteGitBundle).catch(() => undefined);
+                    if (forceFullBundle) {
+                      await fs.writeFile(localShallowPath, toBuffer(await input.client.readFile(remoteShallowPath)));
+                      await input.client.remove(remoteShallowPath).catch(() => undefined);
+                    }
                     if (!forceFullBundle) {
                       remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
                         .then((bytes) => toBuffer(bytes).toString("utf8").trim())
@@ -2112,6 +2119,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       exportRef,
                       importedRef: importedRef!,
                       baseSha: gitSnapshot.headCommit,
+                      shallowPath: forceFullBundle ? localShallowPath : undefined,
                     }));
                   });
 

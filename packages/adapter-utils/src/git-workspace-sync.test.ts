@@ -578,6 +578,46 @@ describe("git workspace sync", () => {
     }
   });
 
+  it.each([false, true])("imports shallow full bundles without truncating existing host ancestry (host has history: %s)", async (hostHasHistory) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-shallow-bundle-"));
+    cleanupDirs.push(root);
+    const source = await createRepo(root);
+    await writeFile(path.join(source, "tracked.txt"), "published work\n");
+    await git(source, ["commit", "-am", "published"]);
+    const published = await git(source, ["rev-parse", "HEAD"]);
+    const host = path.join(root, "host");
+    await git(root, ["clone", source, host]);
+    if (!hostHasHistory) {
+      // A host containing just the original base, never the separately fetched PR.
+      await git(host, ["reset", "--hard", "HEAD^"]);
+      await git(host, ["reflog", "expire", "--expire=now", "--all"]);
+      await git(host, ["update-ref", "-d", "refs/remotes/origin/main"]);
+      await git(host, ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+      await git(host, ["gc", "--prune=now"]);
+      await expect(git(host, ["cat-file", "-e", published])).rejects.toThrow();
+    }
+    const before = await git(host, ["rev-list", "HEAD"]);
+    const sandbox = path.join(root, "sandbox");
+    await git(root, ["clone", "--depth=1", `file://${source}`, sandbox]);
+    const bundlePath = path.join(root, "full.bundle");
+    const shallowPath = path.join(root, "shallow");
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+    await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+      remoteDir: sandbox, baseSha: published, exportRef, bundlePath, shallowPath, forceFullBundle: true,
+    })]);
+    expect(await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef, importedRef,
+      baseSha: published, shallowPath })).toBe(published);
+    expect(await git(host, ["rev-list", "HEAD"])).toBe(before);
+    expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
+
+    await writeFile(shallowPath, `${published}\n../../config\n`);
+    await expect(fetchGitBundleIntoLocalRef({ localDir: host, bundlePath, exportRef,
+      importedRef: createImportedGitRef("invalid"), baseSha: published, shallowPath }))
+      .rejects.toThrow("Invalid Git shallow boundaries");
+    expect(await git(host, ["rev-list", "HEAD"])).toBe(before);
+  });
+
   it("falls back to a full self-contained bundle when the sandbox lacks baseSha", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-full-"));
     cleanupDirs.push(rootDir);

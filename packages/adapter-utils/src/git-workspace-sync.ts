@@ -695,16 +695,74 @@ export async function fetchGitBundleIntoLocalRef(input: {
   exportRef: string;
   importedRef: string;
   baseSha: string;
+  /** Shallow boundaries accompanying a full bundle, which cannot encode them. */
+  shallowPath?: string;
 }): Promise<string> {
   const bundleSize = (await fs.stat(input.bundlePath).catch(() => null))?.size ?? 0;
   if (bundleSize === 0) {
     return input.baseSha;
   }
 
-  await runLocalGit(input.localDir, ["fetch", "--force", input.bundlePath, `${input.exportRef}:${input.importedRef}`], {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-  });
+  const shallow = input.shallowPath ? await fs.readFile(input.shallowPath, "utf8") : "";
+  if (shallow.trim()) {
+    const boundaries = shallow.trim().split("\n");
+    const objectFormat = (await runLocalGit(input.localDir, ["rev-parse", "--show-object-format"])).stdout.trim();
+    const oid = objectFormat === "sha256" ? /^[a-f0-9]{64}$/ : /^[a-f0-9]{40}$/;
+    if (!boundaries.every((boundary) => oid.test(boundary))) throw new Error("Invalid Git shallow boundaries");
+    const staging = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-bundle-"));
+    try {
+      // Git bundles have no shallow protocol. Unpack into a private repository
+      // carrying the sender's boundaries, then let ordinary Git fetch negotiate
+      // which boundaries the host actually needs. Never overwrite host shallow
+      // metadata or disable connectivity checks.
+      await runLocalGit(input.localDir, ["clone", "--bare", "--shared", input.localDir, staging], { timeout: 60_000 });
+      const advertised = await runLocalGit(staging, ["bundle", "unbundle", input.bundlePath], {
+        timeout: 60_000, maxBuffer: 1024 * 1024,
+      });
+      const head = advertised.stdout.split("\n").find((line) => line.endsWith(` ${input.exportRef}`))?.split(" ")[0];
+      if (!head || !oid.test(head)) throw new Error("Git bundle does not advertise the requested export ref");
+      const retainedBoundaries = (await fs.readFile(path.join(staging, "shallow"), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+      })).trim().split("\n").filter(Boolean);
+      const hasCommit = async (commit: string): Promise<boolean> => {
+        try {
+          await runLocalGit(staging, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+          return true;
+        } catch (error) {
+          if ((error as { code?: unknown }).code === 1) return false;
+          throw error;
+        }
+      };
+      for (const boundary of boundaries) {
+        // A shallow sender can stop before history the host already holds.
+        // Keep that connection when possible; adding its boundary unconditionally
+        // would hide a real merge-base and reject concurrent host changes.
+        if (!await hasCommit(boundary)) continue; // An unrelated tip is not in this bundle.
+        const parents = await runLocalGit(staging, ["rev-parse", `${boundary}^@`]);
+        let missingParent = false;
+        for (const parent of parents.stdout.trim().split("\n").filter(Boolean)) {
+          if (!await hasCommit(parent)) {
+            missingParent = true;
+            break;
+          }
+        }
+        if (missingParent) retainedBoundaries.push(boundary);
+      }
+      if (retainedBoundaries.length) await fs.writeFile(path.join(staging, "shallow"), `${[...new Set(retainedBoundaries)].join("\n")}\n`);
+      await runLocalGit(staging, ["update-ref", input.exportRef, head]);
+      await runLocalGit(input.localDir, ["fetch", "--force", "--update-shallow", staging, `${input.exportRef}:${input.importedRef}`], {
+        timeout: 60_000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true });
+    }
+  } else {
+    await runLocalGit(input.localDir, ["fetch", "--force", input.bundlePath, `${input.exportRef}:${input.importedRef}`], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+  }
   const importedHead = await runLocalGit(input.localDir, ["rev-parse", input.importedRef], {
     timeout: 10_000,
     maxBuffer: 16 * 1024,
@@ -744,6 +802,8 @@ export function buildRemoteGitDeltaBundleScript(input: {
    * failed because the host lacked the bundle's prerequisite.
    */
   forceFullBundle?: boolean;
+  /** Export the sender's shallow boundaries alongside a full bundle. */
+  shallowPath?: string;
 }): string {
   const remoteDir = shellQuote(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
@@ -761,6 +821,10 @@ export function buildRemoteGitDeltaBundleScript(input: {
     input.cleanupBundle ? "trap cleanup EXIT" : "",
     `mkdir -p ${shellQuote(path.posix.dirname(input.bundlePath))}`,
     `rm -f ${bundlePath}`,
+    ...(input.shallowPath ? [
+      `shallow_file=$(git -C ${remoteDir} rev-parse --path-format=absolute --git-path shallow)`,
+      `if [ -f "$shallow_file" ]; then cp "$shallow_file" ${shellQuote(input.shallowPath)}; else : > ${shellQuote(input.shallowPath)}; fi`,
+    ] : []),
     // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
     // baseSha as a prerequisite the importer (host) must already hold. That
     // assumption breaks in two real cases, and then `git fetch` on the host
