@@ -11,6 +11,7 @@ import { conflict } from "../../errors.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "./scheduling.js";
+import { observeCrossIssueInfluence } from "../cross-issue-influence-limit.js";
 import { readIdleSleepSafety } from "../idle-sleep-safety.js";
 import { PaperclipRunnerToolAuthority } from "../native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../native-runtime/native-run-finalizer.js";
@@ -38,6 +39,7 @@ function callbacks(db: Db) {
     groupAgentOrgRowsByCompany: preparation.groupAgentOrgRowsByCompany,
     issuesSvc: {
       listReviewAttention: vi.fn<HeartbeatSchedulingDependencies["issuesSvc"]["listReviewAttention"]>(async () => new Map()),
+      listDependencyReadiness: vi.fn<HeartbeatSchedulingDependencies["issuesSvc"]["listDependencyReadiness"]>(async () => new Map()),
       create: vi.fn<HeartbeatSchedulingDependencies["issuesSvc"]["create"]>(),
     },
     enqueueWakeup: vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => admitted),
@@ -404,7 +406,8 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 2, enqueued: 2, skipped: 0 });
     expect(f.deps.claimDueTimerHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ id: f.agent.id }), now, 60);
     expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
-      source: "timer", reason: "heartbeat_timer", contextSnapshot: expect.objectContaining({ timerClaimWasFirstHeartbeat: true }),
+      source: "timer", reason: "heartbeat_timer",
+      contextSnapshot: expect.objectContaining({ timerClaimWasFirstHeartbeat: true, issueId: f.issue.id, taskId: f.issue.id }),
     }));
   });
 
@@ -430,6 +433,96 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  // Regression: an unscoped timer wake could check out its assigned issue but
+  // then fail every PATCH/comment with cross_issue_influence_run_context_required.
+  // The wake must carry the eligible issue as its source snapshot.
+  it("scopes the timer wake to the agent's eligible issue", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
+      source: "timer", reason: "heartbeat_timer",
+      contextSnapshot: expect.objectContaining({ issueId: f.issue.id, taskId: f.issue.id }),
+    }));
+  });
+
+  it("leaves the timer wake unscoped when the agent has no eligible issue", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null, status: "done" }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    const timerCall = f.deps.enqueueWakeup.mock.calls.find(call => call[1]?.reason === "heartbeat_timer");
+    expect(timerCall).toBeDefined();
+    expect(timerCall![1]!.contextSnapshot?.issueId).toBeUndefined();
+    expect(timerCall![1]!.contextSnapshot?.taskId).toBeUndefined();
+  });
+
+  it("scopes the timer wake to a runnable issue and skips one with unfinished blockers", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    // Created earlier, so without the readiness filter it would be chosen first.
+    const blocked = await db.insert(issues).values({
+      companyId: f.company.id, title: "Blocked first", status: "todo", assigneeAgentId: f.agent.id,
+      createdAt: new Date(dueAt.getTime() - 60_000), monitorNextCheckAt: null,
+    }).returning().then(rows => rows[0]!);
+    const readiness = (id: string, unresolved: number) => ({
+      issueId: id, blockerIssueIds: unresolved ? ["blocker"] : [], unresolvedBlockerIssueIds: unresolved ? ["blocker"] : [],
+      unresolvedBlockerCount: unresolved, pendingFinalizeBlockerIssueIds: [], allBlockersDone: unresolved === 0, isDependencyReady: unresolved === 0,
+    });
+    f.deps.issuesSvc.listDependencyReadiness.mockResolvedValue(new Map([
+      [blocked.id, readiness(blocked.id, 1)],
+      [f.issue.id, readiness(f.issue.id, 0)],
+    ]));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
+      source: "timer", reason: "heartbeat_timer",
+      contextSnapshot: expect.objectContaining({ issueId: f.issue.id, taskId: f.issue.id }),
+    }));
+  });
+
+  it("advances to the next runnable issue when admission refuses a paused candidate", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    const paused = await db.insert(issues).values({
+      companyId: f.company.id, title: "Paused first", status: "in_progress", assigneeAgentId: f.agent.id,
+      createdAt: new Date(dueAt.getTime() - 60_000), monitorNextCheckAt: null,
+    }).returning().then(rows => rows[0]!);
+    // Admission refuses the subtree-held issue (as the real queue does), so the
+    // scheduler must try the next candidate rather than leaving ready work idle.
+    f.deps.enqueueWakeup.mockImplementation(async (_agentId, opts) =>
+      opts?.contextSnapshot?.issueId === paused.id ? null : admitted);
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup.mock.calls.map(call => call[1]?.contextSnapshot?.issueId))
+      .toEqual([paused.id, f.issue.id]);
+  });
+
+  // Greptile: prove the public contract, not only the mocked arguments. The run
+  // the scheduler admits must be able to write to the issue it is scoped to.
+  it("lets a timer-scoped run update the issue it is scoped to", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    await f.scheduler.tickTimers(now);
+    // Read the wake the scheduler admitted and persist a run with that context,
+    // then exercise the real containment check against it.
+    const wake = f.deps.enqueueWakeup.mock.calls.find(call => call[1]?.reason === "heartbeat_timer")?.[1];
+    expect(wake?.contextSnapshot?.issueId).toBe(f.issue.id);
+
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
+      runtimeMode: "native", status: "running", contextSnapshot: wake!.contextSnapshot!,
+    }).returning();
+    // The real containment check permits the write because the run is scoped to
+    // this issue; an unscoped run would be rejected here.
+    await expect(observeCrossIssueInfluence(db, {
+      companyId: f.company.id, runId: run!.id, agentId: f.agent.id,
+      targetIssueId: f.issue.id, kind: "update", now,
+    })).resolves.toBeNull();
   });
 
   it("recovers active goals with stable revision-based admission keys", async () => {

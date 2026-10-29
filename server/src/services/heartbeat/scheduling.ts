@@ -68,10 +68,21 @@ export interface HeartbeatSchedulingDependencies
   extends Pick<HeartbeatRetryDependencies, "getRun" | "getAgent" | "getWorktreeExecutionCutoff">,
     Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "claimDueTimerHeartbeat">,
     Pick<RunPreparation, "toAgentOrgRow" | "groupAgentOrgRowsByCompany"> {
-  issuesSvc: Pick<ReturnType<typeof issueService>, "listReviewAttention" | "create">;
+  issuesSvc: Pick<
+    ReturnType<typeof issueService>,
+    "listReviewAttention" | "listDependencyReadiness" | "create"
+  >;
   scheduleBoundedRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetryForRun"];
   getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
 }
+
+// Issue statuses a timer wake may be scoped to. These match the queue's
+// `hasActionableTimerWork` predicate; an issue outside them cannot be the
+// source of a timer run.
+const TIMER_ELIGIBLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+// Cap how many candidate issues we inspect for a single due agent. A timer
+// wake is scoped to one issue, so we only need the first runnable candidate.
+const TIMER_ISSUE_CANDIDATE_LIMIT = 10;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -1214,6 +1225,75 @@ export function createHeartbeatScheduling(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
+  // The issues a timer wake may be scoped to, in deterministic order. Only
+  // runnable issues qualify: dispatch cancels a run whose issue still has
+  // unresolved blockers, so scoping the wake to one would consume the timer
+  // without starting work and starve the agent's ready issues. A paused
+  // (subtree-held) issue is deliberately not filtered here — admission already
+  // refuses it and `admitTimerWake` advances to the next candidate.
+  async function selectRunnableTimerIssues(
+    agent: typeof agents.$inferSelect,
+    cutoff: Date | null,
+  ): Promise<{ id: string }[]> {
+    const candidates = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, [...TIMER_ELIGIBLE_ISSUE_STATUSES]),
+          ...(cutoff ? [gte(issues.createdAt, cutoff)] : []),
+        ),
+      )
+      .orderBy(asc(issues.createdAt), asc(issues.id))
+      .limit(TIMER_ISSUE_CANDIDATE_LIMIT);
+    if (candidates.length === 0) return [];
+
+    const readiness = await issuesSvc.listDependencyReadiness(
+      agent.companyId,
+      candidates.map((candidate) => candidate.id),
+    );
+    return candidates.filter(
+      (candidate) =>
+        (readiness.get(candidate.id)?.unresolvedBlockerCount ?? 0) === 0,
+    );
+  }
+
+  // Scopes the timer wake to a runnable issue when one exists; otherwise leaves
+  // it unscoped, matching the pre-existing behavior for an agent with no
+  // eligible issue. Admission can still refuse a candidate (for example an
+  // issue held by an active subtree pause), so try each candidate in turn
+  // rather than failing the whole wake.
+  async function admitTimerWake(
+    agent: typeof agents.$inferSelect,
+    runnableIssues: { id: string }[],
+    timerClaim: { wasFirstHeartbeat: boolean },
+    now: Date,
+  ) {
+    const candidates: ({ id: string } | null)[] =
+      runnableIssues.length > 0 ? runnableIssues : [null];
+    for (const candidate of candidates) {
+      const run = await enqueueWakeup(agent.id, {
+        source: "timer",
+        triggerDetail: "system",
+        reason: "heartbeat_timer",
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat_scheduler",
+        contextSnapshot: {
+          source: "scheduler",
+          reason: "interval_elapsed",
+          now: now.toISOString(),
+          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+          issueId: candidate?.id,
+          taskId: candidate?.id,
+        },
+      });
+      if (run) return run;
+    }
+    return null;
+  }
+
   async function tickTimers(now = new Date()) {
       if ((await getSchedulingSuppression()).suppressed) {
         return {
@@ -1245,29 +1325,24 @@ export function createHeartbeatScheduling(
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
-        }
-
-        checked += 1;
+        // A timer wake must carry a source issue or `observeCrossIssueInfluence`
+        // treats every subsequent PATCH/comment on the agent's own assigned
+        // issue as a cross-issue write and fails closed, stranding the run's
+        // results. The due-time check runs before the candidate lookup (which
+        // does not gate the wake) so an agent whose interval has not elapsed
+        // does not pay for the extra queries on every tick; the worktree cutoff
+        // still requires the lookup to decide whether the agent is considered.
         const baseline = new Date(
           agent.lastHeartbeatAt ?? agent.createdAt,
         ).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+        const due = now.getTime() - baseline >= policy.intervalSec * 1000;
+        const runnableIssues = due || cutoff
+          ? await selectRunnableTimerIssues(agent, cutoff)
+          : [];
+        if (cutoff && runnableIssues.length === 0) continue;
+
+        checked += 1;
+        if (!due) continue;
         const timerClaim = await claimDueTimerHeartbeat(
           agent,
           now,
@@ -1275,19 +1350,7 @@ export function createHeartbeatScheduling(
         );
         if (!timerClaim) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-            timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
-          },
-        });
+        const run = await admitTimerWake(agent, runnableIssues, timerClaim, now);
         if (run) enqueued += 1;
         else skipped += 1;
       }
