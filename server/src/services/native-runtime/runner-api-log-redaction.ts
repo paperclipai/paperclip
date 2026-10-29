@@ -17,7 +17,7 @@ export function redactRunnerApiEvent<T extends { eventType: string; sourceKind: 
     && Object.keys(payload).every(key => SCHEMA_DENIAL_FIELDS.has(key))
     && SCHEMA_DENIAL_STRINGS.every(key => typeof payload[key] === "string"
       && payload[key].length > 0 && payload[key].length <= 512 && /^[\x20-\x7e]+$/.test(payload[key]))) {
-    return event;
+    return { ...redactRunnerApiPayloads(event), payload: event.payload };
   }
   return redactRunnerApiPayloads(event);
 }

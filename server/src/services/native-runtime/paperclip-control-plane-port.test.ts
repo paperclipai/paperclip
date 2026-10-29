@@ -512,14 +512,18 @@ describe("PaperclipControlPlanePort conformance", () => {
       sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
       normalizedSessionId: identity.sessionId, eventType: "harness.diagnostic", schemaVersion: 1,
       priority: 0, emittedAt: new Date().toISOString(), payload,
+      debug: { operationId, data: { value: "private-diagnostic-debug" } },
     };
     await port.appendEvent(event);
     expect(observed[0]?.payload).toEqual(payload);
+    expect(observed[0]?.debug).toMatchObject({ apiPayloadRedacted: true });
+    expect(JSON.stringify(observed[0])).not.toContain("private-diagnostic-debug");
     expect((await port.appendEvent(event)).disposition).toBe("duplicate");
     expect(port.normalizeReplayPayload(payload)).toEqual(port.normalizeReplayPayload(observed[0]!.payload));
     const saved = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
     expect(saved).toHaveLength(1);
     expect((saved[0]!.payload?.prpEvent as unknown as PrpEvent).payload).toEqual(payload);
+    expect(JSON.stringify(saved)).not.toContain("private-diagnostic-debug");
     await expect(port.appendEvent({ ...event, payload: {
       ...payload, inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /properties/title/type.",
     } })).rejects.toThrow();

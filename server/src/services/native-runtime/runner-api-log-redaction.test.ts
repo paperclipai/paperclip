@@ -34,6 +34,12 @@ describe("API payload persistence redaction", () => {
     };
     const event = { sourceKind: "runner", eventType: "harness.diagnostic", payload };
     expect(redactRunnerApiEvent(event)).toEqual(event);
+    const debugEvent = { ...event, debug: { operationId, data: { value: "private-debug-value" } } };
+    const savedDebug = redactRunnerApiEvent(debugEvent);
+    expect(savedDebug.payload).toEqual(payload);
+    expect(savedDebug.debug).toMatchObject({ apiPayloadRedacted: true });
+    expect(JSON.stringify(savedDebug)).not.toContain("private-debug-value");
+    expect(redactRunnerApiEvent(savedDebug)).toEqual(savedDebug);
     for (const value of [
       { ...event, eventType: "item.completed" },
       { ...event, sourceKind: "control_plane" },
