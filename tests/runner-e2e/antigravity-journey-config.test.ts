@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
-import { cleanupAntigravityJourney, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
+import { antigravityNoLaunchReceipt, cleanupAntigravityJourney, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { ConnectionApi } from "./connection-target.js";
 import { antigravityKnownCostObservation } from "./antigravity-journey-launch.js";
@@ -21,6 +21,81 @@ function fixture() { return { version: 1, setupId: "synthetic", hosting: "self-h
   limits: { durationMs: 900_000, turnTimeoutMs: 300_000, maxRuns: 2, budgetCents: 100 } }; }
 function resources(): AntigravityJourneyResources { return { version: 1, executionId: ANTIGRAVITY_JOURNEY_EXECUTION, origin: "http://127.0.0.1:3104",
   companyId, environmentId, connectionId, agentName: "Antigravity QA 0123456789ab", agentId, runIds: [], processes: {}, retained: false, setupProbe: "not_started" }; }
+function neverLaunched() {
+  const owned = resources(); owned.runIds = [runId]; owned.issueId = "66666666-6666-4666-8666-666666666666"; owned.setupProbe = "retired";
+  const leaseId = "77777777-7777-4777-8777-777777777777";
+  const run: Record<string, any> = { id: runId, companyId, agentId, issueId: owned.issueId, status: "cancelled", executionStage: "settled", costAccountingPending: false,
+    runtimeMode: "legacy", runtimeModeResolvedAt: null, controllerLeaseExpiresAt: null, processPid: null, processGroupId: null, processStartedAt: null,
+    runnerInstanceId: null, nativeSessionId: null, driverKind: null, completionContractId: null, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+    resultJson: { startupCancellation: { beforeNativeSelection: true, errorCode: "cancelled", requestedAt: "2026-01-01T00:00:00Z" }, startupPreparationSettledAt: "2026-01-01T00:00:02Z" },
+    contextSnapshot: { paperclipEnvironment: { id: environmentId, driver: "local", leaseId } } };
+  const lease: Record<string, any> = { id: leaseId, companyId, heartbeatRunId: runId, environmentId, status: "expired", releasedAt: "2026-01-01T00:00:01Z" };
+  return { owned, run, lease };
+}
+
+it.each(["released", "expired"])("persists authoritative pre-native cancellation with a %s lease before purge", async status => {
+  const { owned, run, lease } = neverLaunched(); lease.status = status;
+  let lifecycleState = "ready", saved = false;
+  const agent = () => ({ id: agentId, companyId, name: owned.agentName, lifecycleState });
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [agent()];
+    if (route.includes("heartbeat-runs?")) return [run];
+    if (route === `/api/heartbeat-runs/${runId}`) return run;
+    if (route === `/api/environment-leases/${lease.id}`) return lease;
+    if (route === `/api/issues/${owned.issueId}`) return { id: owned.issueId, companyId, assigneeAgentId: agentId, status: "cancelled" };
+    if (route === `/api/agents/${agentId}`) return agent();
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error(`Unexpected cleanup read ${route}`);
+  });
+  const remove = vi.fn(async () => { expect(saved).toBe(true); expect(owned.processes[runId]?.captured).toBe(false); });
+  const post = vi.fn(async (route: string) => { expect(route).toBe(`/api/agents/${agentId}/terminate`); lifecycleState = "terminated"; });
+  const cleanup = { agent: false, runs: false, connectionPreserved: false };
+  await cleanupAntigravityJourney({ api: { get, post, patch: async () => {}, delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup, captureRun: async () => {}, persistResources: async () => {
+      if (owned.noLaunch?.[runId]) { expect(parseAntigravityOwnedResources(owned, parseAntigravityJourneyConfig(fixture()))).toBe(owned); saved = true; }
+    } });
+  expect(remove).toHaveBeenCalledOnce(); expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true });
+  expect(owned.noLaunch?.[runId]).toMatchObject({ kind: "cancelled-before-native-selection", runId, leaseStatus: status, leaseReleasedAt: lease.releasedAt });
+});
+
+it.each([
+  ["missing settlement", (f: ReturnType<typeof neverLaunched>) => { delete f.run.resultJson.startupPreparationSettledAt; }],
+  ["false before-selection receipt", (f: ReturnType<typeof neverLaunched>) => { f.run.resultJson.startupCancellation.beforeNativeSelection = false; }],
+  ["preparation pending", (f: ReturnType<typeof neverLaunched>) => { f.run.executionStage = "preparing"; }],
+  ["unsettled accounting", (f: ReturnType<typeof neverLaunched>) => { f.run.costAccountingPending = true; }],
+  ["native owner", (f: ReturnType<typeof neverLaunched>) => { f.run.runnerInstanceId = "native-owner"; }],
+  ["missing null owner", (f: ReturnType<typeof neverLaunched>) => { delete f.run.processPid; }],
+  ["captured process", (f: ReturnType<typeof neverLaunched>) => { f.owned.processes[runId] = { captured: true, identityChanged: false, journal: [] }; }],
+  ["unreleased expired lease", (f: ReturnType<typeof neverLaunched>) => { f.lease.releasedAt = null; }],
+  ["active lease", (f: ReturnType<typeof neverLaunched>) => { f.lease.status = "active"; }],
+  ["late lease release", (f: ReturnType<typeof neverLaunched>) => { f.lease.releasedAt = "2026-01-01T00:00:03Z"; }],
+  ["foreign lease", (f: ReturnType<typeof neverLaunched>) => { f.lease.heartbeatRunId = agentId; }],
+  ["foreign environment", (f: ReturnType<typeof neverLaunched>) => { f.lease.environmentId = agentId; }],
+])("rejects no-launch cleanup with %s", (_label, edit) => {
+  const f = neverLaunched(); edit(f);
+  expect(() => antigravityNoLaunchReceipt(f.run, f.lease, f.owned)).toThrow("cleanup_no_launch_receipt_unconfirmed");
+});
+it("retains the agent if authoritative no-launch evidence cannot be persisted", async () => {
+  const { owned, run, lease } = neverLaunched(), post = vi.fn(), remove = vi.fn();
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [{ id: agentId, companyId, name: owned.agentName }];
+    if (route.includes("heartbeat-runs?")) return [run];
+    if (route === `/api/heartbeat-runs/${runId}`) return run;
+    if (route === `/api/environment-leases/${lease.id}`) return lease;
+    throw new Error("Unexpected cleanup read");
+  });
+  await expect(cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(), delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: false, connectionPreserved: false }, captureRun: async () => {},
+    persistResources: async () => { if (owned.noLaunch?.[runId]) throw new Error("fixture receipt storage unavailable"); } })).rejects.toThrow("fixture receipt storage unavailable");
+  expect(remove).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled();
+});
+it("rejects altered retained no-launch identity, release timing, or extra fields", () => {
+  for (const patch of [{ runId: agentId }, { leaseStatus: "active" }, { leaseReleasedAt: "2026-01-01T00:00:03Z" }, { rawPrivatePayload: "unexpected" }]) {
+    const { owned, run, lease } = neverLaunched();
+    owned.noLaunch = { [runId]: { ...antigravityNoLaunchReceipt(run, lease, owned), ...patch } as any };
+    expect(() => parseAntigravityOwnedResources(owned, parseAntigravityJourneyConfig(fixture()))).toThrow("invalid_antigravity_owned_resources");
+  }
+});
 
 it("discovers one explicit-only real-agent cell without ambient API-key requirements", () => {
   const selected = selectRunnerExecutions(parseRunnerSelectors(["--id", ANTIGRAVITY_JOURNEY_EXECUTION, "--antigravity-journey-config", "/private/binding.json", "--max-automatic-retries", "0"]), runnerMatrix);

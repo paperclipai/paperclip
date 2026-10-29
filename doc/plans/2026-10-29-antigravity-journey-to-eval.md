@@ -207,6 +207,10 @@ to its own task/run and actually match the independently computed content/hash.
 After each turn, accepted native result, committed finalization and applied Done
 decision lineage must agree. Same conversation does not require same physical
 daemon: the source retired the first owners and resumed with fresh owners.
+The native Runner instance ID is session-scoped in the recorded `.5` runs.
+Freshness therefore compares each independently observed primary Runner PID and
+OS birth identity, with its exact run and `per_turn` argv verified; changing only
+a sidecar or journal digest cannot satisfy that gate.
 
 Exactly two task work turns/runs are admitted in one selected case and one
 attempt, with finite whole-attempt/per-turn deadlines, no automatic retries and
@@ -230,6 +234,12 @@ agent as declared. Retained task history is inspectable; it does not authorize
 future dispatch. A forced interruption retains a private ownership receipt for
 the existing recovery command. Cleanup failure stays separate from the primary
 failure; late cleanup writes a new receipt without rewriting the failed attempt.
+An authoritative cancellation before native selection has a separate no-launch
+receipt: settled preparation, explicit absence of native ownership, settled
+accounting, and the exact environment lease's concrete release time. A lease
+marked expired is accepted only for this no-launch variant when its release
+precedes preparation settlement. Native success still requires released lease,
+captured process births, absence of all owned processes and all three fences.
 
 ## Integration and handoff record
 

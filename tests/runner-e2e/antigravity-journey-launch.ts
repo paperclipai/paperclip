@@ -213,6 +213,7 @@ export async function runAntigravityJourneyCampaign(input: {
       try { await browser?.close(); }
       catch { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
       result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);
+      result.issueId = resources.issueId;
       await save("progress.json", evidence);
       if (operationOnly) {
         if (!operationPassed || result.cleanup === "failed") process.exitCode = 1;

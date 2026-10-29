@@ -92,11 +92,13 @@ it("packages final usage captured during cleanup before the agent's public run r
   scenario.authReads = 1;
   const first = "44444444-4444-4444-8444-444444444444", discovered = "55555555-5555-4555-8555-555555555555";
   const agentId = "66666666-6666-4666-8666-666666666666";
-  const run = (id: string, cost: number) => ({ id, agentId, companyId: scenario.config.target.companyId,
+  const issueId = "88888888-8888-4888-8888-888888888888";
+  const run = (id: string, cost: number) => ({ id, agentId, issueId, companyId: scenario.config.target.companyId,
     status: "cancelled", costAccountingPending: false, usageJson: { inputTokens: 100, outputTokens: 20, costUsd: cost },
     startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" });
   scenario.flow.mockImplementationOnce(async ({ resources, observeRun }) => {
     resources.agentId = agentId;
+    resources.issueId = issueId;
     await observeRun({ ...run(first, 0.01), status: "running", costAccountingPending: true });
     throw new Error("fixture interrupted turn");
   });
@@ -109,6 +111,7 @@ it("packages final usage captured during cleanup before the agent's public run r
   const output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot }); outputs.push(output);
   const result = JSON.parse(await readFile(path.join(output, "evidence/result.json"), "utf8"));
   expect(result.runIds).toEqual([first, discovered]);
+  expect(result.issueId).toBe(issueId);
   expect(result.billing.llm.reportedCostUsd).toBe(1);
   expect(result.runtimeUsage.agentRunDurationMs).toBe(2000);
   expect(result.cleanup).toBe("passed");

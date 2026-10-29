@@ -218,7 +218,11 @@ satisfy those gates.
 
 Native public lease release, exact owned process absence and reacquisition/release
 of all three observed provider fence ports establish local retirement. The
-observer reads no private database or raw provider reasoning. Its exact local
+two turns must have different independently captured primary Runner PID/OS-birth
+identities, each verified against the exact run and `per_turn` argv. Their
+session-scoped Runner instance ID may remain the same; a different sidecar does
+not prove a fresh primary. The observer reads no private database or raw provider
+reasoning. Its exact local
 target constraint is part of the case, not portable host proof. A genuine failed
 finish remains failed while prior successful native file activities stay
 completed; the happy path does not deliberately manufacture that rejection.
@@ -245,6 +249,12 @@ settlement and native retirement, then pauses/removes the owned agent according
 to `retainAgent`. Supplied company/environment/browser identity and saved Google
 connection/default grant remain intact and are reverified. It never revokes a
 shared credential or resets the target. Retained task history remains inspectable.
+For cancellation before native selection, cleanup instead persists a closed
+no-launch receipt from the server's settled preparation and explicit null native
+ownership fields, settled accounting, and exact company/run/environment lease.
+That lease must have a concrete release timestamp no later than preparation
+settlement; `expired` is accepted only in this no-launch variant. Missing or
+pending receipts retain the agent. This branch creates no physical capture proof.
 
 A Test that fails or times out before the product confirms probe retirement leaves
 its setup probe marked unconfirmed. The harness keeps that agent paused and

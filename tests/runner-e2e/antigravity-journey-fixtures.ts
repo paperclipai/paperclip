@@ -6,8 +6,8 @@ import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { ConnectionBlock, ConnectionFailure } from "./connection-config.js";
 import { ConnectionApi, connectionDelay, verifyConnectionTarget } from "./connection-target.js";
-import type { AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
-import { reacquireAntigravityNativeFences } from "./antigravity-journey-evidence.js";
+import type { AntigravityJourneyEvidence, AntigravityPrimaryOwner } from "./antigravity-journey-evidence.js";
+import { antigravityPrimaryOwner, reacquireAntigravityNativeFences, validAntigravityPrimaryOwner } from "./antigravity-journey-evidence.js";
 import { observeRunProcesses } from "./copilot-local-fixtures.js";
 
 type Row = Record<string, any>;
@@ -15,10 +15,43 @@ export interface AntigravityJourneyResources {
   version: 1; executionId: string; origin: string; companyId: string; environmentId: string; connectionId: string;
   agentName: string; agentId?: string; issueId?: string; issueIdentifier?: string; runIds: string[];
   retained: boolean; setupProbe: "not_started" | "pending" | "retired" | "retirement_unconfirmed"; processes: Record<string, AntigravityProcessReceipt>;
+  noLaunch?: Record<string, AntigravityNoLaunchReceipt>;
   sourceProvenance?: { head: string; trackedDiffSha256: string; untrackedSourceSha256: string; untrackedSourceFileCount: number; suiteDefinitionHash: string; dirty: boolean };
 }
 export interface AntigravityProcessReceipt {
-  captured: boolean; identityChanged: boolean; journal: Array<{ pid: number; parent: number; start: string }>;
+  captured: boolean; identityChanged: boolean; primaryOwner?: AntigravityPrimaryOwner; journal: Array<{ pid: number; parent: number; start: string }>;
+}
+export interface AntigravityNoLaunchReceipt {
+  kind: "cancelled-before-native-selection"; runId: string; companyId: string; agentId: string; issueId: string;
+  environmentId: string; leaseId: string; leaseStatus: "released" | "expired";
+  cancelRequestedAt: string; startupPreparationSettledAt: string; leaseReleasedAt: string; observedAt: string;
+}
+
+/** The server writes startupPreparationSettledAt only after preparation and
+ * lease cleanup finish without native ownership. Absence of a PID alone is not proof. */
+export function antigravityNoLaunchReceipt(run: Row, lease: Row, resources: AntigravityJourneyResources): AntigravityNoLaunchReceipt {
+  const cancellation = run.resultJson?.startupCancellation;
+  const requestedAt = cancellation?.requestedAt, settledAt = run.resultJson?.startupPreparationSettledAt;
+  const environment = run.contextSnapshot?.paperclipEnvironment, profile = run.runnerProfileJson;
+  const prior = resources.processes[run.id];
+  const instant = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+  const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(value);
+  if (!resources.runIds.includes(run.id) || run.companyId !== resources.companyId || run.agentId !== resources.agentId
+    || !resources.issueId || run.issueId !== resources.issueId || run.status !== "cancelled" || run.executionStage !== "settled"
+    || run.costAccountingPending !== false || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt !== null
+    || run.controllerLeaseExpiresAt !== null || cancellation?.beforeNativeSelection !== true || cancellation.errorCode !== "cancelled"
+    || !instant(requestedAt) || !instant(settledAt) || Date.parse(requestedAt) > Date.parse(settledAt)
+    || ["processPid", "processGroupId", "processStartedAt", "runnerInstanceId", "nativeSessionId", "driverKind", "completionContractId"].some(key => run[key] !== null)
+    || !profile || Object.keys(profile).length !== 1 || !profile.adapterDispatch || Object.keys(profile.adapterDispatch).length !== 1
+    || profile.adapterDispatch.adapterType !== "paperclip_runner" || prior?.captured || prior?.identityChanged || (prior?.journal.length ?? 0) > 0
+    || environment?.id !== resources.environmentId || environment.driver !== "local" || !uuid(environment.leaseId)
+    || lease.id !== environment.leaseId || lease.companyId !== resources.companyId || lease.heartbeatRunId !== run.id
+    || lease.environmentId !== resources.environmentId || !["released", "expired"].includes(lease.status)
+    || !instant(lease.releasedAt) || Date.parse(lease.releasedAt) < Date.parse(requestedAt) || Date.parse(lease.releasedAt) > Date.parse(settledAt)
+    || Date.parse(settledAt) > Date.now()) throw new ConnectionFailure("cleanup_no_launch_receipt_unconfirmed");
+  return { kind: "cancelled-before-native-selection", runId: run.id, companyId: resources.companyId, agentId: run.agentId,
+    issueId: run.issueId, environmentId: resources.environmentId, leaseId: lease.id, leaseStatus: lease.status,
+    cancelRequestedAt: requestedAt, startupPreparationSettledAt: settledAt, leaseReleasedAt: lease.releasedAt, observedAt: new Date().toISOString() };
 }
 export type AntigravityProcessObservers = Map<string, ReturnType<typeof observeRunProcesses>>;
 export function selectAntigravityJourneyEnvironment(allowedEnvironments: Row[], environmentId: string): Row {
@@ -41,7 +74,7 @@ export function observeAntigravityRun(resources: AntigravityJourneyResources, ru
   const journal = previous?.journal ?? [];
   for (const process of observation.journal) if (!journal.some(row => row.pid === process.pid && row.start === process.start)) journal.push({ pid: process.pid, parent: process.parent, start: process.start });
   resources.processes[run.id] = { captured: Boolean(previous?.captured || observation.captured),
-    identityChanged: Boolean(previous?.identityChanged || observation.identityChanged), journal };
+    identityChanged: Boolean(previous?.identityChanged || observation.identityChanged), primaryOwner: previous?.primaryOwner ?? antigravityPrimaryOwner(run, observation), journal };
 }
 
 /** Read only the same host's kernel birth identities; never signal a reported PID. */
@@ -102,7 +135,7 @@ export async function prepareAntigravityJourney(api: ConnectionApi, config: Anti
 export function parseAntigravityOwnedResources(input: unknown, config: AntigravityJourneyConfig): AntigravityJourneyResources {
   const v = input as Partial<AntigravityJourneyResources> | null;
   const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-  const allowed = ["version", "executionId", "origin", "companyId", "environmentId", "connectionId", "agentName", "agentId", "issueId", "issueIdentifier", "runIds", "retained", "setupProbe", "processes", "sourceProvenance"];
+  const allowed = ["version", "executionId", "origin", "companyId", "environmentId", "connectionId", "agentName", "agentId", "issueId", "issueIdentifier", "runIds", "retained", "setupProbe", "processes", "noLaunch", "sourceProvenance"];
   if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(key => !allowed.includes(key)) || v.version !== 1 || v.executionId !== ANTIGRAVITY_JOURNEY_EXECUTION
     || v.origin !== config.target.baseURL || v.companyId !== config.target.companyId || v.environmentId !== config.target.environmentId
     || v.connectionId !== config.savedConnection.id || !/^Antigravity QA [a-f0-9]{12}$/.test(v.agentName ?? "")
@@ -111,9 +144,19 @@ export function parseAntigravityOwnedResources(input: unknown, config: Antigravi
     || !["not_started", "pending", "retired", "retirement_unconfirmed"].includes(v.setupProbe ?? "")
     || !v.processes || typeof v.processes !== "object" || Array.isArray(v.processes)
     || Object.entries(v.processes).some(([runId, receipt]) => !uuid.test(runId) || typeof receipt?.captured !== "boolean" || typeof receipt.identityChanged !== "boolean"
+      || (receipt.primaryOwner !== undefined && (!validAntigravityPrimaryOwner(receipt.primaryOwner) || receipt.primaryOwner.runId !== runId))
       || !Array.isArray(receipt.journal) || receipt.journal.length > 1000 || receipt.journal.some(process => !Number.isSafeInteger(process.pid)
         || process.pid <= 1 || !Number.isSafeInteger(process.parent) || process.parent < 0 || typeof process.start !== "string" || !Number.isFinite(Date.parse(process.start)))))
     throw new ConnectionFailure("invalid_antigravity_owned_resources");
+  if (v.noLaunch !== undefined && (!v.noLaunch || typeof v.noLaunch !== "object" || Array.isArray(v.noLaunch)
+    || Object.entries(v.noLaunch).some(([runId, receipt]) => !v.runIds!.includes(runId) || !receipt || typeof receipt !== "object" || Array.isArray(receipt)
+      || Object.keys(receipt).length !== 12 || Object.keys(receipt).some(key => !["kind", "runId", "companyId", "agentId", "issueId", "environmentId", "leaseId", "leaseStatus", "cancelRequestedAt", "startupPreparationSettledAt", "leaseReleasedAt", "observedAt"].includes(key))
+      || receipt.kind !== "cancelled-before-native-selection" || receipt.runId !== runId || receipt.companyId !== v.companyId
+      || receipt.agentId !== v.agentId || receipt.issueId !== v.issueId || receipt.environmentId !== v.environmentId || !uuid.test(receipt.leaseId)
+      || !["released", "expired"].includes(receipt.leaseStatus)
+      || [receipt.cancelRequestedAt, receipt.startupPreparationSettledAt, receipt.leaseReleasedAt, receipt.observedAt].some(value => typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+      || Date.parse(receipt.cancelRequestedAt) > Date.parse(receipt.leaseReleasedAt) || Date.parse(receipt.leaseReleasedAt) > Date.parse(receipt.startupPreparationSettledAt)
+      || Date.parse(receipt.startupPreparationSettledAt) > Date.parse(receipt.observedAt)))) throw new ConnectionFailure("invalid_antigravity_owned_resources");
   if (v.sourceProvenance && (Object.keys(v.sourceProvenance).some(key => !["head", "trackedDiffSha256", "untrackedSourceSha256", "untrackedSourceFileCount", "suiteDefinitionHash", "dirty"].includes(key))
     || !/^[a-f0-9]{40}$/.test(v.sourceProvenance.head) || [v.sourceProvenance.trackedDiffSha256, v.sourceProvenance.untrackedSourceSha256, v.sourceProvenance.suiteDefinitionHash].some(value => !/^[a-f0-9]{64}$/.test(value))
     || !Number.isSafeInteger(v.sourceProvenance.untrackedSourceFileCount) || v.sourceProvenance.untrackedSourceFileCount < 0 || typeof v.sourceProvenance.dirty !== "boolean"))
@@ -147,6 +190,7 @@ export async function cleanupAntigravityJourney(input: {
       if (run.agentId !== agent.id || run.companyId !== resources.companyId) throw new ConnectionFailure("cleanup_run_owner_mismatch");
       if (!resources.runIds.includes(run.id)) resources.runIds.push(run.id);
       const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
+      if (observed.id !== run.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
       await input.captureRun(observed);
       observeAntigravityRun(resources, observed, input.observers ?? new Map());
       await input.persistResources();
@@ -161,6 +205,7 @@ export async function cleanupAntigravityJourney(input: {
         if (resources.runIds.includes(run.id)) continue;
         resources.runIds.push(run.id);
         const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
+        if (observed.id !== run.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
         await input.captureRun(observed);
         observeAntigravityRun(resources, observed, input.observers ?? new Map());
         await input.persistResources();
@@ -169,10 +214,19 @@ export async function cleanupAntigravityJourney(input: {
       let retired = !latest.some(run => run.agentId === agent.id && ["queued", "running"].includes(run.status));
       for (const runId of resources.runIds) {
         const run = await api.get<Row>(`/api/heartbeat-runs/${runId}`);
-        if (run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        if (run.id !== runId || run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
         await input.captureRun(run);
         if (!["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false) retired = false;
         const receipt = resources.processes[runId];
+        if ((!receipt?.captured || receipt.journal.length < 2) && run.resultJson?.startupCancellation?.beforeNativeSelection === true) {
+          const leaseId = run.contextSnapshot?.paperclipEnvironment?.leaseId;
+          if (typeof leaseId !== "string") throw new ConnectionFailure("cleanup_lease_identity_missing");
+          const lease = await api.get<Row>(`/api/environment-leases/${leaseId}`);
+          const noLaunch = antigravityNoLaunchReceipt(run, lease, resources);
+          (resources.noLaunch ??= {})[runId] = noLaunch;
+          await input.persistResources();
+          continue;
+        }
         if (!receipt?.captured || receipt.journal.length < 2) throw new ConnectionFailure("cleanup_physical_owner_not_captured");
         const observed = remainingRecordedProcesses(receipt);
         if (observed.identityChanged) throw new ConnectionFailure("cleanup_physical_identity_changed");

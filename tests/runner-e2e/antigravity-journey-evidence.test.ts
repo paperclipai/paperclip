@@ -1,6 +1,40 @@
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { antigravityEvidenceFixture, antigravityTurnFixture } from "./antigravity-journey-test-fixtures.js";
-import { gradeAntigravityJourney, gradeAntigravityJourneyTurn, sameAntigravityConversation, validateAntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
+import { antigravityPrimaryOwner, gradeAntigravityJourney, gradeAntigravityJourneyTurn, sameAntigravityConversation, selectAntigravityIssueRun, validateAntigravityJourneyEvidence, verifyAntigravityJourneyTurn } from "./antigravity-journey-evidence.js";
+import type { ConnectionApi } from "./connection-target.js";
+
+it("consumes the activity router's public runId summary rather than a full heartbeat row", () => {
+  const service = readFileSync(new URL("../../server/src/services/activity.ts", import.meta.url), "utf8");
+  const router = readFileSync(new URL("../../server/src/routes/activity.ts", import.meta.url), "utf8");
+  const client = readFileSync(new URL("../../ui/src/api/activity.ts", import.meta.url), "utf8");
+  expect(service).toMatch(/runsForIssue:[\s\S]*?\.select\(\{\s*runId: heartbeatRuns\.id/u);
+  expect(router).toMatch(/router\.get\("\/issues\/:id\/runs"[\s\S]*?svc\.runsForIssue\(issue\.companyId, issue\.id/u);
+  expect(client).toMatch(/interface RunForIssue\s*\{\s*runId: string/u);
+  expect(selectAntigravityIssueRun([{ runId: "old", agentId: "agent" }, { runId: "new", agentId: "agent" }], "agent", ["old"])).toBe("new");
+  expect(selectAntigravityIssueRun([], "agent", [])).toBeNull();
+});
+it.each([
+  [{ id: "wrong-public-shape", agentId: "agent" }],
+  [{ runId: "run", id: "conflicting", agentId: "agent" }],
+  [{ runId: "run", agentId: "other" }],
+  [{ runId: "run", agentId: "agent" }, { runId: "run", agentId: "agent" }],
+  [{ runId: "run", agentId: "agent" }, { runId: "extra", agentId: "agent" }],
+].map(summaries => ({ summaries })))("rejects an invalid or ambiguous public run summary %#", ({ summaries }) => {
+  expect(() => selectAntigravityIssueRun(summaries, "agent", [])).toThrow("antigravity_evidence_");
+});
+it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("fetches the public runId and verifies the full owner before any host observation", async () => {
+  const fixture = antigravityTurnFixture(), routes: string[] = []; let observed = false;
+  const api = { origin: "http://127.0.0.1:3104", get: async (route: string) => {
+    routes.push(route);
+    if (route.endsWith("/runs")) return [{ runId: fixture.run.id, agentId: fixture.agentId }];
+    return { ...fixture.run, companyId: "foreign" };
+  } } as unknown as ConnectionApi;
+  await expect(verifyAntigravityJourneyTurn({ ...fixture, api, deadlineAt: Date.now() + 1000,
+    observeRun: async () => { observed = true; } })).rejects.toThrow("observed_run_binding");
+  expect(routes).toEqual(["/api/issues/task/runs", "/api/heartbeat-runs/run-first"]);
+  expect(observed).toBe(false);
+});
 
 it("accepts real-bound exact file evidence despite an unrelated genuine finish rejection", () => {
   const proof = gradeAntigravityJourneyTurn(antigravityTurnFixture());
@@ -31,6 +65,7 @@ const changes: Array<[string, (f: ReturnType<typeof antigravityTurnFixture>) => 
   ["wrong actual bytes", f => { f.downloadedBytes[0] = 0; }],
   ["success claim without delivery", f => { f.run.resultJson.semanticToolReceipts = {}; }],
   ["narrative Done without committed result", f => { f.run.resultJson.finalizationPhase = "prepared"; }],
+  ["unsettled cost accounting", f => { f.run.costAccountingPending = true; }],
   ["different selected connection", f => { f.run.contextSnapshot.aiConnection.connectionId = "ambient-connection"; }],
   ["different effective model", f => { f.run.runnerProfileJson.sessionCheckpoint.providerIdentity.effectiveModel = "automatic"; }],
   ["old candidate profile", f => { f.expectedProfileDigest = `sha256:${"c".repeat(64)}`; }],
@@ -49,6 +84,12 @@ const changes: Array<[string, (f: ReturnType<typeof antigravityTurnFixture>) => 
   ["failed file read", f => { f.events[3]!.payload.prpEvent.payload.status = "failed"; }],
   ["terminal task with active lease", f => { f.lease.status = "active"; }],
   ["unobserved physical owner", f => { f.retirement.captured = false; }],
+  ["missing primary birth", f => { delete (f.retirement as any).primaryOwner; }],
+  ["forged primary birth", f => { f.retirement.primaryOwner.startedAt = "forged"; }],
+  ["different primary run", f => { f.retirement.primaryOwner.runId = "another-run"; }],
+  ["different primary PID", f => { f.retirement.primaryOwner.pid++; }],
+  ["different primary OS birth", f => { f.retirement.primaryOwner.startedAt = "2026-10-29T00:00:01Z"; }],
+  ["unverified primary argv", f => { (f.retirement.primaryOwner as any).perTurnArgvVerified = false; }],
   ["remaining native process", f => { f.retirement.remainingProcessCount = 1; }],
   ["PID reused", f => { f.retirement.identityChanged = true; }],
   ["native child still owns lifetime fence", f => { f.retirement.nativeFencesReacquired = false; }],
@@ -61,6 +102,25 @@ it.each(changes)("rejects %s rather than trusting Done prose", (_label, change) 
 it.each(["acpxRecordId", "agentSessionId", "backendSessionId", "normalizedSessionId", "workspaceDigest", "profileDigest", "effectiveModel"] as const)("rejects replaced native conversation %s", key => {
   const e = antigravityEvidenceFixture(); e.turnEvidence[1]!.conversation[key] = "replaced";
   expect(sameAntigravityConversation(e.turnEvidence[0]!, e.turnEvidence[1]!)).toBe(false);
+});
+it("allows the real session-scoped runner ID only with a different primary process birth", () => {
+  const e = antigravityEvidenceFixture(), [first, second] = e.turnEvidence;
+  second!.runnerInstanceId = first!.runnerInstanceId;
+  expect(sameAntigravityConversation(first!, second!)).toBe(true);
+  second!.retirement.primaryOwner = { ...first!.retirement.primaryOwner, runId: second!.runId };
+  // A different sidecar/journal size does not prove a different primary Runner.
+  second!.retirement.observedProcessCount++;
+  expect(sameAntigravityConversation(first!, second!)).toBe(false);
+});
+it("binds the retained primary to the actual observer's per-turn argv, run, and OS birth", () => {
+  const f = antigravityTurnFixture(), owner = f.retirement.primaryOwner;
+  const observation = { captured: true, identityChanged: false, live: [], journal: [{ pid: owner.pid, parent: 1, start: owner.startedAt }], rootObserved: undefined,
+    authorityCheck: { accepted: true, commandSha256: owner.commandSha256, authority: { pid: owner.pid, groupId: owner.groupId, startedAt: owner.startedAt, runId: owner.runId },
+      observed: { pid: owner.pid, parent: 1, start: owner.startedAt } } };
+  expect(antigravityPrimaryOwner(f.run, observation)).toEqual(owner);
+  expect(antigravityPrimaryOwner(f.run, { ...observation, authorityCheck: { ...observation.authorityCheck, accepted: false } })).toBeUndefined();
+  observation.authorityCheck.authority.runId = "another-run";
+  expect(() => antigravityPrimaryOwner(f.run, observation)).toThrow("primary_owner_binding");
 });
 
 it("retains first completion as a snapshot when later task reopening changes coordinator pointers", () => {

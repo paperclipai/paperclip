@@ -12,7 +12,8 @@ export function antigravityTurnFixture(second = false) {
   const providerIdentity = { kind: "acpx", acpxRecordId: "acpx-record", agentSessionId: "provider-session", backendSessionId: "provider-session",
     normalizedSessionId: "native-session", requestedModel: model, effectiveModel: model, permissionMode: "approve-all", workspaceDigest: `sha256:${"b".repeat(64)}`, profileDigest };
   const run: Record<string, any> = { id: runId, companyId: "company", agentId: "agent", issueId: "task", status: "succeeded", runtimeMode: "native", driverKind: "acpx_runtime",
-    nativeSessionId: "native-session", runnerInstanceId,
+    nativeSessionId: "native-session", runnerInstanceId, costAccountingPending: false,
+    processPid: second ? 900002 : 900001, processGroupId: second ? 900002 : 900001, processStartedAt: second ? "2026-10-29T01:00:00.000Z" : "2026-10-29T00:00:00.000Z",
     runnerProfileJson: { backend: "acpx_runtime", nativeExecutionInput: { binding: { runId, companyId: "company", agentId: "agent", issueId: "task" },
       provider: { kind: "acpx", agent: "antigravity", model, profile: { commandDigest: profileDigest } } }, sessionCheckpoint: { providerIdentity } },
     contextSnapshot: { aiConnection: { provider: "google", method: "subscription", connectionId: "connection" }, paperclipEnvironment: { id: "environment", driver: "local", leaseId: `lease-${runId}` } },
@@ -46,7 +47,9 @@ export function antigravityTurnFixture(second = false) {
       originalFilename: "antigravity-proof.txt", contentType: "text/plain", byteSize: expectedBytes.length, sha256 },
     downloadedBytes: Buffer.from(expectedBytes), events,
     lease: { id: `lease-${runId}`, companyId: "company", environmentId: "environment", heartbeatRunId: runId, status: "released", releasedAt: "2026-10-29T00:00:00Z" },
-    retirement: { captured: true, observedProcessCount: 3, remainingProcessCount: 0, identityChanged: false, nativeFencesReacquired: true, nativeFenceCount: 3 } };
+    retirement: { captured: true, observedProcessCount: 3, remainingProcessCount: 0, identityChanged: false,
+      primaryOwner: { runId, pid: run.processPid as number, groupId: run.processGroupId as number, startedAt: run.processStartedAt as string, commandSha256: "c".repeat(64), perTurnArgvVerified: true as const },
+      nativeFencesReacquired: true, nativeFenceCount: 3 } };
 }
 
 /** Rust durable/state.rs hashes the ACPX executor's stable event identity. */
