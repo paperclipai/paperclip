@@ -6236,7 +6236,7 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
         .with_registry(&registry)
         .build(&terminal_schema)
         .unwrap();
-    for scenario in ["schema", "summary", "controller"] {
+    for scenario in ["schema", "summary", "controller", "controller-goal"] {
         let directory = temporary_directory(&format!("rejected-completion-{scenario}"));
         let input = if scenario == "schema" {
             json!({})
@@ -6254,6 +6254,9 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
         let input_path = directory.join("finish-input.json");
         fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
         let mut config = provider_config(&directory, &["--complete-after-tool-call"]);
+        if scenario == "controller-goal" {
+            config.args.push("--agent-created-goal-on-open".to_owned());
+        }
         config.args.extend([
             "--terminal-result-file".to_owned(),
             input_path.to_string_lossy().into_owned(),
@@ -6295,7 +6298,7 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
             for event in &events {
                 if event.event_type == "semantic_tool.input" {
                     input_calls += 1;
-                    assert_eq!(scenario, "controller");
+                    assert!(scenario.starts_with("controller"));
                     executor.execute(&command("reject", 4, "semantic_tool.result", json!({
                         "callId": "terminal-result-call", "operationId": "paperclip_finish", "isError": true,
                         "result": {"error": {"code": "deliverable_missing"}} }))).unwrap();
@@ -6323,6 +6326,18 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
             .position(|event| event.event_type == "run.terminal")
             .unwrap();
         assert!(failure < turn && turn < terminal);
+        if scenario == "controller-goal" {
+            let settled_goal = emitted
+                .iter()
+                .rposition(|event| {
+                    matches!(
+                        event.event_type.as_str(),
+                        "session.goal.updated" | "session.goal.snapshot"
+                    ) && event.payload["workingNow"] == false
+                })
+                .unwrap();
+            assert!(failure < settled_goal && settled_goal < turn);
+        }
         assert_eq!(
             emitted[failure].payload["code"],
             "semantic_completion_rejected"
@@ -6335,7 +6350,7 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
         assert!(!emitted
             .iter()
             .any(|event| event.event_type == "run.result.proposed"));
-        assert_eq!(input_calls, usize::from(scenario == "controller"));
+        assert_eq!(input_calls, usize::from(scenario.starts_with("controller")));
         assert_eq!(call_count(&directory, "terminal-result:rejected"), 1);
         executor.shutdown().unwrap();
         fs::remove_dir_all(directory).unwrap();

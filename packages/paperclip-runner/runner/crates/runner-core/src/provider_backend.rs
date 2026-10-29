@@ -4323,6 +4323,7 @@ impl CodexCommandExecutor {
                     }
                     let normalized = normalize_provider_notification(state, &method, &params)?;
                     let normalized_event_count = normalized.len();
+                    let mut terminal_goal_events = Vec::new();
                     if terminal_event_type.is_some() {
                         state.settle_active_provider_turn_identity()?;
                         let settled = state
@@ -4373,7 +4374,7 @@ impl CodexCommandExecutor {
                         if let Some(goal) = state.goal.as_mut() {
                             goal.working_now = false;
                             state.goal_revision = state.goal_revision.saturating_add(1);
-                            state.push_event(NormalizedProviderEvent {
+                            terminal_goal_events.push(NormalizedProviderEvent {
                                 event_type: "session.goal.updated".to_owned(),
                                 priority: EventPriority::P0,
                                 payload: goal_event_payload(
@@ -4381,7 +4382,7 @@ impl CodexCommandExecutor {
                                     state.goal_capability.as_ref(),
                                     state.goal_revision,
                                 ),
-                            })?;
+                            });
                         }
                     }
                     if method == "thread/goal/updated" {
@@ -4416,7 +4417,7 @@ impl CodexCommandExecutor {
                                 if next_goal != state.goal {
                                     state.goal = next_goal;
                                     state.goal_revision = state.goal_revision.saturating_add(1);
-                                    state.push_event(NormalizedProviderEvent {
+                                    terminal_goal_events.push(NormalizedProviderEvent {
                                         event_type: "session.goal.snapshot".to_owned(),
                                         priority: EventPriority::P0,
                                         payload: goal_event_payload(
@@ -4424,11 +4425,11 @@ impl CodexCommandExecutor {
                                             state.goal_capability.as_ref(),
                                             state.goal_revision,
                                         ),
-                                    })?;
+                                    });
                                 }
                             }
                             Err(_) => {
-                                state.push_event(NormalizedProviderEvent {
+                                terminal_goal_events.push(NormalizedProviderEvent {
                                     event_type: "provider.notice.recorded".to_owned(),
                                     priority: EventPriority::P0,
                                     payload: json!({
@@ -4441,7 +4442,7 @@ impl CodexCommandExecutor {
                                         "userActionable": false,
                                         "summary": "Codex goal state could not be reconciled after the turn; Paperclip retained the last durable snapshot.",
                                     }),
-                                })?;
+                                });
                             }
                         }
                     }
@@ -4449,7 +4450,11 @@ impl CodexCommandExecutor {
                     if let Some(ref event_type) = terminal_event_type {
                         let goal_status = state.goal.as_ref().map(|goal| goal.status.as_str());
                         let outcome = terminal_events(state, event_type, goal_status);
-                        state.extend_terminal_events(with_terminal_outcome(normalized, outcome))?;
+                        terminal_goal_events.extend(normalized);
+                        state.extend_terminal_events(with_terminal_outcome(
+                            terminal_goal_events,
+                            outcome,
+                        ))?;
                     } else if receipt_limit_terminal_poll {
                         for event in normalized {
                             state.push_receipt_limit_cleanup_event(event)?;
