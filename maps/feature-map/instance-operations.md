@@ -92,7 +92,7 @@ Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypa
 
 Antigravity: [provisioning](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
 [closure/integrity regressions](../../packages/paperclip-runner/scripts/materialize-antigravity-distribution.test.mjs),
-and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-release-gates.test.ts).
+and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
 Exercise public-layout setup and verify both native files and cleanup; separately
 verify that configuration/API/driver/sidecar reject the pending provider. These
 checks do not establish authenticated task execution.

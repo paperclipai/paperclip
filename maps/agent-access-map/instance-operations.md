@@ -204,6 +204,6 @@ at API, driver, sidecar and Rust admission; a company grant cannot enable it.
 Google AI API-key binding is distinct from Workspace OAuth. Evidence remains
 `source-only` for agent access: [setup](../../cli/src/commands/runtime.ts),
 [provisioner](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
-and [gate regressions](../../packages/paperclip-runner/src/drivers/acpx/antigravity-release-gates.test.ts).
+and [gate regressions](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
 Credential-free public-layout provisioning and controlled native tests do not
 qualify a company agent task or authenticated connection/revocation.
