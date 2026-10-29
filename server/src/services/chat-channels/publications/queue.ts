@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
 
 import { unresolvedSlackPublicationCondition } from "../../connectors/slack-publication.js";
@@ -242,9 +243,11 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
             ),
         ),
       );
-      const candidates = await tx.select({ id: chatPublications.id }).from(chatPublications).where(condition).for("update", { skipLocked: true });
+      const candidates = await tx.select({ id: chatPublications.id, companyId: chatPublications.companyId, issueId: chatPublications.issueId })
+        .from(chatPublications).where(condition).for("update", { skipLocked: true });
       if (!candidates.length) return [];
       await notifyChatPublicationWork(tx);
+      for (const candidate of candidates) await notifyChatResponseAvailability(tx, candidate);
       return tx
         .update(chatPublications)
         .set({

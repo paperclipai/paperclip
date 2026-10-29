@@ -1342,7 +1342,11 @@ function OnboardingWizardInner({
       setSetupAgentId(id);
       return agentsApi.create(companyId, {
       setupId: id, name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
-      role: agentRole, adapterType: createAdapter, runner,
+      role: agentRole, adapterType: createAdapter,
+      // The name-only record is held in setup and has no selected harness yet.
+      // Apply the runner only once a real source is chosen; sending a native
+      // runner with the provisional process adapter is an invalid combination.
+      ...(sourceSelected ? { runner } : {}),
       adapterConfig: createAdapter === "paperclip_runner" ? { provider: "acpx", acpxAgent: "copilot" } : {},
       metadata: { setupAdapterPending: !sourceSelected },
       onboardingFirstAgent: true, runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),

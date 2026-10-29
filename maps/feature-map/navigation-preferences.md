@@ -15,7 +15,7 @@ Agent access: [companion](../agent-access-map/navigation-preferences.md).
 ## Sub-features
 
 - `navigation`: `navigation-preferences/navigation` — use current sidebar links, favorites, recents, and available layout controls.
-- `preferences`: `navigation-preferences/preferences` — persist supported ordering/collapse choices for the intended user/company.
+- `preferences`: `navigation-preferences/preferences` — persist supported ordering/collapse choices for the intended user/company, and the personal experimental workspace choice.
 - `profile`: `navigation-preferences/profile` — edit personal identity and inspect public profile links.
 - `announcements`: `navigation-preferences/announcements` — inspect and dismiss an announcement with its intended instance-wide user scope.
 - `fallbacks`: `navigation-preferences/fallbacks` — handle missing resources and old deep links without presenting another resource as the target.
@@ -99,3 +99,45 @@ IDs per company/account without passive full-detail or workspace inspection.
 Successful omissions remove unavailable entries; failed reads preserve history.
 Verify rename, inbox archive, pause/restart, reload, cross-tab updates and account
 switches. Inbox archive does not remove the task from recent history.
+
+### Personal Coordinator workspace
+
+Settings → Experimental → Coordinator workspace opts the current person into the
+experimental shell; off restores classic. The server saves the choice by user across
+companies, separate from instance feature flags. The local-trusted identity is shared
+Local Board, not evidence of multi-user isolation.
+Agent Chat remains an independent instance prerequisite. When it is off, the
+personal card explains the dependency and links eligible instance administrators
+to the existing Agent Chat control. Hidden or Cloud-managed controls are not
+presented as editable. Disabled Chat routes link back to Experimental settings.
+Enabling the personal workspace never changes the instance capability.
+
+Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
+[prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
+[authorization](../../server/src/__tests__/workspace-preferences-routes.test.ts), and
+[database persistence](../../server/src/__tests__/workspace-preferences.test.ts).
+Manual: toggle on/off, reload, switch companies/accounts, and simulate failed reads
+and saves. Confirm existing work is unchanged and a failed save keeps the current
+choice. The [Settings card story](../../ui/storybook/stories/navigation-preferences/coordinator-workspace-setting.stories.tsx)
+uses the production component with simulated API responses; it does not establish
+real persistence or permission behavior.
+
+Local browser verification (2026-10-26, isolated Coordinator worktree): initially
+off, enabled and persisted across reload, disabled back to classic navigation,
+then enabled back to Chat / Tasks / Needs You. This used `local_trusted`; signed-in
+two-person browser isolation remains unverified.
+
+Coordinator More exposes a pin/unpin button beside every destination. Each flyout
+row highlights as one surface; its pin appears on row hover or keyboard focus.
+Opening the flyout focuses its container so Search is not highlighted before
+interaction. Pinned pages appear beneath More in pinning order and retain the
+existing company-aware routes.
+Unpin from either the flyout or the pinned row. The list is personal to the current
+user in this browser, shared across companies; it does not sync across devices.
+Only known route names are rendered. Storage failures show a save error.
+The [pin hook](../../ui/src/hooks/usePinnedNavigation.ts) owns browser persistence;
+[sidebar tests](../../ui/src/components/CoordinatorSidebar.test.tsx) cover pin/unpin,
+remount persistence, account separation, unknown routes and cross-tab updates.
+Manual: pin with mouse and keyboard, reload, follow a pinned link, unpin from both
+locations, and check the mobile drawer. Local-trusted checks do not prove two-user
+authenticated browser isolation.

@@ -1,3 +1,4 @@
+import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
@@ -73,10 +74,9 @@ import {
   parseTrustProxyEnv,
 } from "./middleware/trust-proxy.js";
 import {
-  IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
   resolveDefaultImportTransferSpoolRoot,
-  sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
+import { registerImportSpoolCleanupWork } from "./services/import-spool-cleanup-work.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
 import { livenessRoutes } from "./routes/liveness.js";
@@ -139,6 +139,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
 import { serverVersion } from "./version.js";
+import { workspacePreferenceRoutes } from "./routes/workspace-preferences.js";
 import { primaryAgentRoutes } from "./routes/primary-agent.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
@@ -199,11 +200,6 @@ import { nativeChatProgressWork } from "./services/chat-native-progress-work.js"
 import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-work.js";
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
-import {
-  createCoalescedAsyncTrigger,
-  isChatPublicationCommitSignal,
-} from "./services/chat-publication-reconciliation.js";
-import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
@@ -231,7 +227,6 @@ import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostic
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
-const CHAT_PUBLICATION_FLUSH_INTERVAL_MS = 1_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -321,76 +316,6 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     (opts.deploymentMode === "local_trusted" ||
       opts.deploymentMode === "authenticated")
   );
-}
-
-type ChatReconciliationLane =
-  | "deliveries"
-  | "GitHub webhook recovery"
-  | "publications"
-  | "Slack file receipts"
-  | "Slack session status";
-
-/**
- * Provider recovery can wait on slow external I/O. Keep each existing durable
- * lane single-flight without making an optional provider effect suppress the
- * next publication sweep for every endpoint.
- */
-export function createChatReconciliationCoordinator(input: {
-  processPendingDeliveries: () => Promise<unknown>;
-  processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
-  flushPublications: () => Promise<unknown>;
-  processPendingSlackFileUploadReceipts?: () => Promise<unknown>;
-  processPendingSlackSessionSyncs?: () => Promise<unknown>;
-  onError: (lane: ChatReconciliationLane, error: unknown) => void;
-}) {
-  let stopped = false;
-  const inFlight = new Map<ChatReconciliationLane, Promise<void>>();
-  const publicationReconciliation = createCoalescedAsyncTrigger({
-    run: input.flushPublications,
-    onError: (error) => input.onError("publications", error),
-  });
-  const start = (
-    lane: ChatReconciliationLane,
-    task: () => Promise<unknown>,
-  ) => {
-    if (stopped || inFlight.has(lane)) return;
-    const pending = Promise.resolve()
-      .then(task)
-      .then(() => undefined)
-      .catch((error) => input.onError(lane, error))
-      .finally(() => {
-        if (inFlight.get(lane) === pending) inFlight.delete(lane);
-      });
-    inFlight.set(lane, pending);
-  };
-  return {
-    reconcile() {
-      if (stopped) return;
-      start("deliveries", input.processPendingDeliveries);
-      if (input.processFailedGitHubWebhookDeliveries) {
-        start(
-          "GitHub webhook recovery",
-          input.processFailedGitHubWebhookDeliveries,
-        );
-      }
-      publicationReconciliation.poll();
-      if (input.processPendingSlackFileUploadReceipts) start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
-      if (input.processPendingSlackSessionSyncs) start("Slack session status", input.processPendingSlackSessionSyncs);
-    },
-    notifyPublications() {
-      publicationReconciliation.notify();
-    },
-    stop() {
-      stopped = true;
-      publicationReconciliation.stop();
-    },
-    async drain() {
-      await Promise.allSettled([
-        ...inFlight.values(),
-      ]);
-      await publicationReconciliation.drain();
-    },
-  };
 }
 
 export function createManagedBundledPluginWorkerRecovery(input: {
@@ -888,6 +813,7 @@ export async function createApp(
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(primaryAgentRoutes(db));
+  api.use(workspacePreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup));
   if (opts.databaseBackupService) {
@@ -1268,7 +1194,10 @@ export async function createApp(
   publicMcpEvents?.start(deliveryWork);
   dotMcpEvents?.start(deliveryWork);
   if (publicMcpOAuth) grokDispatcher.start(deliveryWork);
-  const stopMuseMaintenance = startMuseMaintenance(db, deliveryWork);
+  const stopMuseMaintenance = startMuseMaintenance(db, deliveryWork, async () => {
+    const state = await connectionIntentHeartbeat.resolveSchedulingSuppression(true);
+    return !state.suppressed || state.reason === "task_drain";
+  });
   const resourceLifecycleDelivery = registerPluginLifecycleDelivery(deliveryWork, db, workerManager, lifecycle);
   await resourceLifecycleDelivery.ready;
   if (opts.feedbackExportService) {
@@ -1289,6 +1218,10 @@ export async function createApp(
   chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerInteractionContinuationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  registerGitHubReviewProjectionWork(db, deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerGitHubReviewCheckWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerGitHubTerminalResponseWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerGitHubAcknowledgementWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTerminalConfirmationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   nativeChatProgressWork(db).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
@@ -1298,69 +1231,12 @@ export async function createApp(
     deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive(),
   );
   emailChannels.start();
-  const reconcileChatPublicationMaintenance = async () => {
-    await chatChannels.processPublicationMaintenance();
-  };
-  const chatReconciliation = createChatReconciliationCoordinator({
-    // Chat delivery, action, and Telegram discovery workers now own these
-    // duties. Keep the coordinator's other maintenance lanes independent.
-    processPendingDeliveries: async () => undefined,
-    processFailedGitHubWebhookDeliveries: () =>
-      chatChannels.processFailedGitHubWebhookDeliveries(),
-    flushPublications: () => reconcileChatPublicationMaintenance(),
-    onError: (lane, err) => {
-      logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
-    },
-  });
-  const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
-    (event) => {
-      if (!isWarmStandby() && !isIdleTaskDrainActive() && isChatPublicationCommitSignal(event))
-        chatReconciliation.notifyPublications();
-    },
-  );
-  // Remaining publication maintenance still uses this cadence. Lifecycle and
-  // native progress projection have independent commit/deadline workers.
-  // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
-  let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
-    () => {
-      if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
-    },
-    CHAT_PUBLICATION_FLUSH_INTERVAL_MS,
-  );
-  chatPublicationTimer.unref?.();
-  if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
-  // Abandoned chunked-import spool sweep: hourly (plus once at startup),
-  // deleting spool dirs whose transfer saw no activity for 24h and cancelling
-  // their still-open ledger runs. Same setInterval + unref + shutdown-clear
-  // shape as the feedback export flush above.
-  const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
-  const sweepImportTransferSpools = () => {
-    if (isWarmStandby() || isIdleTaskDrainActive()) return;
-    sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
-      .then((result) => {
-        if (result.swept > 0) {
-          logger.info(result, "swept abandoned company import transfer spools");
-        }
-      })
-      .catch((err) => {
-        logger.error(
-          { err },
-          "abandoned company import transfer spool sweep failed",
-        );
-      });
-  };
+  chatChannels.registerGitHubWebhookRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  const importSpoolCleanup = registerImportSpoolCleanupWork(db, deliveryWork,
+    resolveDefaultImportTransferSpoolRoot(), () => !isWarmStandby() && !isIdleTaskDrainActive());
   registerBrowserUseCleanup(deliveryWork, browserUse, () => !isIdleTaskDrainActive());
-  let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
-    setInterval(
-      sweepImportTransferSpools,
-      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-    );
-  importTransferSweepTimer.unref?.();
-  // Startup only (never on the hourly interval — that would kill live
-  // applies): apply jobs are in-memory in this single process, so any run
-  // still "applying" now was interrupted by the previous shutdown and would
-  // otherwise 409 every retry forever. Fail those stranded runs — their
-  // spooled parts stay reusable — then run the normal sweep once.
+
+
   void companyTransferRunService
     .recoverStrandedApplyingRuns(db)
     .then((recovered) => {
@@ -1373,9 +1249,6 @@ export async function createApp(
     })
     .catch((err) => {
       logger.error({ err }, "stranded company transfer apply recovery failed");
-    })
-    .finally(() => {
-      sweepImportTransferSpools();
     });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
@@ -1454,18 +1327,8 @@ export async function createApp(
       await dotMcpEvents?.stop();
       jobCoordinator.stop();
       resourceLifecycleDelivery.dispose();
+      importSpoolCleanup.unsubscribe();
       await deliveryWork.stop();
-      unsubscribeChatPublicationSignals();
-      chatReconciliation.stop();
-      if (chatPublicationTimer) {
-        clearInterval(chatPublicationTimer);
-        chatPublicationTimer = null;
-      }
-      await chatReconciliation.drain();
-      if (importTransferSweepTimer) {
-        clearInterval(importTransferSweepTimer);
-        importTransferSweepTimer = null;
-      }
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);

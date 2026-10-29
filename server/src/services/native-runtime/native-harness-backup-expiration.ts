@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -377,6 +378,7 @@ export function nativeHarnessBackupExpirationService(
       });
       if ("reason" in blocker) return blocker;
       if (options.dryRun) return { owner: blocker, cleared: 0 };
+      await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
       const cleared = await tx
         .delete(agentTaskSessions)
         .where(

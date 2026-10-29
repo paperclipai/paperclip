@@ -26,7 +26,7 @@ const native = vi.hoisted(() => ({
   closeIdle: vi.fn(async () => ({ closed: 0, failed: 0 })),
   detach: vi.fn(async () => 0),
   finalizations: vi.fn(async (_db: Db, _ids?: string[], _options?: unknown) => undefined),
-  cleanups: vi.fn(async () => undefined),
+  cleanups: vi.fn<() => Promise<void>>(async () => undefined),
   drainMaintenance: vi.fn<() => Promise<void>>(async () => undefined),
   claims: vi.fn<typeof claimNativeRestartRecoveries>(async () => []),
 }));
@@ -42,12 +42,12 @@ vi.mock("../native-runtime/index.js", async (importOriginal) => ({
   closeIdleWarmNativeSessionsForRestart: native.closeIdle,
   detachNativeSessionsForRestart: native.detach,
   reconcileNativeFinalizations: native.finalizations,
-  reconcileRetainedNativeSessionCleanups: native.cleanups,
   claimNativeRestartRecoveries: native.claims,
 }));
-vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>(),
-  drainRetainedRunnerdMaintenanceOperations: native.drainMaintenance,
+
+vi.mock("../native-runtime/retained-native-session-cleanup.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../native-runtime/retained-native-session-cleanup.js")>(),
+  reconcileRetainedNativeSessionCleanups: native.cleanups,
 }));
 
 function callbacks(db: Db) {
@@ -107,7 +107,6 @@ beforeEach(() => {
   native.closeIdle.mockResolvedValue({ closed: 0, failed: 0 });
   native.finalizations.mockResolvedValue(undefined);
   native.cleanups.mockResolvedValue(undefined);
-  native.drainMaintenance.mockResolvedValue(undefined);
   native.claims.mockResolvedValue([]);
 });
 
@@ -180,7 +179,7 @@ describe("heartbeat recovery module callbacks", () => {
 });
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_TEST_DATABASE_URL");
-const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const support = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping recovery module database tests: ${support.reason}`);
 
@@ -188,11 +187,9 @@ describePostgres("heartbeat recovery module ownership", () => {
   let db: Db;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    if (externalUrl) {
-      await applyPendingMigrations(externalUrl);
-      database = { connectionString: externalUrl, cleanup: async () => {} };
-    } else database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-module-");
-    db = createDb(database.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-module-");
+    db = createDb(externalUrl ?? database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
@@ -473,7 +470,7 @@ describePostgres("heartbeat recovery module ownership", () => {
       const old = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0];
       await db.update(heartbeatRuns).set({ status: "interrupted", contextSnapshot: { issueId: f.run.issueId }, resultJson: { workspaceRestored: true } }).where(eq(heartbeatRuns.id, f.run.id));
       await finishLegacyShutdownWorkspaceSettlement(db, f.run);
-      const single = createDb(database.connectionString, { maxConnections: 1 });
+      const single = createDb(externalUrl ?? database.connectionString, { maxConnections: 1 });
       try { expect(await allowLegacyShutdownWorkspaceCleanup(single, old, new Date(Date.now() + 60_000))).toBe(true); }
       finally { await single.$client.end({ timeout: 1 }); }
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
@@ -816,9 +813,9 @@ describePostgres("heartbeat recovery module ownership", () => {
   it("retains shutdown ownership until background native cleanup physically settles", async () => {
     const deps = callbacks(db);
     let settle!: () => void;
-    native.drainMaintenance.mockReturnValueOnce(new Promise<void>(resolve => { settle = resolve; }));
+    native.cleanups.mockReturnValueOnce(new Promise<void>(resolve => { settle = resolve; }));
     await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
-    await vi.waitFor(() => expect(native.drainMaintenance).toHaveBeenCalled());
+    await vi.waitFor(() => expect(native.cleanups).toHaveBeenCalled());
     expect(deps.activeRunExecutionPromises.size).toBe(1);
     settle();
     await Promise.all([...deps.activeRunExecutionPromises]);

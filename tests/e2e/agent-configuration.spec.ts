@@ -45,10 +45,23 @@ const editor = (page: Page) => page.getByRole("textbox", { name: "Agent YAML con
 async function document(page: Page): Promise<AgentConfigurationDocument> {
   await expect(editor(page)).toBeVisible();
   await expect(editor(page)).toHaveAttribute("contenteditable", "true");
-  await editor(page).press("ControlOrMeta+a");
-  await editor(page).press("ControlOrMeta+c");
-  const source = await page.evaluate(() => navigator.clipboard.readText());
-  expect(source).toContain("apiVersion: paperclip/v1");
+  let source = "";
+  // Keep the selection inside the editor across configuration rerenders.
+  // Never parse a whole-page selection or a prior clipboard value as YAML.
+  await expect.poll(async () => {
+    await page.evaluate(() => navigator.clipboard.writeText(""));
+    await editor(page).click();
+    await editor(page).press("ControlOrMeta+a");
+    const selectedEditor = await editor(page).evaluate(element => {
+      const selection = window.getSelection();
+      return document.activeElement === element && !!selection?.anchorNode && !!selection.focusNode
+        && element.contains(selection.anchorNode) && element.contains(selection.focusNode);
+    });
+    if (!selectedEditor) return false;
+    await page.keyboard.press("ControlOrMeta+c");
+    source = await page.evaluate(() => navigator.clipboard.readText());
+    return /^apiVersion: paperclip\/v1(?:\r?\n|$)/.test(source);
+  }, { message: "Copy the current YAML from the focused editor" }).toBe(true);
   return parse(source);
 }
 async function edit(page: Page, change: (value: AgentConfigurationDocument) => void) {
@@ -196,10 +209,18 @@ test("a lost creation response requires reload and cannot blindly replay command
   await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
   expect((await json(await request.get(`/api/agents/${agent.id}/configuration`))).title).toBe("Saved before lost response");
   expect(await json(await request.get(`/api/agents/${agent.id}/keys`))).toHaveLength(2);
+  // Reproduce the observed CI failure once: a copy contains surrounding page
+  // text as well as the YAML header. The read helper must reacquire a clean
+  // editor copy instead of accepting the header and parsing the whole page.
+  await page.evaluate(() => document.addEventListener("copy", event => {
+    event.clipboardData?.setData("text/plain", "Skip to Main Content\napiVersion: paperclip/v1\nCopied surrounding page text");
+    event.preventDefault();
+  }, { capture: true, once: true }));
   expect((await document(page)).spec.apiKeys!.create).toHaveLength(2);
   await page.getByRole("button", { name: "Reload saved", exact: true }).click();
-  await expect.poll(async () => (await document(page)).spec.apiKeys!.create).toEqual([]);
   await expect(page).toHaveURL(/\/agents\/partially-renamed-yaml-engineer\/advanced$/);
+  await expect(page.getByRole("button", { name: "Reload saved", exact: true })).toBeEnabled();
+  expect((await document(page)).spec.apiKeys!.create).toEqual([]);
   await expect(page.getByRole("textbox", { name: "API key: First key token" })).toBeVisible();
   await edit(page, value => { value.spec.title = "Recovered save"; });
   await save(page);

@@ -80,7 +80,7 @@ export function approvalRecords(db: Db) {
         .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
         .returning()
         .then((rows) => rows[0] ?? null);
-      });
+      }, { approvalId: id });
       return updated;
     },
 
@@ -102,7 +102,7 @@ export function approvalRecords(db: Db) {
         })
         .where(eq(approvals.id, id))
         .returning()
-        .then((rows) => rows[0]));
+        .then((rows) => rows[0]), { approvalId: id });
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -124,7 +124,7 @@ export function approvalRecords(db: Db) {
         })
         .where(eq(approvals.id, id))
         .returning()
-        .then((rows) => rows[0]));
+        .then((rows) => rows[0]), { approvalId: id });
     },
 
     listComments: async (approvalId: string) => {

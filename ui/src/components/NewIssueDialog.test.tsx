@@ -14,6 +14,8 @@ import { addStagedFilesToIssue, NewIssueDialog } from "./NewIssueDialog";
 
 const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
 vi.mock("./primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => primaryState }));
+const coordinatorState = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => coordinatorState }));
 
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
@@ -355,6 +357,7 @@ describe("NewIssueDialog", () => {
   let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    coordinatorState.enabled = false;
     primaryState.primaryAgentId = null;
     primaryState.loading = false;
     vi.useRealTimers();
@@ -1355,6 +1358,61 @@ describe("NewIssueDialog", () => {
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ description: "Investigate the sign-in redirect and fix it" }));
     expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("title");
     await act(async () => root.unmount());
+  });
+
+  it.each([false, true])("creates a task from one description field (Coordinator %s)", async (enabled) => {
+    coordinatorState.enabled = enabled;
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    expect(container.querySelectorAll("textarea")).toHaveLength(1);
+    if (enabled) expect(container.textContent).toContain("New Task");
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    expect(submit.disabled).toBe(true);
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Write the launch post");
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    const payload = mockIssuesApi.create.mock.calls[0][1];
+    expect(payload.description).toBe("Write the launch post");
+    expect(payload).not.toHaveProperty("successCriteria");
+    expect(payload).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    { enabled: false, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "", criteria: "Ready for review", expected: "## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: " \n ", expected: "Write the launch post" },
+  ])("restores legacy draft criteria into the editable description (Coordinator $enabled, criteria '$criteria')", async ({ enabled, description, criteria, expected }) => {
+    coordinatorState.enabled = enabled;
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+      title: "", description, successCriteria: criteria, status: "todo", priority: "medium",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    const descriptionInput = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+    expect(descriptionInput.value).toBe(expected);
+    const editedDescription = `${expected}\nKeep this edit.`;
+    await typeTextareaValue(descriptionInput, editedDescription);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    const savedDraft = JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!);
+    expect(savedDraft.description).toBe(editedDescription);
+    expect(savedDraft).not.toHaveProperty("successCriteria");
+    await act(async () => root.unmount());
+    const reopened = renderDialog(container);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!.value).toBe(editedDescription);
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create.mock.calls[0][1].description).toBe(editedDescription);
+    await act(async () => reopened.root.unmount());
   });
 
   it.each(["Corrected task title", ""])("lets users edit or clear an inherited title (%s)", async (nextTitle) => {

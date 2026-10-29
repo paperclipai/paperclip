@@ -732,6 +732,8 @@ export const issuesApi = {
     api.get<DocumentRevision[]>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
+  getDocumentRevision: (id: string, key: string, revisionId: string) =>
+    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

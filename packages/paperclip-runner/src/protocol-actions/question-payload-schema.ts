@@ -14,9 +14,20 @@ const canonicalQuestionSchema = {
 
 export const questionPayloadSchema = {
   type: "object",
-  description: "Kind-specific interaction data. For questions, send version:1 and one complete questionSet containing every text and choice question. Paperclip generates compatibility questions. Each canonical question needs id, prompt, required, and answerMode: text, single_select, or multi_select. Text questions have no options or customAnswer. Choice questions need at least two meaningful options with id/label. Use customAnswer:{enabled:true} for an optional written answer to a choice question. Legacy questions remain supported; if both representations are supplied, they must describe the same complete form. Keep IDs stable across retries. For confirmation, payload may be {}.",
+  description: "Kind-specific interaction data. For questions, send version:1 and one complete questionSet containing every text and choice question. Paperclip generates compatibility questions. Each canonical question needs id, prompt, required, and answerMode: text, single_select, or multi_select. Text questions have no options or customAnswer. Choice questions need at least two meaningful options with id/label. Use customAnswer:{enabled:true} for an optional written answer to a choice question. Legacy questions remain supported; if both representations are supplied, they must describe the same complete form. Keep IDs stable across retries. For required output quality review, confirmation payload must contain qualityReview:{key:<required deliverable key>} and target:{type:issue_document,key:<output document key>,revisionId:<saved revision>} or target:{type:issue_attachment,attachmentId,assetId,sha256}. For item_verdicts put qualityReview and target on each reviewed item. Keep supersedeOnUserComment:false inside payload. Never discard these bindings to work around a validation error; an unbound confirmation cannot satisfy required quality review.",
   properties: {
     version: { const: 1 },
+    qualityReview: {
+      type: "object", required: ["key"],
+      properties: { key: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,79}$" } },
+      additionalProperties: false,
+    },
+    target: {
+      type: ["object", "null"],
+      description: "Exact registered output identity. Use an output document revision or immutable attachment for quality review; a plan does not qualify.",
+      additionalProperties: true,
+    },
+    supersedeOnUserComment: { type: "boolean" },
     questionSet: {
       type: "object",
       required: questionSetSchema.required,

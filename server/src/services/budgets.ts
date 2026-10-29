@@ -262,7 +262,7 @@ async function markApprovalStatus(
   if (!approvalId) return;
   const [approval] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, approvalId));
   if (!approval) return;
-  await notifyApprovalWork(db, approval.companyId);
+  await notifyApprovalWork(db, approval.companyId, { approvalId });
   await db
     .update(approvals)
     .set({

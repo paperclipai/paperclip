@@ -97,6 +97,46 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(call(f, "create_task", { ...input, title: "Different" })).rejects.toThrow(/idempotency/);
   });
 
+  it.each([true, false])("defaults raw API creation only for a chat-bound run: %s", async (conversation) => {
+    const f = await server.fixture({ conversation, disableWakeOnDemand: true });
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    for (const assignment of [{}, { assigneeAgentId: null }]) {
+      const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/issues`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Requested task ${randomUUID()}`, projectId: f.projectId, status: "todo", ...assignment }),
+      });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(201);
+      expect(result).toMatchObject({ assigneeAgentId: conversation ? f.agentId : null, assigneeUserId: null });
+    }
+  });
+
+  it.each(["native", "mcp"])("preserves an explicit alternate agent or person through %s creation", async (transport) => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [otherAgent] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Requested editor", status: "idle", adapterType: "process" }).returning();
+    for (const assignment of [{ assigneeActorId: otherAgent.id }, { assigneeUserId: f.responsibleUserId }]) {
+      const args = { title: `Explicitly assigned task ${randomUUID()}`, projectId: f.projectId, idempotencyKey: randomUUID(), ...assignment };
+      const result = transport === "native" ? await call(f, "create_task", args) as any : await callProjectTool({
+        name: "create_task", arguments: args, apiUrl: server.apiUrl,
+        token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!,
+        companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true,
+      });
+      const taskId = transport === "native" ? result.task.id : result.id;
+      const [task] = await server.db.select().from(issues).where(eq(issues.id, taskId));
+      expect(task).toMatchObject({ assigneeAgentId: assignment.assigneeActorId ?? null, assigneeUserId: assignment.assigneeUserId ?? null });
+    }
+  });
+
+  it("persists required output review supplied through MCP creation", async () => {
+    const f = await server.fixture({ conversation: true });
+    const requirement = { version: 1, deliverables: [{ key: "copy", label: "Launch copy" }] };
+    const result = await callProjectTool({ name: "create_task", arguments: {
+      title: "MCP review gate", projectId: f.projectId, idempotencyKey: "mcp-quality-gate", requiredQualityReview: requirement,
+    }, apiUrl: server.apiUrl, token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true }) as any;
+    const [task] = await server.db.select().from(issues).where(eq(issues.id, result.id));
+    expect(task.executionPolicy).toMatchObject({ requiredQualityReview: requirement });
+  });
+
   it("rejects creation, child helpers, and reparenting under a chat, while retaining legacy children", async () => {
     const f = await server.fixture({ conversation: true });
     const svc = issueService(server.db);
