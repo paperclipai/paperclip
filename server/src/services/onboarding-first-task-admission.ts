@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { agents, documents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND, requestCheckboxConfirmationPayloadSchema, requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema, requestConfirmationResultSchema } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -37,6 +37,7 @@ export async function assertOnboardingFirstTaskCreationAllowed(tx: Db, input: {
   companyId: string;
   actorAgentId?: string | null;
   actorRunId?: string | null;
+  blockedByIssueIds?: readonly string[];
 }): Promise<void> {
   if (!input.actorAgentId || !input.actorRunId) return;
   const [observedRun] = await tx.select(runOriginFields).from(heartbeatRuns).where(and(
@@ -60,6 +61,12 @@ export async function assertOnboardingFirstTaskCreationAllowed(tx: Db, input: {
   if (!run || runIssueId(run) !== source.id) throw acceptanceRequired();
 
   if (await readOnboardingFirstTaskDecision(tx, { companyId: input.companyId, issueId: source.id, outcomes: ["accepted"] }) !== "accepted") throw acceptanceRequired();
+  if (input.blockedByIssueIds?.includes(source.id)) {
+    throw badRequest(
+      "First-task execution tasks cannot be blocked by their onboarding task. Remove the onboarding task from blockedByTaskIds (REST: blockedByIssueIds), create the ready child, then use set_dependencies on the onboarding task to wait for the child.",
+      { code: "onboarding_first_task_parent_blocker" },
+    );
+  }
 }
 
 /** Shared persisted-decision proof; creation and completion retain different authority. */

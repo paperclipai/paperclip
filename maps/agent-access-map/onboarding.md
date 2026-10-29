@@ -194,6 +194,12 @@ conversational resolution with a genuine later same-task user message supplies
 acceptance; an agent-only resolution does not. A plan approval must name the
 current same-task revision. Newer pending/rejected proposals stop new creation.
 Already admitted task replay and ordinary delegation retain their existing rules.
+An accepted onboarding execution cannot create a new task blocked by its
+authenticated onboarding source. Native and REST creation return a recoverable
+input error before committing that task or its wake. A corrected call retains
+the human acceptance and can reuse the unconsumed command key. Other blocker
+relationships remain available. The child needs self-contained approved inputs;
+the parent uses `set_dependencies` to wait on the child, not the reverse.
 
 Native `paperclip_finish` does not grant completion authority from an opening
 answer. The onboarding parent requires a trusted saved human decision on its

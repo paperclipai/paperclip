@@ -10240,6 +10240,7 @@ export function issueService(db: Db) {
           companyId,
           actorAgentId: issueData.createdByAgentId,
           actorRunId,
+          blockedByIssueIds,
         });
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);

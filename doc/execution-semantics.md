@@ -40,6 +40,14 @@ their existing behavior, including dispatch recovery for already admitted work.
 This boundary governs new task creation; other execution and resource authorities
 continue to apply independently.
 
+An approved first-task execution handoff cannot name its onboarding source as a
+blocker of the new task. Creation rejects that input before committing a task,
+dependency, wake or command receipt, with guidance for a corrected retry. Create
+the dependency-ready child, then make the onboarding parent wait on that child
+through `set_dependencies`. Parentage alone is not a dependency. Other blockers,
+ordinary task delegation and replay of previously admitted creation retain their
+existing behavior.
+
 ## 2. Assignee Semantics
 
 An issue has at most one assignee.

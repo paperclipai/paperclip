@@ -155,6 +155,13 @@ admit new work. [Admission controls](../../server/src/__tests__/onboarding-first
 exercise native and REST calls against disposable PostgreSQL; live model and
 Cloud onboarding remain separate evidence.
 
+After acceptance, reject a new task whose blockers include its onboarding source.
+The rejected command must leave no task, dependency, wake or creation receipt;
+a corrected retry must still create the ready child. Preserve valid blockers for
+other work. The shipped handoff recipe copies the actual approved inputs and
+constraints into the child, then makes the parent depend on the child. Its
+schema and persistence controls do not prove that a live model follows it.
+
 Native completion also requires a saved human proposal decision. An opening
 answer alone must leave the first task in review. Verify that premature native
 completion is refused, including a result already saved before finalization.
