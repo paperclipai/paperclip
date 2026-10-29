@@ -2333,10 +2333,6 @@ async function startServerWithDatabaseTeardown(
   };
   } catch (error) {
     if (startupListenerBound) {
-      // A plain server.close() waits for every open connection. A proxy or a
-      // streaming client can hold one open indefinitely, and then this startup
-      // never rejects, the process never exits and the supervisor never
-      // restarts it. Close the remaining connections after the grace period.
       try {
         await closeHttpListenerForShutdown({ server, signal: "startup_failure", log: logger });
       } catch (closeError) {

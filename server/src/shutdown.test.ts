@@ -304,22 +304,33 @@ describe("closeHttpListenerForShutdown", () => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write("data: open\n\n");
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const { port } = server.address() as AddressInfo;
-    const streamOpen = new Promise<void>((resolve) => {
-      request({ host: "127.0.0.1", port, path: "/stream" }, (res) => {
-        res.once("data", () => resolve());
-        res.on("error", () => {});
-      }).on("error", () => {}).end();
-    });
-    await streamOpen;
+    let client: ReturnType<typeof request> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const { port } = server.address() as AddressInfo;
+      await new Promise<void>((resolve, reject) => {
+        client = request({ host: "127.0.0.1", port, path: "/stream" }, (res) => {
+          res.once("data", () => resolve());
+          res.once("error", reject);
+        });
+        client.once("error", reject);
+        client.end();
+      });
 
-    const started = Date.now();
-    await expect(
-      closeHttpListenerForShutdown({ server, signal: "startup_failure", timeoutMs: 200, log: stubLogger() }),
-    ).resolves.toBe("timed_out");
-    expect(Date.now() - started).toBeLessThan(2_000);
-    expect(server.listening).toBe(false);
+      const started = Date.now();
+      await expect(
+        closeHttpListenerForShutdown({ server, signal: "startup_failure", timeoutMs: 200, log: stubLogger() }),
+      ).resolves.toBe("timed_out");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(server.listening).toBe(false);
+    } finally {
+      client?.destroy();
+      server.closeAllConnections();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("does nothing when the listener was never bound", async () => {

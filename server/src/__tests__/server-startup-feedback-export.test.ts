@@ -205,14 +205,19 @@ const {
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const fakeServer = {
+    listening: false,
     on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
+      fakeServer.listening = true;
       callback?.();
       return fakeServer;
     }),
-    close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
+    close: vi.fn((callback?: (error?: Error) => void) => {
+      fakeServer.listening = false;
+      callback?.();
+    }),
   };
   const loadConfigMock = vi.fn();
 
