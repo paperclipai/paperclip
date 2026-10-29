@@ -100,6 +100,18 @@ describe("display-only catalog overview", () => {
       await expect(regenerateCatalogOverview({metadataFile:metadata,outputDirectory:path.join(dir,'big-out')})).rejects.toThrow('bounded');
     } finally { await rm(dir,{recursive:true,force:true}); }
   });
+  it("links the dated immutable snapshot from real campaign and metadata navigation", () => {
+    const data=fixture();
+    const ordinary=renderRunnerE2EDashboard({title:"Campaign",generatedAt:data.asOf,expected:[],catalog:[],entries:[]});
+    for (const html of [ordinary,page(data)]) {
+      const dom=new JSDOM(html),link=dom.window.document.querySelector<HTMLAnchorElement>('[data-nav-catalog]')!;
+      expect(link.textContent).toContain('Chat catalog · Oct 29');
+      expect(link.href).toBe('https://d1p6rlowie26tp.cloudfront.net/runner-e2e/campaigns/chat-catalog-overview-20261029-175400z/');
+      expect(dom.window.getComputedStyle(link).display).not.toBe('none');
+      expect(dom.window.document.querySelectorAll('[data-nav-catalog]')).toHaveLength(1);
+      dom.window.close();
+    }
+  });
   it("keeps the normal campaign branch and its missing-result behavior", () => {
     const normal=renderRunnerE2EDashboard({title:'Existing campaign',generatedAt:'2026-10-29T17:54:00Z',expected:[],catalog:[],entries:[]});
     expect(normal).toContain('aria-label="Campaign summary"');

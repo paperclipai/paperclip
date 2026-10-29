@@ -3082,3 +3082,8 @@ not from retained conversations or private artifacts.
 The renderer requires a new output directory and makes it private; it does not
 publish the preview or modify existing campaign files. Normal campaign rendering
 and retained result cards continue to use the existing bundle command.
+
+The shared report navigation links the dated, immutable catalog snapshot.
+Deploying this generator does not rewrite existing published history HTML.
+Activating the link on an existing page requires a separately reviewed,
+conditional navigation-only update. The metadata command publishes nothing.
