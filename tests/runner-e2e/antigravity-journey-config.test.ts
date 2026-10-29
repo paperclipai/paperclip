@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
-import { antigravityNoLaunchReceipt, cleanupAntigravityJourney, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
+import { antigravityNoLaunchReceipt, cleanupAntigravityJourney, observeAntigravityRun, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources, type AntigravityProcessObservers } from "./antigravity-journey-fixtures.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { ConnectionApi } from "./connection-target.js";
 import { antigravityKnownCostObservation } from "./antigravity-journey-launch.js";
@@ -32,6 +32,17 @@ function neverLaunched() {
   const lease: Record<string, any> = { id: leaseId, companyId, heartbeatRunId: runId, environmentId, status: "expired", releasedAt: "2026-01-01T00:00:01Z" };
   return { owned, run, lease };
 }
+it("retains accepted physical ownership when a primary report projection throws", () => {
+  const { owned, run } = neverLaunched(), pid = 900001, start = "2026-01-01T00:00:00Z";
+  Object.assign(run, { processPid: pid, processGroupId: pid, processStartedAt: start });
+  owned.processes[runId] = { captured: false, identityChanged: false, journal: [] };
+  const journal = [{ pid, parent: 1, start }, { pid: pid + 1, parent: pid, start }];
+  const observers = new Map([[runId, { sample: () => ({ captured: true, identityChanged: false, live: [pid, pid + 1], journal,
+    authorityCheck: { accepted: true, commandSha256: "malformed-projection-digest", authority: { runId, pid, groupId: pid, startedAt: start }, observed: journal[0] } }) }]]) as unknown as AntigravityProcessObservers;
+  expect(() => observeAntigravityRun(owned, run, observers)).toThrow(/primary_owner_/u);
+  expect(owned.processes[runId]).toEqual({ captured: true, identityChanged: false, journal });
+  expect(owned.processes[runId]!.primaryOwner).toBeUndefined();
+});
 
 it.each(["released", "expired"])("persists authoritative pre-native cancellation with a %s lease before purge", async status => {
   const { owned, run, lease } = neverLaunched(); lease.status = status;

@@ -32,8 +32,11 @@ export function antigravityPrimaryOwner(run: Row, observation: ReturnType<Return
   const check = observation.authorityCheck;
   if (!check?.accepted) return;
   requireProof(observation.captured && Number.isFinite(Date.parse(check.observed.start)), "primary_owner_birth");
+  // The shared live observer emits a tagged digest. Normalize only that exact
+  // producer format into the retained witness's bare SHA-256 field.
+  requireProof(/^sha256:[a-f0-9]{64}$/u.test(check.commandSha256), "primary_owner_command_digest");
   const owner: AntigravityPrimaryOwner = { runId: check.authority.runId, pid: check.observed.pid, groupId: check.authority.groupId,
-    startedAt: new Date(Date.parse(check.observed.start)).toISOString(), commandSha256: check.commandSha256, perTurnArgvVerified: true };
+    startedAt: new Date(Date.parse(check.observed.start)).toISOString(), commandSha256: check.commandSha256.slice("sha256:".length), perTurnArgvVerified: true };
   requireProof(validAntigravityPrimaryOwner(owner) && owner.runId === run.id && owner.pid === run.processPid && check.authority.pid === owner.pid
     && Date.parse(check.authority.startedAt) === Date.parse(owner.startedAt)
     && owner.groupId === run.processGroupId && Date.parse(owner.startedAt) === Date.parse(run.processStartedAt)

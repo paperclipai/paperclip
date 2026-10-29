@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
-import { expect, it } from "vitest";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { expect, it, vi } from "vitest";
 import { antigravityEvidenceFixture, antigravityTurnFixture } from "./antigravity-journey-test-fixtures.js";
 import { antigravityPrimaryOwner, gradeAntigravityJourney, gradeAntigravityJourneyTurn, sameAntigravityConversation, selectAntigravityIssueRun, validateAntigravityJourneyEvidence, verifyAntigravityJourneyTurn } from "./antigravity-journey-evidence.js";
 import type { ConnectionApi } from "./connection-target.js";
+import { observeRunProcesses } from "./copilot-local-fixtures.js";
+import { readLinuxProcessStartedAt } from "../../packages/paperclip-runner/src/live/linux-process-start.js";
 
 it("consumes the activity router's public runId summary rather than a full heartbeat row", () => {
   const service = readFileSync(new URL("../../server/src/services/activity.ts", import.meta.url), "utf8");
@@ -115,13 +119,58 @@ it("allows the real session-scoped runner ID only with a different primary proce
 it("binds the retained primary to the actual observer's per-turn argv, run, and OS birth", () => {
   const f = antigravityTurnFixture(), owner = f.retirement.primaryOwner;
   const observation = { captured: true, identityChanged: false, live: [], journal: [{ pid: owner.pid, parent: 1, start: owner.startedAt }], rootObserved: undefined,
-    authorityCheck: { accepted: true, commandSha256: owner.commandSha256, authority: { pid: owner.pid, groupId: owner.groupId, startedAt: owner.startedAt, runId: owner.runId },
+    authorityCheck: { accepted: true, commandSha256: `sha256:${owner.commandSha256}`, authority: { pid: owner.pid, groupId: owner.groupId, startedAt: owner.startedAt, runId: owner.runId },
       observed: { pid: owner.pid, parent: 1, start: owner.startedAt } } };
   expect(antigravityPrimaryOwner(f.run, observation)).toEqual(owner);
   expect(antigravityPrimaryOwner(f.run, { ...observation, authorityCheck: { ...observation.authorityCheck, accepted: false } })).toBeUndefined();
   observation.authorityCheck.authority.runId = "another-run";
   expect(() => antigravityPrimaryOwner(f.run, observation)).toThrow("primary_owner_binding");
 });
+it.each(["", "c".repeat(64), "sha256:short", `sha256:${"C".repeat(64)}`, `sha256:${"c".repeat(65)}`])("rejects malformed shared-observer command digest %#", commandSha256 => {
+  const f = antigravityTurnFixture(), owner = f.retirement.primaryOwner;
+  expect(() => antigravityPrimaryOwner(f.run, { captured: true, identityChanged: false, live: [], rootObserved: undefined,
+    journal: [{ pid: owner.pid, parent: 1, start: owner.startedAt }], authorityCheck: { accepted: true, commandSha256,
+      authority: { pid: owner.pid, groupId: owner.groupId, startedAt: owner.startedAt, runId: owner.runId },
+      observed: { pid: owner.pid, parent: 1, start: owner.startedAt } } })).toThrow("primary_owner_command_digest");
+});
+it.skipIf(!["darwin", "linux"].includes(process.platform))("normalizes the real live observer's tagged command digest for a bounded owned child", async () => {
+  const runId = "hermetic-primary-owner", observer = observeRunProcesses();
+  // No Runner/provider/model: two finite test-owned Node processes expose the
+  // same argv/birth contract consumed by the selected local native observer.
+  const script = `const {spawn}=require('node:child_process');
+    const child=spawn(process.execPath,['-e','setTimeout(()=>{},3500)'],{stdio:'ignore'});
+    process.on('SIGTERM',()=>{child.kill();setTimeout(()=>process.exit(0),50)});
+    setTimeout(()=>{child.kill();process.exit(0)},4000);
+    console.log('ready');`;
+  const child = spawn(process.execPath, ["-e", script, "--", "--run-id", runId, "--lifecycle-mode", "per_turn"],
+    { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: process.env.PATH } });
+  const exited = once(child, "exit");
+  try {
+    await once(child.stdout!, "data");
+    const pid = child.pid!;
+    const startedAt = process.platform === "linux" ? readLinuxProcessStartedAt(pid)
+      : new Date(Date.parse(execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="],
+        { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } }).trim())).toISOString();
+    const run = { id: runId, processPid: pid, processGroupId: pid, processStartedAt: startedAt };
+    let observation = observer.sample({ runId, pid, groupId: pid, startedAt });
+    await vi.waitFor(() => {
+      observation = observer.sample({ runId, pid, groupId: pid, startedAt });
+      expect(observation.captured).toBe(true); expect(observation.journal.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 2500 });
+    expect(observation.authorityCheck?.accepted).toBe(true);
+    expect(observation.authorityCheck!.commandSha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    const owner = antigravityPrimaryOwner(run, observation)!;
+    expect(owner).toMatchObject({ runId, pid, groupId: pid, startedAt, perTurnArgvVerified: true });
+    expect(owner.commandSha256).toBe(observation.authorityCheck!.commandSha256.slice("sha256:".length));
+    expect(owner.commandSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(() => antigravityPrimaryOwner({ ...run, id: "different-run" }, observation)).toThrow("primary_owner_binding");
+    expect(() => antigravityPrimaryOwner({ ...run, processStartedAt: "2026-01-01T00:00:00Z" }, observation)).toThrow("primary_owner_binding");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await exited;
+    await vi.waitFor(() => expect(observer.sample().live).toHaveLength(0), { timeout: 5000 });
+  }
+}, 10_000);
 
 it("retains first completion as a snapshot when later task reopening changes coordinator pointers", () => {
   const first = antigravityTurnFixture(), observed = gradeAntigravityJourneyTurn(first);

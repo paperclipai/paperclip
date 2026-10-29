@@ -73,8 +73,12 @@ export function observeAntigravityRun(resources: AntigravityJourneyResources, ru
   const previous = resources.processes[run.id];
   const journal = previous?.journal ?? [];
   for (const process of observation.journal) if (!journal.some(row => row.pid === process.pid && row.start === process.start)) journal.push({ pid: process.pid, parent: process.parent, start: process.start });
-  resources.processes[run.id] = { captured: Boolean(previous?.captured || observation.captured),
-    identityChanged: Boolean(previous?.identityChanged || observation.identityChanged), primaryOwner: previous?.primaryOwner ?? antigravityPrimaryOwner(run, observation), journal };
+  // Retain accepted physical ownership before deriving a report projection.
+  // The launcher's error path persists this record even if projection fails.
+  const retained: AntigravityProcessReceipt = { captured: Boolean(previous?.captured || observation.captured),
+    identityChanged: Boolean(previous?.identityChanged || observation.identityChanged), ...(previous?.primaryOwner ? { primaryOwner: previous.primaryOwner } : {}), journal };
+  resources.processes[run.id] = retained;
+  retained.primaryOwner ??= antigravityPrimaryOwner(run, observation);
 }
 
 /** Read only the same host's kernel birth identities; never signal a reported PID. */
