@@ -27,7 +27,7 @@ use crate::question_response::validate_question_response;
 pub(crate) fn runtime_notification_codex_args(
     args: &[String],
     profile: &str,
-    paths: &[PathBuf; 3],
+    paths: &[PathBuf; 4],
 ) -> Vec<String> {
     let prefix = "shell_environment_policy.include_only=";
     let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
@@ -61,7 +61,7 @@ pub(crate) fn runtime_notification_codex_args(
         let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
             continue;
         };
-        for (path, mode) in paths.iter().zip(["read", "read", "write"]) {
+        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
             filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
         }
         extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
@@ -4236,6 +4236,7 @@ mod tests {
         let paths = [
             PathBuf::from("/runtime/runnerd"),
             PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/state/private/runtime-activity.lock"),
             PathBuf::from("/tmp/prn-channel"),
         ];
         let extra =
@@ -4275,6 +4276,7 @@ mod tests {
                 ("/state/private", "none"),
                 ("/runtime/runnerd", "read"),
                 ("/state/private/runtime-notifications.json", "read"),
+                ("/state/private/runtime-activity.lock", "read"),
                 ("/tmp/prn-channel", "write"),
             ] {
                 assert_eq!(

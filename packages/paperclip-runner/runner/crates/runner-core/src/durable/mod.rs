@@ -23,8 +23,6 @@ pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
     StoredCommandResult, StoredOutboxEvent,
 };
-#[cfg(test)]
-pub(crate) use transport::control_read_timeout;
 pub(crate) use transport::current_unix_ms;
 
 pub const PROTOCOL: &str = "paperclip.runner";

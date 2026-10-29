@@ -861,13 +861,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Read control before starting another fsynced provider batch.
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
-            #[cfg(unix)]
-            let work_pending = notifications
-                .as_ref()
-                .is_some_and(|notifications| notifications.has_pending_work());
-            #[cfg(not(unix))]
-            let work_pending = false;
-            let control_message = transport.receive_json_with_pending_work(work_pending);
+            let control_message = transport.receive_json();
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,

@@ -609,7 +609,7 @@ cargo test --release --manifest-path runner/Cargo.toml --locked -p paperclip-run
 This uses `app-server command/exec` without credentials or a model call. It checks
 actual shell discovery, successful durable activity recording, and denial of unrelated
 Runner state, descriptor writes and ambient secrets. The normal suite covers
-mailbox frame limits, timeout/orphan cleanup and attachment fencing.
+bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
 
 ## Direct live protocol qualification
 

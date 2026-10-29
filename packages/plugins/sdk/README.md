@@ -282,39 +282,31 @@ context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context)
 "$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used
 ```
 
-Runner publishes its matching executable as host-owned
-`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER`; clients invoke that absolute path and
-need no Runner command on `PATH`. Configured task environment cannot override it.
-Runner preserves both discovery variables at final provider command boundaries.
-For Codex, it adds read access to those two exact files and write access to the
-dedicated IPC directory, preserving the existing filesystem and network limits;
-it never grants access to the enclosing Runner state directory.
+Runner supplies the matching absolute executable as
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER` and an atomic endpoint descriptor as
+`PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
+override them. Provider launch boundaries preserve both values. Codex receives
+read access to the helper, descriptor and publisher lock, plus write access to
+one named pipe. The enclosing Runner state remains protected.
 
-Runner supplies `PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`, a stable path to its
-local notification endpoint descriptor. The helper uses bounded JSON-RPC over a
-private filesystem mailbox (2 KiB frames, at most 16 entries per control-loop
-iteration and a 500 ms client deadline). Per-request directories are private,
-atomically published and cleaned on completion or timeout; abandoned requests
-expire after two seconds. Runner opens request directories without following
-symlinks and performs reads, claims, replies and expiry cleanup relative to
-those open handles, so a provider cannot redirect them by swapping a pathname. After
-publishing a complete request, the helper updates a root-level wake marker. A
-native filesystem watcher coalesces wakes for Runner's owning control loop;
-uncompleted bounded sweeps and concurrent wakes are retained. Runner checks
-control messages with a short wait while mailbox work is pending, then restores
-its normal control wait, so bounded batches do not consume client deadlines. Cleanup has a
-real expiry deadline only while request directories remain; an unsuccessful
-inspection retains its own retry deadline until reconciled. Settled history
-causes no further mailbox scans. The watcher stops with Runner; if it cannot be
-registered, this optional hint stays unavailable without an idle polling fallback. It does not parse stdout/stderr or take a run ID. Runner
-rejects contexts from earlier warm attachments or process lifetimes and persists
-`runtime.activity.recorded` with `{ namespace, activityKey }` through its existing
-authenticated PRP event stream before acknowledging. The wrapper treats this
-optional hint as best effort; missing/older runners must not fail the operation.
-Do not notify for help, schema discovery, status probes or failures. No agent
-instruction is required. Identifiers are 1–160 Unicode code points, excluding
-C0 controls and DEL, consistently with all PRP schemas. This is a UI hint; plugin discovery, authorization and
-availability checks still apply. Runner knows no plugin or UI slot. Core maps declared activity identifiers to its consumers and retains authorization and readiness checks.
+The helper captures context locally. After success, it publishes newline-delimited
+JSON through a nonblocking pipe. A leading newline terminates an interrupted
+previous write. A read-only file lock serializes publishers with a 500 ms deadline.
+Runner reuses its bounded line reader: 2 KiB per record, 128 queued records and
+16 records per control-loop iteration. Idle transport blocks; cleanup removes
+only its pipe and lock files.
+
+A successful helper exit means publication to the pipe. Runner validates context
+against the active run, deduplicates up to 128 activity pairs per authority, and
+persists `runtime.activity.recorded` through its authenticated event stream.
+Warm attachment and process recovery rotate context. The helper accepts no run
+identity. Clients treat this hint as best effort, including with older runtimes.
+Notify only after successful use; exclude help, schema discovery, status probes
+and failures. No agent instruction is required.
+
+Identifiers are 1–160 Unicode code points, excluding C0 controls and DEL.
+Core maps declared activity identifiers to its consumers and applies their
+existing discovery, authorization and availability checks.
 
 #### `taskDetailView`
 
