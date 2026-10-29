@@ -1,3 +1,4 @@
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { managedConnectorProfile } from "./client-settings.js";
 import type { ActorInfo } from "../types.js";
@@ -408,18 +409,19 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         personalCredential || agentCredential ? credentialSecretRefs : [],
         tx,
       );
-      const linkedInteractionKind = stateRow.interactionId
+      const linkedInteraction = stateRow.interactionId
         ? await tx
-            .select({ kind: issueThreadInteractions.kind })
+            .select({ kind: issueThreadInteractions.kind, issueId: issueThreadInteractions.issueId })
             .from(issueThreadInteractions)
             .where(eq(issueThreadInteractions.id, stateRow.interactionId))
             .limit(1)
-            .then((rows) => rows[0]?.kind ?? null)
+            .then((rows) => rows[0] ?? null)
         : null;
       if (
         stateRow.interactionId &&
-        linkedInteractionKind === "request_confirmation"
+        linkedInteraction?.kind === "request_confirmation"
       ) {
+        await notifyIssueReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
         await tx
           .update(issueThreadInteractions)
           .set({

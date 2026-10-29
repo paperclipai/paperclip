@@ -1,4 +1,3 @@
-import { createChatReconciliationCoordinator } from "../app.js";
 import { subscribeDatabaseWork } from "@paperclipai/db";
 import * as voiceReplyNotifications from "../services/voice/voice-reply-notifications.js";
 import { voiceReplySchedule } from "../services/voice/voice-reply-schedule.js";
@@ -263,21 +262,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   });
 
-  it("leaves due history intact during chat maintenance and deletes it through retention", async () => {
+  it("deletes due history through its retention worker", async () => {
     const f = await inboundFixture();
     const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
     await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
     await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
     const onError = vi.fn();
-    const maintenance = createChatReconciliationCoordinator({
-      processPendingDeliveries: async () => undefined,
-      flushPublications: async () => undefined, onError,
-    });
-    try {
-      maintenance.reconcile(); await maintenance.drain();
-      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(1);
-      expect(onError).not.toHaveBeenCalled();
-    } finally { maintenance.stop(); await maintenance.drain(); }
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
     try {
       await f.service.inbound.registerRetentionWork(coordinator, () => true).ready;

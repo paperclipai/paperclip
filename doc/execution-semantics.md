@@ -1624,6 +1624,15 @@ reads lightweight thread state, and fetches paginated turn metadata or specific
 turn items only when execution reconciliation needs them. Unsupported
 or incomplete history is an explicit error, not evidence of idle execution.
 
+Built-in remote Codex launches install the current sealed skill inventory into
+the isolated provider home's `skills` directory before starting Codex. Explicit
+skill inputs use that same discovery path; a separate immutable context copy does
+not make a skill discoverable to Codex. Launch preparation replaces prior skills,
+including an empty or revoked inventory, while preserving provider conversation
+history. It rejects source or destination symlinks and does not copy ambient host
+skills. Preconfigured homes and plugin-provided launch preparation keep their
+existing contracts.
+
 The root-thread usage snapshot sent during resume belongs to its reported
 completed turn. Retain a bounded local diagnostic and use cumulative totals as
 a baseline; do not emit a warning or charge its historical `last` usage to the

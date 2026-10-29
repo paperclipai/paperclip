@@ -2,6 +2,10 @@ export interface DocumentAnnotationHashTarget {
   documentKey: string;
   threadId: string | null;
   commentId: string | null;
+  revisionId?: string;
+  interactionId?: string;
+  /** Document owner can differ from the task containing the review conversation. */
+  documentIssueId?: string;
   /**
    * `viewer=full` (LOOA-2181): external deep links — e.g. the Slack gateway's
    * "Open task" button on an approval card — request the document opened in
@@ -33,6 +37,9 @@ export function parseDocumentAnnotationHash(hash: string): DocumentAnnotationHas
     threadId: threadId && threadId.length > 0 ? threadId : null,
     commentId: commentId && commentId.length > 0 ? commentId : null,
     viewer: params.get("viewer") === "full" ? "full" : null,
+    ...(params.get("revision") ? { revisionId: params.get("revision")! } : {}),
+    ...(params.get("interaction") ? { interactionId: params.get("interaction")! } : {}),
+    ...(params.get("documentIssue") ? { documentIssueId: params.get("documentIssue")! } : {}),
   };
 }
 
@@ -43,6 +50,9 @@ export function buildDocumentAnnotationHash(
   if (target.threadId) params.set("thread", target.threadId);
   if (target.commentId) params.set("comment", target.commentId);
   if (target.viewer) params.set("viewer", target.viewer);
+  if (target.revisionId) params.set("revision", target.revisionId);
+  if (target.interactionId) params.set("interaction", target.interactionId);
+  if (target.documentIssueId) params.set("documentIssue", target.documentIssueId);
   const qs = params.toString();
   const encodedKey = encodeURIComponent(target.documentKey);
   return qs ? `${DOCUMENT_HASH_PREFIX}${encodedKey}&${qs}` : `${DOCUMENT_HASH_PREFIX}${encodedKey}`;

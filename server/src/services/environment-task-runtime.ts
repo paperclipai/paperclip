@@ -369,7 +369,7 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
   const [current] = await db.update(environmentLeases).set({
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
-    .returning({ metadata: environmentLeases.metadata });
+    .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId });
   if (current?.metadata?.runnerTaskDispatched !== true) {
     if (current?.metadata) await settlePluginTaskCredentialHandoff(db, { companyId: lease.companyId, leaseId: lease.id }, current.metadata,
       async () => { throw new Error("Undispatched task must not request credentials"); });
@@ -385,7 +385,7 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
   } catch {
     await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
       failureReason: "plugin_runner_task_cleanup_unconfirmed", releasedAt: new Date(), updatedAt: new Date(),
-    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId))));
+    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId))), { companyId: lease.companyId, runId: current.heartbeatRunId ?? undefined });
     throw new Error("Plugin Runner termination is unconfirmed; the saved lease requires cleanup");
   }
 }

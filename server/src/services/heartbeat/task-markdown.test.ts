@@ -8,6 +8,61 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, description: "Write a blog post about our launch." },
+      nativeRunner: true,
+      includeDescription,
+    });
+
+    expect(markdown).toContain("Task clarification directive:");
+    expect(markdown).toContain("Inspect the available task description, plan, conversation, prior answers, and relevant references before asking");
+    expect(markdown).toContain("ask one focused question at a time in this task");
+    expect(markdown).toContain('interactionKind: "questions", payload.questions');
+    expect(markdown).toContain('resolverPolicy: "human_only", continuationPolicy: "wake_assignee"');
+    expect(markdown).toContain("stable idempotencyKey");
+    expect(markdown).toContain("do not send the user to a separate chat or create a replacement task");
+    expect(markdown).toContain("Reuse an existing relevant pending question");
+    expect(markdown).toContain("an unanswered question is not consent");
+    expect(markdown).toContain("A human-dismissed request is deferred to history");
+    expect(markdown).toContain("Do not invent material user intent or success criteria");
+  });
+
+  it("preserves execution of a clear accepted plan without imposing clarification", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, workMode: "planning" },
+      nativeRunner: true,
+      acceptedPlanContinuation: true,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body: "Write a 300-word launch post for customers using the supplied brief." },
+    });
+
+    expect(markdown).toContain("If the outcome and success criteria are clear enough to act, proceed without a setup checklist or ritual questions");
+    expect(markdown).toContain("When a missing decision materially changes the outcome");
+    expect(markdown).toContain("Implement the accepted plan on this issue");
+    expect(markdown).toContain("Write a 300-word launch post for customers using the supplied brief.");
+  });
+
+  it.each([
+    { nativeRunner: false, coordinatorWorkspace: true, conversationAgentId: null },
+    { nativeRunner: undefined, coordinatorWorkspace: false, conversationAgentId: null },
+    { nativeRunner: true, coordinatorWorkspace: false, conversationAgentId: "coordinator" },
+    { nativeRunner: true, coordinatorWorkspace: true, conversationAgentId: "coordinator" },
+  ])("does not add native task clarification to adapter or standing-chat assignments: %j", ({ conversationAgentId, ...input }) => {
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId }, ...input }))
+      .not.toContain("Task clarification directive:");
+  });
+
+  it("shows inferred task proposals only for opted-in native conversations while preserving explicit creation", () => {
+    const issue = { id: "chat", identifier: null, title: "Chat", conversationAgentId: "coordinator" };
+    const classic = buildPaperclipTaskMarkdown({ issue, nativeRunner: true });
+    expect(classic).not.toContain("Coordinator task proposals:");
+    const optedIn = buildPaperclipTaskMarkdown({ issue, nativeRunner: true, coordinatorWorkspace: true });
+    expect(optedIn).toContain('interactionKind: "suggest_tasks"');
+    expect(optedIn).toContain("acceptance creates the task atomically");
+    expect(optedIn).toContain("If the user explicitly authorized task creation, use create_task directly");
+    expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
+      .not.toContain("Coordinator task proposals:");
+  });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({

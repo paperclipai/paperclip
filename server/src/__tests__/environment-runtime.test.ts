@@ -2,6 +2,7 @@ import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -62,7 +63,10 @@ import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { buildNativeHarnessBackupManifest } from "../services/native-runtime/native-session-executor.ts";
 import { createNativeHarnessBackupStamp } from "../services/native-runtime/native-harness-backup-stamp.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_RUNTIME_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const sshFixtureSupport = await getSshEnvLabSupport();
 const managedCloudConfig = { v: 1, mode: "cloud", catalogVersion: "test", features: {}, plugins: { autoInstall: ["daytona"] } };
@@ -199,9 +203,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   const previousOrphanCleanupSpoolDir = process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR;
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("environment-runtime");
-    stopDb = started.stop;
-    connectionString = started.connectionString;
+    if (externalTestDatabaseUrl) connectionString = externalTestDatabaseUrl;
+    else {
+      const started = await startEmbeddedPostgresTestDatabase("environment-runtime");
+      stopDb = started.stop;
+      connectionString = started.connectionString;
+    }
   });
 
   beforeEach(async () => {
@@ -6246,12 +6253,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toMatchObject({ status });
   });
 
-  it.each(["issue", "workspace", "environment"] as const)(
+  it.each(["issue", "workspace", "environment", "run"] as const)(
     "durably claims failed reusable cleanup before %s teardown and recovers a provider failure",
     async (scope) => {
       const seeded = await seedReusablePluginSandboxLease();
       await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
-      await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
+      if (scope !== "run") await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
       const issueId = randomUUID();
       if (scope === "issue") {
         await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Cleanup crash window", status: "done" });
@@ -6276,7 +6283,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
       } as unknown as PluginWorkerManager });
       const runtime = makeRuntime();
-      const close = (service: ReturnType<typeof makeRuntime>) => scope === "environment"
+      const close = (service: ReturnType<typeof makeRuntime>) => scope === "run"
+        ? service.releaseRunLeases(seeded.runId, "released", undefined, "destroy")
+        : scope === "environment"
         ? service.destroyReusableSandboxLeasesForEnvironment({ environmentId: seeded.environment.id })
         : service.destroyReusableSandboxLeases({ companyId: seeded.companyId,
           ...(scope === "issue" ? { issueId } : { executionWorkspaceId: seeded.executionWorkspaceId }) });
@@ -6311,6 +6320,36 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       });
     },
   );
+
+  it.each([false, true])("preserves a newer destroy receipt when an old run cleanup returns (failure=%s)", async failure => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const service = environmentService(db);
+    let confirmed: Awaited<ReturnType<typeof service.getLeaseById>>;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentDestroyLease") throw new Error(`Unexpected method ${method}`);
+
+
+      const current = (await service.getLeaseById(seeded.reusableLease.id))!;
+      const attemptId = randomUUID();
+      await db.update(environmentLeases).set({ status: "pending_cleanup",
+        metadata: { ...current.metadata, pendingCleanupAttemptId: attemptId },
+      }).where(eq(environmentLeases.id, current.id));
+      confirmed = await service.releaseLease(current.id, "expired", { expectedPendingCleanupAttemptId: attemptId,
+        cleanupStatus: "success", remoteExecutionTermination: remoteTerminationReceipt(current,
+          { providerLeaseId: current.providerLeaseId, state: "destroyed" }),
+      });
+      if (failure) throw new Error("Late failure from the old provider request");
+      return { providerLeaseId: current.providerLeaseId, state: "destroyed" };
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    await expect(runtime.releaseRunLeases(seeded.runId, "released", undefined, "destroy")).resolves.toEqual([]);
+    expect(call).toHaveBeenCalledOnce();
+    expect(confirmed!).toMatchObject({ status: "expired", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { state: "destroyed" } } });
+    expect(await service.getLeaseById(seeded.reusableLease.id)).toEqual(confirmed!);
+  });
 
   it.each(["queued", "scheduled_retry", "running"] as const)(
     "fences scoped cleanup when its holding run becomes %s after selection", async (status) => {

@@ -1,3 +1,6 @@
+import type { CancelledWorkspacePreservationScope } from "../cancelled-workspace-preservation-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -13,7 +16,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 
 export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">,
-  options: { allowPreterminal?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
+  options: { allowPreterminal?: boolean; requireCancelledStop?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
   if (readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)?.state !== "prepared") return;
   const issueId = selected.nativeIssueId ?? selected.issueId ?? selected.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return;
@@ -27,6 +30,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       eq(nativeRunFinalizations.runId, selected.id), eq(nativeRunFinalizations.companyId, selected.companyId),
       eq(nativeRunFinalizations.issueId, issueId),
     )).for("update");
+    if (options.requireCancelledStop && coordinator?.phase !== "terminal_failure") return;
     const claim = options.restartRecovery;
     const reference = readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)!;
     const ownsClaim = Boolean(options.allowPreterminal && coordinator?.phase === "observed" && claim
@@ -42,6 +46,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       eq(heartbeatRuns.id, selected.id), eq(heartbeatRuns.companyId, selected.companyId),
     )).for("update");
     if (!run || run.runtimeMode !== "native" || (!options.allowPreterminal && run.status !== "failed")) return;
+    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeStopIntent(run))) return;
     const currentReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
     if (!currentReference || currentReference.state !== "prepared"
       || (claim?.kind === "reattach_remote_runner" && (claim.remote.kind === "plugin_task" || claim.remote.providerLeaseId !== currentReference.providerLeaseId
@@ -144,7 +149,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
     if (run && hasAcknowledgedNativeStopIntent(run)) {
-      try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true }); }
+      try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
         const code = retentionContentionCode(error);
@@ -153,4 +158,71 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
       }
     }
   }
+}
+
+function pendingCancelledWorkspace() {
+  return sql`${heartbeatRuns.runtimeMode} = 'native' AND ${heartbeatRuns.status} = 'cancelled'
+    AND ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+    AND ${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+    AND (${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+      AND ${heartbeatRuns.resultJson}->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE`;
+}
+
+export function registerCancelledWorkspacePreservationWork(db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean,
+  canRecover: () => Promise<boolean>) {
+  type Entry = { id: string; companyId: string; dueAt: number };
+  type Candidate = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId"
+    | "runtimeMode" | "driverKind" | "status" | "resultJson" | "runnerProfileJson">;
+  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeStopIntent(run)
+    && readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
+    && !hasRequiredWorkspaceRecovery(run.resultJson) && !nativeRunHasNoWorkspaceAccess(run);
+  const scopeCondition = (scope?: CancelledWorkspacePreservationScope) => scope ? and(
+    eq(heartbeatRuns.companyId, scope.companyId), scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined) : undefined;
+  async function load(scope: CancelledWorkspacePreservationScope | undefined, signal?: AbortSignal) {
+    if (!await canRecover()) return [];
+    const entries: Entry[] = [];
+    let cursor: string | undefined;
+    while (canRun() && !signal?.aborted) {
+      const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
+        driverKind: heartbeatRuns.driverKind, status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(pendingCancelledWorkspace(), scopeCondition(scope),
+        cursor ? gt(heartbeatRuns.id, cursor) : undefined)).orderBy(asc(heartbeatRuns.id)).limit(100);
+      for (const row of rows) if (eligible(row)) entries.push({ id: row.id, companyId: row.companyId, dueAt: 0 });
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].id;
+    }
+    throw new Error("Cancelled workspace preservation reconstruction stopped");
+  }
+  async function check(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
+    if (!await canRecover()) return null;
+    const [run] = await db.select().from(heartbeatRuns)
+      .where(and(pendingCancelledWorkspace(), scopeCondition({ companyId: entry.companyId, runId: entry.id })));
+    if (!run || !eligible(run)) return null;
+    if (!canRun() || signal?.aborted) throw new Error("Cancelled workspace preservation stopped");
+    const [finalization] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
+      eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
+    ));
+    if (finalization?.resultId) return null;
+    if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
+      return { ...entry, dueAt: Date.now() + 30_000 };
+    const [source] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+      or(eq(environmentLeases.status, "active"), and(inArray(environmentLeases.status, ["pending_cleanup", "released"]),
+        eq(environmentLeases.leasePolicy, "ephemeral"))),
+    )).limit(1);
+    if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
+    const [current] = await db.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+    return current && current.status === "cancelled" && eligible(current) ? { ...entry, dueAt: Date.now() + 30_000 } : null;
+  }
+  return registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.cancelledWorkspacePreservation, batchSize: 5,
+    decodeScope: (hint: string): CancelledWorkspacePreservationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+    matches: (entry: Entry, scope?: CancelledWorkspacePreservationScope) => !scope ||
+      entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+    load, check,
+  }, canRun);
 }

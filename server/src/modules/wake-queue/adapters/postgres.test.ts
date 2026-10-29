@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -16,6 +17,7 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1220,6 +1222,31 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(wakeRow?.status).toBe("deferred_issue_execution");
       expect(wakeRow?.coalescedCount).not.toBe(5);
       expect(wakeRow?.payload).not.toHaveProperty("foo");
+    });
+
+    it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment])(
+      "scopes a real coalesced-input %s response wake to its active run after commit", async queue => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const runId = await seedRun({ companyId, agentId, status: "running" });
+      const hints: Array<Record<string, unknown>> = [];
+      const unsubscribe = subscribeDatabaseWork(db, queue, (event, values) => {
+        if (event === "settled") for (const value of values ?? []) hints.push(JSON.parse(value));
+      });
+      try {
+        await db.transaction(async tx => {
+          await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+            companyId, activeExecutionRunId: runId, mergedContextSnapshot: { commentId: "fresh-input" },
+            agentId, source: "on_demand", triggerDetail: null, payload: null,
+            requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
+          });
+          expect(hints).toEqual([]);
+        });
+        expect(hints).toEqual([{ companyId, runId }]);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+          .toMatchObject({ commentId: "fresh-input" });
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, runId))).toHaveLength(1);
+      } finally { unsubscribe(); }
     });
 
     // Review test (b), the coalesce write: a foreign company affects no row

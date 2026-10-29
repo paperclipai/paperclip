@@ -100,8 +100,9 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
-        ? { priorIdentity: preparedIdentity, accountIdentity: input.accountIdentity } : {}),
+        ? { priorIdentity: preparedIdentity } : {}),
     }));
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");

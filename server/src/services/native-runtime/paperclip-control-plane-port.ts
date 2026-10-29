@@ -1,3 +1,5 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { and, asc, eq, gt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -408,6 +410,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           ignoredAttentionRequests: normalizationDiagnostics.ignoredAttentionRequests,
         },
       } as unknown as Record<string, unknown>;
+      await notifyNativeResultCommit(tx, this.#binding);
+      await notifyNativeWorkspaceFinalization(tx, this.#binding);
       const inserted = await tx.insert(nativeRunResults).values({
         companyId: this.#binding.companyId,
         issueId: this.#binding.issueId,

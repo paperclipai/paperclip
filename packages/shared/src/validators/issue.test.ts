@@ -665,6 +665,12 @@ describe("issue validators", () => {
     expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
   });
 
+  it.each(["PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "paperclip_runner_prepared_harness_home"])("rejects task-level prepared storage via %s", key => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { env: { [key]: "/home/agent/.claude", TASK_FLAG: "kept" } } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
   it("rejects retired model profiles in agent runtime config", () => {
     const parsed = createAgentSchema.safeParse({
       name: "Coder",
