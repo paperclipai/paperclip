@@ -27,6 +27,11 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
 
+Named JSON file outputs and explicit publication requests require the same
+verified delivery evidence as other file outputs. A saved summary document does
+not replace a requested downloadable JSON file. Reading JSON inputs or discussing
+their contents inline does not by itself require a file attachment.
+
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:
 `Write memory.txt. This is personal memory, not a task deliverable.` or

@@ -82,9 +82,9 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
   const sentences = objective.replaceAll("\\_", "_").split(/(?:[.!?](?:\s|$)|\n)/iu);
   let precedingFileOutput = false;
   return sentences.some((sentence, index) => {
-    const file = /\b(?:files?|attachments?|downloads?|pdf|spreadsheets?|workbooks?|slide decks?|powerpoints?|docx|xlsx|csv)\b|\b[^\s/]+\.(?:md|txt|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip)\b/giu;
+    const file = /\b(?:files?|attachments?|downloads?|pdf|spreadsheets?|workbooks?|slide decks?|powerpoints?|docx|xlsx|csv)\b|\b[^\s/]+\.(?:md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip)\b/giu;
     const outputs = sentence.split(/(?:[;,]|\bbut\b)/iu).flatMap(clause => {
-      const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/giu)];
+      const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build|publish)\b/giu)];
       return creates.flatMap((create, createIndex) => {
         const before = clause.slice(0, create.index);
         if (/\b(?:do not|don['’]t|never|no need to)\s*$/iu.test(before)) return [];
@@ -111,13 +111,13 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         });
         // An explicit attachment/export request can refer to the file by
         // pronoun. It still requires publication when its name is omitted.
-        const referencesOutput = /^(?:attach|export|send|provide|give|return)$/iu.test(create[0])
+        const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
           && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
         const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
         const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
         const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
           && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
-        const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give)\b/iu.test(create[0] + output);
+        const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give|publish)\b/iu.test(create[0] + output);
         const deniedAttempt = create[0].toLowerCase() === "write" && objects.length === 1
           && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
           && /\b(?:must be denied|denial is (?:the )?expected|(?:this|the) negative test)\b/iu.test(objective);
