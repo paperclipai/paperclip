@@ -196,7 +196,11 @@ current same-task revision. Newer pending/rejected proposals stop new creation.
 Already admitted task replay and ordinary delegation retain their existing rules.
 An accepted onboarding execution cannot create a new task blocked by its
 authenticated onboarding source. Native and REST creation return a recoverable
-input error before committing that task or its wake. A corrected call retains
+input error before committing that task or its wake. The same source restriction
+applies to later blocker edits, using database UUID identity. Native dependency
+edits carry their authenticated run. Empty-list corrections and other blockers
+remain available without a new proposal decision. The API keeps its normal
+attempt audit. A corrected creation call retains
 the human acceptance and can reuse the unconsumed command key. Other blocker
 relationships remain available. The child needs self-contained approved inputs;
 the parent uses `set_dependencies` to wait on the child, not the reverse.

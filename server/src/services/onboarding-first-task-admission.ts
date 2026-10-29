@@ -28,31 +28,54 @@ const acceptanceRequired = () => forbidden(
   { code: "onboarding_first_task_acceptance_required" },
 );
 
-/**
- * Creation admission for a run serving the server-owned onboarding task. This is
- * deliberately independent of the requested parent and client origin metadata.
- * Call inside the creation transaction, after a side-effect-free replay check.
- */
-export async function assertOnboardingFirstTaskCreationAllowed(tx: Db, input: {
+type FirstTaskMutationInput = {
   companyId: string;
   actorAgentId?: string | null;
   actorRunId?: string | null;
   blockedByIssueIds?: readonly string[];
-}): Promise<void> {
-  if (!input.actorAgentId || !input.actorRunId) return;
+};
+
+async function readAuthenticatedFirstTaskSource(tx: Db, input: FirstTaskMutationInput, lockSource: boolean) {
+  if (!input.actorAgentId || !input.actorRunId) return null;
   const [observedRun] = await tx.select(runOriginFields).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.actorRunId), eq(heartbeatRuns.companyId, input.companyId),
     eq(heartbeatRuns.agentId, input.actorAgentId),
   ));
   if (!observedRun) throw forbidden("Authenticated agent run not found");
   const sourceIssueId = runIssueId(observedRun);
-  if (!sourceIssueId) return;
-  // Match the native authority/interaction lifecycle: issue, then run, then
-  // interaction/document. Ordinary tasks acquire no additional row locks.
-  const [source] = await tx.select({ id: issues.id }).from(issues).where(and(
+  if (!sourceIssueId) return null;
+  // Let the UUID column compare identities, including PostgreSQL's accepted
+  // uppercase, unhyphenated and braced forms. Do not compare raw input strings.
+  const isRequestedBlocker = input.blockedByIssueIds?.length
+    ? sql<boolean>`${inArray(issues.id, [...input.blockedByIssueIds])}`
+    : sql<boolean>`false`;
+  const query = tx.select({ id: issues.id, isRequestedBlocker }).from(issues).where(and(
     eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId),
     eq(issues.originKind, ONBOARDING_FIRST_TASK_ORIGIN_KIND),
-  )).for("update");
+  ));
+  const [source] = lockSource ? await query.for("update") : await query;
+  return source ?? null;
+}
+
+function assertNotBlockedByFirstTaskSource(source: { isRequestedBlocker: boolean } | null) {
+  if (source?.isRequestedBlocker) {
+    throw badRequest(
+      "First-task execution tasks cannot be blocked by their onboarding task. Remove the onboarding task from blockedByTaskIds (REST: blockedByIssueIds), preserve other required blockers, then use set_dependencies on the onboarding task to wait for the child.",
+      { code: "onboarding_first_task_parent_blocker" },
+    );
+  }
+}
+
+/**
+ * Creation admission for a run serving the server-owned onboarding task. This is
+ * deliberately independent of the requested parent and client origin metadata.
+ * Call inside the creation transaction, after a side-effect-free replay check.
+ */
+export async function assertOnboardingFirstTaskCreationAllowed(tx: Db, input: FirstTaskMutationInput): Promise<void> {
+  if (!input.actorAgentId || !input.actorRunId) return;
+  // Match the native authority/interaction lifecycle: issue, then run, then
+  // interaction/document. Ordinary tasks acquire no additional row locks.
+  const source = await readAuthenticatedFirstTaskSource(tx, input, true);
   if (!source) return;
   const [run] = await tx.select(runOriginFields).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.actorRunId), eq(heartbeatRuns.companyId, input.companyId),
@@ -61,12 +84,15 @@ export async function assertOnboardingFirstTaskCreationAllowed(tx: Db, input: {
   if (!run || runIssueId(run) !== source.id) throw acceptanceRequired();
 
   if (await readOnboardingFirstTaskDecision(tx, { companyId: input.companyId, issueId: source.id, outcomes: ["accepted"] }) !== "accepted") throw acceptanceRequired();
-  if (input.blockedByIssueIds?.includes(source.id)) {
-    throw badRequest(
-      "First-task execution tasks cannot be blocked by their onboarding task. Remove the onboarding task from blockedByTaskIds (REST: blockedByIssueIds), create the ready child, then use set_dependencies on the onboarding task to wait for the child.",
-      { code: "onboarding_first_task_parent_blocker" },
-    );
-  }
+  assertNotBlockedByFirstTaskSource(source);
+}
+
+/** Blocker edits retain their own authorization; they do not consume a proposal. */
+export async function assertOnboardingFirstTaskDependenciesAllowed(tx: Db, input: FirstTaskMutationInput): Promise<void> {
+  if (!input.blockedByIssueIds?.length) return;
+  // The update owner already holds the actor-run authorization lock. A read is
+  // sufficient for immutable source identity; do not lock a parent after a child.
+  assertNotBlockedByFirstTaskSource(await readAuthenticatedFirstTaskSource(tx, input, false));
 }
 
 /** Shared persisted-decision proof; creation and completion retain different authority. */

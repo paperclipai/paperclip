@@ -158,7 +158,9 @@ Cloud onboarding remain separate evidence.
 After acceptance, reject a new task whose blockers include its onboarding source.
 The rejected command must leave no task, dependency, wake or creation receipt;
 a corrected retry must still create the ready child. Preserve valid blockers for
-other work. The shipped handoff recipe copies the actual approved inputs and
+other work. Check equivalent UUID spellings and a later child PATCH as well as
+native dependency edits. Preserve normal API attempt auditing and allow blocker
+corrections without a new proposal acceptance. The shipped handoff recipe copies the actual approved inputs and
 constraints into the child, then makes the parent depend on the child. Its
 schema and persistence controls do not prove that a live model follows it.
 

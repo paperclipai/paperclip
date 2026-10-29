@@ -225,6 +225,105 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
     expect(recoveredInput).toEqual(inputBytes);
   });
 
+  it.each(["uppercase", "hyphenless", "braced"])("rejects a PostgreSQL-equivalent %s onboarding blocker UUID", async variant => {
+    const f = await fixture();
+    await accept(f, await proposal(f));
+    const sourceId = variant === "uppercase" ? f.issueId.toUpperCase()
+      : variant === "hyphenless" ? f.issueId.replaceAll("-", "") : `{${f.issueId}}`;
+    const before = await f.snapshot();
+    await expect(f.authority.execute({ tool: "create_task", callId: randomUUID(), arguments: {
+      title: "Approved child", idempotencyKey: "equivalent-parent", status: "todo", blockedByTaskIds: [sourceId],
+    } })).rejects.toMatchObject({ status: 400, details: { code: "onboarding_first_task_parent_blocker" } });
+    const after = await f.snapshot();
+    expect(after.issues).toEqual(before.issues);
+    expect(after.issueRelations).toEqual(before.issueRelations);
+  });
+
+  it("rejects adding the onboarding source blocker through a child PATCH", async () => {
+    const f = await fixture();
+    await accept(f, await proposal(f));
+    const created = await f.authority.execute({ tool: "create_task", callId: randomUUID(), arguments: {
+      title: "Approved ready child", idempotencyKey: "ready-child", status: "todo",
+    } }) as { task: { id: string } };
+    const before = await f.snapshot();
+    const beforeWakes = await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/issues/${created.task.id}`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "blocked", blockedByIssueIds: [f.issueId.toUpperCase()] }),
+    });
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(400);
+    expect(body).toMatchObject({ details: { code: "onboarding_first_task_parent_blocker" } });
+    const after = await f.snapshot();
+    expect(after.issues).toEqual(before.issues);
+    expect(after.issueRelations).toEqual(before.issueRelations);
+    const priorActivityIds = new Set(before.activity.map(row => row.id));
+    expect(after.activity.filter(row => !priorActivityIds.has(row.id))).toEqual([expect.objectContaining({
+      action: "issue.cross_issue_influence_observed", entityId: created.task.id, runId: f.runId,
+      details: expect.objectContaining({ sourceIssueId: f.issueId, targetIssueId: created.task.id, kind: "update", allowed: true }),
+    })]);
+    expect(await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual(beforeWakes);
+  });
+
+  it("guards native dependency edits without consuming the retry key", async () => {
+    const f = await fixture();
+    await accept(f, await proposal(f));
+    const before = await f.snapshot();
+    const [beforeRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const input = { idempotencyKey: "native-parent-blocker", blockedByTaskIds: [f.issueId.toUpperCase()] };
+    await expect(f.authority.execute({ tool: "set_dependencies", callId: randomUUID(), arguments: input })).rejects.toMatchObject({
+      status: 400, details: { code: "onboarding_first_task_parent_blocker" },
+    });
+    const after = await f.snapshot();
+    expect(after.issues).toEqual(before.issues);
+    expect(after.issueRelations).toEqual(before.issueRelations);
+    const [afterRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(afterRun.resultJson).toEqual(beforeRun.resultJson);
+    await expect(f.authority.execute({ tool: "set_dependencies", callId: randomUUID(), arguments: {
+      ...input, blockedByTaskIds: [f.blockerId],
+    } })).resolves.toMatchObject({ disposition: "applied" });
+  });
+
+  it("keeps blocker edits and clears independent of a newer first-task proposal", async () => {
+    const f = await fixture();
+    await accept(f, await proposal(f));
+    const created = await f.authority.execute({ tool: "create_task", callId: randomUUID(), arguments: {
+      title: "Existing approved child", idempotencyKey: "approved-before-new-proposal", status: "todo",
+    } }) as { task: { id: string } };
+    await proposal(f);
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    for (const blockedByIssueIds of [[f.blockerId], []]) {
+      const response = await fetch(`${server.apiUrl}/api/issues/${created.task.id}`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ blockedByIssueIds }),
+      });
+      expect(response.status, JSON.stringify(await response.json())).toBe(200);
+    }
+    for (const blockedByTaskIds of [[created.task.id], []]) await expect(f.authority.execute({
+      tool: "set_dependencies", callId: randomUUID(), arguments: { idempotencyKey: randomUUID(), blockedByTaskIds },
+    })).resolves.toMatchObject({ disposition: "applied" });
+    expect((await f.snapshot()).issueRelations).toEqual([]);
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+  });
+
+  it("preserves an ordinary run's parent-blocked child update", async () => {
+    const f = await fixture();
+    await server.db.update(issues).set({ originKind: "manual" }).where(eq(issues.id, f.issueId));
+    const created = await f.authority.execute({ tool: "create_task", callId: randomUUID(), arguments: {
+      title: "Ordinary child", idempotencyKey: "ordinary-child", status: "todo",
+    } }) as { task: { id: string } };
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/issues/${created.task.id}`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "blocked", blockedByIssueIds: [f.issueId] }),
+    });
+    expect(response.status, JSON.stringify(await response.json())).toBe(200);
+    expect((await f.snapshot()).issueRelations).toContainEqual(expect.objectContaining({
+      issueId: f.issueId, relatedIssueId: created.task.id, type: "blocks",
+    }));
+  });
+
   it("an explicit Approve/Revise question remains input rather than proposal authority after the human answers", async () => {
     const f = await fixture();
     const issueIds = (await f.snapshot()).issues.map(issue => issue.id).sort();
