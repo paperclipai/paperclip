@@ -8,7 +8,7 @@ import { everydayTasks, SLUGIFY_REQUIREMENTS, SLUGIFY_REVISION } from "../everyd
 import { latestStoryDelivery, type StoryDelivery } from "../everyday-delivery.js";
 import { gradeConnectionGuidanceDecline } from "../connection-guidance-evidence.js";
 import { runPlanRevisionAcceptance } from "../plan-revision-flow.js";
-import { decideProtectedActionThroughUi } from "../protected-action-flow.js";
+import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChecks } from "../protected-action-flow.js";
 import { editCreatedSkillThroughStudio } from "../skill-studio-flow.js";
 import { downloadStoryArtifact, runArtifactOracle } from "../story-artifact.js";
 import { collectRunEvents } from "../run-observations.js";
@@ -175,9 +175,10 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
         await retain("service-decline-grade.json", checks);
         check("decline-truthful-explanation", checks.every(row => row.passed));
       } else {
-        const docs = await context.api.get<Row[]>(`/api/issues/${issue.id}/documents`);
-        const bodies = await Promise.all(docs.map(doc => context.api.get<Row>(`/api/issues/${issue.id}/documents/${encodeURIComponent(doc.key)}`)));
-        check("approved-service-data-used", bodies.some(doc => String(doc.body).includes(service.marker)));
+        await open(issue);
+        const bodies = await readServiceBriefing({ page: context.page, api: context.api, issueId: issue.id });
+        await retain("service-briefing.json", bodies);
+        check("approved-service-data-used", serviceBriefingChecks(bodies, service.marker).every(row => row.passed));
       }
       await open(issue);
     }

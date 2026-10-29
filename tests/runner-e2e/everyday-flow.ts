@@ -1,7 +1,7 @@
 import { stopAndRedirectThroughUi } from "./stop-redirect-flow.js";
 import { downloadStoryArtifact } from "./story-artifact.js";
 import { editCreatedSkillThroughStudio } from "./skill-studio-flow.js";
-import { decideProtectedActionThroughUi } from "./protected-action-flow.js";
+import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChecks } from "./protected-action-flow.js";
 import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS } from "./connection-guidance-cases.js";
 import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, explainsConnectionUnavailable, type ConnectionGuidanceDeclineInput } from "./connection-guidance-evidence.js";
@@ -1474,48 +1474,8 @@ export async function runEverydayFlow(input: Input) {
         "Exactly one approved service call; none after decline.",
       );
       if (caseId === "service-approve") {
-        const docs = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/documents`,
-        );
-        const bodies = await Promise.all(
-          docs.map((d) =>
-            api.get<Row>(
-              `/api/issues/${parent!.id}/documents/${encodeURIComponent(d.key)}`,
-            ),
-          ),
-        );
-        const attachments = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/attachments`,
-        );
-        for (const attachment of attachments.filter(
-          (a) =>
-            /\.(?:md|txt)$/i.test(a.originalFilename ?? a.filename ?? "") ||
-            ["text/markdown", "text/plain"].includes(a.contentType),
-        )) {
-          const url = `/api/attachments/${attachment.id}/content`;
-          const response = await api.request.get(url);
-          if (!response.ok()) continue;
-          await expect(page.locator(`a[href*="${url}"]`).first()).toBeVisible();
-          bodies.push({
-            id: attachment.id,
-            title: attachment.originalFilename ?? attachment.filename,
-            body: await response.text(),
-            source: "delivered-attachment",
-          });
-        }
-        const text = bodies
-          .map((d) => String(d.body ?? d.revision?.body ?? ""))
-          .join("\n");
-        check(
-          "briefing-uses-real-result",
-          text.includes(`SERVICE_${nonce}`),
-          "A delivered issue document or Markdown attachment contains the actual service verification code.",
-        );
-        check(
-          "briefing-includes-page-titles",
-          text.includes("Roadmap") && text.includes("Meeting notes"),
-          "The briefing includes both page titles returned by the service.",
-        );
+        const bodies = await readServiceBriefing({ page, api, issueId: parent!.id });
+        for (const result of serviceBriefingChecks(bodies, `SERVICE_${nonce}`)) check(result.id, result.passed, result.detail);
         ev.documents = bodies;
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }
