@@ -76,7 +76,16 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
   }
 
   if (Object.keys(overlay.runtime).length > 0) {
+    const builtRuntimeConfig = patch.runtimeConfig as Record<string, unknown> | undefined;
     Object.assign(patch, overlay.runtime);
+    const runtimeConfig = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
+    if (builtRuntimeConfig && runtimeConfig) {
+      patch.runtimeConfig = omitUndefinedEntries({
+        ...runtimeConfig,
+        heartbeat: builtRuntimeConfig.heartbeat,
+        debug: builtRuntimeConfig.debug,
+      });
+    }
   }
 
   return patch;

@@ -6,7 +6,7 @@ import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qu
 import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
@@ -615,6 +615,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
+  const runtimeOverlay = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
+  const currentAiConnection = runtimeOverlay ? runtimeOverlay.aiConnection : runtimeConfig.aiConnection;
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -1011,11 +1013,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : "Local";
 
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
-    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+    currentAiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
-  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse(currentAiConnection).data;
   const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
@@ -1206,7 +1208,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
       const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
-        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+        currentAiConnection,
       ).data;
       if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
         && runnerAvailability?.defaultRunner !== "paperclip"
@@ -1305,7 +1307,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
-    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
+    (isCreate || !currentAiConnection) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1829,8 +1831,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
                     // so the old adapter's values don't bleed through via eff()
+                    const binding = aiRuntimeConnectionBindingSchema.safeParse(currentAiConnection).data;
+                    const dropBinding = binding && binding.mode !== "router"
+                      && !isAiConnectionCompatible(binding, t, binding.provider === "openrouter" ? "openrouter/" : undefined);
+                    const { aiConnection: _dropped, ...runtimeWithoutBinding } = runtimeOverlay ?? runtimeConfig;
                     setOverlay((prev) => ({
                       ...prev,
+                      ...(dropBinding ? { runtime: { ...prev.runtime, runtimeConfig: runtimeWithoutBinding } } : {}),
                       adapterType: t,
                       runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
                       adapterConfig: {
@@ -1867,7 +1874,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
-            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse(currentAiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
               mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });

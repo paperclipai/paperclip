@@ -92,6 +92,40 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("sends runtimeConfig without aiConnection when a harness switch clears it", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      ...agent.runtimeConfig,
+      aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" },
+    };
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "opencode_local",
+        adapterConfig: { model: "openai/gpt-5.2-codex" },
+        runtime: { runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } } },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({ heartbeat: { enabled: true, intervalSec: 300 } });
+  });
+
+  it("keeps heartbeat edits when the connection changes in the same save", () => {
+    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        heartbeat: { intervalSec: 600 },
+        runtime: { runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 }, aiConnection: binding } },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 600 },
+      aiConnection: binding,
+    });
+  });
+
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
