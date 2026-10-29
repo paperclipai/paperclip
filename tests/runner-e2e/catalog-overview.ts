@@ -55,7 +55,7 @@ export function parseCatalogOverview(value: unknown): CatalogOverview {
   });
   if (new Set(rows.map(row => row.scenarioId)).size !== 244 || new Set(rows.map(row => row.scenarioId.split(".")[0])).size !== 35) throw new Error("Duplicate or incomplete catalog metadata");
   for (const row of rows) {
-    if ((row.mainOutcome !== "unmeasured") !== (row.executionRecord === "main-measured") || (row.allowance !== "unknown" && (row.allowance === "unused-initial") !== (row.executionRecord === "never-run"))
+    if ((row.mainOutcome !== "unmeasured") !== (row.executionRecord === "main-measured") || (row.allowance === "unused-initial") !== (row.executionRecord === "never-run")
       || (row.latestCandidateOutcome !== undefined && ["never-run", "unknown"].includes(row.executionRecord))) throw new Error("Inconsistent recorded execution scope");
   }
   const measured = rows.filter(row => row.mainOutcome !== "unmeasured").length;

@@ -73,6 +73,10 @@ describe("display-only catalog overview", () => {
     expect(doc.querySelector('.summary')!.textContent).toContain('25Recorded feature-work passes');
     expect(() => parseCatalogOverview({...data,accounting:{...data.accounting,exhaustedFinals:104}})).toThrow('Inconsistent catalog accounting');
   });
+  it("rejects unknown allowance when execution is positively known never-run", () => {
+    const data=fixture(); data.rows[169]!.allowance="unknown";
+    expect(() => parseCatalogOverview(data)).toThrow('Inconsistent recorded execution scope');
+  });
   it("shows a later candidate pass without promoting the recorded main failure", () => {
     const data=fixture(); data.rows[25]!.latestCandidateOutcome="passed";
     const doc=new JSDOM(page(data)).window.document,row=doc.getElementById('catalog-'+data.rows[25]!.scenarioId)!;
