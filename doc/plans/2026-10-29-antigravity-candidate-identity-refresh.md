@@ -36,7 +36,7 @@ and its macOS ARM64 native closure is
 `sha256:044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a`.
 Earlier `.4` declarations, artifacts and attempt grades remain immutable.
 
-The [recorded setup and follow-up conversion](2026-10-29-antigravity-journey-to-eval.md)
+The [recorded setup and follow-up evidence](2026-10-28-antigravity-integration.md)
 retains the fresh `.5` additional-agent setup, instruction-only file proof and
 same-task second turn. Independent actual bytes, exact low model, native
 conversation identity, accepted/committed Done lineage and physical retirement

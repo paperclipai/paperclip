@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { inflateRawSync } from "node:zlib";
@@ -16,9 +16,101 @@ const RUNTIME_FILES = ["agy_acp_server.par", "localharness_external"];
 const SHA256 = /^[a-f0-9]{64}$/;
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
+function assertTrustedOwner(stat) {
+  const uid = process.getuid?.();
+  if (!Number.isInteger(uid) || !Number.isInteger(stat.uid) || (stat.uid !== uid && stat.uid !== 0)) {
+    throw new Error("Antigravity assets have an untrusted filesystem owner");
+  }
+}
+
+/** Resolve parent aliases once, then use only the checked canonical path.
+ * A root-owned sticky temporary directory protects each owned child entry. */
+async function ownedDirectory(directory, { privateRoot = false, parentAlias = false } = {}) {
+  const original = await lstat(directory);
+  if ((!original.isDirectory() || original.isSymbolicLink()) && !(parentAlias && original.isSymbolicLink())) {
+    throw new Error("Antigravity closure must be a real directory with private write access");
+  }
+  const canonical = await realpath(directory);
+  let current = canonical;
+  let root;
+  while (true) {
+    const stat = await lstat(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Antigravity assets have an unsafe ancestor directory");
+    assertTrustedOwner(stat);
+    if (!root) root = stat;
+    const trustedSticky = stat.uid === 0 && (stat.mode & 0o1000) !== 0;
+    if ((stat.mode & 0o022) && !(trustedSticky && !(privateRoot && current === canonical))) {
+      throw new Error("Antigravity assets have an unsafe ancestor with shared write access; closures require private write access");
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  if (!original.isSymbolicLink() && (root.dev !== original.dev || root.ino !== original.ino)) {
+    throw new Error("Antigravity asset directory changed during ownership verification");
+  }
+  return { directory: canonical, stat: root };
+}
+
+function assertOwnedFile(stat, maximum) {
+  if (!stat.isFile() || stat.nlink !== 1) throw new Error("Antigravity closure contains links or special files");
+  assertTrustedOwner(stat);
+  if (stat.mode & 0o7022) throw new Error("Antigravity closure contains unsafe file permissions");
+  if (stat.size > maximum) throw new Error("Antigravity asset exceeds its file size limit");
+}
+
+async function openOwnedFile(path, maximum) {
+  const parent = await ownedDirectory(dirname(path), { parentAlias: true });
+  const canonical = join(parent.directory, basename(path));
+  const before = await lstat(canonical);
+  assertOwnedFile(before, maximum);
+  const file = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    assertOwnedFile(stat, maximum);
+    if (stat.dev !== before.dev || stat.ino !== before.ino) throw new Error("Antigravity asset changed while opening");
+    return { file, path: canonical, before: stat };
+  } catch (error) { await file.close(); throw error; }
+}
+
+async function readOwnedFile(path, maximum) {
+  const { file, before } = await openOwnedFile(path, maximum);
+  try {
+    const bytes = await file.readFile();
+    const after = await file.stat();
+    assertOwnedFile(after, maximum);
+    if (bytes.length > maximum || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+      throw new Error("Antigravity asset changed while reading");
+    }
+    return bytes;
+  } finally { await file.close(); }
+}
+
+/** Reject an unsafe existing ancestor before creating even a staging directory. */
+async function ownedDestination(destination) {
+  const missing = [];
+  let ancestor = dirname(destination);
+  while (true) {
+    try { await lstat(ancestor); break; }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missing.push(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+  let { directory } = await ownedDirectory(ancestor, { parentAlias: true });
+  for (const name of missing.reverse()) {
+    directory = join(directory, name);
+    try { await mkdir(directory, { mode: 0o700 }); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
+    directory = (await ownedDirectory(directory)).directory;
+  }
+  return join(directory, basename(destination));
+}
+
 /** Only the checked-in declaration selects downloads and runtime contents. */
 export async function antigravityDistribution(platform = process.platform, architecture = process.arch) {
-  const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
+  const manifest = JSON.parse((await readOwnedFile(MANIFEST_PATH, 64 * 1024)).toString("utf8"));
   const item = manifest.platforms?.[`${platform}-${architecture}`];
   if (manifest.schema !== "paperclip.antigravity_distribution.v1" || !/^\d+\.\d+\.\d+$/.test(manifest.version)) throw new Error("Invalid Antigravity distribution declaration");
   if (!item) throw new Error(`Antigravity has no pinned distribution for ${platform}/${architecture}`);
@@ -30,15 +122,14 @@ export async function antigravityDistribution(platform = process.platform, archi
     if (!Array.isArray(entries) || entries.length !== RUNTIME_FILES.length || entries.some((entry, index) => entry.path !== RUNTIME_FILES[index] || !SHA256.test(entry.sha256) || !Number.isSafeInteger(entry.size) || entry.size < 1 || entry.executable !== true) || digest(JSON.stringify(entries)) !== sha256) throw new Error("Invalid Antigravity complete execution closure pins");
   }
   if (item.patchVersion !== ANTIGRAVITY_PATCH_VERSION || !SHA256.test(item.admissionSourceSha256)) throw new Error("Antigravity distribution must pin its owned native admission patch");
-  const sourceStat = await lstat(ADMISSION_SOURCE_PATH);
-  if (!sourceStat.isFile() || sourceStat.nlink !== 1 || sourceStat.size > 64 * 1024 || digest(await readFile(ADMISSION_SOURCE_PATH)) !== item.admissionSourceSha256) throw new Error("Antigravity native admission patch source digest mismatch");
+  if (digest(await readOwnedFile(ADMISSION_SOURCE_PATH, 64 * 1024)) !== item.admissionSourceSha256) throw new Error("Antigravity native admission patch source digest mismatch");
   return { ...item, version: manifest.version, platform, architecture };
 }
 
 /** Hash both native binaries; a cached local manifest never establishes trust. */
 export async function antigravityDistributionClosure(directory) {
-  const root = await lstat(directory);
-  if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o022)) throw new Error("Antigravity closure must be a real directory with private write access");
+  const root = await ownedDirectory(directory, { privateRoot: true });
+  directory = root.directory;
   const names = (await readdir(directory)).sort();
   const files = names.filter(name => name !== ANTIGRAVITY_TREE_MANIFEST);
   if (JSON.stringify(files) !== JSON.stringify(RUNTIME_FILES)) throw new Error("Antigravity closure must contain exactly both native binaries");
@@ -46,31 +137,34 @@ export async function antigravityDistributionClosure(directory) {
   const entries = [];
   for (const name of names) {
     const path = join(directory, name);
-    const before = await lstat(path);
-    if (!before.isFile() || before.nlink !== 1) throw new Error("Antigravity closure contains links or special files");
-    if (before.mode & 0o7022) throw new Error("Antigravity closure contains unsafe file permissions");
-    if (name === ANTIGRAVITY_TREE_MANIFEST) {
-      if (before.size > 64 * 1024) throw new Error("Antigravity local closure record exceeds size limit");
-      continue;
-    }
-    bytes += before.size;
-    if (bytes > MAX_TREE_BYTES) throw new Error("Antigravity closure exceeds size limit");
-    const hash = createHash("sha256");
-    let length = 0;
-    for await (const chunk of createReadStream(path)) { hash.update(chunk); length += chunk.length; }
-    const after = await lstat(path);
-    if (before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || length !== after.size || !after.isFile() || after.nlink !== 1) throw new Error("Antigravity closure changed while being hashed");
-    entries.push({ path: name, sha256: hash.digest("hex"), size: length, executable: Boolean(after.mode & 0o111) });
+    const maximum = name === ANTIGRAVITY_TREE_MANIFEST ? 64 * 1024 : MAX_TREE_BYTES;
+    const { file, before } = await openOwnedFile(path, maximum);
+    try {
+      if (name === ANTIGRAVITY_TREE_MANIFEST) continue;
+      bytes += before.size;
+      if (bytes > MAX_TREE_BYTES) throw new Error("Antigravity closure exceeds size limit");
+      const hash = createHash("sha256");
+      let length = 0;
+      for await (const chunk of file.createReadStream({ autoClose: false })) { hash.update(chunk); length += chunk.length; }
+      const after = await file.stat();
+      const current = await lstat(path);
+      assertOwnedFile(after, maximum);
+      if (before.ino !== current.ino || before.dev !== current.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || length !== after.size) throw new Error("Antigravity closure changed while being hashed");
+      entries.push({ path: name, sha256: hash.digest("hex"), size: length, executable: Boolean(after.mode & 0o111) });
+    } finally { await file.close(); }
   }
+  const current = await ownedDirectory(directory, { privateRoot: true });
+  if (current.stat.dev !== root.stat.dev || current.stat.ino !== root.stat.ino) throw new Error("Antigravity closure directory changed while being hashed");
   return { entries, sha256: digest(JSON.stringify(entries)) };
 }
 
 export async function verifyAntigravityDistribution(directory, distribution) {
+  directory = (await ownedDirectory(directory, { privateRoot: true })).directory;
   const pinned = await antigravityDistribution(distribution?.platform, distribution?.architecture);
   if (distribution && !isDeepStrictEqual(distribution, pinned)) throw new Error("Antigravity runtime verification requires the checked-in distribution pins");
   const closure = await antigravityDistributionClosure(directory);
   if (closure.sha256 !== pinned.closureSha256) throw new Error("Antigravity full execution closure digest mismatch");
-  const record = JSON.parse(await readFile(join(directory, ANTIGRAVITY_TREE_MANIFEST), "utf8"));
+  const record = JSON.parse((await readOwnedFile(join(directory, ANTIGRAVITY_TREE_MANIFEST), 64 * 1024)).toString("utf8"));
   if (!isDeepStrictEqual(record, closureRecord(pinned, closure))) throw new Error("Antigravity cached closure record does not match the checked-in pins");
   return closure;
 }
@@ -130,17 +224,15 @@ export function antigravityArchiveEntries(archive) {
 export async function materializePinnedAntigravityDistribution(options = {}) {
   const distribution = await antigravityDistribution(options.platform, options.architecture);
   if (!options.destination) throw new Error("Antigravity materialization requires an explicit destination");
-  const destination = resolve(options.destination);
-  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  const destination = await ownedDestination(resolve(options.destination));
+  const parent = await ownedDirectory(dirname(destination));
   try { await lstat(destination); throw new Error("Antigravity destination already exists; refusing to overwrite it"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   const temporary = await mkdtemp(join(dirname(destination), ".antigravity-install-"));
   try {
     let archive;
     if (options.archivePath) {
-      const stat = await lstat(options.archivePath);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_ARCHIVE_BYTES) throw new Error("Antigravity archive must be a bounded regular file");
-      archive = await readFile(options.archivePath);
+      archive = await readOwnedFile(options.archivePath, MAX_ARCHIVE_BYTES);
     } else {
       const response = await fetch(distribution.url, { redirect: "error", signal: AbortSignal.timeout(180_000) });
       if (!response.ok || !response.body) throw new Error(`Antigravity archive download failed: ${response.status}`);
@@ -172,6 +264,8 @@ export async function materializePinnedAntigravityDistribution(options = {}) {
     if (closure.sha256 !== distribution.closureSha256) throw new Error("Antigravity full execution closure digest mismatch");
     await writeFile(join(patched, ANTIGRAVITY_TREE_MANIFEST), `${JSON.stringify(closureRecord(distribution, closure))}\n`, { mode: 0o400, flag: "wx" });
     for (const entry of closure.entries) await chmod(join(patched, entry.path), 0o500);
+    const currentParent = await ownedDirectory(dirname(destination));
+    if (currentParent.stat.dev !== parent.stat.dev || currentParent.stat.ino !== parent.stat.ino) throw new Error("Antigravity cache parent changed before publication");
     await rename(patched, destination);
     return { ...distribution, destination, executable: join(destination, distribution.executable) };
   } finally { await rm(temporary, { recursive: true, force: true }); }

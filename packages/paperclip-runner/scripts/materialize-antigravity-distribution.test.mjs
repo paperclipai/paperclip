@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,8 +51,8 @@ function zip(entries = files) {
   return Buffer.concat([...locals, central, end]);
 }
 
-async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, archive = zip(), patchSuffix = "" } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-provision-test-"));
+async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, archive = zip(), patchSuffix = "", baseDirectory = tmpdir(), changeParentDuringPatch = false } = {}) {
+  const root = await realpath(await mkdtemp(join(baseDirectory, "paperclip-antigravity-provision-test-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const scripts = join(root, "scripts");
   await mkdir(scripts);
@@ -61,7 +61,7 @@ async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, 
   const admissionSourceSha256 = hash(admissionSource);
   await writeFile(join(scripts, "patch-antigravity-runtime.admission.py"), admissionSource);
   await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), `
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1';
 export async function patchAntigravityRuntime({source,destination}) {
@@ -71,6 +71,7 @@ export async function patchAntigravityRuntime({source,destination}) {
   const content=await readFile(join(source,name));
   await writeFile(join(destination,name),name==='agy_acp_server.par'?Buffer.concat([content,Buffer.from(${JSON.stringify(patchSuffix)})]):content,{mode:0o500});
  }
+ ${changeParentDuringPatch ? `await chmod(${JSON.stringify(join(root, "home/.paperclip/runtimes/antigravity/darwin-arm64"))},0o777);` : ""}
  return {version:ANTIGRAVITY_PATCH_VERSION,admissionSourceSha256:${JSON.stringify(admissionSourceSha256)}};
 }
 `);
@@ -249,4 +250,75 @@ test("cached assets with shared write access and linked runtime roots fail close
   await chmod(destination, 0o777);
   await assert.rejects(provision(), /private write access/);
   await chmod(destination, 0o700);
+});
+
+test("a private cached closure is rejected when another user could replace its parent entry", async t => {
+  const { provision, destination } = await fixture(t);
+  await provision();
+  const parent = join(destination, "..");
+  await chmod(parent, 0o777);
+  try { await assert.rejects(provision(), /ancestor.*write|unsafe.*ancestor/); }
+  finally { await chmod(parent, 0o700); }
+});
+
+test("publication refuses a replaceable cache parent before patching or creating a temporary installation", async t => {
+  const { api, options, destination, root } = await fixture(t);
+  const parent = join(destination, "..");
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  await chmod(parent, 0o777);
+  try {
+    await assert.rejects(api.materializePinnedAntigravityDistribution(options), /ancestor.*write|unsafe.*ancestor/);
+    await assert.rejects(readFile(join(root, "patch.called")), { code: "ENOENT" });
+    assert.deepEqual(await readdir(parent), []);
+  } finally { await chmod(parent, 0o700); }
+});
+
+test("package pin sources beneath a replaceable ancestor cannot authorize installation", async t => {
+  const { api, options, root } = await fixture(t);
+  await chmod(root, 0o777);
+  try { await assert.rejects(api.materializePinnedAntigravityDistribution(options), /ancestor.*write|unsafe.*ancestor/); }
+  finally { await chmod(root, 0o700); }
+});
+
+test("canonical parent aliases keep a private owned installation valid", async t => {
+  const { api, options, distribution, root } = await fixture(t);
+  const home = join(root, "private-home");
+  await mkdir(home, { mode: 0o700 });
+  const alias = join(root, "home-alias");
+  await symlink(home, alias);
+  const destination = join(alias, "cache", distribution.closureSha256);
+  await api.materializePinnedAntigravityDistribution({ ...options, destination });
+  assert.equal((await api.verifyAntigravityDistribution(destination, distribution)).sha256, distribution.closureSha256);
+});
+
+test("a root-owned sticky temporary ancestor protects the private installation", async t => {
+  const temporary = await realpath("/tmp");
+  const stat = await lstat(temporary);
+  if (stat.uid !== 0 || !(stat.mode & 0o1000)) return t.skip("requires the host's root-owned sticky temporary directory");
+  const { provision, api, destination, distribution } = await fixture(t, { baseDirectory: "/tmp" });
+  await provision();
+  assert.equal((await api.verifyAntigravityDistribution(destination, distribution)).sha256, distribution.closureSha256);
+});
+
+test("source and cached ownership are checked for the current execution principal", async t => {
+  const { api, provision, destination } = await fixture(t);
+  await provision();
+  const getuid = process.getuid;
+  if (!getuid || getuid() === 0) return t.skip("requires a non-root principal to model foreign ownership without changing filesystem privileges");
+  // Keep the real kernel metadata; model a different verifier principal rather
+  // than chowning files or running another user's process during the test.
+  process.getuid = () => getuid() + 1;
+  try {
+    await assert.rejects(api.antigravityDistributionClosure(destination), /untrusted filesystem owner/);
+    await assert.rejects(api.antigravityDistribution("darwin", "arm64"), /untrusted filesystem owner/);
+  } finally { process.getuid = getuid; }
+});
+
+test("a parent made replaceable while patching cannot receive a published runtime", async t => {
+  const { api, options, destination } = await fixture(t, { changeParentDuringPatch: true });
+  try {
+    await assert.rejects(api.materializePinnedAntigravityDistribution(options), /ancestor.*write|unsafe.*ancestor/);
+    await assert.rejects(lstat(destination), { code: "ENOENT" });
+    assert.deepEqual(await readdir(join(destination, "..")), []);
+  } finally { await chmod(join(destination, ".."), 0o700); }
 });
