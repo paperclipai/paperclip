@@ -50,6 +50,34 @@ async function readOrigin(cwd: string): Promise<string | null> {
   }).catch(() => null);
 }
 
+const DEFAULT_GIT_PORTS = new Set(["", "22", "80", "443", "9418"]);
+
+/** One repository written as HTTPS, ssh://, or scp-style SSH has one identity. */
+function repositoryIdentity(value: string): string {
+  const raw = value.trim();
+  let host: string;
+  let repoPath: string;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]{2,}):(?!\/\/)(.+)$/.exec(raw);
+  if (scp && !raw.includes("://")) {
+    host = scp[1]!;
+    repoPath = scp[2]!;
+  } else {
+    let parsed: URL;
+    try { parsed = new URL(raw); } catch { return raw; }
+    if (!["https:", "http:", "ssh:", "git+ssh:", "git:"].includes(parsed.protocol) || !parsed.hostname) return raw;
+    host = DEFAULT_GIT_PORTS.has(parsed.port) ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
+    repoPath = parsed.pathname;
+  }
+  host = host.toLowerCase();
+  repoPath = repoPath.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/, "");
+  // GitHub owner and repository names are case-insensitive.
+  return `${host}/${host === "github.com" ? repoPath.toLowerCase() : repoPath}`;
+}
+
+function isRecordedRepository(origin: string | null, recorded: string): boolean {
+  return origin !== null && repositoryIdentity(origin) === repositoryIdentity(recorded);
+}
+
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
   const directory = await exec("git", ["rev-parse", "--path-format=absolute", flag], {
     cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
@@ -104,7 +132,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   projectId: string | null;
   explicitProjectWorkspaceId: string | null;
   workspace: SourceWorkspace;
-  boundProjectWorkspace: { id: string; companyId: string; projectId: string; cwd: string | null } | null;
+  boundProjectWorkspace: { id: string; companyId: string; projectId: string; cwd: string | null; repoUrl?: string | null } | null;
   candidateBaseCwds: string[];
   managedSourceRoot: string;
   materializeOriginalRepository?: () => Promise<string>;
@@ -139,12 +167,20 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     return new Set(candidates.filter((value): value is string => value !== null));
   };
   const knownRoots = await roots();
+  let boundLocalOwner: string | null = null;
   if (binding?.cwd) {
     // A configured local path may be a repository subfolder or another linked
     // checkout. Resolve its Git owner as the old restore path already did.
-    const localOwner = await resolveBoundLocalOwner(binding.cwd);
-    if (localOwner) knownRoots.add(localOwner);
+    boundLocalOwner = await resolveBoundLocalOwner(binding.cwd);
+    if (boundLocalOwner) knownRoots.add(boundLocalOwner);
   }
+  // The recorded URL is copied from the bound project configuration. While
+  // that configuration is unchanged, its own checkout is the recorded source
+  // even if its origin names the remote through an SSH host alias. Every other
+  // owner must match the stored origin's repository identity.
+  const recordedRepoUrl = workspace.repoUrl?.trim() || null;
+  const recordedByBinding = (owner: string) => Boolean(recordedRepoUrl && boundLocalOwner
+    && owner === boundLocalOwner && binding?.repoUrl?.trim() === recordedRepoUrl);
   const existing = await canonicalDirectory(cwd);
   const sourceEntry = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
@@ -163,7 +199,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !recordedByBinding(owner) && !isRecordedRepository(await readOrigin(owner), workspace.repoUrl)) {
         repositoryMismatch = true;
         continue;
       }
@@ -181,7 +217,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl && !isRecordedRepository(await readOrigin(candidate), workspace.repoUrl)) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
@@ -194,7 +230,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner) && isRecordedRepository(await readOrigin(owner), workspace.repoUrl)) return owner;
   }
   fail(workspace, "source_repository_unavailable");
 }

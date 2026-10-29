@@ -118,6 +118,57 @@ describe("persisted Git workspace source", () => {
     } } });
   });
 
+  it("accepts the bound project checkout when its origin spells the configured remote differently", async () => {
+    const { original, input } = await fixture();
+    // The project records an SSH host alias; the checkout's origin uses the canonical host.
+    const configured = "github.com-alias:example/original.git";
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "git@github.com:example/original.git"]);
+    expect(await resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: configured, projectWorkspaceId: "bound" }, candidateBaseCwds: [],
+      boundProjectWorkspace: { id: "bound", companyId: "company", projectId: "project", cwd: original, repoUrl: configured },
+    })).toBe(original);
+  });
+
+  it.each([
+    ["git@github.com:Example/Original.git", "https://github.com/example/original"],
+    ["ssh://git@github.com/example/original.git", "https://github.com/example/original.git/"],
+    ["https://github.com/example/original.git", "git@github.com:example/original"],
+  ])("accepts origin %s for recorded %s as the same repository", async (origin, recorded) => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    expect(await resolvePersistedGitWorkspaceSource({ ...input, workspace: { ...input.workspace, repoUrl: recorded } })).toBe(original);
+  });
+
+  it.each([
+    ["git@github.com:example/other.git", "https://github.com/example/original"],
+    ["git@gitlab.com:example/original.git", "https://github.com/example/original"],
+    ["https://example.invalid:8443/original.git", "https://example.invalid/original.git"],
+  ])("rejects origin %s for recorded %s", async (origin, recorded) => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    await expect(resolvePersistedGitWorkspaceSource({ ...input, workspace: { ...input.workspace, repoUrl: recorded } }))
+      .rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } } });
+  });
+
+  it("still rejects a differently spelled origin once the bound project configuration changed", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "git@github.com:example/original.git"]);
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: "github.com-alias:example/original.git", projectWorkspaceId: "bound" }, candidateBaseCwds: [],
+      boundProjectWorkspace: { id: "bound", companyId: "company", projectId: "project", cwd: original,
+        repoUrl: "https://example.invalid/other.git" },
+    })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } } });
+  });
+
+  it("does not extend the bound configuration match to another linked owner", async () => {
+    const { original, replacement, input } = await fixture();
+    const configured = "github.com-alias:example/original.git";
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: configured, projectWorkspaceId: "bound" }, candidateBaseCwds: [original],
+      boundProjectWorkspace: { id: "bound", companyId: "company", projectId: "project", cwd: replacement, repoUrl: configured },
+    })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } } });
+  });
+
   it("refuses an independent clone masquerading as the selected linked worktree", async () => {
     const { root, original, input } = await fixture();
     const clone = path.join(root, "clone");
