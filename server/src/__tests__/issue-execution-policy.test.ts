@@ -2535,12 +2535,32 @@ describe("board holds on a pending review cycle", () => {
       }
     });
 
-    it("keeps the saved reviewer when the blocking request assigns a non-participant", () => {
+    it("rejects blocking the review while reassigning it outside the stage", () => {
+      for (const current of ["in_review", "blocked"]) {
+        for (const assignee of [
+          { assigneeAgentId: coderAgentId, assigneeUserId: null },
+          { assigneeAgentId: null, assigneeUserId: null },
+        ]) {
+          expect(() =>
+            applyIssueExecutionPolicyTransition({
+              issue: issueWith(current, count),
+              policy,
+              requestedStatus: "blocked",
+              requestedAssigneePatch: assignee,
+              actor: { userId: boardUserId },
+              allowBoardOverride: true,
+            }),
+          ).toThrow("participant of the current review stage");
+        }
+      }
+    });
+
+    it("accepts blocking the review with the current reviewer echoed as assignee", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: issueWith("in_review", count),
         policy,
         requestedStatus: "blocked",
-        requestedAssigneePatch: { assigneeAgentId: coderAgentId, assigneeUserId: null },
+        requestedAssigneePatch: { assigneeAgentId: qaAgentId, assigneeUserId: null },
         actor: { userId: boardUserId },
         allowBoardOverride: true,
       });

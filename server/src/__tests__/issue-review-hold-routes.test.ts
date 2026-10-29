@@ -157,6 +157,15 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       );
   }
 
+  async function allWakes(agentId: string) {
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    return rows.filter((row) => !row.payload?.retryOfRunId);
+  }
+
+  async function settleWakes() {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
   describe.each([1, 2])("with changesRequestedCount %i", (count) => {
     it("keeps the cycle through a board blocked hold and an unrelated edit, then restores the same reviewer", async () => {
       const seeded = await seedHeldReview(count, "in_review");
@@ -225,11 +234,17 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
         reviewRequest: null,
         monitor: null,
       });
+      await settleWakes();
+      expect(await allWakes(seeded.replacementAgentId)).toHaveLength(0);
+      expect(await allWakes(seeded.reviewerAgentId)).toHaveLength(0);
 
       const edit = await request(seeded.board)
         .patch(`/api/issues/${seeded.issueId}`)
         .send({ priority: "high" });
       expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+      await settleWakes();
+      expect(await allWakes(seeded.replacementAgentId)).toHaveLength(0);
+      expect(await allWakes(seeded.reviewerAgentId)).toHaveLength(0);
 
       const restore = await request(seeded.board)
         .patch(`/api/issues/${seeded.issueId}`)
@@ -247,7 +262,28 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       await vi.waitFor(async () => {
         expect(await reviewWakes(seeded.replacementAgentId)).toHaveLength(1);
       });
-      expect(await reviewWakes(seeded.reviewerAgentId)).toHaveLength(0);
+      await settleWakes();
+      expect(await allWakes(seeded.replacementAgentId)).toHaveLength(1);
+      expect(await reviewWakes(seeded.replacementAgentId)).toHaveLength(1);
+      expect(await allWakes(seeded.reviewerAgentId)).toHaveLength(0);
+    });
+
+    it("rejects blocking the review while reassigning it outside the stage without writing", async () => {
+      const seeded = await seedHeldReview(count, "in_review");
+
+      const res = await request(seeded.board)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({
+          status: "blocked",
+          assigneeAgentId: null,
+          unblockDescriptor: { owner: "board", action: "Restore the reviewer" },
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      const row = await readIssue(seeded.issueId);
+      expect(row.status).toBe("in_review");
+      expect(row.assigneeAgentId).toBe(seeded.reviewerAgentId);
+      expect(row.executionState).toEqual(seeded.executionState);
     });
 
     it.each(["todo", "in_progress"])("rejects a board PATCH to %s on the held review without writing", async (status) => {

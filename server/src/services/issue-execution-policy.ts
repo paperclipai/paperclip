@@ -648,10 +648,16 @@ function clearExecutionStatePatch(input: {
 function boardPendingStatusOverride(
   patch: Record<string, unknown>,
   requestedStatus: string,
-  heldState: IssueExecutionState | null,
+  hold: { state: IssueExecutionState | null; reassignedOutsideStage: boolean },
 ): TransitionResult {
   if (requestedStatus === "blocked") {
-    if (heldState) patch.executionState = heldState;
+    if (hold.reassignedOutsideStage) {
+      throw unprocessable(
+        "A pending review can be blocked only while keeping its assignee or moving it to another participant of the current review stage.",
+        { code: "pending_review_hold_assignee" },
+      );
+    }
+    if (hold.state) patch.executionState = hold.state;
     return { patch };
   }
   if (requestedStatus === "done" || requestedStatus === "cancelled") {
@@ -766,6 +772,11 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(explicitAssignee, currentParticipant)
         ? explicitAssignee
         : null;
+    const reassignedOutsideStage =
+      requestedAssigneePatchProvided &&
+      !replacementReviewer &&
+      !principalsEqual(explicitAssignee, currentParticipant) &&
+      (explicitAssignee ? !principalsEqual(explicitAssignee, currentAssignee) : currentAssignee !== null);
     const heldState = replacementReviewer
       ? buildPendingState({
           previous: existingState,
@@ -904,7 +915,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         requestedStatus !== "in_review" &&
         requestedStatus !== "in_progress"
       ) {
-        return boardPendingStatusOverride(patch, requestedStatus, heldState);
+        return boardPendingStatusOverride(patch, requestedStatus, { state: heldState, reassignedOutsideStage });
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
@@ -970,7 +981,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
-        return boardPendingStatusOverride(patch, requestedStatus, heldState);
+        return boardPendingStatusOverride(patch, requestedStatus, { state: heldState, reassignedOutsideStage });
       }
       // Assignee-only override: the issue stays in_review, so clearing the
       // execution state would strand it with no participant or return

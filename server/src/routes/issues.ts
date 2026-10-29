@@ -15696,7 +15696,9 @@ export function issueRoutes(
         existing.executionState,
       );
       const nextExecutionState = parseIssueExecutionState(issue.executionState);
-      const executionStageWakeup = buildExecutionStageWakeup({
+      const reviewHeld =
+        issue.status === "blocked" && nextExecutionState?.status === "pending";
+      const executionStageWakeup = reviewHeld ? null : buildExecutionStageWakeup({
         issueId: issue.id,
         previousState: previousExecutionState,
         nextState: nextExecutionState,
@@ -15792,6 +15794,7 @@ export function issueRoutes(
         if (executionStageWakeup && deferWakeForGoal !== true) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
+          !reviewHeld &&
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
