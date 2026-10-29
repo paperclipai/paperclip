@@ -41,9 +41,9 @@ const scope = {
 };
 const force = process.env.CI_FORCE_TASKS === "true" || uncacheable;
 const result = spawnSync("pnpm", ["exec", "turbo", "run", execution.target,
-  "--root-turbo-json", runtimeConfig, "--summarize", "--cache=local:rw", "--cache-dir=.turbo/cache",
+  "--root-turbo-json", runtimeConfig, "--summarize", force ? "--cache=" : "--cache=local:rw", "--cache-dir=.turbo/cache",
   ...(process.env.CI_TASK_DRY_RUN === "true" ? ["--dry=json"] : []),
-  ...(force ? ["--force"] : []), "--", ...execution.args], {
+  "--", ...execution.args], {
   stdio: "inherit",
   env: { ...process.env, TURBO_TELEMETRY_DISABLED: "1",
     CI_TASK_CACHE_SCOPE: createHash("sha256").update(JSON.stringify(scope)).digest("hex") },
