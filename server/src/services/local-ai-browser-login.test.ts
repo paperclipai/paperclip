@@ -60,6 +60,27 @@ function resolveFixtureCodexCommand(home: string): string {
   return result.command;
 }
 
+describe("native Windows browser subscription login", () => {
+  it.each(["anthropic", "openai"] as const)("reports the unsupported host before starting %s login", async (provider) => {
+    targetPlatform("win32", "x64");
+    root = await mkdtemp(path.join(os.tmpdir(), "paperclip-browser-login-"));
+    const home = path.join(root, "unused-credential-home");
+    process.env.PATH = path.join(root, "private-no-python-or-provider-cli");
+
+    const login = startLocalBrowserLogin(provider, home);
+
+    expect(login.outcome).toBe("failure");
+    expect(login.error).toMatch(/native Windows.*Run Paperclip.*inside WSL2/);
+    expect(login.authorizationUrl).toBeUndefined();
+    expect(login.code).toBeUndefined();
+    expect(login.submitCode).toBeUndefined();
+    expect(resolveCodexCommand).not.toHaveBeenCalled();
+    expect(JSON.stringify(login)).not.toContain(root);
+    await expect(stat(home)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(() => login.abort()).not.toThrow();
+  });
+});
+
 describe.skipIf(process.platform === "win32")("local browser subscription login", () => {
   it.each(["native", "arm32", "musl", "glibc-2.38", "glibc-3.0", "unknown"])("uses the selected Codex command with its credential home and ambient HOME/cwd (%s)", async platform => {
     const legacy = platform === "arm32";

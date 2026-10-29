@@ -472,6 +472,8 @@ authentication with a live account.
 
 ### Local sign-in checks
 
+The local Claude and Codex browser sign-in transport requires a Unix pseudo-terminal. A native Windows Paperclip server reports this limitation before starting the provider process. Installing Python on Windows does not provide the required `pty` module. For subscription browser sign-in on a Windows PC, run both the Paperclip server and the provider CLI inside WSL2, or use a Linux or macOS server. A Windows browser can still access that server. This limitation applies to this local sign-in transport, not to every adapter execution mode or API-key connection.
+
 Local subscription screens share the same credential check on entry and when the
 window regains focus. Waiting screens also poll until sign-in verifies. A successful
 check shows the account is signed in; only **Connect** creates or reconnects the grant.

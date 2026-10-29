@@ -48,6 +48,13 @@ sys.exit(os.waitstatus_to_exitcode(status))
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: string): LocalBrowserLoginState {
+  if (process.platform === "win32") {
+    return {
+      outcome: "failure",
+      error: "Browser sign-in is not supported on a native Windows Paperclip server. Run Paperclip and the provider CLI inside WSL2 or on a Linux or macOS host, then start sign-in again.",
+      abort() {},
+    };
+  }
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
