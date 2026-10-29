@@ -19,6 +19,7 @@ const blockedViewDefaults = {
   showStatusColumn: true,
   showIdentifierColumn: true,
   showUpdatedColumn: true,
+  showResponsibleColumn: true,
 };
 
 function attention(

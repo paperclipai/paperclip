@@ -2601,6 +2601,7 @@ export function Inbox() {
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
+          showResponsibleColumn={visibleIssueColumnSet.has("assignee") && availableIssueColumnSet.has("assignee")}
         />
       ) : null}
 
