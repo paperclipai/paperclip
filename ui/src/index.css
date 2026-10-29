@@ -537,7 +537,6 @@
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
-  --profile-popover-min-height: 304px;
   --profile-popover-header-height: 76px;
   --profile-popover-row-height: 38px;
   --profile-popover-row-gap: 9px;
