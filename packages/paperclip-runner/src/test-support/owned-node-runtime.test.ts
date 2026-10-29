@@ -40,3 +40,16 @@ it("copies the real host Node bytes without executing the runtime", async () => 
   expect((await lstat(owned.executable)).isFile()).toBe(true);
   if (process.platform !== "win32") expect((await stat(owned.executable)).mode & 0o022).toBe(0);
 });
+
+it("rejects a broken adjacent library directory instead of returning an incomplete closure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "owned-node-test-")); roots.push(root);
+  const bin = join(root, "host", "bin"), lib = join(root, "host", "lib");
+  await mkdir(bin, { recursive: true });
+  const source = join(bin, "node");
+  await writeFile(source, "synthetic Node artifact");
+  await writeFile(lib, "a file cannot be the library directory");
+  await expect(copyOwnedNodeRuntime(join(root, "owned"), source)).rejects.toMatchObject({
+    message: `Cannot read Node fixture libraries at ${lib}`,
+    cause: { code: "ENOTDIR" },
+  });
+});

@@ -10,8 +10,11 @@ export async function copyOwnedNodeRuntime(directory: string, source = process.e
   // Homebrew Node resolves its libnode dylib next to the relocated executable.
   const libraryRoot = join(dirname(source), "..", "lib");
   const libraries: string[] = [];
-  for (const name of (await readdir(libraryRoot).catch(() => [] as string[]))
-    .filter(name => /^libnode\..*\.dylib$/.test(name))) {
+  const names = await readdir(libraryRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [] as string[];
+    throw new Error(`Cannot read Node fixture libraries at ${libraryRoot}`, { cause: error });
+  });
+  for (const name of names.filter(name => /^libnode\..*\.dylib$/.test(name))) {
     const library = join(directory, name);
     await copyFile(join(libraryRoot, name), library);
     await chmod(library, 0o600);
