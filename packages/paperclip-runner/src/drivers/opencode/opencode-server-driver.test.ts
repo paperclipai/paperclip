@@ -153,6 +153,46 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("exports company traces across warm runs without giving the ingestion key to the provider", async () => {
+    await chmod(fixture, 0o755);
+    const bodies: Array<Record<string, any>> = [];
+    const collector = createHttpServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", chunk => chunks.push(chunk));
+      request.on("end", () => { bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); response.end("{}"); });
+    });
+    await new Promise<void>(resolve => collector.listen(0, "127.0.0.1", resolve));
+    const address = collector.address();
+    if (!address || typeof address === "string") throw new Error("collector did not bind");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-company-export-")); roots.push(root);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH, PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+        OTEL_EXPORTER_OTLP_TRACES_HEADERS: "authorization=Bearer%20ingestion-canary",
+        OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=fixture-company", OTEL_LOG_USER_PROMPTS: "1", OTEL_LOG_ASSISTANT_RESPONSES: "1" } });
+    let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+    try {
+      session = await driver.openSession({ runId: "first", normalizedSessionId: "export", workingDirectory: root });
+      const child = await readFile(join(root, "export", "data", "fake-environment.json"), "utf8");
+      expect(child).not.toContain("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+      expect(child).not.toContain("ingestion-canary");
+      for (const runId of ["first", "second"]) {
+        if (runId === "second") session.attachRun!({ runId });
+        await session.startTurn({ message: { role: "user", text: "finish" } });
+        const events = await collectTurnEvents(session.events());
+        expect(events.at(-1)).toMatchObject({ runId, eventType: "turn.completed" });
+      }
+      await session.close({ reason: "test" }); session = undefined;
+      expect(bodies).toHaveLength(2);
+      const roots = bodies.map(body => body.resourceSpans[0].scopeSpans[0].spans[0]);
+      expect(roots.map(span => span.attributes.find((a: any) => a.key === "paperclip.run.id").value.stringValue)).toEqual(["first", "second"]);
+      expect(JSON.stringify(bodies)).not.toContain("ingestion-canary");
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { collector.close(() => resolve()); collector.closeAllConnections(); });
+    }
+  });
+
   it("advertises within-turn plans as unsupported", async () => {
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",

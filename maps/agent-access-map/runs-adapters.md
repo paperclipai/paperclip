@@ -4,6 +4,18 @@ Product map: [runs-adapters](../feature-map/runs-adapters.md).
 
 Feature ID: `runs-adapters`.
 
+Scoped local Git author contract (`runs-adapters/runs`): an admitted execution
+with managed launchers can create a local commit without a GitHub grant. A
+private per-operation Git config supplies `Paperclip <noreply@paperclip.ing>`
+only as a default. Repository/command configuration and captured managed identity
+retain precedence. The default conveys no API, repository-network or credential
+authority; current run, company, trust and GitHub-grant checks stay in force.
+The [launcher controls](../../packages/adapter-utils/src/github-launcher.test.ts)
+exercise real Git with controlled broker responses; the
+[staging controls](../../packages/adapter-utils/src/github-launcher-environment.test.ts)
+exercise real local shells through a simulated sandbox transport. Neither
+qualifies live cloud execution or GitHub writes. No REST operation changes.
+
 Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
 
 Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).

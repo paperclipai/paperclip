@@ -1,6 +1,6 @@
 # GitHub identity during agent execution
 
-Shared agents use the GitHub connection of the person whose accepted instructions they are executing. Task ownership remains unchanged. GitHub is optional: ordinary work can start without a connection; a private checkout, authenticated API call, or commit can fail when that operation needs credentials or author metadata.
+Shared agents use the GitHub connection of the person whose accepted instructions they are executing. Task ownership remains unchanged. GitHub is optional: ordinary work can start without a connection. Managed launchers provide a default author for local commits; private checkouts and authenticated API calls still require eligible credentials.
 
 ## Accepted instructions and continuations
 
@@ -54,10 +54,17 @@ runner startup and provider startup. Shell operations acquire credentials for
 the active run through that broker. They do not require a persistent GitHub CLI
 login or inherit an ambient host broker capability.
 
-Without a managed identity, local commits can use an explicitly configured
-repository identity or `git -c user.name=... -c user.email=...`. The launcher
-leaves author/committer environment variables unset and requires configured
-identity instead of guessing the host user's details. Managed shell profiles
+Without a managed identity, local commits default to
+`Paperclip <noreply@paperclip.ing>`. The launcher writes this token-free default
+to a private per-operation global Git configuration file, removed on exit.
+Repository identity and `git -c user.name=... -c user.email=...` override it.
+The launcher leaves author/committer environment variables unset instead of
+guessing the host user's details. `git config --global` changes only this
+temporary file; use repository configuration for persistent overrides.
+If the private configuration directory or default author file cannot be prepared,
+Git ignores the incomplete file. Local commits still require an explicit
+repository or command identity when no managed identity is available. A failed
+default author write does not remove valid managed credentials. Managed shell profiles
 remove empty identity overrides after environment merging, so agents do not
 need to unset them per command. A captured managed identity still takes
 precedence over repository configuration.

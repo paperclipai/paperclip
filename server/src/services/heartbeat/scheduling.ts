@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyIssueReviewState } from "../issue-review-state-notifications.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
@@ -68,11 +69,11 @@ type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 
 export interface HeartbeatSchedulingDependencies
   extends Pick<HeartbeatRetryDependencies, "getRun" | "getAgent" | "getWorktreeExecutionCutoff">,
-    Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "claimDueTimerHeartbeat">,
+    Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "nextTimerHeartbeatAt" | "claimDueTimerHeartbeat">,
     Pick<RunPreparation, "toAgentOrgRow" | "groupAgentOrgRowsByCompany"> {
   issuesSvc: Pick<ReturnType<typeof issueService>, "listReviewAttention" | "create">;
   scheduleBoundedRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetryForRun"];
-  getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
+  getSchedulingSuppression: (fresh?: boolean) => Promise<{ suppressed: boolean }>;
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -137,6 +138,7 @@ export function createHeartbeatScheduling(
     toAgentOrgRow,
     groupAgentOrgRowsByCompany,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   } = dependencies;
 
@@ -591,6 +593,7 @@ export function createHeartbeatScheduling(
     const publications: ActivityPublication[] = [];
     try {
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const released = await tx.update(issues)
           .set({ monitorWakeRequestedAt: null, updatedAt: input.now })
           .where(issueMonitorClaimCondition(claimed)).returning({ id: issues.id });
@@ -622,8 +625,11 @@ export function createHeartbeatScheduling(
     } catch (err) {
       // Diagnostics are optional. Release the original claim even if audit storage
       // failed, and never clobber a monitor that was replaced in the meantime.
-      await db.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
-        .where(issueMonitorClaimCondition(claimed));
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        await tx.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
+          .where(issueMonitorClaimCondition(claimed));
+      });
       logger.warn({ err, issueId: claimed.id }, "issue monitor diagnostic could not be recorded");
     }
   }
@@ -819,8 +825,9 @@ export function createHeartbeatScheduling(
         }
       }
 
-      const consumed = await db
-        .update(issues)
+      const consumed = await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        return tx.update(issues)
         .set({
           ...monitorOnlyDispatchPatch(buildIssueMonitorTriggeredPatch({
             issue: claimed,
@@ -831,8 +838,7 @@ export function createHeartbeatScheduling(
         })
         .where(issueMonitorClaimCondition(claimed))
         .returning({ id: issues.id });
-      // Admission already accepted the check. A replacement schedule must stay
-      // intact, but losing its consumption fence does not undo that accepted wake.
+      });
       if (consumed.length === 0) return { outcome: "triggered" as const };
 
       await logActivity(db, {
@@ -970,6 +976,7 @@ export function createHeartbeatScheduling(
 
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const claimed = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const [updated] = await tx
         .update(issues)
         .set({
@@ -1012,7 +1019,7 @@ export function createHeartbeatScheduling(
     });
   }
 
-  async function tickDueIssueMonitors(now = new Date()) {
+  async function tickDueIssueMonitors(now: Date, canContinue: () => boolean) {
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
@@ -1040,7 +1047,9 @@ export function createHeartbeatScheduling(
     let skipped = 0;
 
     for (const due of dueMonitors) {
+      if (!canContinue()) break;
       const claimed = await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const [updated] = await tx
           .update(issues)
           .set({
@@ -1067,6 +1076,7 @@ export function createHeartbeatScheduling(
       });
 
       if (!claimed) continue;
+      if (!canContinue()) break;
 
       try {
         const result = await dispatchClaimedIssueMonitor(claimed, {
@@ -1093,6 +1103,26 @@ export function createHeartbeatScheduling(
       triggered,
       skipped,
     };
+  }
+
+  async function tickIssueMonitors(now = new Date(), canContinue: () => boolean = () => true) {
+    if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) {
+      return { checked: 0, triggered: 0, skipped: 0 };
+    }
+    return tickDueIssueMonitors(now, canContinue);
+  }
+
+  async function nextIssueMonitorAt(): Promise<number | null> {
+    if ((await getSchedulingSuppression(true)).suppressed) return null;
+    const [row] = await db.select({ at: sql<string | null>`min(greatest(${issues.monitorNextCheckAt},
+      ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond'))` })
+      .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(and(eq(companies.status, "active"), noActiveNativeMonitorRun(),
+        sql`${issues.monitorNextCheckAt} is not null`, isNull(issues.assigneeUserId),
+        sql`${issues.assigneeAgentId} is not null`, inArray(issues.status, ["in_progress", "in_review"])));
+
+
+    return row?.at == null ? null : new Date(row.at).getTime();
   }
 
   async function recoverActiveSessionGoals() {
@@ -1256,96 +1286,97 @@ export function createHeartbeatScheduling(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
-  async function tickTimers(now = new Date()) {
-      if ((await getSchedulingSuppression()).suppressed) {
-        return {
-          checked: 0,
-          enqueued: 0,
-          skipped: 0,
-        };
-      }
-      const cutoff = await getWorktreeExecutionCutoff();
+  async function eligibleTimerAgents() {
+    const cutoff = await getWorktreeExecutionCutoff();
 
-      const allAgents = await db
-        .select({ ...getTableColumns(agents) })
-        .from(agents)
-        .innerJoin(companies, eq(companies.id, agents.companyId))
-        .where(eq(companies.status, "active"));
-      const agentsByCompany = groupAgentOrgRowsByCompany(
-        allAgents.map(toAgentOrgRow),
+    const allAgents = await db
+      .select({ ...getTableColumns(agents) })
+      .from(agents)
+      .innerJoin(companies, eq(companies.id, agents.companyId))
+      .where(eq(companies.status, "active"));
+    const agentsByCompany = groupAgentOrgRowsByCompany(
+      allAgents.map(toAgentOrgRow),
+    );
+    const eligible: Array<{ agent: typeof agents.$inferSelect; intervalSec: number }> = [];
+
+    for (const agent of allAgents) {
+      const invokability = evaluateAgentInvokability(
+        toAgentOrgRow(agent),
+        agentsByCompany.get(agent.companyId) ?? [],
       );
-      let checked = 0;
-      let enqueued = 0;
-      let skipped = 0;
+      if (!invokability.invokable) continue;
+      const policy = parseHeartbeatPolicy(agent);
+      if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-      for (const agent of allAgents) {
-        const invokability = evaluateAgentInvokability(
-          toAgentOrgRow(agent),
-          agentsByCompany.get(agent.companyId) ?? [],
-        );
-        if (!invokability.invokable) continue;
-        const policy = parseHeartbeatPolicy(agent);
-        if (!policy.enabled || policy.intervalSec <= 0) continue;
-
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
-        }
-
-        checked += 1;
-        const baseline = new Date(
-          agent.lastHeartbeatAt ?? agent.createdAt,
-        ).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
-        const timerClaim = await claimDueTimerHeartbeat(
-          agent,
-          now,
-          policy.intervalSec,
-        );
-        if (!timerClaim) continue;
-
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-            timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+      if (cutoff) {
+        const eligibleIssue = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, ["todo", "in_progress"]),
+              gte(issues.createdAt, cutoff),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!eligibleIssue) continue;
       }
 
-      const issueMonitors = await tickDueIssueMonitors(now);
-
-      return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
-      };
+      eligible.push({ agent, intervalSec: policy.intervalSec });
     }
+    return eligible;
+  }
+
+  async function nextAgentTimerAt(now = new Date()): Promise<number | null> {
+    if ((await getSchedulingSuppression(true)).suppressed) return null;
+    let next: number | null = null;
+    for (const { agent } of await eligibleTimerAgents()) {
+      const deadline = await nextTimerHeartbeatAt(agent, now);
+      if (deadline !== null) next = next === null ? deadline : Math.min(next, deadline);
+    }
+    return next;
+  }
+
+  async function tickAgentTimers(now = new Date(), canContinue: () => boolean = () => true) {
+    if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) return { checked: 0, enqueued: 0, skipped: 0 };
+    let checked = 0, enqueued = 0, skipped = 0;
+    for (const { agent, intervalSec } of await eligibleTimerAgents()) {
+      if (!canContinue()) break;
+      checked++;
+      const deadline = await nextTimerHeartbeatAt(agent, now);
+      if (deadline === null || deadline > now.getTime()) continue;
+      if (!canContinue()) break;
+      const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
+      if (!timerClaim) continue;
+      const run = await enqueueWakeup(agent.id, {
+        source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
+        requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
+        contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
+          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },
+      });
+      if (run) enqueued++; else skipped++;
+    }
+    return { checked, enqueued, skipped };
+  }
+
+
+  async function tickTimers(now = new Date()) {
+    const timers = await tickAgentTimers(now);
+    const monitors = await tickIssueMonitors(now);
+    return { checked: timers.checked + monitors.checked,
+      enqueued: timers.enqueued + monitors.triggered, skipped: timers.skipped + monitors.skipped };
+  }
 
   return {
     triggerIssueMonitor,
     tickTimers,
+    tickAgentTimers,
+    nextAgentTimerAt,
+    tickIssueMonitors,
+    nextIssueMonitorAt,
     recoverActiveSessionGoals,
     recoverPendingSessionGoalActions,
   };

@@ -40,6 +40,17 @@ The agent header has one Run now action. Administrators can enable
 Capture raw provider traces under the agent configuration’s Debugging section
 for future runs. The header shows Raw tracing on while that setting is enabled.
 
+Managed Git launchers let agents save local commits without a GitHub connection
+or manual author setup. Verify a fresh checkout and a second shell in the same
+workspace: both commits should use `Paperclip <noreply@paperclip.ing>` when no
+identity is configured. Repository and command settings override this default;
+an eligible managed identity still takes precedence. Inspect stored commit
+metadata and confirm the default did not change repository or host configuration.
+Repeat with unavailable GitHub access; authenticated operations must still obey
+the existing credential checks. The [launcher controls](../../packages/adapter-utils/src/github-launcher.test.ts)
+and [real-shell staging controls](../../packages/adapter-utils/src/github-launcher-environment.test.ts)
+cover this local behavior, separately from live cloud execution and GitHub writes.
+
 For latency diagnosis with an operator OTLP endpoint, search the hashed run ID
 without restricting the root span name. Compare workspace preparation with its
 `workspace_<step>` intervals. Measure controller readiness separately through

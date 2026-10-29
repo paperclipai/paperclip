@@ -629,6 +629,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyExternalAgentSettlement(tx);
           await notifyInstructionCommit(tx);
           await notifyDirectoryCleanup(tx);

@@ -4,7 +4,7 @@ import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { rm } from "node:fs/promises";
+import { lstat, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import {
@@ -82,12 +82,27 @@ export async function removeProjectManagedFiles(input: {
     throw new Error("Invalid company or project id for managed-file cleanup");
   }
 
-  const managedProjectRoot = path.dirname(resolveManagedProjectWorkspaceDir({
-    companyId: input.companyId,
-    projectId: input.projectId,
-    repoName: "_default",
-  }));
-  await rm(managedProjectRoot, { recursive: true, force: true });
+  let instanceRoot: string;
+  try {
+    instanceRoot = await realpath(resolvePaperclipInstanceRoot());
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  let checkedPath = instanceRoot;
+  for (const segment of ["projects", input.companyId, input.projectId]) {
+    checkedPath = path.join(checkedPath, segment);
+    try {
+      const stat = await lstat(checkedPath);
+      if (stat.isSymbolicLink() || !stat.isDirectory() || await realpath(checkedPath) !== checkedPath) {
+        throw new Error("Refusing managed-file cleanup through a redirected directory");
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+  }
+  await rm(checkedPath, { recursive: true, force: true });
 }
 
 type ProjectRow = typeof projects.$inferSelect;

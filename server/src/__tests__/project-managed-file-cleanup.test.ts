@@ -1,8 +1,8 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
+import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.ts";
 import { removeProjectManagedFiles } from "../services/projects.ts";
 
 describe("project managed-file cleanup", () => {
@@ -48,6 +48,34 @@ describe("project managed-file cleanup", () => {
     await expect(access(managedWorkspace)).rejects.toThrow();
     await expect(access(path.join(externalWorkspace, "external.txt"))).resolves.toBeUndefined();
     await expect(access(path.join(siblingWorkspace, "sibling.txt"))).resolves.toBeUndefined();
+  });
+
+  it.each(["projects", "company", "project"])("rejects a symlink at the %s directory", async (level) => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-link-"));
+    tempRoots.push(home);
+    process.env.PAPERCLIP_HOME = home;
+    const instanceRoot = resolvePaperclipInstanceRoot();
+    const segments = ["projects", "company", "project"];
+    const index = segments.indexOf(level);
+    const parent = path.join(instanceRoot, ...segments.slice(0, index));
+    const external = path.join(home, "external");
+    const target = path.join(external, ...segments.slice(index + 1));
+    await mkdir(parent, { recursive: true });
+    await mkdir(target, { recursive: true });
+    const sentinel = path.join(target, "keep.md");
+    await writeFile(sentinel, "preserve");
+    await symlink(external, path.join(parent, level));
+    await expect(removeProjectManagedFiles({ companyId: "company", projectId: "project" }))
+      .rejects.toThrow("redirected directory");
+    await expect(access(sentinel)).resolves.toBeUndefined();
+  });
+
+  it("allows cleanup when the managed directory is absent", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-absent-"));
+    tempRoots.push(home);
+    process.env.PAPERCLIP_HOME = home;
+    await expect(removeProjectManagedFiles({ companyId: "company", projectId: "project" }))
+      .resolves.toBeUndefined();
   });
 
   it("rejects unsafe path segments", async () => {

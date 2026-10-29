@@ -7,7 +7,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { routineService } from "../services/routines.js";
 import { budgetService } from "../services/budgets.js";
 import { companyService } from "../services/companies.js";
-import { registerScheduledWork } from "../services/scheduled-work.js";
+import { registerDeadlineWork } from "../services/deadline-work.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
@@ -54,14 +55,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const svc = service();
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
-    const workers = registerScheduledWork(coordinator, db, { retryMs: 30_000,
+
+
+    const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.routineSchedules, {
+      retryMs: 30_000,
       canRun: () => !draining,
-      tickTimers: async () => {},
-      tickRoutines: options.run ?? (signal => svc.tickScheduledTriggers(new Date(), () => !draining && !signal.aborted)),
-      nextRoutineRunAt: options.next ?? (() => svc.nextScheduledTriggerAt()),
+      run: options.run ?? (signal => svc.tickScheduledTriggers(new Date(), () => !draining && !signal.aborted)),
+      next: options.next ?? (() => svc.nextScheduledTriggerAt()),
     });
-    await Promise.all([workers.routines.ready, workers.timers.ready]);
-    return workers;
+    await worker.ready;
+    return worker;
   }
   async function settled() {
     await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));

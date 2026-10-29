@@ -541,8 +541,8 @@ describe("public repository paid workflow security", () => {
         /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/g,
       ),
     ).toHaveLength(6);
-    expect(fullStack.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(3);
-    expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(9);
+    expect(fullStack.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(4);
+    expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(10);
     expect(fullStack).not.toContain("ref: ${{ inputs.target_branch }}");
     expect(fullStack).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}",
@@ -817,12 +817,12 @@ describe("public repository paid workflow security", () => {
       "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
     );
     expect(report).toContain(
-      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ needs.catalog.outputs.operations_cadence == '' && vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL || '' }}",
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL || '' }}",
     );
     const historyPrefix = "${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}";
     expect(report).toContain(`PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${historyPrefix}`);
     expect(publisher).toContain(`RUNNER_E2E_HISTORY_PREFIX: ${historyPrefix}`);
-    expect(publisher).toContain("needs.catalog.outputs.operations_cadence == '' && needs.report.outputs.history_source_ready == 'true'");
+    expect(publisher).toContain("needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && needs.report.outputs.history_source_ready == 'true'");
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
     ).toBeLessThan(report.indexOf("Collect blob reports"));
@@ -854,7 +854,7 @@ describe("public repository paid workflow security", () => {
     expect(manual).toContain("steps: &paid_test_steps");
     const report = workflow.split("\n  report:")[1]!.split("\n  publish_history:")[0]!;
     const step = (source: string, name: string) => source.split(`      - name: ${name}\n`)[1]!.split(/\n      - /u)[0]!;
-    for (const [job, name] of [[paid, "Upload access-controlled packaged cell evidence"], [report, "Upload access-controlled merged report"]]) {
+    for (const [job, name] of [[paid, "Upload nonprivate packaged cell evidence"], [report, "Upload nonprivate merged report"]]) {
       expect(step(job!, name!)).toContain("if: always() && needs.catalog.outputs.operations_cadence == ''");
     }
     expect(step(report, "Download cell evidence")).toContain("if: needs.catalog.outputs.operations_cadence == ''");

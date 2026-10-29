@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
@@ -80,6 +81,9 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       normalizedPatch.adapterType as string,
       existing.adapterConfig,
     );
+  }
+  if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
   }
   return normalizedPatch;
 }

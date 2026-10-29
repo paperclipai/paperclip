@@ -11,6 +11,37 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it.each(["missing", "absent", "unavailable", "rejected"])("commits local work without an identity when GitHub access is %s", async (access) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-author-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed");
+    await mkdir(bin);
+    await exec("git", ["init", root]);
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    const server = createServer((_req, res) => {
+      res.writeHead(access === "rejected" ? 403 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: access, env: {
+        GH_TOKEN: "rejected-token", GIT_AUTHOR_NAME: "Rejected", GIT_AUTHOR_EMAIL: "rejected@example.test",
+        GIT_COMMITTER_NAME: "Rejected", GIT_COMMITTER_EMAIL: "rejected@example.test",
+      } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({
+      GH_TOKEN: "host-token", GIT_AUTHOR_NAME: "Host", GIT_AUTHOR_EMAIL: "host@example.test",
+      GIT_COMMITTER_NAME: "Host", GIT_COMMITTER_EMAIL: "host@example.test",
+    }, { url: `http://127.0.0.1:${port}`, token: access === "missing" ? "" : "run-capability" }),
+      PATH: `${bin}:${process.env.PATH}` };
+    await writeFile(path.join(root, "work.txt"), "saved work\n");
+    await exec(path.join(bin, "git"), ["add", "work.txt"], { cwd: root, env });
+    await exec(path.join(bin, "git"), ["commit", "-m", "Save local work"], { cwd: root, env });
+    expect((await exec("git", ["-C", root, "log", "-1", "--format=%an <%ae>|%cn <%ce>"])).stdout.trim())
+      .toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
+    expect((await exec("git", ["-C", root, "show", "HEAD:work.txt"])).stdout).toBe("saved work\n");
+    await expect(exec("git", ["-C", root, "config", "--local", "--get", "user.name"])).rejects.toThrow();
+    await expect(exec("git", ["-C", root, "config", "--local", "--get", "user.email"])).rejects.toThrow();
+  });
   it.each(["repository", "command"])("uses explicit %s identity for local commits without managed credentials", async (identitySource) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-identity-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -22,9 +53,8 @@ describe("managed GitHub launchers", () => {
       GH_TOKEN: "host-token", GIT_AUTHOR_NAME: "Host", GIT_COMMITTER_NAME: "Host",
     }, { url: "", token: "" }), PATH: `${bin}:${process.env.PATH}` };
     const git = async (...args: string[]) => (await exec(path.join(bin, "git"), args, { cwd: root, env })).stdout.trim();
-    // No configured identity must fail, rather than guessing the host user's.
-    await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();
-    await expect(git("var", "GIT_COMMITTER_IDENT")).rejects.toThrow();
+    expect(await git("var", "GIT_AUTHOR_IDENT")).toMatch(/^Paperclip <noreply@paperclip.ing>/);
+    expect(await git("var", "GIT_COMMITTER_IDENT")).toMatch(/^Paperclip <noreply@paperclip.ing>/);
     if (identitySource === "repository") {
       await git("config", "user.name", "Local Author");
       await git("config", "user.email", "local@example.test");
@@ -81,6 +111,44 @@ describe("managed GitHub launchers", () => {
     expect(JSON.parse(result.stdout)).toEqual({token:null});
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
+  });
+  it.each(["before-write", "partial-write"])("keeps Git and managed credentials available after a %s failure", async (failure) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-write-failure-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await exec("git", ["init", root]);
+    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");', { mode: 0o700 });
+    const fault = path.join(root, "write-fault.cjs");
+    await writeFile(fault, `const fs = require('node:fs'); const write = fs.writeFileSync;
+fs.writeFileSync = (file, ...args) => {
+  if (String(file).endsWith('/gitconfig')) {
+    if (${failure === "partial-write"}) write(file, '[user', { mode: 0o600 });
+    throw new Error('fixture disk full');
+  }
+  return write(file, ...args);
+};`);
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = {
+      ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}`,
+    };
+    const result = await exec(process.execPath, ["--require", fault, path.join(bin, "gh")], { cwd: root, env });
+    expect(result.stdout).toBe("managed-token");
+    expect(result.stderr).toContain("configuration_directory_unavailable");
+    const git = (...args: string[]) => exec(process.execPath, ["--require", fault, path.join(bin, "git"), ...args], { cwd: root, env });
+    expect((await git("status", "--porcelain", "--untracked-files=no")).stdout).toBe("");
+    await expect(git("commit", "--allow-empty", "-m", "No default")).rejects.toMatchObject({ stderr: expect.stringContaining("Author identity unknown") });
+    await git("-c", "user.name=Explicit", "-c", "user.email=explicit@example.test", "commit", "--allow-empty", "-m", "Explicit identity");
+    expect((await exec("git", ["-C", root, "log", "-1", "--format=%an <%ae>|%cn <%ce>"])).stdout.trim())
+      .toBe("Explicit <explicit@example.test>|Explicit <explicit@example.test>");
   });
   // The first broker request fails, the second succeeds: the managed token must still reach gh.
   it.each([
@@ -177,7 +245,9 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(anonymous.token).toBeNull();
     await git("config", "--unset", "user.name");
     await git("config", "--unset", "user.email");
-    await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();
+    await git("commit", "--allow-empty", "-m", "Default identity after revocation");
+    expect(await git("log", "-1", "--format=%an <%ae>|%cn <%ce>"))
+      .toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");

@@ -261,9 +261,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const unrelatedPolicy = { commentRequired: false, futureAuthorization: { preserve: true } };
     await db.update(issues).set({ executionPolicy: { ...before.executionPolicy, ...unrelatedPolicy } }).where(eq(issues.id, issueId));
 
-    const result = await heartbeat.tickTimers(tickAt);
+    const result = await heartbeat.tickIssueMonitors(tickAt);
 
-    expect(result.enqueued).toBe(1);
+    expect(result.triggered).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.monitorNextCheckAt).toBeNull();

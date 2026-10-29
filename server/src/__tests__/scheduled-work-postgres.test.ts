@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import type { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../services/delivery-work-notifications.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { routineService } from "../services/routines.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerScheduledWork } from "../services/scheduled-work.js";
@@ -60,12 +61,14 @@ describe.skipIf(!support.supported)("scheduled deadline database queries", () =>
     registerScheduledWork({ register: (queue, task) => {
       tasks.set(queue, task);
       return { ready: Promise.resolve(), wake: () => {} };
-    } }, db, { retryMs: 60_000, tickTimers: async () => {}, tickRoutines: async () => {}, canRun: () => true,
+    } }, { retryMs: 60_000, tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickIssueMonitors: async () => {},
+      nextIssueMonitorAt: () => heartbeatService(db).nextIssueMonitorAt(), tickRoutines: async () => {}, canRun: () => true,
       nextRoutineRunAt: () => routineService(db).nextScheduledTriggerAt() });
     for (const task of tasks.values()) await task.run(new AbortController().signal);
     expect(await routineService(db).nextScheduledTriggerAt()).toBe(at(-1).getTime());
     expect(tasks.get(DELIVERY_QUEUES.routineSchedules)!.nextRunAt!()).toBeGreaterThan(now);
-    expect(tasks.get(DELIVERY_QUEUES.issueMonitors)!.nextRunAt!()).toBe(at(15).getTime());
+    expect(await heartbeatService(db).nextIssueMonitorAt()).toBe(at(-1).getTime());
+    expect(tasks.get(DELIVERY_QUEUES.issueMonitors)!.nextRunAt!()).toBe(now + 60_000);
     await db.execute(sql`truncate table companies restart identity cascade`);
     vi.setSystemTime(at(2));
     for (const task of tasks.values()) await task.run(new AbortController().signal);

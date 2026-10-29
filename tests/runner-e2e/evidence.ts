@@ -57,6 +57,12 @@ const REQUIRED_PASS_FILES = [
   path.join("snapshots", "api-state.json"),
 ] as const;
 
+export function isStandardEvidenceFile(relative: string) {
+  const extension = path.extname(relative).toLowerCase();
+  return isStandardEvidencePath(relative) && (TEXT_EXTENSIONS.has(extension) || BINARY_EXTENSIONS.has(extension)
+    || extension === ".zip");
+}
+
 export interface EvidencePackageResult {
   files: string[];
   leaks: Array<{ file: string; reason: string }>;
@@ -77,7 +83,7 @@ async function walk(root: string, relative = ""): Promise<string[]> {
   return files;
 }
 
-function isAllowed(relative: string) {
+export function isStandardEvidencePath(relative: string) {
   const segments = relative.split(path.sep);
   if (segments.length === 1)
     return (
@@ -143,7 +149,7 @@ export async function packageEvidence(input: {
   const leaks: EvidencePackageResult["leaks"] = [];
   const available = await walk(input.privateDir);
 
-  for (const relative of available.filter(isAllowed)) {
+  for (const relative of available.filter(isStandardEvidencePath)) {
     const source = path.join(input.privateDir, relative);
     const extension = path.extname(relative).toLowerCase();
     const destination = path.join(input.uploadDir, relative);

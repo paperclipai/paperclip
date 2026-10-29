@@ -97,7 +97,7 @@ it("keeps anonymous wrappers usable after run cleanup and excludes sandbox image
     await writeFile(path.join(root, ".config", "gh", "hosts.yml"), "ambient-image-secret");
     await writeFile(path.join(bin, "gh"), `#!${process.execPath}
 const fs = require('node:fs');
-process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubToken:process.env.GITHUB_TOKEN || '', ssh:process.env.SSH_AUTH_SOCK, global:process.env.GIT_CONFIG_GLOBAL, imageConfig:fs.existsSync(process.env.GH_CONFIG_DIR + '/hosts.yml')}));`, { mode: 0o700 });
+process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubToken:process.env.GITHUB_TOKEN || '', ssh:process.env.SSH_AUTH_SOCK, global:process.env.GIT_CONFIG_GLOBAL, globalConfig:fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf8'), imageConfig:fs.existsSync(process.env.GH_CONFIG_DIR + '/hosts.yml')}));`, { mode: 0o700 });
     const imageEnv = { HOME: root, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, GH_TOKEN: "ambient-token", GITHUB_TOKEN: "ambient-other-token", SSH_AUTH_SOCK: "/ambient/socket" };
     const execute: CommandManagedRuntimeRunner["execute"] = async (input) => {
       const startedAt = new Date().toISOString();
@@ -117,7 +117,14 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
     expect(await readFile(path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), "utf8")).not.toContain("ambient-token");
     // A still-live provider uses its first-turn environment, not the new one.
     const command = await execute({ command: path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), env: first.env });
-    expect(JSON.parse(command.stdout)).toEqual({ token: "", githubToken: "", ssh: "", global: "/dev/null", imageConfig: false });
+    const result = JSON.parse(command.stdout);
+    expect(result).toEqual({ token: "", githubToken: "", ssh: "", imageConfig: false,
+      global: expect.stringMatching(/\/paperclip-github-operation-[^/]+\/gitconfig$/),
+      globalConfig: "[user]\n\tname = Paperclip\n\temail = noreply@paperclip.ing\n" });
+    await expect(readFile(result.global)).rejects.toMatchObject({ code: "ENOENT" });
+    const commit = await execute({ command: "bash", args: ["--noprofile", "--norc", "-c",
+      "git init -q && git commit --allow-empty -qm 'Local work' && git log -1 --format='%an <%ae>|%cn <%ce>'"], env: first.env });
+    expect(commit.stdout.trim()).toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
     const changedPath = await prepareHeartbeatGitHubLaunchers({ ...base, runId: "run-three", env: { ...imageEnv, PATH: `${imageEnv.PATH}:/extra` } });
     expect(changedPath.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
   } finally {
