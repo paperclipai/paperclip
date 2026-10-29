@@ -773,6 +773,9 @@ A record permits sleep only after its owned run, accepted result, assessment,
 applied status decision, and effect deliveries agree on completion. Leases,
 retries, recovery requests, unfinished accounting, and incomplete run projections
 keep the instance awake. Historical controller identity alone does not block sleep.
+The exact run also needs its successful workspace-finalization receipt. Pending
+final-reply recovery shares its discovery predicate with the recovery worker, and
+live warm sessions remain local work through close/checkpoint completion.
 
 ## Feedback history and idle sleep
 

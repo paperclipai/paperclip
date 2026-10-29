@@ -8,6 +8,7 @@ import { sql } from "drizzle-orm";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
 import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 
 export interface IdleSleepDrainStatus {
   ownerId?: string;
@@ -244,6 +245,10 @@ const WORK_CHECKS = [
         AND result_row.schema_status = 'accepted'
         AND result_row.result_json->'terminal'->>'runTerminalState' = r.status
         AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM workspace_operations operation
+      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
+        AND operation.heartbeat_run_id = f.run_id
+        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
     AND NOT EXISTS (
       SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
         AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
@@ -316,6 +321,7 @@ export async function readIdleSleepSafety(
       checks.push(sql`EXISTS (SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()})`);
       checks.push(sql`EXISTS (SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()})`);
+      checks.push(sql`EXISTS (${nativeResponsePresentationPendingQuery()})`);
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.
       checks.push(quietPlugins.length === 0

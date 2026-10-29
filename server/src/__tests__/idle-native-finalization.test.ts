@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, companies, completionContracts, createDb, environments, environmentLeases, heartbeatRuns, issues,
+  agents, companies, completionContracts, createDb, environments, environmentLeases, heartbeatRuns, issues, issueComments,
   nativeRunFinalizations, nativeRunResults, statusDecisionEffects, statusDecisions,
-  workAssessments,
+  workAssessments, workspaceOperations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
+import { nativeResponsePresentationWork } from "../services/native-runtime/native-response-presentation-work.js";
 
 const now = Date.UTC(2020, 0, 1);
 const ownerId = "0e421722-e69c-45ca-ac42-80fbd0d66739";
@@ -37,6 +38,7 @@ if (!support.supported) console.warn(`Skipping finalization idle-sleep Postgres 
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID();
     const assessmentId = randomUUID(), decisionId = randomUUID();
+    const operationId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Finalization fixture", issuePrefix: "FIN" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Idle worker", adapterType: "process", status: "idle" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Completed task", status: "done" });
@@ -59,7 +61,9 @@ if (!support.supported) console.warn(`Skipping finalization idle-sleep Postgres 
       reasonCode: "fixture", decisionJson: {}, decisionDigest: decisionId, applicationState: "applied", appliedAt: new Date(now) });
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, resultId, assessmentId, decisionId,
       phase: "committed", controllerBootId: "historical-controller", controllerPid: 123 });
-    return { companyId, agentId, issueId, runId, resultId, assessmentId, decisionId };
+    await db.insert(workspaceOperations).values({ id: operationId, companyId, issueId, heartbeatRunId: runId,
+      phase: "workspace_finalize", status: "succeeded", startedAt: new Date(now), finishedAt: new Date(now) });
+    return { companyId, agentId, issueId, runId, resultId, assessmentId, decisionId, operationId };
   }
 
   it.each(["succeeded", "failed", "cancelled"])("permits a fully settled %s run and preserves its audit history", async status => {
@@ -155,6 +159,56 @@ if (!support.supported) console.warn(`Skipping finalization idle-sleep Postgres 
     try {
       expect(await read()).toEqual({ version: 1, backgroundWork: "unknown" });
     } finally { finish(); }
+    expect(await read()).toEqual(none);
+  });
+
+  it.each([
+    { status: "failed" }, { status: "cancelled" }, { phase: "workspace_prepare" },
+    { issueId: null }, { heartbeatRunId: null },
+  ])("retains workspace repair without its owned successful receipt %j", async change => {
+    const f = await seed();
+    await db.update(workspaceOperations).set(change).where(eq(workspaceOperations.id, f.operationId));
+    expect(await read()).toEqual(present);
+  });
+
+  it("retains a committed run with no workspace-finalization receipt", async () => {
+    const f = await seed();
+    await db.delete(workspaceOperations).where(eq(workspaceOperations.id, f.operationId));
+    expect(await read()).toEqual(present);
+  });
+
+  async function seedPendingReply() {
+    const f = await seed();
+    await db.update(nativeRunResults).set({ resultJson: {
+      result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Completed task" },
+      terminal: { runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" },
+    } }).where(eq(nativeRunResults.id, f.resultId));
+    return f;
+  }
+
+  it("retains final-reply recovery between result commit and comment creation", async () => {
+    const f = await seedPendingReply();
+    expect(await nativeResponsePresentationWork(db).load()).toMatchObject([{ id: f.runId }]);
+    expect(await read()).toEqual(present);
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: "Final reply fixture" }).returning();
+    await db.update(heartbeatRuns).set({ resultJson: { finalizationPhase: "committed",
+      presentationDecision: { commentAction: "create", commentId: comment.id } } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await nativeResponsePresentationWork(db).load()).toEqual([]);
+    expect(await read()).toEqual(none);
+    expect(await db.select({ id: issueComments.id }).from(issueComments)).toEqual([{ id: comment.id }]);
+  });
+
+  it.each([true, "true", false])("respects the exact skipIssueComment contract %j", async skipIssueComment => {
+    const f = await seedPendingReply();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { skipIssueComment } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await read()).toEqual(skipIssueComment === true ? none : present);
+  });
+
+  it.each(["reuse", "none"])("preserves an explicit final-reply presentation choice %s", async commentAction => {
+    const f = await seedPendingReply();
+    await db.update(heartbeatRuns).set({ resultJson: { finalizationPhase: "committed",
+      presentationDecision: { commentAction } } }).where(eq(heartbeatRuns.id, f.runId));
     expect(await read()).toEqual(none);
   });
 });
