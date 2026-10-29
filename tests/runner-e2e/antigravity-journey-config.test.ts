@@ -96,6 +96,47 @@ it("rejects altered retained no-launch identity, release timing, or extra fields
     expect(() => parseAntigravityOwnedResources(owned, parseAntigravityJourneyConfig(fixture()))).toThrow("invalid_antigravity_owned_resources");
   }
 });
+it.each(["settles", "timeout", "wrong_owner", "malformed"])("waits for an original pre-native cleanup owner without weakening proof (%s)", async scenario => {
+  vi.useFakeTimers();
+  try {
+    const { owned, run, lease } = neverLaunched(), settledRun = structuredClone(run), settledLease = structuredClone(lease);
+    run.executionStage = "preparing"; run.costAccountingPending = true; delete run.resultJson.startupPreparationSettledAt;
+    run.controllerLeaseExpiresAt = "2026-01-01T00:00:04Z"; lease.status = "active"; lease.releasedAt = null;
+    if (scenario === "wrong_owner") lease.companyId = agentId;
+    if (scenario === "malformed") run.resultJson.startupCancellation.requestedAt = "invalid-timestamp";
+    let fullReads = 0, lifecycleState = "ready", persisted = false;
+    const agent = () => ({ id: agentId, companyId, name: owned.agentName, lifecycleState });
+    const get = vi.fn(async (route: string) => {
+      if (route.endsWith("/agents")) return [agent()];
+      if (route.includes("heartbeat-runs?")) return [structuredClone(run)];
+      if (route === `/api/heartbeat-runs/${runId}`) {
+        if (++fullReads >= 3 && scenario === "settles") { Object.assign(run, settledRun); Object.assign(lease, settledLease); }
+        return structuredClone(run);
+      }
+      if (route === `/api/environment-leases/${lease.id}`) return structuredClone(lease);
+      if (route === `/api/issues/${owned.issueId}`) return { id: owned.issueId, companyId, assigneeAgentId: agentId, status: "cancelled" };
+      if (route === `/api/agents/${agentId}`) return agent();
+      if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+      throw new Error("Unexpected cleanup read");
+    });
+    const remove = vi.fn(async () => { expect(persisted).toBe(true); });
+    const post = vi.fn(async (route: string) => { expect(route).toBe(`/api/agents/${agentId}/terminate`); lifecycleState = "terminated"; });
+    const outcome: { completed: boolean; error?: unknown } = { completed: false };
+    const operation = cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(), delete: remove } as unknown as ConnectionApi,
+      config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: false, connectionPreserved: false }, captureRun: async () => {},
+      persistResources: async () => { persisted ||= Boolean(owned.noLaunch?.[runId]); } }).then(() => { outcome.completed = true; }, error => { outcome.error = error; });
+    await vi.advanceTimersByTimeAsync(scenario === "timeout" ? 60_500 : 1_000);
+    await operation;
+    if (scenario === "settles") {
+      expect(outcome.error).toBeUndefined(); expect(outcome.completed).toBe(true); expect(fullReads).toBeGreaterThanOrEqual(3);
+      expect(remove).toHaveBeenCalledOnce(); expect(owned.noLaunch?.[runId]).toMatchObject({ leaseStatus: "expired", startupPreparationSettledAt: settledRun.resultJson.startupPreparationSettledAt });
+    } else {
+      expect(String(outcome.error)).toContain(scenario === "timeout" ? "cleanup_run_retirement_unconfirmed" : scenario === "wrong_owner" ? "cleanup_lease_owner_mismatch" : "cleanup_no_launch_receipt_unconfirmed");
+      expect(outcome.completed).toBe(false); expect(remove).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); expect(persisted).toBe(false);
+      if (scenario !== "timeout") expect(fullReads).toBeLessThan(3);
+    }
+  } finally { vi.useRealTimers(); }
+});
 
 it("discovers one explicit-only real-agent cell without ambient API-key requirements", () => {
   const selected = selectRunnerExecutions(parseRunnerSelectors(["--id", ANTIGRAVITY_JOURNEY_EXECUTION, "--antigravity-journey-config", "/private/binding.json", "--max-automatic-retries", "0"]), runnerMatrix);

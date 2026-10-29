@@ -219,9 +219,32 @@ export async function cleanupAntigravityJourney(input: {
         if (!["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false) retired = false;
         const receipt = resources.processes[runId];
         if ((!receipt?.captured || receipt.journal.length < 2) && run.resultJson?.startupCancellation?.beforeNativeSelection === true) {
-          const leaseId = run.contextSnapshot?.paperclipEnvironment?.leaseId;
+          const cancellation = run.resultJson.startupCancellation, settledAt = run.resultJson.startupPreparationSettledAt;
+          const environment = run.contextSnapshot?.paperclipEnvironment, profile = run.runnerProfileJson;
+          const instant = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
+          // Cancellation may return while its original preparation owner is
+          // still settling. Only missing progress receipts may wait; ownership
+          // contradictions and malformed evidence must not become a timeout.
+          if (run.issueId !== resources.issueId || run.status !== "cancelled" || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt !== null
+            || !["preparing", "settled"].includes(run.executionStage) || typeof run.costAccountingPending !== "boolean"
+            || cancellation.errorCode !== "cancelled" || !instant(cancellation.requestedAt) || (settledAt != null && !instant(settledAt))
+            || (run.controllerLeaseExpiresAt !== null && !instant(run.controllerLeaseExpiresAt))
+            || ["processPid", "processGroupId", "processStartedAt", "runnerInstanceId", "nativeSessionId", "driverKind", "completionContractId"].some(key => run[key] !== null)
+            || !profile || Object.keys(profile).length !== 1 || !profile.adapterDispatch || Object.keys(profile.adapterDispatch).length !== 1
+            || profile.adapterDispatch.adapterType !== "paperclip_runner" || receipt?.captured || receipt?.identityChanged || (receipt?.journal.length ?? 0) > 0
+            || environment?.id !== resources.environmentId || environment.driver !== "local") throw new ConnectionFailure("cleanup_no_launch_receipt_unconfirmed");
+          const leaseId = environment.leaseId;
           if (typeof leaseId !== "string") throw new ConnectionFailure("cleanup_lease_identity_missing");
           const lease = await api.get<Row>(`/api/environment-leases/${leaseId}`);
+          if (lease.id !== leaseId || lease.companyId !== resources.companyId || lease.heartbeatRunId !== runId || lease.environmentId !== resources.environmentId)
+            throw new ConnectionFailure("cleanup_lease_owner_mismatch");
+          if (!["active", "released", "expired", "failed", "retained", "pending_cleanup"].includes(lease.status)
+            || (lease.releasedAt != null && !instant(lease.releasedAt))
+            || (settledAt != null && Date.parse(settledAt) < Date.parse(cancellation.requestedAt))
+            || (lease.releasedAt != null && (Date.parse(lease.releasedAt) < Date.parse(cancellation.requestedAt)
+              || (settledAt != null && Date.parse(lease.releasedAt) > Date.parse(settledAt))))) throw new ConnectionFailure("cleanup_no_launch_receipt_unconfirmed");
+          if (run.executionStage !== "settled" || settledAt == null || run.costAccountingPending || run.controllerLeaseExpiresAt !== null
+            || !["released", "expired"].includes(lease.status) || lease.releasedAt == null) { retired = false; continue; }
           const noLaunch = antigravityNoLaunchReceipt(run, lease, resources);
           (resources.noLaunch ??= {})[runId] = noLaunch;
           await input.persistResources();
