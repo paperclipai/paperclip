@@ -202,6 +202,18 @@ describe("project env routes", () => {
     expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
   });
 
+  it("denies managed-file deletion without workspace-write authority", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockAccessService.decide.mockImplementation(async (input) => ({
+      allowed: input.action !== "project:write_workspace",
+      action: input.action, reason: "deny_no_grant", explanation: "Workspace write permission required.",
+    }));
+    const app = await createApp();
+    await request(app).delete("/api/projects/project-1?deleteFiles=true").expect(403);
+    expect(mockProjectService.assertDeletionAllowed).not.toHaveBeenCalled();
+    expect(mockProjectService.remove).not.toHaveBeenCalled();
+  });
+
   it("normalizes env bindings on create and logs only env keys", async () => {
     const normalizedEnv = {
       API_KEY: {

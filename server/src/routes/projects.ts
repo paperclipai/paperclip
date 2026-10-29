@@ -1142,6 +1142,7 @@ export function projectRoutes(db: Db) {
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    if (deleteFiles && !(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     let deletionClaimToken: string | null = null;
     let claimLost = false;
     let renewal: ReturnType<typeof setInterval> | null = null;
