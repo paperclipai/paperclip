@@ -47,6 +47,17 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+## Queued review retirement
+
+Before merging a fresh wake, queue admission cancels a queued review whose
+complete submission generation has changed. The cancelled run records
+`issue_review_participant_changed` and a warning `lifecycle` event on the
+`system` stream. The event identifies the task and its current status through
+the existing pending-run cancellation payload. Retirement and fresh admission
+share the issue transaction, so a failed admission rolls back the event and
+cancellation. The old run keeps its original generation; running turns are
+unaffected by this admission path. These records stay in the local run log.
+
 ## Legacy case handoff cleanup
 
 `legacy.case_handoff_cleanup_intent` records local cleanup ownership before
