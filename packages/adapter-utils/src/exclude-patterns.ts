@@ -1,3 +1,33 @@
+export const WORKSPACE_HEAVY_DIR_NAMES = [
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+] as const;
+
+export const WORKSPACE_HEAVY_DIR_EXCLUDES = WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
+  entry,
+  `${entry}/*`,
+  `*/${entry}`,
+  `*/${entry}/*`,
+]);
+
+export function resolveSshWorkspaceSyncExcludes(input: {
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
+}): { workspace: string[]; repository: string[] } {
+  const repository = input.workspaceFileMode === "all" ? [] : [...WORKSPACE_HEAVY_DIR_EXCLUDES];
+  return {
+    workspace: [...new Set([...repository, ...(input.workspaceExclude ?? [])])],
+    repository,
+  };
+}
+
 export function isRelativePathOrDescendant(relative: string, candidate: string): boolean {
   return relative === candidate || relative.startsWith(`${candidate}/`);
 }
