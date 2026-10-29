@@ -184,6 +184,13 @@ Paperclip Telemetry export, and legacy adapters do not use this writer.
 
 ## Semantic Settlement Diagnostics and Retry Logs
 
+When native tool arguments fail their authorized JSON Schema, the runner records
+`harness.diagnostic` with code `semantic_tool_denied` and `paperclipExecuted: false`.
+Its optional `inputSchemaGuidance` retains the same safe repair guidance sent to
+the provider: at most three authorized schema locations within 512 bytes.
+It includes no rejected arguments, submitted values, or unknown input keys.
+The rejected call does not create a semantic input event or execution receipt.
+
 Before interrupting a Codex turn, the runner durably records a
 `harness.diagnostic` event with code `provider_interrupt_requested`, the stop
 reason, provider turn ID, and pending tool call IDs. A harmless identical result

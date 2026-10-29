@@ -3533,17 +3533,21 @@ impl CodexCommandExecutor {
             .state
             .as_mut()
             .expect("Codex state remains available for a rejected tool call");
+        let mut payload = json!({
+            "provider": state.config.provider,
+            "code": "semantic_tool_denied",
+            "operationId": operation_id,
+            "callId": call_id,
+            "message": reason,
+            "paperclipExecuted": false,
+        });
+        if let Some(guidance) = error.safe_provider_message() {
+            payload["inputSchemaGuidance"] = json!(guidance);
+        }
         let event = NormalizedProviderEvent {
             event_type: "harness.diagnostic".to_owned(),
             priority: EventPriority::P0,
-            payload: json!({
-                "provider": state.config.provider,
-                "code": "semantic_tool_denied",
-                "operationId": operation_id,
-                "callId": call_id,
-                "message": reason,
-                "paperclipExecuted": false,
-            }),
+            payload,
         };
         if state.receipt_limit_interrupt_pending {
             state.push_receipt_limit_cleanup_event(event)?;
