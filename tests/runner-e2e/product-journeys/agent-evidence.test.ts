@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAgentTaskState } from "./agent-flows.js";
-import { nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
+import { activeNativeTurnStarted, nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { parseTargetConfig } from "./catalog.js";
 import type { JourneyContext } from "./types.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -15,6 +15,18 @@ function state() {
     comments: [], interactions: [], attachments: [] };
 }
 describe("deployed agent journey evidence", () => {
+  it("requires an active native turn before the Stop boundary, including the native completion race", () => {
+    const run = { runtimeMode: "native", status: "running" };
+    const event = (eventType: string) => ({ payload: { prpEvent: { eventType } } });
+    expect(activeNativeTurnStarted(run, [])).toBe(false);
+    expect(activeNativeTurnStarted(run, [event("session.opened")])).toBe(false);
+    expect(activeNativeTurnStarted(run, [event("turn.started")])).toBe(true);
+    for (const terminal of ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]) {
+      expect(activeNativeTurnStarted(run, [event("turn.started"), event(terminal)])).toBe(false);
+    }
+    expect(activeNativeTurnStarted({ ...run, status: "succeeded" }, [event("turn.started")])).toBe(false);
+    expect(activeNativeTurnStarted({ ...run, runtimeMode: "legacy" }, [event("turn.started")])).toBe(false);
+  });
   it.each(["tool.execution.started", "turn.started", "message.delta", "item.delta", "item.completed"])("rejects a quiet-Stop claim when the retired turn emits %s", eventType => {
     const event = (type: string) => ({ id: type, payload: { prpEvent: { eventType: type, payload: { text: "old turn kept writing" } } } });
     const before = [event("turn.cancelled")];

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
-import { nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
+import { activeNativeTurnStarted, nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
 import { runnerTasks } from "../catalog.js";
 import { everydayTasks, SLUGIFY_REQUIREMENTS, SLUGIFY_REVISION } from "../everyday-cases.js";
 import { latestStoryDelivery, type StoryDelivery } from "../everyday-delivery.js";
@@ -189,11 +189,20 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await reply(issue, SLUGIFY_REVISION);
     const state = await waitFor(options.deadlineAt, () => read(issue), value => value.taskRuns.some(run => run.status === "running"), "stop_boundary_not_active");
     const original = state.taskRuns.find(run => run.status === "running")!;
-    await retain("stop-before.json", state);
     await open(issue);
+    const originalEvents = () => collectRunEvents<Row>((afterSeq, limit) =>
+      context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+    const boundary = await waitFor(options.deadlineAt, async () => {
+      const events = await originalEvents();
+      await retain("stop-startup-events.json", events);
+      const current = await read(issue);
+      const run = current.taskRuns.find(row => row.id === original.id);
+      if (!run || !active(run)) throw new JourneyError("failed", "stop_boundary_already_settled");
+      return { state: current, run, events };
+    }, value => activeNativeTurnStarted(value.run, value.events), "stop_native_turn_not_active");
+    await retain("stop-before.json", boundary.state);
     cancelled.push(original.id);
-    const runActivity = async () => nativeWorkEvents(await collectRunEvents<Row>((afterSeq, limit) =>
-      context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`)));
+    const runActivity = async () => nativeWorkEvents(await originalEvents());
     let beforeEvents: Row[];
     const redirected = await stopAndRedirectThroughUi({ page: context.page, nonce,
       awaitRetirement: async () => {

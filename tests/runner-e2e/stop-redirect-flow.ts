@@ -9,6 +9,13 @@ export function nativeWorkEvents<T extends Row>(events: T[]): T[] {
   });
 }
 
+/** A claimed run is not proof that a cancellable native turn has started. */
+export function activeNativeTurnStarted(run: Row | undefined, events: Row[]): boolean {
+  const latestTurn = events.map(row => row.payload?.prpEvent?.eventType)
+    .filter(kind => ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(kind)).at(-1);
+  return run?.runtimeMode === "native" && run.status === "running" && latestTurn === "turn.started";
+}
+
 /** Shared story order; target adapters supply authoritative retirement observations. */
 export async function stopAndRedirectThroughUi(input: {
   page: Page; nonce: string;
