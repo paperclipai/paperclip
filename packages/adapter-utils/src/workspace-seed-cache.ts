@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { directorySnapshotSha256, withDirectoryMergeLock, type DirectorySnapshot } from "./workspace-restore-merge.js";
 import { assertWorkspaceManifestDiskSpace } from "./workspace-manifest.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
@@ -26,9 +26,12 @@ async function digest(file: string): Promise<string> {
   return hash.digest("hex");
 }
 
+/** A privateCopyDirectory must be caller-owned staging; its caller owns cleanup. */
 export async function readWorkspaceSeedGeneration(root: string, generation: string,
-  options: { companyDirectory?: string } = {}): Promise<WorkspaceDurableSeedPaths | null> {
+  options: { companyDirectory?: string; privateCopyDirectory?: string } = {}): Promise<WorkspaceDurableSeedPaths | null> {
   const directory = path.join(root, generation);
+  let privateCopy: string | null = null;
+  let accepted = false;
   try {
     for (const item of [root, directory]) { const stat = await fs.lstat(item); if (!stat.isDirectory() || stat.isSymbolicLink()) return null; }
     const receipt = path.join(directory, "receipt.json");
@@ -37,12 +40,23 @@ export async function readWorkspaceSeedGeneration(root: string, generation: stri
     const metadata = JSON.parse(await fs.readFile(receipt, "utf8"));
     if (!/^[a-f0-9]{64}$/.test(metadata.workspaceSha256) || (metadata.gitSha256 !== null && !/^[a-f0-9]{64}$/.test(metadata.gitSha256))) return null;
     if (metadata.version !== 1 || metadata.generation !== generation) return null;
-    const workspaceArchivePath = path.join(directory, "workspace.tar");
-    const gitArchivePath = metadata.gitSha256 ? path.join(directory, "git.tar") : null;
+    if (options.privateCopyDirectory) {
+      const stat = await fs.lstat(options.privateCopyDirectory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+      privateCopy = await fs.mkdtemp(path.join(options.privateCopyDirectory, "verified-seed-"));
+    }
+    const archiveDirectory = privateCopy ?? directory;
+    const workspaceArchivePath = path.join(archiveDirectory, "workspace.tar");
+    const gitArchivePath = metadata.gitSha256 ? path.join(archiveDirectory, "git.tar") : null;
     for (const [file, expected] of [[workspaceArchivePath, metadata.workspaceSha256], [gitArchivePath, metadata.gitSha256]]) {
       if (!file) continue;
-      const stat = await fs.lstat(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || await digest(file) !== expected) return null;
+      const source = path.join(directory, path.basename(file));
+      const stat = await fs.lstat(source);
+      if (!stat.isFile() || stat.isSymbolicLink()) return null;
+      // Hash the exact private bytes staging will consume. This avoids a
+      // second source hash and remains valid if the shared cache changes later.
+      if (privateCopy) await fs.copyFile(source, file, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
+      if (await digest(file) !== expected) return null;
     }
     const used = await withDirectoryMergeLock(path.resolve(options.companyDirectory ?? root), async () => {
       const current = await fs.lstat(receipt).catch(() => null);
@@ -52,9 +66,11 @@ export async function readWorkspaceSeedGeneration(root: string, generation: stri
       return true;
     });
     if (!used) return null;
+    accepted = true;
     return { workspaceArchivePath, workspaceArchiveSha256: metadata.workspaceSha256,
       gitArchivePath, gitArchiveSha256: metadata.gitSha256 };
   } catch { return null; }
+  finally { if (!accepted && privateCopy) await fs.rm(privateCopy, { recursive: true, force: true }).catch(() => undefined); }
 }
 export const WORKSPACE_SEED_CACHE_LIMITS = Object.freeze({
   workspaceGenerations: 16,

@@ -170,6 +170,17 @@ it.each([
   const isolated = await prepare("other-company", secondBranch, path.join(root, "other-company-cache"));
   expect(isolated.phases).toContain("workspace.git_clone");
   await isolated.prepared.cleanupWorkspaceSnapshot?.();
+  await fs.writeFile(path.join(company, "shared-v1", current[0]!, "git.tar"), "corrupted cache");
+  const fallback = await prepare("corrupted-cache", secondBranch);
+  expect(fallback.phases).toContain("workspace.git_clone");
+  for (const relative of repositories) {
+    const cwd = path.join(fallback.remote, relative);
+    expect(await git(cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe(secondBranch ?? "HEAD");
+    expect(await fs.readFile(path.join(cwd, "tracked.txt"), "utf8")).toBe("working-tree bytes\n");
+    expect(await fs.readFile(path.join(cwd, "new.txt"), "utf8")).toBe("untracked overlay\n");
+    await expect(fs.stat(path.join(cwd, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  await fallback.prepared.cleanupWorkspaceSnapshot?.();
 }, 30_000);
 
 it("separates shared seeds when file contents, Git head, origin or repository layout differ", async () => {

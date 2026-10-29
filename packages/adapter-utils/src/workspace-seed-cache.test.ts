@@ -26,6 +26,45 @@ async function fixture() {
 }
 const generation = (index: number) => index.toString(16).padStart(64, "0");
 
+it("returns verified private copies that survive subsequent cache changes", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copy = await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination });
+  expect(copy).not.toBeNull();
+  expect(path.dirname(copy!.workspaceArchivePath)).toBe(path.dirname(copy!.gitArchivePath!));
+  expect(path.dirname(path.dirname(copy!.workspaceArchivePath))).toBe(destination);
+  await fs.writeFile(path.join(f.workspace, generation(1), "workspace.tar"), "changed shared cache");
+  await fs.rm(path.join(f.workspace, generation(1), "git.tar"));
+  expect(await fs.readFile(copy!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  expect(await fs.readFile(copy!.gitArchivePath!, "utf8")).toBe("git recovery bytes");
+});
+
+it("rejects corrupted private bytes and removes incomplete materialization", async () => {
+  const f = await fixture();
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed)).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copyFile = fs.copyFile.bind(fs);
+  vi.spyOn(fs, "copyFile").mockImplementationOnce(async (...args) => {
+    await copyFile(...args);
+    await fs.writeFile(args[1], "corrupted during copy");
+  });
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+  expect(await fs.readFile(path.join(f.workspace, generation(1), "workspace.tar"), "utf8")).toBe("run recovery bytes");
+});
+
+it("cleans a verified workspace copy if the cached Git archive is corrupt", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  await fs.writeFile(path.join(f.workspace, generation(1), "git.tar"), "corrupt");
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+});
+
 it("stops new workspace generations at capacity while retaining reusable and per-run seeds", async () => {
   const f = await fixture(); const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 } };
   expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
