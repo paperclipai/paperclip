@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
@@ -1016,6 +1017,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
     if (wakeupIds.length === 0) return 0;
 
+    await notifyChatInboundWakeNotices(tx, { companyId: scope.companyId });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -1134,7 +1136,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     let caseHandoffRetryClaimed = false;
     if (handoffIssueId && supersedesCaseHandoff && options.resultJson?.caseHandoffYieldStop !== true) {
       const publications: ActivityPublication[] = [];
-      const supersessionApplied = await db.transaction(async tx => {
+      const applySupersession = () => db.transaction(async tx => {
         const [issue] = await tx.select({ id: issues.id, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
           assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
           .where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
@@ -1189,7 +1191,27 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId,
           sourceRunId: runId, includeUnboundTerminalIntent: Boolean(fenced && ownsTask), reason, publications });
         return true;
-      }).catch(rethrowNativeCancellationLockConflict);
+      });
+      let supersessionApplied = false;
+      for (let attempt = 0; ; attempt++) {
+        const previousRun = run;
+        try {
+          supersessionApplied = await applySupersession();
+          break;
+        } catch (error) {
+          const value = parseObject(error);
+          const deadlock = value.code === "40P01" || parseObject(value.cause).code === "40P01";
+          if (!deadlock || attempt >= 2) rethrowNativeCancellationLockConflict(error);
+          // PostgreSQL aborted the entire transaction. Discard its local
+          // receipts before re-reading current authority under fresh locks.
+          // Provider Stop and publication happen only after this boundary.
+          run = previousRun;
+          cancellationClaimed = false;
+          caseHandoffRetryClaimed = false;
+          publications.length = 0;
+          await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+        }
+      }
       publications.forEach(publishActivity);
       if (!supersessionApplied) return null;
     }
@@ -1556,35 +1578,29 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     );
     if (uniqueAgentIds.length === 0) return 0;
 
-    const now = new Date();
-    const wakeupIds = await db
-      .select({ id: agentWakeupRequests.id })
-      .from(agentWakeupRequests)
-      .where(
-        and(
+    return db.transaction(async tx => {
+      const wakeups = await tx
+        .select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+        .from(agentWakeupRequests)
+        .where(and(
           inArray(agentWakeupRequests.agentId, uniqueAgentIds),
-          inArray(agentWakeupRequests.status, [
-            "queued",
-            "deferred_issue_execution",
-          ]),
-          sql`${agentWakeupRequests.runId} is null`,
-        ),
-      )
-      .then((rows) => rows.map((row) => row.id));
-
-    if (wakeupIds.length === 0) return 0;
-
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: reason,
-        updatedAt: now,
-      })
-      .where(inArray(agentWakeupRequests.id, wakeupIds));
-
-    return wakeupIds.length;
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          isNull(agentWakeupRequests.runId),
+        ));
+      if (!wakeups.length) return 0;
+      for (const companyId of new Set(wakeups.map(row => row.companyId))) {
+        await notifyChatInboundWakeNotices(tx, { companyId });
+      }
+      const now = new Date();
+      const cancelled = await tx.update(agentWakeupRequests).set({
+        status: "cancelled", finishedAt: now, error: reason, updatedAt: now,
+      }).where(and(
+        inArray(agentWakeupRequests.id, wakeups.map(row => row.id)),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        isNull(agentWakeupRequests.runId),
+      )).returning({ id: agentWakeupRequests.id });
+      return cancelled.length;
+    });
   }
 
   async function cancelInvocationsForAgentsInternal(

@@ -3499,10 +3499,6 @@ describe("executeNativeSession recovery", () => {
   });
 
   it("stops and closes a timed-out consumer even when the caller requested a warm session", async () => {
-    let markAppendStarted = () => {};
-    const appendStarted = new Promise<void>((resolve) => {
-      markAppendStarted = resolve;
-    });
     let releaseAppend = () => {};
     const appendReleased = new Promise<void>((resolve) => {
       releaseAppend = resolve;
@@ -3515,7 +3511,6 @@ describe("executeNativeSession recovery", () => {
     let appendCommitted = false;
     const appendEvent = vi.fn(
       async (_event: PrpEvent, options?: { signal: AbortSignal }) => {
-        markAppendStarted();
         await Promise.race([
           appendReleased,
           new Promise<never>((_resolve, reject) => {
@@ -3612,28 +3607,39 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
-    const execution = executeNativeSession({
-      input,
-      backend,
-      controlPlane: port,
-      runnerInstanceId: "runner-recovery",
-      controlPlaneInstanceId: "control-recovery",
-      timeoutMs: 1,
-      keepSessionOpen: true,
-    });
-    const rejection = expect(execution).rejects.toThrow(
-      "native session timed out",
-    );
-    await appendStarted;
-    await vi.waitFor(() => expect(iteratorTeardown).toHaveBeenCalledOnce());
-    await rejection;
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalled();
-    expect(appendEvent).toHaveBeenCalledOnce();
-    expect(appendCommitted).toBe(false);
-    releaseAppend();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(appendCommitted).toBe(false);
+    // Reach the pending append before expiring the consumer. A real 1 ms
+    // deadline can expire during setup before the consumer reaches this case.
+    vi.useFakeTimers();
+    try {
+      const execution = executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        timeoutMs: 1,
+        keepSessionOpen: true,
+      });
+      const rejection = expect(execution).rejects.toThrow(
+        "native session timed out",
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(appendEvent).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejection;
+      expect(iteratorTeardown).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalled();
+      expect(appendEvent).toHaveBeenCalledOnce();
+      expect(appendCommitted).toBe(false);
+      releaseAppend();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(appendCommitted).toBe(false);
+    } finally {
+      releaseAppend();
+      releaseTeardown();
+      vi.useRealTimers();
+    }
   });
 
   it("closes a failed session while retaining an uncancellable event read", async () => {

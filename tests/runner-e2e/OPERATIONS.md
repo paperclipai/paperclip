@@ -399,12 +399,16 @@ This path currently supports the admitted local cells; remote transport remains
 unqualified.
 
 Scheduled experiment creation, grade insertion and summary retrieval share a
-60-second window, three-request cap, 4 MiB total payload allowance and eight-score
+60-second window, three-request cap, 4 MiB total payload allowance and fourteen-score
 cap. They run serially without automatic retry. Admission is persisted before
 dispatch in `<ledgerPath>.experiment-ingestion.jsonl`; uncertain responses retain
 their allowance and unresolved status. Reusing that file fails instead of
 resetting the budget. These limits cover the selected daily/weekly campaigns;
 the standalone experiment-import command does not use this transport budget.
+Each retained attempt contributes two deterministic grades, including failed
+grades. The cap supports seven attempts without dropping rows. Larger campaigns
+still fail closed. Historical receipts with the eight-score policy remain
+readable and keep their original limits and traffic counts.
 
 Private `ingestion-usage.json` binds all three receipt paths to the campaign's
 admitted attempts and ledger hash. Missing, malformed, unclosed or unresolved
@@ -972,11 +976,17 @@ install. `report-lock.json` pins the input lock, patch and resulting lock hashes
 This updates existing patch identities and the already declared yaml dependency
 without registry resolution. The worker target and its lock artifact never
 control report dependencies. An already-reviewed output lock is used unchanged. An unknown committed lock fails before install;
-update and review this correction when dependency inputs change. The original
+review the correction with dependency changes. The existing lockfile-refresh bot runs
+`prepare-report-lock.mjs --refresh` and includes the correction and hashes in its
+lockfile PR. The PR includes the root lock, which is owned by CODEOWNERS;
+the bot requests normal auto-merge and cannot bypass required code-owner review
+or checks. It refuses to bless an unrecognized committed lock. Paid authorization
+and report jobs still apply only the reviewed offline correction. The original
 failed run remains failed when retained evidence gets a new presentation.
 
-The trusted authorization job checks this correction before catalog/build and
-paid work. Unknown dependency locks fail before model admission. Manual history
+The trusted authorization job checks this correction and validates the frozen
+lock against current dependency manifests offline before catalog/build and paid
+work. This check resolves no packages and runs no lifecycle scripts. Unknown dependency locks fail before model admission. Manual history
 publication applies the same correction before its frozen install. Qualification
 image builds apply it only when target and workflow revisions match; a different
 target keeps its own lock and does not require these reporting helper files.

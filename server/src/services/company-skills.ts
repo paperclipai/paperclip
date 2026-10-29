@@ -12,7 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { skillFileBytes, snapshotFile, assertSkillSnapshotPath, skillSnapshotHash } from "./skill-snapshot.js";
 import { fileURLToPath } from "node:url";
-import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents as agentsTable,
@@ -3047,9 +3047,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, [...bundledSkills, firstTaskSkill]);
+      return upsertImportedSkills(companyId, [...bundledSkills, firstTaskSkill], db, { includeFolderPath: false });
     }
-    return upsertImportedSkills(companyId, [firstTaskSkill]);
+    return upsertImportedSkills(companyId, [firstTaskSkill], db, { includeFolderPath: false });
   }
 
   async function readBundledSkillReleaseRegistry() {
@@ -3132,7 +3132,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         id: companySkills.id,
         key: companySkills.key,
         folderId: companySkills.folderId,
-        metadata: companySkills.metadata,
+        metadata: sql<Record<string, unknown>>`jsonb_build_object('sourceKind', ${companySkills.metadata}->'sourceKind')`,
       })
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId))
@@ -3172,7 +3172,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         metadata: companySkills.metadata,
       })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId));
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.sourceType, "local_path")));
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
@@ -3322,7 +3322,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         ? await folderSvc.descendantIds(companyId, "skill", query.folderId)
         : new Set([query.folderId]);
     }
-    const agentRows = await agents.list(companyId);
+    const agentRows = await db.select({
+      desiredSkills: sql<unknown>`${agentsTable.adapterConfig}->'paperclipSkillSync'->'desiredSkills'`,
+    }).from(agentsTable).where(and(eq(agentsTable.companyId, companyId), ne(agentsTable.status, "terminated")));
+    const attachedAgentCounts = new Map<string, number>();
+    for (const agent of agentRows) {
+      for (const key of resolveDesiredSkillKeys(rows, { paperclipSkillSync: { desiredSkills: agent.desiredSkills } })) {
+        attachedAgentCounts.set(key, (attachedAgentCounts.get(key) ?? 0) + 1);
+      }
+    }
     const q = query.q?.trim().toLowerCase() ?? "";
     const categories = new Set(
       (query.categories ?? [])
@@ -3348,13 +3356,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
       return true;
     });
-    const items = filtered.map((skill) => {
-      const attachedAgentCount = agentRows.filter((agent) => {
-        const desiredSkills = resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>);
-        return desiredSkills.includes(skill.key);
-      }).length;
-      return toCompanySkillListItem(skill, attachedAgentCount);
-    });
+    const items = filtered.map((skill) => toCompanySkillListItem(skill, attachedAgentCounts.get(skill.key) ?? 0));
     const sort = query.sort ?? "alphabetical";
     items.sort((left, right) => {
       if (sort === "recent") return right.updatedAt.getTime() - left.updatedAt.getTime() || left.name.localeCompare(right.name);
@@ -3424,13 +3426,20 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
-  async function getByKey(companyId: string, key: string, database: DbOrTransaction = db) {
+  async function getByKey(
+    companyId: string,
+    key: string,
+    database: DbOrTransaction = db,
+    options: { includeFolderPath?: boolean } = {},
+  ) {
     const row = await database
       .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key), await visibility(database).condition(companyId)))
       .then((rows) => rows[0] ?? null);
-    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
+    if (!row) return null;
+    const skill = toCompanySkill(row);
+    return options.includeFolderPath === false ? skill : enrichFolderPath(companyId, skill);
   }
 
   async function getBySlugIfUnique(companyId: string, slug: string) {
@@ -6176,7 +6185,32 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   ): Promise<T> {
     if (options.onlyKeys?.size === 0 || (!options.onlyKeys && options.selectionConfig && !options.includeLegacy
       && readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills.length === 0)) return consume([]);
-    await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
+    // Installed selections need current authorization, not a company-wide import on every turn.
+    const selected = options.onlyKeys ?? (options.selectionConfig && !options.includeLegacy
+      ? new Set(readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills) : null);
+    const installed = selected ? await db.select({ key:companySkills.key, slug:companySkills.slug,
+      sourceLocator:companySkills.sourceLocator,
+      sourceKind:sql<string>`${companySkills.metadata}->>'sourceKind'`,
+    }).from(companySkills).where(and(eq(companySkills.companyId,companyId),
+      inArray(companySkills.key,[...selected]),await visibility().condition(companyId))) : [];
+    if (!selected || installed.length !== selected.size) {
+      await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
+    } else {
+      for (const skill of installed.filter(skill => skill.sourceKind === "paperclip_bundled")) {
+        const candidates = skill.key === ONBOARDING_FIRST_TASK_SKILL_KEY
+          ? [fileURLToPath(new URL("../onboarding-assets/first-task/skills/first-task/", import.meta.url))]
+          : resolveBundledSkillsRoot().map(root => path.join(root,skill.slug));
+        for (const directory of candidates) {
+          if (!(await fs.stat(path.join(directory,"SKILL.md")).catch(() => null))?.isFile()) continue;
+          if (normalizeSourceLocatorDirectory(skill.sourceLocator) !== path.resolve(directory)) {
+            const imported = await readLocalSkillImportFromDirectory(companyId,directory,{metadata:{sourceKind:"paperclip_bundled"}});
+            if (imported.key !== skill.key) throw new Error("Bundled runtime skill key changed");
+            await upsertImportedSkills(companyId,[imported],db,{includeFolderPath:false});
+          }
+          break;
+        }
+      }
+    }
     return withSkillVersionCacheLock(db, companyId, async () => {
       const entries = await listRuntimeSkillEntriesLocked(companyId, options);
       return measureRunPhase("skills.consume", () => consume(entries));
@@ -6383,13 +6417,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     companyId: string,
     imported: ImportedSkill[],
     database: DbOrTransaction = db,
+    options: { includeFolderPath?: boolean } = {},
   ): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     const bundledFolders = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureBundledCategory>>>();
     for (const skill of imported) {
       assertImportedSkillKeyAllowed(skill);
       assertImportedSkillSourceAllowed(skill);
-      const existing = await getByKey(companyId, skill.key, database);
+      const existing = await getByKey(companyId, skill.key, database, options);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);

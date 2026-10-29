@@ -1,3 +1,6 @@
+import { notifyChatResponseAvailability } from "../chat-response-availability.js";
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
@@ -845,6 +848,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const error = stopped
           ? "Automatic continuation stopped by the committed chat conversation close. Send a new request in chat or on the Board to start fresh work."
           : "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.";
+        await notifyChatRunMilestones(tx, { companyId: current.companyId, issueId });
         [terminal] = await tx
           .update(heartbeatRuns)
           .set({
@@ -960,9 +964,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (!["pending_dispatch", "delivered"].includes(caseHandoffReceipt.state) || caseHandoffReceipt.toAgentId !== run.agentId ||
           !current || current.version !== caseHandoffReceipt.version || current.issueId !== caseHandoffReceipt.issueId ||
           current.agentId !== run.agentId || (!run.startedAt && current.statusVersion !== caseHandoffReceipt.appliedIssueStatusVersion)) {
-        const [cancelled] = await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
-          errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
-          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
+        const cancelled = await db.transaction(async tx => {
+          const [currentRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")))
+            .for("update");
+          if (!currentRun) return null;
+          await notifyChatRunMilestones(tx, { companyId: run.companyId });
+          const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
+            errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
+          return row;
+        });
         if (cancelled) await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date(), error: cancelled.error });
         return null;
       }
@@ -1317,6 +1329,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 if (proof.kind === "stopped") {
                   const error =
                     "Automatic continuation stopped by the committed chat conversation close. Send a fresh request in chat or on the Board.";
+                  await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1395,6 +1408,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
                 await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
+                await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1436,6 +1450,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               });
               if (liveIds.length === 0) {
                 const reason = "Queued messages were discarded before dispatch";
+                await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1483,6 +1498,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               }
 
               await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
+              await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -1593,6 +1609,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             )).for("update");
             if (!lockedRun || lockedRun.status !== "queued") return null;
             await withExternalAdmissionGuard(claimTx, run.companyId, run.agentId, () => assertNoExternalOverlap(claimTx, run.companyId, run.agentId));
+            await notifyChatRunMilestones(claimTx, { companyId: run.companyId, issueId: issueId ?? undefined });
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
@@ -1690,6 +1707,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function releaseRunClaimedJustBeforeSuppression(runId: string) {
     const now = new Date();
     await db.transaction(async (tx) => {
+      const [candidate] = await tx.select({ companyId: heartbeatRuns.companyId, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"))).for("update");
+      if (!candidate) return;
+      await notifyChatRunMilestones(tx, { companyId: candidate.companyId,
+        issueId: readNonEmptyString(parseObject(candidate.contextSnapshot).issueId) ?? undefined });
       const released = await tx
         .update(heartbeatRuns)
         .set({
@@ -2478,12 +2500,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const waitIssueId = issueId;
         return db.transaction(async (tx) => {
           await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
+          if (durableRequest) await notifyChatInboundWakeNotices(tx, {
+            companyId: durableRequest.companyId, issueId: durableRequest.issueId,
+          });
           return recordExecutionWait(tx as unknown as Db, {
             issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
           });
         });
       }
-      await db.insert(agentWakeupRequests).values(request);
+      if (durableRequest) {
+        await db.transaction(async tx => {
+          await notifyChatInboundWakeNotices(tx, {
+            companyId: durableRequest.companyId, issueId: durableRequest.issueId,
+          });
+          await tx.insert(agentWakeupRequests).values(request);
+        });
+      } else {
+        await db.insert(agentWakeupRequests).values(request);
+      }
       return { created: true };
     };
     const writeSkippedHeartbeatRequest = async (
@@ -3454,6 +3488,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const reason = issueCancelled
               ? "Cancelled because the issue was cancelled before the scheduled retry became due"
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({
@@ -3590,6 +3625,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId
           ) {
+            await notifyChatRunMilestones(tx, { companyId: activeExecutionRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({
@@ -3828,6 +3864,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 `- Reason: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE}`,
                 `- Next action: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`,
               ].join("\n");
+              if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
               await tx
                 .update(issues)
                 .set({
@@ -4309,6 +4346,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
+          await notifyChatRunMilestones(tx, { companyId: agent.companyId, issueId: issueId ?? undefined });
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
@@ -4701,6 +4739,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     >();
 
     for (const candidate of candidates) {
+      const payload = parseObject(candidate.payload);
+      const wakeContext = parseObject(payload._paperclipWakeContext);
+      const issueId =
+        readNonEmptyString(payload.issueId) ??
+        readNonEmptyString(payload.taskId) ??
+        readNonEmptyString(wakeContext.issueId) ??
+        null;
       const dispatchActorId = `native-status-wake-dispatch:${candidate.id}`;
       const existingDispatch = await db
         .select()
@@ -4722,24 +4767,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           : existingDispatch.status === "deferred_issue_execution"
             ? "coalesced"
             : existingDispatch.status;
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: recoveredStatus,
-            runId: existingDispatch.runId,
-            finishedAt:
-              (existingDispatch.runId ?? existingDispatch.finishedAt)
-                ? (existingDispatch.finishedAt ?? now)
-                : null,
-            error: existingDispatch.error,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(agentWakeupRequests.id, candidate.id),
-              isNull(agentWakeupRequests.runId),
-            ),
-          );
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: recoveredStatus,
+              runId: existingDispatch.runId,
+              finishedAt:
+                (existingDispatch.runId ?? existingDispatch.finishedAt)
+                  ? (existingDispatch.finishedAt ?? now)
+                  : null,
+              error: existingDispatch.error,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.id, candidate.id),
+                isNull(agentWakeupRequests.runId),
+              ),
+            );
+        });
         recovered += 1;
         continue;
       }
@@ -4773,13 +4821,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .returning({ id: agentWakeupRequests.id });
       if (claimed.length === 0) continue;
 
-      const payload = parseObject(candidate.payload);
-      const wakeContext = parseObject(payload._paperclipWakeContext);
-      const issueId =
-        readNonEmptyString(payload.issueId) ??
-        readNonEmptyString(payload.taskId) ??
-        readNonEmptyString(wakeContext.issueId) ??
-        null;
       const scopeKey = issueId
         ? `${candidate.companyId}:${candidate.agentId}:${issueId}:${readNativeReviewAssignmentContext(wakeContext)?.nativeReviewInteractionId ?? ""}`
         : null;
@@ -4787,16 +4828,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ? deliveredByIssueScope.get(scopeKey)
         : null;
       if (priorDelivery) {
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: "coalesced",
-            runId: priorDelivery.runId,
-            finishedAt: new Date(),
-            error: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, candidate.id));
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "coalesced",
+              runId: priorDelivery.runId,
+              finishedAt: new Date(),
+              error: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, candidate.id));
+        });
         recovered += 1;
         continue;
       }
@@ -4895,21 +4939,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         // promote both rows (the original has no nativeStatusWakeIntentId
         // provenance and would otherwise run once before the dispatch receipt).
         const deliveredStatus = delivered?.status ?? "queued";
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: wakeRun || deliveredStatus === "deferred_issue_execution"
-              ? "coalesced"
-              : deliveredStatus,
-            runId: wakeRun?.id ?? delivered?.runId ?? null,
-            finishedAt:
-              wakeRun || delivered?.finishedAt
-                ? (delivered?.finishedAt ?? new Date())
-                : null,
-            error: delivered?.error ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, candidate.id));
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: wakeRun || deliveredStatus === "deferred_issue_execution"
+                ? "coalesced"
+                : deliveredStatus,
+              runId: wakeRun?.id ?? delivered?.runId ?? null,
+              finishedAt:
+                wakeRun || delivered?.finishedAt
+                  ? (delivered?.finishedAt ?? new Date())
+                  : null,
+              error: delivered?.error ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, candidate.id));
+        });
 
         if (scopeKey) {
           deliveredByIssueScope.set(scopeKey, {

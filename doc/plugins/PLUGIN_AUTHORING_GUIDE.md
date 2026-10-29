@@ -248,6 +248,18 @@ not advertise interactive login or template capture. Install
 the built package by local path; its optional managed-image catalog key is
 `createos`. The package README describes configuration and the opt-in live smoke.
 
+### boxd sandbox provider
+
+The in-repo [`@paperclipai/plugin-boxd`](../../packages/plugins/sandbox-providers/boxd/README.md)
+package implements the environment lifecycle hooks on isolated boxd microVMs
+through the `@boxd-sh/sdk` package. It supports reusable leases: a released
+machine is suspended and the next run resumes it with its disk, memory and
+processes. It also implements the stop and inspect hooks, and it bounds a lease
+with a provider-side delete timer when the host requests an expiry. It does not
+advertise interactive login, template capture or native file sync. Install the
+built package by local path; its optional managed-image catalog key is `boxd`.
+The package README describes configuration and the opt-in live smoke.
+
 ### Worker APIs
 
 Worker:

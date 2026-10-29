@@ -1,3 +1,5 @@
+import { isSafeNativeChatProgressEventType } from "../safe-native-chat-progress.js";
+import { notifyChatNativeProgress } from "../chat-native-progress-notifications.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
@@ -290,6 +292,9 @@ export class NativeRunCoordinatorStore {
         throw new Error("native_event_source_gap");
       }
 
+      if (isSafeNativeChatProgressEventType(event.eventType)) {
+        await notifyChatNativeProgress(tx, { companyId: this.#binding.companyId, issueId: this.#binding.issueId });
+      }
       const cursor = run.nextEventSeq;
       const [inserted] = await tx
         .insert(heartbeatRunEvents)

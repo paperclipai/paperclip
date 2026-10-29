@@ -1,3 +1,5 @@
+import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
@@ -312,6 +314,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async cancelDeferredWake({ companyId, wakeId, reason, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
@@ -343,6 +346,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async failDeferredWake({ companyId, wakeId, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({
@@ -472,6 +476,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async finalizePromotedWake(input) {
+      await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issue.id });
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -688,6 +693,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       sessionBefore,
       now,
     }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId: issue.id });
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -949,6 +955,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
+      await notifyChatRunMilestones(tx, { companyId: input.companyId });
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
@@ -989,6 +996,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
     async mergeIntoExistingDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
+      if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({

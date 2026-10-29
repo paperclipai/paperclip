@@ -7,11 +7,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentActionButtons } from "./AgentActionButtons";
+import { useAgentLifecycleStatus } from "./AgentLifecycleStatus";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockOpenNewIssue = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockAgentsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   invoke: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
@@ -134,7 +137,7 @@ describe("AgentActionButtons", () => {
     );
   }
 
-  it.each(["codex_local", "claude_local", "paperclip_runner"])("returns unfinished %s agents to their saved runner", async adapterType => {
+  it.each(["codex_local", "claude_local", "opencode_local", "pi_local", "paperclip_runner"])("returns unfinished %s agents to their saved runner", async adapterType => {
     render(makeAgent({ adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup" }));
     await flushReact();
     const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
@@ -144,6 +147,84 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining("setupAgentId=agent-1"));
     expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining(`runner=${adapterType === "paperclip_runner" ? "paperclip" : "legacy"}`));
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
+  it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
+    render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));
+    await flushReact();
+    const buttons = [...container.querySelectorAll("button")];
+    const finish = buttons.filter(button => button.textContent === "Finish setup");
+    expect(finish).toHaveLength(1);
+    expect(buttons.some(button => /Run Heartbeat|^Resume$|^Pause$/.test(button.textContent ?? ""))).toBe(false);
+    await act(() => finish[0].click());
+    const target = new URL(mockNavigate.mock.calls[0][0], "https://example.test");
+    expect(target.pathname).toBe("/agents/new");
+    expect(Object.fromEntries(target.searchParams)).toMatchObject({ setupAgentId: "agent-1", adapterType: "paperclip_runner", runnerProvider: "claude", runner: "paperclip" });
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
+  it.each(["terminating", "cleaning_up", "terminated", "rejected"] as const)("does not reopen setup during %s", async lifecycleState => {
+    render(makeAgent({ status: "terminated", lifecycleState, pauseReason: "setup" }));
+    await flushReact();
+    expect(container.textContent).not.toContain("Finish setup");
+  });
+
+  it("restores Run after lifecycle refresh completes setup without replacing the editable record", async () => {
+    const draft = makeAgent({ status: "paused", lifecycleState: "paused", lifecycleVersion: 1, pauseReason: "setup", pausedAt: new Date("2026-01-01T00:00:00Z"), adapterConfig: { model: "saved-model" } });
+    queryClient.setQueryData(queryKeys.agents.detail("alpha"), draft);
+    mockAgentsApi.get.mockResolvedValueOnce(draft);
+    function LiveActions() {
+      const lifecycle = useAgentLifecycleStatus(draft);
+      return <AgentActionButtons agent={{ ...draft, ...lifecycle.data }} companyId="company-1" runLabel="Run Heartbeat" />;
+    }
+    root = createRoot(container);
+    root.render(<QueryClientProvider client={queryClient}><LiveActions /></QueryClientProvider>);
+    await flushReact();
+    expect(container.textContent).toContain("Finish setup");
+    mockAgentsApi.get.mockResolvedValue({ ...draft, status: "idle", lifecycleState: "ready", lifecycleVersion: 2, pauseReason: null, pausedAt: null, adapterConfig: { model: "updated-on-server" } });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: [...queryKeys.agents.detail(draft.id), "lifecycle", draft.companyId] }); });
+    await flushReact();
+    expect(container.textContent).not.toContain("Finish setup");
+    const run = [...container.querySelectorAll("button")].find(button => button.textContent === "Run Heartbeat");
+    expect(run?.disabled).toBe(false);
+    expect(queryClient.getQueryData<Agent>(queryKeys.agents.detail("alpha"))?.adapterConfig).toEqual({ model: "saved-model" });
+    expect(mockAgentsApi.get).toHaveBeenLastCalledWith("agent-1", "company-1");
+    await act(() => run!.click());
+    await flushReact();
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1");
+  });
+
+  it("checks unsaved changes before leaving to finish setup", async () => {
+    const onBeforeNavigate = vi.fn(() => false);
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }), { hasPendingNavigationChanges: true, onBeforeNavigate });
+    await flushReact();
+    await act(() => [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup")!.click());
+    expect(onBeforeNavigate).toHaveBeenCalledOnce();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps setup available when the caller hides Run or blocks work", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }), { showRun: false, workActionsDisabled: true });
+    await flushReact();
+    expect([...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup")!.disabled).toBe(false);
+  });
+
+  it("offers Run after setup completes without turning a manual pause into setup", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }));
+    await flushReact();
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "manual" }));
+    await flushReact();
+    expect(container.textContent).toContain("Resume");
+    expect(container.textContent).not.toContain("Finish setup");
+    render(makeAgent({ status: "idle", lifecycleState: "ready", pauseReason: null }));
+    await flushReact();
+    const run = [...container.querySelectorAll("button")].find(button => button.textContent === "Run Heartbeat");
+    expect(run?.disabled).toBe(false);
+    await act(() => run!.click());
+    await flushReact();
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1");
   });
 
   it.each(["preparing", "verifying", "resuming"] as const)("offers pause rather than resume during %s", async lifecycleState => {

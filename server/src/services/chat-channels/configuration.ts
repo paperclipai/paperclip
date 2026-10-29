@@ -196,7 +196,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             code: "chat_endpoint_not_active",
           });
         }
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -334,7 +334,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
                 inArray(chatDeliveries.state, ["received", "retry"]),
               ),
             );
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           [activatedEndpoint] = await tx
             .update(chatEndpoints)
             .set({
@@ -381,9 +381,9 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           const failure = redactError(error);
           const failedAt = new Date();
           await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+          await db.transaction(async (tx) => {
             await credentialLease.assertOwned(tx);
-            await notifyChatEndpointWork(tx, endpoint.connectionId);
+            await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
             await tx
               .update(chatEndpoints)
               .set({
@@ -487,7 +487,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             code: "chat_endpoint_already_removed",
           });
         }
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -721,7 +721,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await managementContext?.reauthorize();
         const claimed = await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const rows = await tx
             .update(chatEndpoints)
             .set({
@@ -800,7 +800,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await installSpekoVoiceTools(tx, endpoint, actorUserId);
       }
         const preserveSlackVerification = preservesProvisionedSlackVerification(current.setup, credentials.signingSecret ?? "", `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`);
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -887,7 +887,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({

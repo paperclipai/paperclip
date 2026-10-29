@@ -46,6 +46,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   New messages and orphan cleanup can register missing preservation automatically
   and wake the existing worker. Saved input still waits for verified stop and file
   persistence, then enters ordinary admission once.
+  A completed explicit Retry also retires its failed, unowned sandbox predecessor's
+  stale retry and registers preservation atomically. Current task state and live or
+  mismatched owners remain protected; workspace switching still waits for cleanup.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once
@@ -57,6 +60,44 @@ Agent access: [companion](../agent-access-map/recovery.md).
   the agent itself restarted or that a failed run succeeded.
 
 ## How to get to it (user POV)
+
+For `recovery/reconnect`, also interrupt a write response after the server accepts
+it. Keep a title draft bound to its original task while navigating. Restore a
+new-task draft with its files selected in another order and require the same
+creation key and one task. Verify lost document-create and decision responses,
+including an interrupted verification read. Once the bounded retry budget ends,
+require a visible **Resend now** action. Use
+[durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx) and
+[task creation tests](../../ui/src/components/NewIssueDialog.test.tsx) for the
+controlled source cases; repeat the real browser journey for acceptance.
+Switch accounts while an inline edit is open or a channel send waits to retry:
+the next account must see neither private text nor a retry from the first account.
+Returning to the original account restores its retained channel request with the
+same key for explicit retry. Unowned legacy receipts stay held for Activity
+inspection until a person explicitly discards their browser record; discard does
+not replay the text or cancel an accepted update. Typing before the first session
+lookup survives that initial lookup and is backed up under the resolved owner. Component evidence lives in the
+[inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
+[connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
+these controlled session changes do not establish hosted authentication acceptance.
+Also switch accounts during a restored task create and while its files are
+uploading: later uploads stop, the next account sees a fresh form, and the
+original request key remains owned by the first account. Reselect colliding
+text-document filenames in reverse order and verify their original keys and
+contents. Switch between cached document subjects without copying either draft.
+A receipt arriving before an in-flight resend must preserve the next message.
+The startup browser journey in
+[disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
+first session response while a title save waits, simulates an offline event with
+API failures while keeping static assets reachable, then verifies the real saved
+server title after account resolution and reload. The accepted-comment journey
+then completes and assigns a task before repeating its saved comment request;
+the original receipt must return once, its activity must appear once, and the task must stay Done. Reusing that
+key with different text must return a conflict without changing the task. This
+uses a disposable process agent and makes no provider call. A separate healthy-API
+startup journey fails the session endpoint with JSON 500 responses, then restores
+it while an edit waits; the same edit must save and survive reload without a
+network reconnect or another user action.
 
 ### `source-task`
 

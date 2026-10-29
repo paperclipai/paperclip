@@ -333,6 +333,10 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
+Use the returned `nextOffset` as `offset` to read the next page. The tool and
+parameter descriptions include these bounds for providers that render numeric
+schema constraints as plain number types.
 Search returns bounded pages of names, descriptions, and input schemas. Each
 page intersects the session's pinned assignments with current gateway grants.
 An individual schema that exceeds a page returns an `inputSchemaRef`. The same
@@ -817,6 +821,25 @@ If delivery exceeds the limit, the bridge reports an error without a partial
 success value. The action may already have completed. Reconcile its saved
 result or receipt instead of repeating it. Replaying the same MCP call identity
 reuses the original handler execution, including when delivery failed.
+
+## Prepared harness storage
+
+An execution environment can supply an existing Claude configuration directory
+through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME`, using an absolute, non-symlinked
+path. Runner derives `CLAUDE_CONFIG_DIR` from this value, overriding any separately
+supplied value. This selects persistent harness storage without
+changing the run's permission mode or enabling preconfigured-home behavior.
+`HOME` remains the execution account's home. Each account must use its own
+configuration directory. The environment must publish the selected skills before
+admission; Runner does not copy or delete skills in this directory.
+On Unix, the directory must belong to the Runner user and use mode `0700`;
+the provider lifetime lease rejects group/world access or another owner.
+
+Runner binds the home into recovery identity and uses its existing provider
+lifetime lease. After acquiring that lease, it replaces Core-owned Claude settings
+with the current launch settings. History remains in the account directory.
+Task control files remain in the session runtime directory. Separate directories
+under one OS user are not a credential isolation boundary.
 
 ## Preconfigured home
 

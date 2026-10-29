@@ -1055,6 +1055,24 @@ missing, repeated, or out-of-order sequence numbers and fails capture after
 100 full pages instead of grading a truncated stream. Original incomplete
 captures remain failed evidence; qualifying a fix requires a new live attempt.
 
+Every standard runner attempt automatically captures `taskChat` before fixture
+teardown, including failed attempts. Test details show each task's saved brief,
+full comments, question/approval prompts and recorded answers in a chat layout,
+plus native agent progress when available. Delegated tasks have their own
+threads; standing chats remain included after a journey restores the Agent Chat
+setting. Comments are paginated and message bodies are retained without display
+truncation. Missing reads, repeated pages, and capture limits are labeled partial
+or unavailable without changing the workflow's grade. Browser-only attempts with
+no tasks show no chat section. Existing reports without `taskChat` continue to
+render normally; screenshots cannot reconstruct a historical conversation.
+
+`taskChat` is a closed, credential-redacted public projection in the normalized
+result, so local, CI, regenerated, and published dashboards share the same
+recording. It contains visible conversation text, not raw run logs, reasoning,
+tool arguments or provider/session metadata. Collection uses the public API,
+has a 30-second request-admission budget, and caps task/comment discovery at
+100 pages; incomplete collection is never labeled complete.
+
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
 shows every selected execution with screenshot thumbnails, grouped by suite and case.
@@ -2833,12 +2851,22 @@ Each ordinary live attempt collects company-wide saved feedback after retiring
 runs and before fixture teardown, even when cancellation or grading fails. This
 includes feedback from child and background runs. Full paginated bodies and
 native tool invocation outcomes are checkpointed in the access-controlled
-`snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline;
-missing detail pages, truncated run lists, active work, and unavailable APIs
+`snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline.
+Event reads use the remaining shared read budget, with up to five seconds
+reserved for the final checkpoint. Other reads keep a five-second request cap
+so a stalled earlier endpoint leaves time to inspect run events. All reads
+remain bounded by the shared read cutoff and are not retried.
+Missing detail pages, truncated run lists, active work, and unavailable APIs
 remain explicit partial/unavailable observations. Legacy shell helpers do not
 have complete native invocation coverage. An empty saved-feedback list does not
 prove that a tool was available, and a completed tool receipt does not by itself
 prove a saved submission.
+
+Invocation receipts distinguish inspected native runs (`native_events`) from
+terminal workspace deferrals that provably started no provider work
+(`provider_not_started`). The latter requires the server's explicit receipt and
+an exhaustive scan without provider events. Pending retries, actual legacy
+execution, contradictory receipts, and incomplete event reads remain partial.
 
 Results and retained-attempt receipts contain only counts, closed statuses, and
 body fingerprints. Campaign reports group identical fingerprints across attempts

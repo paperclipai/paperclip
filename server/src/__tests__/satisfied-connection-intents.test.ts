@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
@@ -20,16 +21,20 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 import { reserveRunBudget } from "../services/budget-reservations.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SATISFIED_CONNECTION_TEST_DATABASE_URL");
+const support = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
 describePostgres("already available connection requests", () => {
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
-    db = createDb(temp.connectionString);
-    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+    else {
+      temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
+      db = createDb(temp.connectionString);
+    }
+    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   }, 20_000);
   beforeEach(async () => { await db.execute(sql`truncate table companies cascade`); });
   afterAll(async () => { await db.$client.end({ timeout: 1 }); await temp?.cleanup(); });
@@ -59,6 +64,21 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
     return run!;
   }
+
+  it("notifies terminal confirmation recovery after existing-access retirement commits", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTerminalConfirmations, notified);
+    try {
+      await db.transaction(async tx => {
+        expect(await satisfiedConnectionIntentService(tx as unknown as typeof db).sweepPending()).toMatchObject({ satisfied: 1 });
+        expect(notified).not.toHaveBeenCalled();
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("pending");
+      });
+      expect(notified).toHaveBeenCalledOnce();
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    } finally { unsubscribe(); }
+  });
 
   it("settles a published Slack card when existing access retires the connection request", async () => {
     const f = await seed();
@@ -378,7 +398,7 @@ describePostgres("already available connection requests", () => {
 
   it("records a system completion and one durable continuation with a one-connection pool", async () => {
     const f = await seed();
-    const single = createDb(temp.connectionString, { maxConnections: 1 });
+    const single = createDb(externalTestDatabaseUrl ?? temp.connectionString, { maxConnections: 1 });
     try {
       const outcomes = await Promise.all([satisfiedConnectionIntentService(single).sweepPending(), satisfiedConnectionIntentService(db).sweepPending()]);
       expect(outcomes.reduce((sum, outcome) => sum + outcome.satisfied, 0)).toBe(1);

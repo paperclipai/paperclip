@@ -327,6 +327,10 @@ impl AcpxSidecarTransport {
                 "XDG_CACHE_HOME",
             ]);
         }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
+        }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at
         // suspension. Allow its bounded cleanup to settle before group KILL;

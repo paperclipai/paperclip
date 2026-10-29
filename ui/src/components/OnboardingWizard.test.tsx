@@ -590,10 +590,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // so "Continue" on step 1 creates the organization and lands on the agent
     // step with no mission question in between.
 
-    async function openStepOne() {
+    async function openStepOne(savedOverrides: Record<string, unknown> = {}) {
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, companyName: "Initech" }),
+        JSON.stringify({ step: 1, companyName: "Initech", ...savedOverrides }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -620,6 +620,34 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       await flushReact();
     }
+
+    it("defers the native runner until the name-only setup has a chosen provider", async () => {
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne({ adapterType: "codex_local", runner: "paperclip" });
+      try {
+        await clickByText((text) => text.startsWith("Continue"));
+        const field = document.body.querySelector("#onboarding-agent-name") as HTMLInputElement;
+        await act(async () => setControlledValue(field, "Chief of Staff"));
+        await flushReact();
+        await clickByText((text) => isArcPrimary(text));
+
+        expect(document.body.textContent).toContain("Connect a model");
+        expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+        const setup = mockAgentsApi.create.mock.calls[0][1];
+        expect(setup).toMatchObject({ adapterType: "process", metadata: { setupAdapterPending: true } });
+        expect(setup).not.toHaveProperty("runner");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+        await clickByText((text) => /OpenAI.*Subscription/.test(text));
+        for (let i = 0; i < 3; i++) await flushReact();
+        expect(mockAgentsApi.update).toHaveBeenCalledWith(setup.setupId, expect.objectContaining({
+          adapterType: "codex_local", runner: "paperclip", metadata: { setupAdapterPending: false },
+        }), "company-new");
+        expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
 
     it("shows no environment-check card on the model step, and no Mission row on review", async () => {
       // Round-3 walk feedback: the adapter environment check still runs —

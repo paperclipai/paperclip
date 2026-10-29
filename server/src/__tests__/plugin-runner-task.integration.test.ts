@@ -203,6 +203,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       provider: "codex", model: "fixture", instructions: "Core policy", runtimeContext: null, settings: {},
       approvalPolicy: "never", readOnly: false, preparedConversation: false, includeCollaborationModeInstructions: false };
     const prepared = await owner.driver.prepareLaunch!(requirements);
+    expect(calls).toContainEqual(expect.objectContaining({kind:"prepare",accountIdentity:"account"}));
     // Re-preparation invalidates the old credential validation before the worker reply.
     await runtime.task({ companyId, leaseId: acquired.lease.id, operation: environmentTaskOperationSchema.parse({
       kind: "prepare", requirements, projectIds: [projectId],

@@ -74,6 +74,33 @@ mutations. Qualify a useful model task separately from saving the account.
 
 ### `session`
 
+For a plugin computer, complete a task, let its warm session suspend, then send
+two follow-ups within the next warm window. Verify the first resumes the saved
+session and the second keeps the same provider history without an identity
+mismatch. After a fresh recovery into a repository-free directory, send another
+ordinary follow-up. Verify it retains that directory without Core Git worktree
+preparation. Explicit repository strategies and changed provider owners must
+remain denied. Executor and workspace-preparation regressions cover control
+behavior; they do not establish live provider acceptance.
+
+For a remote OpenCode agent configured with `per_turn`, complete a task, then
+send two follow-ups without resetting its session. Verify that each continuation
+restores its external controller checkpoint, retains provider context and saved
+files, and finishes with no stranded task lock. A missing checkpoint, an active
+prior owner or a mismatched session must still stop admission. The
+rejected active-owner attempt must not prevent a later continuation from reading
+the owner's newer completed checkpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+cover checkpoint restoration and its guards; real-provider acceptance remains
+separate evidence.
+
+After a completed warm turn, change an agent setting that invalidates its
+instruction copy, then send a follow-up. Verify the old runner suspends during
+preparation, saved files remain available, and the follow-up completes once.
+Repeat with an expired or foreign preparation owner and verify that execution
+stays held. The checkpoint integration regression covers the ownership boundary;
+a real provider run remains separate acceptance evidence.
+
 For a repository project that inherits storage-plugin defaults, run a task and
 send two follow-ups. Start with unset task workspace settings, then repeat with
 an explicit isolated mode or strategy. Binding must save `reuse_existing` and
@@ -94,6 +121,11 @@ provider sandbox. Send a follow-up that
 reads the retained file and appends one new line. Verify a replacement sandbox,
 a new provider session, the exact file contents, successful finalization and no
 stranded task lock. Send another follow-up and verify ordinary session reuse.
+
+With external controller checkpoints enabled, also admit a fresh session on a
+reused sandbox lease. Verify startup from canonical controller evidence and
+reject a marker without a registered controller, changed identity or prior turn
+activity. An existing remote session directory must retain its recovery gate.
 
 Repeat without resetting the session: its replacement must restore verified
 history or remain blocked. Missing backup state must not silently start an
@@ -159,7 +191,12 @@ an explicit Paperclip request must give target-qualification guidance. Begin the
 ordinary task to exercise the existing lazy environment path. This live journey
 remains separate from the resolver's source controls.
 
-For sandbox defaults, follow the [environment probe](./execution-environments.md#environment-settings)
+Managed Cloud images default to Paperclip Runner without a saved platform
+qualification. A platform snapshot update must not change that default or
+require a separate qualification request before Test. Disabled or overridden
+adapters still restrict availability, and actual runtime startup can still fail.
+
+For other sandbox defaults, follow the [environment probe](./execution-environments.md#environment-settings)
 recipe first. Discovery/creation read company-bound immutable-image evidence
 without allocating a target. A mutable image or snapshot name does not establish
 native compatibility. Then test the actual selected runtime with its selected
@@ -180,7 +217,9 @@ cover ordering, failure drain and credential projection; they do not qualify a
 live response-time target.
 For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
-search/call schemas. Discover an allowed tool, call its returned alias, revoke
+search/call schemas. Confirm the search description states the 1–20 page limit
+and default of 5. Follow `nextOffset` to inspect later pages.
+Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must
 retain the assigned gateway URL and token. An older direct-catalog OpenCode

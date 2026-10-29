@@ -25,8 +25,6 @@ describe("createChatReconciliationCoordinator", () => {
         processFailedGitHubWebhookDeliveries,
         processPendingDeliveries,
         flushPublications,
-        reconcileProviderRuntimes: async () => undefined,
-        projectRunMilestones: async () => 0,
         processPendingSlackFileUploadReceipts: async () => undefined,
         processPendingSlackSessionSyncs: async () => undefined,
         onError,
@@ -74,6 +72,53 @@ describe("createChatReconciliationCoordinator", () => {
     },
   );
 
+  it("keeps receiver and voice inventory out of periodic chat maintenance", () => {
+    const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
+    const maintenanceStart = source.indexOf("const chatReconciliation =");
+    const maintenanceEnd = source.indexOf("let chatPublicationTimer:", maintenanceStart);
+    expect(maintenanceStart).toBeGreaterThanOrEqual(0);
+    expect(maintenanceEnd).toBeGreaterThan(maintenanceStart);
+    const maintenance = source.slice(maintenanceStart, maintenanceEnd);
+    expect(maintenance).not.toContain("chatChannels.reconcileProviderRuntimes()");
+    expect(maintenance).not.toContain("chatChannels.voice.");
+    expect(maintenance).not.toContain("enqueueSafeNativeChatProgress");
+    expect(source).toContain("nativeChatProgressWork(db).register(deliveryWork,");
+    expect(source).toContain("chatInboundWakeNoticeWork(chatChannels).register(deliveryWork,");
+    expect(source).toContain("chatChannels.registerReceiverWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerTeamsConsentExpiryWork(deliveryWork,");
+    const teams = readFileSync(new URL("../services/chat-channels/microsoft-teams/file-delivery.ts", import.meta.url), "utf8");
+    expect(source).toContain("chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork,");
+    expect(teams).not.toContain("scheduleTeamsFileMaintenance");
+    expect(teams).not.toContain("selectDistinct");
+    const chat = readFileSync(new URL("../services/chat-channels.ts", import.meta.url), "utf8");
+    expect(chat).not.toContain("scheduleTeamsFileMaintenance");
+    const publicationMaintenance = chat.slice(chat.indexOf("async function processPublicationMaintenance("),
+      chat.indexOf("async function schedulePendingPublications("));
+    expect(publicationMaintenance).not.toContain("await enqueueInboundWakeupPublications(");
+    expect(publicationMaintenance).not.toContain("await enqueueFailedChatRetryPublications(");
+    expect(publicationMaintenance).not.toContain("reconcileTerminalConfirmationActions(");
+    expect(source).toContain("chatChannels.registerInteractionContinuationWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerGitHubAcknowledgementWork(deliveryWork,");
+    expect(chat).not.toContain("scheduleGitHubMaintenance");
+    expect(source).toContain("registerGitHubReviewProjectionWork(db, deliveryWork,");
+    expect(source).not.toContain("chatChannels.processPublicationMaintenance()");
+    expect(source).toContain("chatChannels.registerGitHubTerminalResponseWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerGitHubReviewCheckWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
+    expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
+  });
+
+  it("separates live voice recovery from the remaining periodic maintenance", () => {
+    const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
+    expect(source).toContain("chatChannels.voice.registerRecoveryWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.registerReplyWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.inbound.registerCleanupWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.inbound.registerRetentionWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.registerReportWork(deliveryWork,");
+    expect(source).not.toContain("reconcileVoiceSessions");
+    expect(source).not.toContain("chatChannels.voice.reconcile()");
+  });
+
   it("wires GitHub recovery into its independent lane", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     expect(source).toContain(
@@ -95,10 +140,10 @@ describe("createChatReconciliationCoordinator", () => {
     expect(source).toContain("registerChatDeliveryWork(deliveryWork, chatChannels,");
     expect(source).toContain("registerChatActionWork(deliveryWork, chatChannels,");
     const maintenance = source.slice(
-      source.indexOf("const reconcileChatPublicationMaintenance ="),
       source.indexOf("const chatReconciliation ="),
+      source.indexOf("let chatPublicationTimer:"),
     );
-    expect(maintenance).toContain("chatChannels.processPublicationMaintenance()");
+    expect(maintenance).not.toContain("chatChannels.processPublicationMaintenance()");
     expect(maintenance).not.toContain("chatChannels.schedulePendingPublications()");
     expect(maintenance).not.toContain("chatChannels.processPendingPublications()");
     const workers = readFileSync(new URL("../services/chat-delivery-work.ts", import.meta.url), "utf8");
@@ -116,119 +161,6 @@ describe("createChatReconciliationCoordinator", () => {
     expect(actionMaintenance).not.toContain("processPendingGitHubWebhookIngress(");
   });
 
-  it.each([false, true])(
-    "isolates a blocked milestone projector and joins its completion (rejects: %s)",
-    async (rejects) => {
-      let release!: () => void;
-      const held = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const failure = new Error("milestone projection failed");
-      const projectRunMilestones = vi
-        .fn(async () => 0)
-        .mockImplementationOnce(async () => {
-          await held;
-          if (rejects) throw failure;
-          return 1;
-        });
-      const flushPublications = vi.fn(async () => undefined);
-      const onError = vi.fn();
-      const coordinator = createChatReconciliationCoordinator({
-        projectRunMilestones,
-        reconcileProviderRuntimes: async () => undefined,
-        processPendingDeliveries: async () => undefined,
-        flushPublications,
-        processPendingSlackFileUploadReceipts: async () => undefined,
-        processPendingSlackSessionSyncs: async () => undefined,
-        onError,
-      });
-      try {
-        coordinator.reconcile();
-        await vi.waitFor(() => {
-          expect(projectRunMilestones).toHaveBeenCalledTimes(1);
-          expect(flushPublications).toHaveBeenCalledTimes(1);
-        });
-        // A newly committed final/question must dispatch even while a different
-        // issue's projection is blocked. Repeated signals leave one dirty retry.
-        coordinator.notifyPublications();
-        coordinator.notifyPublications();
-        await vi.waitFor(() =>
-          expect(flushPublications).toHaveBeenCalledTimes(2),
-        );
-        expect(projectRunMilestones).toHaveBeenCalledTimes(1);
-        let drained = false;
-        const draining = coordinator.drain().then(() => {
-          drained = true;
-        });
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(drained).toBe(false);
-        release();
-        await draining;
-        expect(projectRunMilestones).toHaveBeenCalledTimes(2);
-        expect(onError).toHaveBeenCalledTimes(rejects ? 1 : 0);
-        if (rejects)
-          expect(onError).toHaveBeenCalledWith("run milestones", failure);
-        const completedCounts = [
-          projectRunMilestones.mock.calls.length,
-          flushPublications.mock.calls.length,
-        ];
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect([
-          projectRunMilestones.mock.calls.length,
-          flushPublications.mock.calls.length,
-        ]).toEqual(completedCounts);
-      } finally {
-        release();
-        coordinator.stop();
-        await coordinator.drain();
-      }
-    },
-  );
-
-  it("joins a blocked milestone projector at shutdown without starting dirty follow-ups", async () => {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const projectRunMilestones = vi.fn(async () => {
-      await held;
-      return 1;
-    });
-    const flushPublications = vi.fn(async () => undefined);
-    const coordinator = createChatReconciliationCoordinator({
-      projectRunMilestones,
-      flushPublications,
-      reconcileProviderRuntimes: async () => undefined,
-      processPendingDeliveries: async () => undefined,
-      processPendingSlackFileUploadReceipts: async () => undefined,
-      processPendingSlackSessionSyncs: async () => undefined,
-      onError: vi.fn(),
-    });
-    try {
-      coordinator.reconcile();
-      await vi.waitFor(() => {
-        expect(projectRunMilestones).toHaveBeenCalledOnce();
-        expect(flushPublications).toHaveBeenCalledOnce();
-      });
-      coordinator.notifyPublications();
-      coordinator.stop();
-      let drained = false;
-      const draining = coordinator.drain().then(() => {
-        drained = true;
-      });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(drained).toBe(false);
-      release();
-      await draining;
-      expect(projectRunMilestones).toHaveBeenCalledOnce();
-      expect(flushPublications).toHaveBeenCalledOnce();
-    } finally {
-      release();
-      coordinator.stop();
-      await coordinator.drain();
-    }
-  });
-
   it("keeps slow optional recovery from suppressing later publication sweeps", async () => {
     let releaseDelivery!: () => void;
     let releaseSlackStatus!: () => void;
@@ -238,7 +170,6 @@ describe("createChatReconciliationCoordinator", () => {
     const slackStatusReleased = new Promise<void>((resolve) => {
       releaseSlackStatus = resolve;
     });
-    const reconcileProviderRuntimes = vi.fn(async () => undefined);
     const processPendingDeliveries = vi.fn(async () => deliveryReleased);
     const flushPublications = vi.fn(async () => undefined);
     const processPendingSlackFileUploadReceipts = vi.fn(async () => undefined);
@@ -247,8 +178,6 @@ describe("createChatReconciliationCoordinator", () => {
     );
     const onError = vi.fn();
     const coordinator = createChatReconciliationCoordinator({
-      projectRunMilestones: async () => 0,
-      reconcileProviderRuntimes,
       processPendingDeliveries,
       flushPublications,
       processPendingSlackFileUploadReceipts,
@@ -258,7 +187,6 @@ describe("createChatReconciliationCoordinator", () => {
 
     coordinator.reconcile();
     await vi.waitFor(() => {
-      expect(reconcileProviderRuntimes).toHaveBeenCalledTimes(1);
       expect(processPendingDeliveries).toHaveBeenCalledTimes(1);
       expect(flushPublications).toHaveBeenCalledTimes(1);
       expect(processPendingSlackFileUploadReceipts).toHaveBeenCalledTimes(1);
@@ -266,7 +194,6 @@ describe("createChatReconciliationCoordinator", () => {
     });
     coordinator.reconcile();
     await vi.waitFor(() => {
-      expect(reconcileProviderRuntimes).toHaveBeenCalledTimes(2);
       expect(flushPublications).toHaveBeenCalledTimes(2);
       expect(processPendingSlackFileUploadReceipts).toHaveBeenCalledTimes(2);
     });
@@ -293,14 +220,11 @@ describe("createChatReconciliationCoordinator", () => {
           await receiptReleased;
           if (rejects) throw lookupError;
         });
-      const reconcileProviderRuntimes = vi.fn(async () => undefined);
       const processPendingDeliveries = vi.fn(async () => undefined);
       const flushPublications = vi.fn(async () => undefined);
       const processPendingSlackSessionSyncs = vi.fn(async () => undefined);
       const onError = vi.fn();
       const coordinator = createChatReconciliationCoordinator({
-        projectRunMilestones: async () => 0,
-        reconcileProviderRuntimes,
         processPendingDeliveries,
         flushPublications,
         processPendingSlackFileUploadReceipts,
@@ -318,7 +242,6 @@ describe("createChatReconciliationCoordinator", () => {
         });
         coordinator.reconcile();
         await vi.waitFor(() => {
-          expect(reconcileProviderRuntimes).toHaveBeenCalledTimes(2);
           expect(processPendingDeliveries).toHaveBeenCalledTimes(2);
           expect(flushPublications).toHaveBeenCalledTimes(2);
           expect(processPendingSlackSessionSyncs).toHaveBeenCalledTimes(2);

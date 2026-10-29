@@ -1,4 +1,4 @@
-import { notifyChatCommandRegistration } from "./command-work-notifications.js";
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { prepareSlackInventory } from "./slack/inventory.js";
 import { prepareGitHubInventory } from "./github/inventory.js";
 import { prepareDiscordInventory } from "./discord/inventory.js";
@@ -352,7 +352,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
             code: "chat_endpoint_credentials_changed",
           });
         }
-        await notifyChatCommandRegistration(tx, endpoint);
+        await notifyChatEndpointConfiguration(tx, endpoint);
         await tx
           .delete(companySecretBindings)
           .where(
@@ -383,7 +383,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
           .set({ credentialSecretRefs: refs, updatedAt: new Date() })
           .where(eq(toolConnections.id, endpoint.connectionId));
         if (changedFields.length) {
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const [currentEndpoint] = await tx.select({ setup: chatEndpoints.setup }).from(chatEndpoints)
             .where(and(eq(chatEndpoints.id, endpoint.id), eq(chatEndpoints.companyId, endpoint.companyId))).for("update");
           if (!currentEndpoint) throw notFound("Chat endpoint not found");
@@ -464,7 +464,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
         .then((rows) => rows[0] ?? null);
       if (!current) throw notFound("Chat connection not found");
       refs = current.refs;
-      await notifyChatCommandRegistration(tx, endpoint);
+      await notifyChatEndpointConfiguration(tx, endpoint);
       await tx
         .delete(companySecretBindings)
         .where(

@@ -1,4 +1,4 @@
-import { notifyChatCompanyCommandRegistration } from "./chat-channels/command-work-notifications.js";
+import { notifyChatCompanyConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { chatCompanyDeletion } from "./chat-channels/company-deletion.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
@@ -65,7 +65,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
-        await notifyChatCompanyCommandRegistration(tx, id);
+        await notifyChatCompanyConfiguration(tx, id);
         await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
@@ -100,6 +100,9 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
+        // Match receipt completion and comment deletion: task before comment.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.companyId, id)).orderBy(issues.id).for("no key update");
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await notifyCompanyRetentionWork(tx, id);

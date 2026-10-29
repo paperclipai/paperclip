@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -48,7 +49,8 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_ACTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
@@ -154,8 +156,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   beforeAll(async () => {
     operationLogRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-recovery-operation-logs-"));
     process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = operationLogRoot;
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-recovery-actions-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-recovery-actions-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
 
   afterEach(async () => {
@@ -182,6 +184,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
     if (priorOperationLogRoot === undefined) delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
     else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorOperationLogRoot;
@@ -616,8 +619,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
-      const operatorDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
-      const probeDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+      const operatorDb = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
+      const probeDb = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
       let release!: () => void;
       let ready!: () => void;
       let holderPid = 0;
@@ -766,7 +769,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .where(eq(issues.id, sourceIssue.id));
     }
     const [observed] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const singleConnectionDb = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const work = recoveryService(singleConnectionDb, { enqueueWakeup: async () => null })
