@@ -13,6 +13,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  readBodyFile,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -40,7 +41,8 @@ interface ApprovalResubmitOptions extends BaseClientOptions {
 }
 
 interface ApprovalCommentOptions extends BaseClientOptions {
-  body: string;
+  body?: string;
+  bodyFile?: string;
 }
 
 export function registerApprovalCommands(program: Command): void {
@@ -226,12 +228,20 @@ export function registerApprovalCommands(program: Command): void {
       .command("comment")
       .description("Add comment to an approval")
       .argument("<approvalId>", "Approval ID")
-      .requiredOption("--body <text>", "Comment body")
+      .option("--body <text>", "Comment body")
+      .option("--body-file <path>", "Read comment body from a file; use - to read stdin")
       .action(async (approvalId: string, opts: ApprovalCommentOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
+          if (opts.body !== undefined && opts.bodyFile !== undefined) {
+            throw new Error("Pass either --body or --body-file, not both.");
+          }
+          const body = opts.bodyFile !== undefined ? await readBodyFile(opts.bodyFile) : opts.body;
+          if (body === undefined) {
+            throw new Error("Comment body is required. Pass --body or --body-file.");
+          }
           const created = await ctx.api.post<ApprovalComment>(apiPath`/api/approvals/${approvalId}/comments`, {
-            body: opts.body,
+            body,
           });
           printOutput(created, { json: ctx.json });
         } catch (err) {

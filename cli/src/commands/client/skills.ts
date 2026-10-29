@@ -15,7 +15,6 @@ import {
   type CompanySkillProjectScanResult,
   type CompanySkillUpdateStatus,
 } from "@paperclipai/shared";
-import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
@@ -23,6 +22,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  readBodyFile,
   resolveCommandContext,
   type BaseClientOptions,
   type ResolvedClientContext,
@@ -990,21 +990,6 @@ function renderTableValue(value: unknown): string {
   if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
-}
-
-async function readBodyFile(filePath: string): Promise<string> {
-  if (filePath === "-") {
-    return readStdin();
-  }
-  return readFile(filePath, "utf8");
-}
-
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-  }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function confirmDangerousAction(yes: boolean | undefined, message: string): Promise<void> {
