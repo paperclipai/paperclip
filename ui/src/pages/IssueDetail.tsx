@@ -132,7 +132,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -388,6 +388,7 @@ import {
   type IssueTreeControlMode,
   type WorkspaceFileRef,
   workspaceFileRefSchema,
+  isUuidLike,
 } from "@paperclipai/shared";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -3327,10 +3328,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryKey: [...queryKeys.issues.detail(issueId!), "core"],
     queryFn: async ({ signal }) => {
       const core = await issuesApi.getCore(issueId!, { signal });
-      const planKey = [...queryKeys.issues.documents(core.id), "plan"];
-      if (core.planDocument !== undefined && !queryClient.getQueryState(planKey)) {
-        queryClient.setQueryData(planKey, core.planDocument);
-      }
+      seedIssueDetailProjections(queryClient, core, issueId);
       return core;
     },
     enabled: !!issueId,
@@ -3440,9 +3438,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       InfiniteData<IssueComment[], string | null>
     >(issueId ?? "pending"),
   });
-  const linkedCommentId = location.hash.startsWith("#comment-")
+  const commentAnchor = location.hash.startsWith("#comment-")
     ? location.hash.slice("#comment-".length)
     : null;
+  const linkedCommentId = commentAnchor && isUuidLike(commentAnchor) ? commentAnchor.trim() : null;
   const windowComments = useMemo(
     () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
     [commentPages?.pages, recentComments.data?.comments],

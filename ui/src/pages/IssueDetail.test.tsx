@@ -1831,12 +1831,39 @@ describe("IssueDetail", () => {
     expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(true);
   });
 
-  it.each(["#document-qa-evidence", "#document-plan", "#document-continuation-summary", "#work-product-one", "#attachment-one", "#unknown", "#comment-old-comment"])("keeps the recent conversation for anchor %s", async (hash) => {
+  it.each(["empty", "saved"])("reveals core work products while the stored request is stalled (%s)", async (projection) => {
+    const workProducts = projection === "empty" ? [] : [createArtifactWorkProduct({
+      id: "saved-output", attachmentId: "00000000-0000-4000-8000-000000000001", contentType: "text/plain", originalFilename: "evidence.txt",
+    })];
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ workProducts }));
+    mockIssuesApi.get.mockReturnValue(createDeferred<Issue>().promise);
+    mockIssuesApi.listWorkProducts.mockReturnValue(createDeferred<[]>().promise);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      initialHistoryPending: false, workProducts,
+    }));
+    expect(mockIssuesApi.listWorkProducts).toHaveBeenCalled();
+  });
+
+  it.each(["..", "../../../../health", "invalid"])("ignores a malformed comment anchor %s", async (target) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockLocation.hash = `#comment-${target}`;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      compactHistory: true, initialHistoryPending: false,
+    }));
+    expect(mockIssuesApi.getComment).not.toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+  });
+
+  it.each(["#document-qa-evidence", "#document-plan", "#document-continuation-summary", "#work-product-one", "#attachment-one", "#unknown", "#comment-6e391846-d4aa-410f-9d9a-6a60d74bce37"])("keeps the recent conversation for anchor %s", async (hash) => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     mockLocation.hash = hash;
     mockIssuesApi.get.mockResolvedValue(createIssue());
     const recent = createIssueComment({ id: "recent-comment", body: "Latest reply" });
-    const older = createIssueComment({ id: "old-comment", body: "Linked older reply" });
+    const older = createIssueComment({ id: "6e391846-d4aa-410f-9d9a-6a60d74bce37", body: "Linked older reply" });
     mockIssuesApi.getComment.mockResolvedValue(older);
     mockIssuesApi.recentComments.mockResolvedValue({ comments: [recent], latestCommentId: recent.id, hasMore: true });
     await act(async () => renderIssueView());
@@ -1859,10 +1886,10 @@ describe("IssueDetail", () => {
 
   it("retains a linked older comment when opening a document without moving the preview cursor", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
-    mockLocation.hash = "#comment-old-comment";
+    mockLocation.hash = "#comment-6e391846-d4aa-410f-9d9a-6a60d74bce37";
     mockIssuesApi.get.mockResolvedValue(createIssue());
     const recent = createIssueComment({ id: "recent-comment", body: "Latest reply" });
-    const older = createIssueComment({ id: "old-comment", body: "Read my saved evidence" });
+    const older = createIssueComment({ id: "6e391846-d4aa-410f-9d9a-6a60d74bce37", body: "Read my saved evidence" });
     mockIssuesApi.getComment.mockResolvedValue(older);
     mockIssuesApi.recentComments.mockResolvedValue({ comments: [recent], latestCommentId: recent.id, hasMore: true });
     await act(async () => renderIssueView());

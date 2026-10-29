@@ -52,7 +52,7 @@ async function ready(page: Page) {
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 10_000 });
 }
 
-test("saved rich cards are present at first reveal and never insert during slow enrichment", async ({ page }, info) => {
+test("core rich cards reveal before duplicate reads and stay stable during slow enrichment", async ({ page }, info) => {
   await page.addInitScript(() => { window.__PAPERCLIP_ISSUE_DETAIL_PROFILE__ = true; });
   await page.addInitScript(() => {
     const frames: unknown[] = [];
@@ -62,7 +62,7 @@ test("saved rich cards are present at first reveal and never insert during slow 
       const scroller = thread?.querySelector('[data-testid="task-chat-scroller"]');
       if (scroller) {
         const cards = [...scroller.querySelectorAll('[data-testid="task-chat-resource-document"], [data-testid="task-chat-plan-preview"], [data-testid="task-chat-rich-work-product-pull_request"], [data-testid="task-chat-resource-deliverable"]')];
-        frames.push({ time: performance.now(), height: scroller.scrollHeight, cards: cards.length, boxes: cards.map(card => {
+        frames.push({ time: performance.now(), height: scroller.scrollHeight, width: scroller.clientWidth, cards: cards.length, boxes: cards.map(card => {
           const box = card.getBoundingClientRect(); return { top: box.top, height: box.height };
         }) });
       }
@@ -73,6 +73,7 @@ test("saved rich cards are present at first reveal and never insert during slow 
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   await page.route(/\/api\/issues\/[^/?]+$/, async route => { await held; await route.continue(); });
+  await page.route(/\/api\/issues\/[^/?]+\/work-products$/, async route => { await held; await route.continue(); });
   try {
     await page.goto(`/${fixture.prefix}/issues/${fixture.identifier}`);
     await ready(page);
@@ -81,12 +82,13 @@ test("saved rich cards are present at first reveal and never insert during slow 
     await expect(page.getByTestId("task-chat-resource-document")).toHaveCount(3);
     await expect(page.getByTestId("task-chat-plan-preview")).toHaveCount(1);
     await page.waitForTimeout(500);
-    const frames = await page.evaluate(() => (window as unknown as { compactStartupFrames: { height: number; cards: number; boxes: { top: number; height: number }[] }[] }).compactStartupFrames);
+    const frames = await page.evaluate(() => (window as unknown as { compactStartupFrames: { height: number; width: number; cards: number; boxes: { top: number; height: number }[] }[] }).compactStartupFrames);
     await fs.writeFile(info.outputPath("layout.json"), JSON.stringify(frames, null, 2));
     await page.screenshot({ path: info.outputPath("settled.png") });
     expect(frames.length).toBeGreaterThan(5);
     expect(new Set(frames.map(frame => frame.cards)).size, "Cards must arrive before the conversation becomes readable").toBe(1);
     expect(Math.max(...frames.map(frame => frame.height)) - Math.min(...frames.map(frame => frame.height)), "Initial content must not grow after reveal").toBeLessThanOrEqual(2);
+    expect(Math.max(...frames.map(frame => frame.width)) - Math.min(...frames.map(frame => frame.width)), "Initial pane geometry must settle before reveal").toBeLessThanOrEqual(2);
     for (let card = 0; card < frames[0].cards; card++) {
       for (const dimension of ["top", "height"] as const) {
         const values = frames.map(frame => frame.boxes[card][dimension]);
@@ -135,7 +137,7 @@ test("opening a document from an older linked comment retains that row and its p
   // Give the real saved target a document link without inventing a browser row.
   const target = await (await request.get(`/api/issues/${fixture.id}/comments/${fixture.oldestCommentId}`)).json();
   await page.route(`**/api/issues/${fixture.id}/comments/${fixture.oldestCommentId}`, route => route.fulfill({ json: { ...target, body: `${target.body}\n\n[Inspect saved evidence](#document-investigation)` } }));
-  await page.goto(`/${fixture.prefix}/issues/${fixture.identifier}#comment-${fixture.oldestCommentId}`);
+  await page.goto(`/${fixture.prefix}/issues/${fixture.identifier}#comment-${fixture.oldestCommentId}`, { waitUntil: "domcontentloaded" });
   await ready(page);
   const row = page.locator(`[id="comment-${fixture.oldestCommentId}"]`);
   const before = (await row.boundingBox())!.y;
