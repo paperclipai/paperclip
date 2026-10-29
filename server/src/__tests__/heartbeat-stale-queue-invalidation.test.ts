@@ -35,6 +35,7 @@ import {
 import { runningProcesses } from "../adapters/index.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.ts";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -1834,5 +1835,83 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(1);
     await waitForCondition(async () => claimedIssue !== null);
     expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: runId });
+  });
+
+  it("claims and runs a pending interaction wake for an addressee who neither owns nor reviews the task", async () => {
+    const { companyId, agentId: addresseeAgentId } = await seedCompanyAndAgent();
+    const [assignee, reviewer] = await db.insert(agents).values([
+      { companyId, name: "AssigneeCoder", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: false } }, permissions: {} },
+      { companyId, name: "ReviewerAgent", role: "qa", status: "idle", adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: false } }, permissions: {} },
+    ]).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId,
+      title: "Question for another agent during review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: assignee.id,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewer.id, userId: null },
+        returnAssignee: { type: "agent", agentId: assignee.id, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).returning();
+    const interaction = await issueThreadInteractionService(db).create(
+      { id: issue.id, companyId },
+      {
+        kind: "ask_user_questions",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{ id: "scope", prompt: "Which scope?", selectionMode: "single", required: true, options: [{ id: "a", label: "A" }] }],
+        },
+      },
+      { agentId: assignee.id },
+    );
+    expect(interaction).toMatchObject({ status: "pending", addresseeAgentId });
+
+    const run = await heartbeat.wakeup(addresseeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "interaction_pending",
+      payload: {
+        issueId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        sourceCommentId: null,
+        sourceRunId: null,
+        mutation: "interaction",
+      },
+      idempotencyKey: `interaction-pending:${interaction.id}`,
+      requestedByActorType: "agent",
+      requestedByActorId: assignee.id,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        sourceCommentId: null,
+        sourceRunId: null,
+        wakeReason: "interaction_pending",
+        source: "issue.interaction.created",
+      },
+    });
+    expect(run).toBeTruthy();
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => countExecuteCallsForRun(run!.id) === 1)).toBe(true);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    const [finished] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    expect(finished).toEqual({ status: "succeeded", errorCode: null });
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 });
