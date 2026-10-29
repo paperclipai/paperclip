@@ -1,3 +1,4 @@
+import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
@@ -7599,6 +7600,13 @@ export function agentRoutes(
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
+
+    if (req.query.view === "plugin-panels") {
+      const options = await getCurrentUserRedactionOptions();
+      const panels = redactCurrentUserValue(await readTaskPanelActivations(db, run.companyId, run.id), options);
+      res.json(await runRedactions.redactForRun(run.companyId, run.id, panels.map(panel => redactEventPayload({ ...panel }))));
+      return;
+    }
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);

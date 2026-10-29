@@ -60,7 +60,11 @@ their execution, and uncertain prior executions must be reconciled before waking
 
 An installed plugin can offer an agent detail tab in the task side panel through
 its optional `taskSidePanel` declaration. The host supplies the task's running
-agent. The plugin's authorized availability route decides whether the panel is
+agent and run. The runtime captures Runner context before use, then sends a structured activation
+notification on success. Runner rejects stale contexts and emits `runtime.activity.recorded`; the host
+records it in the run log for reload/reconnect recovery. It checks readiness only
+after activation, with three bounded attempts and no periodic availability poll.
+The plugin's authorized availability route decides whether the panel is
 shown, and the plugin owns its label and viewer. No contribution appears for a
 missing plugin, inactive run, unavailable view or access failure. A closed panel
 can be reopened from the launcher while available.

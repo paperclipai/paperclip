@@ -384,6 +384,10 @@ export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSki
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
+const runtimeActivityIdentifierSchema = z.string().min(1)
+  .refine(value => Array.from(value).length <= 160, "Activity identifiers must contain at most 160 code points")
+  .regex(/^[^\u0000-\u001f\u007f]+$/);
+
 export const pluginUiSlotDeclarationSchema = z.object({
   type: z.enum(PLUGIN_UI_SLOT_TYPES),
   id: z.string().min(1),
@@ -392,6 +396,7 @@ export const pluginUiSlotDeclarationSchema = z.object({
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
   taskSidePanel: z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
+    activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
   }).strict().optional(),
   routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",

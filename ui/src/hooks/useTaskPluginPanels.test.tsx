@@ -2,19 +2,19 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
-import { api } from "@/api/client";
+import { api, ApiError } from "@/api/client";
 import { heartbeatsApi, type LiveRunForIssue } from "@/api/heartbeats";
 import { queryKeys } from "@/lib/queryKeys";
 import type { ResolvedPluginSlot } from "@/plugins/slots";
 import { useTaskPluginPanels, type TaskPluginPanel } from "./useTaskPluginPanels";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const plugin = vi.hoisted(() => ({ connected: true, slots: [] as ResolvedPluginSlot[], errorMessage: null as string | null }));
+const plugin = vi.hoisted(() => ({ connected: true, slots: [] as ResolvedPluginSlot[], healthy: true, epoch: 0, handler: null as ((event: LiveEvent) => void) | null, errorMessage: null as string | null }));
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => plugin }));
-vi.mock("@/context/LiveUpdatesProvider", () => ({ useHasCompanyLiveConnection: () => plugin.connected }));
-const slot = { pluginId: "example-plugin", pluginKey: "example.live-view", id: "screen", pluginVersion: "1.0.0", taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability" } } as ResolvedPluginSlot;
+vi.mock("@/context/LiveUpdatesProvider", () => ({ useHasCompanyLiveConnection: () => plugin.connected, useTranscriptLiveStream: (_ids: string[], _options: unknown, handler: (event: LiveEvent) => void) => { plugin.handler = handler; return { healthy: plugin.healthy, epoch: plugin.epoch }; } }));
+const slot = { pluginId: "example-plugin", pluginKey: "example.live-view", id: "screen", pluginVersion: "1.0.0", taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } } as ResolvedPluginSlot;
 const issue = { id: "task", companyId: "company", executionRunId: "run" } as Issue;
 const run = { id: "run", agentId: "agent", status: "running" } as LiveRunForIssue;
 let root: Root, container: HTMLDivElement, client: QueryClient;
@@ -23,6 +23,7 @@ let task: Issue | null;
 let enabled: boolean;
 let get: MockInstance<typeof api.get>;
 let list: MockInstance<typeof heartbeatsApi.liveRunsForIssue>;
+let history: MockInstance<typeof heartbeatsApi.taskPanelActivations>;
 function Harness() { current = useTaskPluginPanels(task, enabled); return null; }
 async function render(next: Issue | null = issue, active = true) {
   task = next; enabled = active;
@@ -34,11 +35,12 @@ async function refresh() {
   await act(async () => { if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30); else await new Promise(resolve => setTimeout(resolve, 30)); });
 }
 beforeEach(() => {
-  plugin.slots = [slot]; plugin.errorMessage = null; plugin.connected = true;
+  plugin.slots = [slot]; plugin.errorMessage = null; plugin.connected = true; plugin.healthy = true; plugin.epoch = 0; plugin.handler = null;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   get = vi.spyOn(api, "get").mockResolvedValue({ available: true });
   list = vi.spyOn(heartbeatsApi, "liveRunsForIssue").mockResolvedValue([run]);
+  history = vi.spyOn(heartbeatsApi, "taskPanelActivations").mockImplementation(async () => plugin.slots.map(slot => ({ pluginKey: slot.pluginKey, slotId: slot.id })));
 });
 afterEach(async () => {
   await act(async () => root.unmount()); client.clear(); container.remove(); vi.restoreAllMocks(); vi.useRealTimers();
@@ -46,7 +48,7 @@ afterEach(async () => {
 it("uses the running agent's authorized status and existing plugin slot", async () => {
   await render();
   expect(list).toHaveBeenCalledWith("task");
-  expect(get).toHaveBeenCalledWith("/plugins/example-plugin/api/agents/agent/view/availability", { signal: expect.any(AbortSignal), cache: "no-store" });
+  expect(get).toHaveBeenCalledWith("/plugins/example-plugin/api/agents/agent/view/availability?runId=run&issueId=task", { signal: expect.any(AbortSignal), cache: "no-store" });
   expect(current).toEqual([{ entityId: "agent", runId: "run", slot }]);
 });
 it("keeps unavailable panels hidden", async () => {
@@ -88,7 +90,7 @@ it("stops idle polling with live updates and resumes fallback polling on disconn
   expect(list).toHaveBeenCalledTimes(3);
 });
 it("uses each plugin's own availability path and excludes only the failing contribution", async () => {
-  const second = { ...slot, pluginId: "other-plugin", pluginKey: "example.other-view", taskSidePanel: { availabilityPath: "/views/:entityId/ready" } };
+  const second = { ...slot, pluginId: "other-plugin", pluginKey: "example.other-view", taskSidePanel: { availabilityPath: "/views/:entityId/ready", activation: { namespace: "example.other-runtime", activityKey: "desktop.used" } } };
   plugin.slots = [slot, second];
   get.mockImplementation(async path => {
     if (path.includes("other-plugin")) throw new Error("Unavailable");
@@ -96,5 +98,117 @@ it("uses each plugin's own availability path and excludes only the failing contr
   });
   await render();
   expect(current).toEqual([{ entityId: "agent", runId: "run", slot }]);
-  expect(get).toHaveBeenCalledWith("/plugins/other-plugin/api/views/agent/ready", expect.anything());
+  expect(get).toHaveBeenCalledWith("/plugins/other-plugin/api/views/agent/ready?runId=run&issueId=task", expect.anything());
+});
+
+
+function event(overrides: Record<string, unknown> = {}): LiveEvent {
+  return { id: 1, companyId: "company", type: "heartbeat.run.event", createdAt: "2099-01-01T00:00:00.000Z",
+    payload: { runId: "run", agentId: "agent", issueId: "task", eventType: "runtime.activity.recorded",
+      payload: { prpEvent: { eventType: "runtime.activity.recorded", sourceKind: "runner", payload: { ...slot.taskSidePanel!.activation } } }, ...overrides } } as LiveEvent;
+}
+async function emit(value: LiveEvent) {
+  await act(async () => { plugin.handler?.(value); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+}
+it("does no availability polling or Launcher discovery until this run activates the panel", async () => {
+  vi.useFakeTimers(); history.mockResolvedValue([]);
+  await render(); expect(get).not.toHaveBeenCalled(); expect(history).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).not.toHaveBeenCalled(); expect(history).toHaveBeenCalledTimes(1);
+  for (const overrides of [{ runId: "other" }, { agentId: "other" }, { issueId: "other" }, { eventType: "item.completed" }]) await emit(event(overrides));
+  await emit({ ...event(), companyId: "other" });
+  await emit(event({ payload: { pluginKey: "example.other", slotId: "screen" } }));
+  for (const native of [
+    { eventType: "runtime.activity.recorded", sourceKind: "control_plane", payload: { ...slot.taskSidePanel!.activation } },
+    { eventType: "runtime.activity.recorded", sourceKind: "runner", payload: { namespace: "example.other-runtime", activityKey: "desktop.used" } },
+    { eventType: "runtime.activity.recorded", sourceKind: "runner", payload: { namespace: "example.runtime", activityKey: "other.used" } },
+  ]) await emit(event({ payload: { prpEvent: native } }));
+  expect(get).not.toHaveBeenCalled();
+  await emit(event());
+  expect(get).toHaveBeenCalledTimes(1); expect(current[0]?.runId).toBe("run");
+  await emit(event());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(1);
+});
+it("restores an activation from durable run history after reload", async () => {
+  await render(); expect(current).toHaveLength(1);
+  expect(history).toHaveBeenCalledWith("run", { signal: expect.any(AbortSignal), cache: "no-store" });
+});
+it("reconciles activation history and availability after reconnect", async () => {
+  vi.useFakeTimers(); history.mockResolvedValue([]); await render(); expect(current).toEqual([]);
+  plugin.healthy = false; await render();
+  history.mockResolvedValue([{ pluginKey: slot.pluginKey, slotId: slot.id }]);
+  plugin.healthy = true; plugin.epoch++;
+  await render(); expect(current).toHaveLength(1);
+});
+it("does not lose an activation to an older in-flight history read", async () => {
+  vi.useFakeTimers(); let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  await render(); expect(get).not.toHaveBeenCalled();
+  await emit(event()); expect(current).toHaveLength(1);
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(current).toHaveLength(1);
+});
+it("merges earlier panel history with a different panel activated during the read", async () => {
+  vi.useFakeTimers();
+  const second = { ...slot, id: "second-screen", taskSidePanel: { ...slot.taskSidePanel!, activation: { namespace: "example.runtime", activityKey: "other.used" } } };
+  plugin.slots = [slot, second];
+  let resolve!: (value: Array<{ pluginKey: string; slotId: string }>) => void;
+  history.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  await render();
+  expect(get).not.toHaveBeenCalled();
+  await emit(event({ payload: { prpEvent: {
+    eventType: "runtime.activity.recorded", sourceKind: "runner",
+    payload: { ...second.taskSidePanel.activation },
+  } } }));
+  expect(current.map(panel => panel.slot.id)).toEqual([second.id]);
+  await act(async () => {
+    resolve([{ pluginKey: slot.pluginKey, slotId: slot.id }]);
+    await vi.advanceTimersByTimeAsync(30);
+  });
+  expect(current.map(panel => panel.slot.id)).toEqual([slot.id, second.id]);
+  expect(history).toHaveBeenCalledTimes(1);
+});
+it("fails closed when activation history cannot be read", async () => {
+  history.mockRejectedValue(new Error("Access denied")); await render();
+  expect(get).not.toHaveBeenCalled(); expect(current).toEqual([]);
+});
+
+it("bounds readiness retries to three attempts after an activation", async () => {
+  vi.useFakeTimers(); get.mockResolvedValue({ available: false });
+  await render(); expect(get).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(3); expect(current).toEqual([]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(3);
+});
+
+it.each(["runs", "history"])("recovers from a transient %s read without recurring polling", async source => {
+  vi.useFakeTimers();
+  const error = new ApiError("Unavailable", 500, {});
+  if (source === "runs") list.mockRejectedValueOnce(error);
+  else history.mockRejectedValueOnce(error);
+  await render();
+  expect(current).toEqual([]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+  expect(current).toHaveLength(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(source === "runs" ? list : history).toHaveBeenCalledTimes(2);
+});
+it.each([500, 403])("bounds failed discovery reads for HTTP %s", async status => {
+  vi.useFakeTimers();
+  list.mockRejectedValue(new ApiError("Unavailable", status, {}));
+  await render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(list).toHaveBeenCalledTimes(status === 500 ? 3 : 1);
+  expect(history).not.toHaveBeenCalled();
+  expect(current).toEqual([]);
+});
+
+it("does not discover a task view without a declared activity mapping", async () => {
+  plugin.slots = [{ ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } }];
+  await render();
+  expect(list).not.toHaveBeenCalled(); expect(history).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled(); expect(current).toEqual([]);
 });

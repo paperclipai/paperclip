@@ -659,3 +659,10 @@ captured before the operation. Warm run attachment and process recovery rotate
 that authority. Runner supplies the run identity from its active authenticated
 binding. Optional hint failure does not fail the underlying operation. No output
 text is scanned and no synthetic receipt is written.
+
+`GET /api/heartbeat-runs/:runId/events?view=plugin-panels` reads these events and
+returns only installed agent task-panel contributions under normal run-read and
+telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
+and current-user redaction. The task page uses one history read on mount/reconnect
+and the existing live transcript stream, then makes a bounded plugin readiness
+check. No panel discovery timer scans runs or provider state while connected.
