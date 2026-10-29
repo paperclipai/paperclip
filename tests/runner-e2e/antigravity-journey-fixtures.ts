@@ -295,6 +295,10 @@ export async function cleanupAntigravityJourney(input: {
         await connectionDelay(250);
       }
       await api.delete(`/api/agents/${agent.id}`);
+    } else {
+      const retained = await api.get<Row>(`/api/agents/${agent.id}`);
+      if (retained.id !== agent.id || retained.companyId !== resources.companyId || retained.name !== resources.agentName || retained.status !== "paused")
+        throw new ConnectionFailure("cleanup_retained_agent_pause_unconfirmed");
     }
     resources.retained = config.retainAgent;
     cleanup.agent = true;

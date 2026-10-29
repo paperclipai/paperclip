@@ -263,10 +263,11 @@ it.each(["interrupted", "timed_out"].flatMap(status => [false, true].map(pending
     owned.processes[runId] = { captured: true, identityChanged: false, journal: [
       { pid: 9000001, parent: 1, start: "2020-01-01T00:00:00Z" }, { pid: 9000002, parent: 9000001, start: "2020-01-01T00:00:00Z" },
     ] };
-    const agent = { id: agentId, companyId, name: owned.agentName }, run = { id: runId, agentId, companyId, status,
+    const agent = { id: agentId, companyId, name: owned.agentName, status: "active" }, run = { id: runId, agentId, companyId, status,
       costAccountingPending: pending, contextSnapshot: { paperclipEnvironment: { leaseId: "lease" } } };
     const get = vi.fn(async (route: string) => {
       if (route.endsWith("/agents")) return [agent];
+      if (route === `/api/agents/${agentId}`) return agent;
       if (route.includes("heartbeat-runs?")) return [run];
       if (route === `/api/heartbeat-runs/${runId}`) return run;
       if (route === "/api/environment-leases/lease") return { companyId, heartbeatRunId: runId, environmentId, status: "released" };
@@ -275,7 +276,7 @@ it.each(["interrupted", "timed_out"].flatMap(status => [false, true].map(pending
     });
     const post = vi.fn(), remove = vi.fn(), cleanup = { agent: false, runs: false, connectionPreserved: false };
     const started = Date.now(); let error: unknown, finishedAt: number | undefined;
-    const operation = cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(), delete: remove } as unknown as ConnectionApi,
+    const operation = cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(async () => { agent.status = "paused"; }), delete: remove } as unknown as ConnectionApi,
       config: parseAntigravityJourneyConfig({ ...fixture(), retainAgent: true }), resources: owned, cleanup, captureRun: async () => {}, persistResources: async () => {} })
       .then(() => { finishedAt = Date.now(); }, caught => { error = caught; finishedAt = Date.now(); });
     await vi.advanceTimersByTimeAsync(60_500); await operation;
@@ -283,6 +284,23 @@ it.each(["interrupted", "timed_out"].flatMap(status => [false, true].map(pending
     else { expect(error).toBeUndefined(); expect(finishedAt! - started).toBeLessThan(1_000); expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true }); expect(owned.retained).toBe(true); }
     expect(post).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
+});
+it("does not claim retained-agent cleanup when the pause PATCH was ignored", async () => {
+  const owned = resources(); owned.setupProbe = "retired";
+  const agent = { id: agentId, companyId, name: owned.agentName, status: "active" };
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [agent];
+    if (route === `/api/agents/${agentId}`) return agent;
+    if (route.includes("heartbeat-runs?")) return [];
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error("Unexpected cleanup read");
+  });
+  const post = vi.fn(), remove = vi.fn(), patch = vi.fn(), cleanup = { agent: false, runs: false, connectionPreserved: false };
+  await expect(cleanupAntigravityJourney({ api: { get, post, patch, delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig({ ...fixture(), retainAgent: true }), resources: owned, cleanup, captureRun: async () => {}, persistResources: async () => {} }))
+    .rejects.toThrow("cleanup_retained_agent_pause_unconfirmed");
+  expect(patch).toHaveBeenCalledWith(`/api/agents/${agentId}`, { status: "paused" });
+  expect(cleanup.agent).toBe(false); expect(post).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
 });
 
 it("stops on combined reported and estimated known cost while retaining unknown subscription prices", () => {
