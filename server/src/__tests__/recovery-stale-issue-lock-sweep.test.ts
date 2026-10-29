@@ -267,7 +267,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     runtimeMode?: "native" | "legacy";
     variant?: "ordinary" | "cancelled" | "wrong_child" | "wrong_reason" | "wrong_agent" | "unfinished_child" | "foreign_child";
   } = {}) {
-    const { companyId, agentId, runningRunId } = await seed();
+    // The reported issue is done, so the issue-terminal authority is in play:
+    // the run has to have outlived the grace period, as a real orphan would.
+    const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     const issueId = randomUUID();
     const childIssueId = randomUUID();
     const variant = options.variant;
@@ -562,7 +564,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   async function seedPendingNativeResult(phase: string, options: { terminalIssue?: boolean; deferCoordinator?: boolean } = {}) {
-    const fixture = await seed();
+    const fixture = await seed(options.terminalIssue ? { runningRunStartedAt: orphanedRunStartedAt() } : undefined);
     const { companyId, agentId, runningRunId } = fixture;
     const issueId = randomUUID();
     const contractId = randomUUID();
