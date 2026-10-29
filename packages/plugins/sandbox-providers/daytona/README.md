@@ -50,8 +50,9 @@ pnpm typecheck
 
 These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
 
-The capacity regression uses Python 3 for a real local PTY and GNU core utilities
-(`gtar`, `gdd`, and `gbase64` on macOS). With `DAYTONA_API_KEY` set, run
+The capacity regression uses Python 3 for a real local PTY, Bash, and GNU core
+utilities (`gtar`, `gdd`, and `gbase64` on macOS). It skips when those prerequisites
+are unavailable or their version checks do not match. With `DAYTONA_API_KEY` set, run
 `pnpm test src/file-sync-capacity.live.test.ts` to exercise an actual stopped and
 resumed Daytona sandbox, a tar write to `/dev/full`, validated export, and a
 second export after reconnect. The test creates and deletes one disposable

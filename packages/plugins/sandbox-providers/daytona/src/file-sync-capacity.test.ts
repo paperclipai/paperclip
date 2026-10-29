@@ -13,7 +13,19 @@ import { performSyncOut } from "./file-sync.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
-const executable = (names: string[]) => names.map(name => spawnSync("sh", ["-c", 'command -v "$1"', "sh", name], { encoding: "utf8" }).stdout.trim()).find(Boolean)!;
+const executable = (names: string[], version: string) => names.map(name => {
+  const resolved = spawnSync("/bin/sh", ["-c", 'command -v "$1"', "sh", name], { encoding: "utf8" }).stdout?.trim();
+  return resolved && spawnSync(resolved, ["--version"], { encoding: "utf8" }).stdout?.includes(version) ? resolved : undefined;
+}).find(Boolean);
+// Match the provider's GNU tools. Hosts without these or Python's PTY relay
+// skip this integration regression, like the nearby real-GNU-tar tests.
+const requiredTools = {
+  tar: executable(["gtar", "tar"], "GNU tar"),
+  dd: executable(["gdd", "dd"], "coreutils"),
+  base64: executable(["gbase64", "base64"], "coreutils"),
+  bash: executable(["bash"], "GNU bash"),
+  python3: executable(["python3"], "Python 3."),
+};
 const ptyRelay = `
 import os, pty, select, signal, sys
 pid, fd = pty.fork()
@@ -37,7 +49,7 @@ while True:
             data = data[os.write(dst, data):]
 `;
 
-it.each(["success", "producer failure", "sparse archive over budget"])("preserves source bytes under archive capacity failure: %s", async scenario => {
+it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "producer failure", "sparse archive over budget"])("preserves source bytes under archive capacity failure: %s", async scenario => {
   const producerFails = scenario === "producer failure";
   const sparseOverBudget = scenario === "sparse archive over budget";
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-capacity-"));
@@ -47,10 +59,10 @@ it.each(["success", "producer failure", "sparse archive over budget"])("preserve
   const bin = path.join(root, "bin");
   await fs.mkdir(remote);
   await fs.mkdir(bin);
-  for (const [name, candidates] of Object.entries({ dd: ["gdd", "dd"], base64: ["gbase64", "base64"] })) {
-    await fs.symlink(executable(candidates), path.join(bin, name));
+  for (const name of ["dd", "base64", "bash"] as const) {
+    await fs.symlink(requiredTools[name]!, path.join(bin, name));
   }
-  const tar = executable(["gtar", "tar"]);
+  const tar = requiredTools.tar!;
   if (producerFails) {
     await fs.writeFile(path.join(bin, "tar"), `#!/bin/sh\n'${tar}' "$@"\nstatus=$?\ncase " $* " in *" -f - "*) exit 23 ;; esac\nexit "$status"\n`, { mode: 0o755 });
   } else {
@@ -79,7 +91,7 @@ it.each(["success", "producer failure", "sparse archive over budget"])("preserve
       createPty: async (options: DaytonaPtyCreateOptions) => {
         // A real PTY exercises raw-mode startup, echo suppression and the
         // canonical line limit, including the longer safe-link retry script.
-        const child = spawn("python3", ["-c", ptyRelay], { env, cwd: options.cwd });
+        const child = spawn(requiredTools.python3!, ["-c", ptyRelay], { env, cwd: options.cwd });
         child.stdout.on("data", options.onData);
         const completion = new Promise<{ exitCode: number }>(resolve => child.once("exit", code => resolve({ exitCode: code ?? 1 })));
         return {
