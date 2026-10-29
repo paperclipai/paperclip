@@ -123,9 +123,12 @@ async function removeCompanyManagedFiles(companyId: string, agentIds: string[]):
     targets.push(path.resolve(config.storageLocalDiskBaseDir, companyId));
   }
 
-  const results = await Promise.allSettled(
-    targets.map((target) => removeManagedCleanupTarget(instanceRoot, target)),
-  );
+  const results: PromiseSettledResult<void>[] = [];
+  for (let offset = 0; offset < targets.length; offset += 4) {
+    results.push(...await Promise.allSettled(
+      targets.slice(offset, offset + 4).map((target) => removeManagedCleanupTarget(instanceRoot, target)),
+    ));
+  }
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
 }

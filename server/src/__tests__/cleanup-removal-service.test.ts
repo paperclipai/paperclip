@@ -44,6 +44,28 @@ import { companyService } from "../services/companies.ts";
 import { deleteCompany } from "../services/company-deletion.js";
 import { createDurableRunLogStore } from "../services/run-log-store.js";
 
+const cleanupWorkers = vi.hoisted(() => ({ enabled: false, active: 0, peak: 0, completed: 0 }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const run = promisify(original.execFile);
+  const execFile = Object.assign((...args: Parameters<typeof original.execFile>) => original.execFile(...args), {
+    [promisify.custom]: async (...args: Parameters<typeof run>) => {
+      if (!cleanupWorkers.enabled) return run(...args);
+      cleanupWorkers.active++;
+      cleanupWorkers.peak = Math.max(cleanupWorkers.peak, cleanupWorkers.active);
+      try {
+        return await run(...args);
+      } finally {
+        cleanupWorkers.active--;
+        cleanupWorkers.completed++;
+      }
+    },
+  });
+  return { ...original, execFile };
+});
+
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CLEANUP_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -619,6 +641,43 @@ process.chdir = (directory) => {
 
     expect(removeManagedFiles).not.toHaveBeenCalled();
     expect(removed?.fileCleanup).toBe("not_requested");
+  });
+
+  it.each([false, true])("bounds real cleanup workers and finishes remaining targets after failure=%s", async (fail) => {
+    const { companyId, agentId } = await seedFixture();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-workers-"));
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    vi.stubEnv("PAPERCLIP_STORAGE_LOCAL_DIR", path.join(root, "storage"));
+    const extraAgentIds = Array.from({ length: 12 }, () => randomUUID());
+    await db.insert(agents).values(extraAgentIds.map((id) => ({
+      id, companyId, name: id, role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    })));
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const workspaces = [agentId, ...extraAgentIds].map(resolveDefaultAgentWorkspaceDir);
+    try {
+      for (const workspace of workspaces) await mkdir(workspace, { recursive: true });
+      if (fail) {
+        const outside = path.join(root, "outside");
+        await mkdir(outside);
+        await writeFile(path.join(outside, "sentinel"), "keep");
+        await rm(path.dirname(workspaces[0]), { recursive: true, force: true });
+        await symlink(outside, path.dirname(workspaces[0]), "dir");
+      }
+      Object.assign(cleanupWorkers, { enabled: true, active: 0, peak: 0, completed: 0 });
+      const removed = await companyService(db).remove(companyId, { deleteFiles: true });
+      expect(removed?.fileCleanup).toBe(fail ? "failed" : "succeeded");
+      expect(cleanupWorkers.peak).toBeGreaterThan(1);
+      expect(cleanupWorkers.peak).toBeLessThanOrEqual(4);
+      expect(cleanupWorkers.active).toBe(0);
+      expect(cleanupWorkers.completed).toBe(workspaces.length + 5);
+      if (fail) expect(await readFile(path.join(root, "outside", "sentinel"), "utf8")).toBe("keep");
+      else for (const workspace of workspaces) await expect(access(workspace)).rejects.toThrow();
+    } finally {
+      cleanupWorkers.enabled = false;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("reports cleanup failure after completing database deletion", async () => {
