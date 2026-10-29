@@ -354,8 +354,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
+    && (manifest?.capabilities.includes("environment.drivers.register") === true
+      || manifest?.capabilities.includes("workspaces.manage") === true);
   const invocationTracer = createInvocationTracer(
-    () => Boolean(invocationContextStorage.getStore()?.traceparent),
+    canRecordSpans,
     span => { void callHostRaw("span.record", span).catch(() => undefined); },
   );
   const { withSpan } = invocationTracer;
@@ -1551,12 +1554,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           options?: { attributes?: Record<string, string | number | boolean> },
         ) {
           // Read the active host trace context from the per-call invocation
-          // channel. A `traceparent` means a host span is active, so this span
-          // may record. No `traceparent` means tracing is off: the span is a
-          // no-op, so a lifecycle hook can always wrap work in a span.
+          // channel. Only providers permitted to record receipts collect spans;
+          // other plugins and tracing-off invocations keep no-op behavior.
           const recordSpan = invocationTracer.captureRecorder();
           const spanInvocation = invocationContextStorage.getStore();
-          const hasTraceContext = Boolean(spanInvocation?.traceparent);
+          const hasTraceContext = canRecordSpans();
           const attributes: Record<string, string | number | boolean> = {
             ...(options?.attributes ?? {}),
           };

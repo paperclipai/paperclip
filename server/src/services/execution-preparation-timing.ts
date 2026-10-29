@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { EXECUTION_PREPARATION_SPAN_ATTRS, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
 
@@ -140,7 +140,7 @@ export function isRunPhaseActive(phase: ExecutionPhase): boolean {
   return endpointEnabled() && owned?.phase === phase && !owned.ended;
 }
 
-function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}): Promise<T> {
+function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
@@ -165,7 +165,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
   };
   if (!endpointEnabled()) return (async () => work())();
   try {
-    const parent = independent ? undefined : getRunExecutionTraceContext(runId);
+    const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
     const traced = trace.getTracer(name.startsWith("heartbeat.prepare.") ? "paperclip.heartbeat-preparation"
       : name.startsWith("native.controller.") ? "paperclip.native-controller" : "paperclip.execution").startActiveSpan(name, {
@@ -199,7 +199,9 @@ export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | 
   const count = owned.details.get(phase) ?? 0;
   if (count >= 16) return work();
   owned.details.set(phase, count + 1);
-  return measure(owned.runId, phase, work, false, counts);
+  // A startup step can be more specific than the owning run phase. Keep that
+  // causal parent while the child publishes its own context to plugin workers.
+  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {

@@ -1,3 +1,4 @@
+import { getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createRunPreparationTiming, measureRunPhase, recordRepositoryObjectCacheDetail, withRunExecutionTiming, withRunWorkspaceFinalizationTiming } from "./execution-preparation-timing.js";
 import { ROOT_CONTEXT, trace, SpanStatusCode, type Context } from "@opentelemetry/api";
@@ -140,4 +141,24 @@ it("does not let cache attribute failures replace the operation result", async (
   });
   await expect(withRunExecutionTiming("run", () => measureRunPhase("workspace.checkout.cache_publish", work))).resolves.toBe(42);
   expect(work).toHaveBeenCalledOnce();
+});
+
+it("keeps plugin dispatch beneath its active startup step and gives the worker the dispatch parent", async () => {
+  const parents = new Map<string, Context>();
+  const spans = new Map<string, { end: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> }>();
+  handles.startActiveSpan.mockImplementation((name, _options, parent, callback) => {
+    parents.set(name, parent);
+    const span = { end: vi.fn(), setStatus: vi.fn() };
+    spans.set(name, span);
+    return callback(span);
+  });
+  const step = trace.wrapSpanContext({ traceId: "1".repeat(32), spanId: "2".repeat(16), traceFlags: 1 });
+  const stepContext = trace.setSpan(ROOT_CONTEXT, step);
+  await withRunExecutionTiming("startup", () => runWithRuntimeParent(stepContext, async () => {
+    await measureRunPhase("execution.plugin_dispatch", () => {
+      expect(trace.getSpan(getActiveStepContext()!.parentContext as Context)).toBe(spans.get("execution.plugin_dispatch"));
+    });
+    expect(getActiveStepContext()!.parentContext).toBe(stepContext);
+  }));
+  expect(parents.get("execution.plugin_dispatch")).toBe(stepContext);
 });

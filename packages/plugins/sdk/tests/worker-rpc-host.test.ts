@@ -569,7 +569,7 @@ describe("worker provider tracer", () => {
   // worker→host traffic. The host injects a `traceparent` on the invocation, so
   // the worker must emit one `span.record` request that echoes the invocation id
   // and carries the span name and attributes.
-  async function runSpanProbe(invocation: PluginInvocationContext, count=1) {
+  async function runSpanProbe(invocation: PluginInvocationContext, count=1, capabilities = ["environment.drivers.register"]) {
     const hostToWorker = new PassThrough();
     const workerToHost = new PassThrough();
     const hostReadline = createInterface({ input: workerToHost });
@@ -640,7 +640,7 @@ describe("worker provider tracer", () => {
           description: "Tracer test",
           author: "Paperclip",
           categories: ["automation"],
-          capabilities: ["environment.drivers.register"],
+          capabilities,
           entrypoints: { worker: "dist/worker.js" },
         },
         config: {},
@@ -698,6 +698,19 @@ describe("worker provider tracer", () => {
     const records=await runSpanProbe({id:"bounded",scope:{companyId:"company-a"},traceparent:"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},300);
     expect(records).toHaveLength(1);
     expect((records[0].params as {children:unknown[]}).children).toHaveLength(255);
+  });
+
+  it.each([{ capabilities: [] }, { capabilities: ["companies.read"] }])("does not collect automatic or legacy receipts without a permitted capability: $capabilities", async ({ capabilities }) => {
+    const records = await runSpanProbe({ id: "not-permitted", scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }, 1, capabilities);
+    expect(records).toEqual([]);
+  });
+
+  it("collects receipts for workspace providers without environment-driver permission", async () => {
+    const records = await runSpanProbe({ id: "workspace", scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }, 1, ["workspaces.manage"]);
+    expect(records).toHaveLength(1);
+    expect(records[0].params).toMatchObject({ name: "plugin.worker", children: [{ name: "pack" }] });
   });
 
   it("emits no span.record when the invocation carries no traceparent (tracing off)", async () => {

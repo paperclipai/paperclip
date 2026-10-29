@@ -3379,7 +3379,11 @@ export function createPluginWorkerHandle(
     executeLogSink?: ExecuteLogSink,
     onWorkerSettled?: () => void,
   ): Promise<HostToWorkerMethods[M][1]> {
-    return measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled));
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled));
+    // Tracing wraps the RPC in a new promise. Guard the promise handed to the
+    // caller as well, without swallowing its eventual rejection for that caller.
+    void dispatched.catch(() => undefined);
+    return dispatched;
   }
 
   function callInternalRaw<M extends HostToWorkerMethodName>(
