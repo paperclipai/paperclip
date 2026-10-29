@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, expect, it, vi } from "vitest";
 import { DurablePrpControlPlane, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
+import { copyOwnedNodeRuntime } from "../test-support/owned-node-runtime.js";
 import { GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
 
@@ -66,6 +67,7 @@ function sidecarSource(root: string) {
 
 async function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "acpx-controller-recovery-"));
+  const { executable: nodeCommand } = await copyOwnedNodeRuntime(resolve(root, "node"));
   const stateDirectory = resolve(root, "control-plane");
   const script = resolve(root, "sidecar.cjs");
   writeFileSync(script, sidecarSource(root), { mode: 0o700 });
@@ -74,7 +76,7 @@ async function fixture() {
     agent: "claude", model: "scripted-model", acpxVersion: profiles.acpxVersion,
     agentServerPackage: profile.agentServerPackage, agentServerVersion: profile.agentServerVersion,
     agentRuntimePackage: profile.agentRuntimePackage, agentRuntimeVersion: profile.agentRuntimeVersion,
-    commandDigest: profile.commandDigest, sidecarCommand: process.execPath, sidecarArgs: [script],
+    commandDigest: profile.commandDigest, sidecarCommand: nodeCommand, sidecarArgs: [script],
     runtimeDirectory: runtime, normalizedSessionId: identity.normalizedSessionId, runId: identity.runId,
     cwd: root, instructions: "Do the supplied synthetic task.", permissionMode: "approve-reads", permissionModePinned: true,
     runtimeContext: null };
@@ -95,7 +97,7 @@ async function fixture() {
     "--run-id",identity.runId,"--session-id",identity.normalizedSessionId,"--turn-id",identity.turnId,"--item-id",identity.itemId,
     "--runner-version",expectedRunnerVersion,"--runner-digest",expectedRunnerDigest,"--max-runtime-ms","0",
     "--reconnect-grace-ms","15000","--reconnect-delay-ms","25","--acpx-launch-authority-digest","sha256:"+"d".repeat(64),
-    "--acpx-sidecar-command",process.execPath,"--acpx-sidecar-command-sha256",digest(process.execPath),
+    "--acpx-sidecar-command",nodeCommand,"--acpx-sidecar-command-sha256",digest(nodeCommand),
     "--acpx-sidecar-script",script,"--acpx-sidecar-script-sha256",digest(script)];
   const startedAt = new Date().toISOString();
   const child = spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:ticket},stdio:["ignore","ignore","pipe"],detached:true});
