@@ -1,4 +1,4 @@
-import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
@@ -1016,10 +1016,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
-  const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
+  const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
+  const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
-  const modelAdapterType = isRunnerHarness ? harnessType : adapterType;
+  const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
     ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
     : ["agents", "none", "adapter-models", adapterType];
@@ -1037,13 +1038,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       aiConnection: modelAiBinding,
       agentId: isCreate ? undefined : props.agent.id,
     }),
-    ...(runnerAcpxAgent === "copilot" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
-  const copilotModelScope = runnerAcpxAgent === "copilot" ? JSON.stringify(modelQueryKey) : null;
+  const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
-    if (copilotModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
-  }, [copilotModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
+    if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
@@ -1410,7 +1411,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent === "copilot" ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(accountBoundCatalog ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1871,7 +1872,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
               mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
-              if (runnerAcpxAgent === "copilot" && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
+              if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
@@ -1953,7 +1954,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable
@@ -1966,7 +1967,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       return result.data?.model ?? null;
                     }}
                 onRefreshModels={
-                  connectionModels ? connectionModels.refreshModels : supportsAdapterModelRefresh(adapterType)
+                  connectionModels ? connectionModels.refreshModels : accountBoundCatalog || supportsAdapterModelRefresh(adapterType)
                     ? handleRefreshModels
                     : undefined
                 }
@@ -2362,7 +2363,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
           variant={isExternalRunner ? "prerequisites" : "connection"}
-          metadataOnly={adapterType === "paperclip_runner" && runnerAcpxAgent === "copilot"}
+          metadataOnly={accountBoundCatalog}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
           error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}

@@ -1311,6 +1311,36 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
   });
 
+  it.each(["api_key", "subscription"] as const)("loads saved Antigravity %s models through its selected connection without a Claude fallback", async method => {
+    const binding = { provider: "google", method, mode: "responsible_user" } as const;
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "google-account", grantId: "google-grant", companyId: "company-1", provider: "google", method, name: "Verified Google",
+      ownership: "personal", ownerUserId: "you", isDefault: true, status: "connected",
+    }] });
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "google-exact-model", label: "My Google model" }]);
+    try {
+      const result = await renderForm([makeEnvironment({ id: "local-1", name: "Local", driver: "local" })], {
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "google-exact-model" }, runtimeConfig: { aiConnection: binding },
+      });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        provider: "acpx", acpxAgent: "antigravity", aiConnection: binding, agentId: "agent-1",
+      })));
+      expect(result.container.textContent).toContain("My Google model");
+      expect(mockAgentsApi.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity")).toBe(true);
+      await clickByText(result.container, "My Google model");
+      const search = document.body.querySelector<HTMLInputElement>('[placeholder="Search models... (type to create)"]');
+      expect(search).not.toBeNull();
+      await act(() => setInputValue(search!, "manual-exact-google-model"));
+      await flushReact();
+      await clickElement(Array.from(document.body.querySelectorAll('[role="option"]')).find(option => option.textContent?.includes("Use manual model")));
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({
+        provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model",
+      }) }));
+    } finally { accounts.mockRestore(); }
+  });
+
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
     const binding = { mode: "responsible_user", provider: "github", method: "api_key" } as const;
     const account = { id: "copilot-account", grantId: "copilot-grant", companyId: "company-1", provider: "github", method: "api_key", name: "My Copilot", ownership: "personal", ownerUserId: "you", isDefault: true, status: "needs_attention" } as const;

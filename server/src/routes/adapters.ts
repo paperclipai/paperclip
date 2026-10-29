@@ -55,6 +55,7 @@ import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin } from "
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
 import type { AgentRunnerAvailability } from "@paperclipai/shared";
+import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -127,6 +128,7 @@ interface AdapterCapabilities {
 }
 
 interface AdapterInfo extends AgentRunnerAvailability {
+  candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -304,9 +306,13 @@ export function adapterRoutes(options: {
     // One shared implementation, with independent provider rollouts. Explicit
     // adapter-admin disabling still applies to both choices.
 
-    const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
-      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),
-    ).sort((a, b) => a.type.localeCompare(b.type));
+    const candidate = typeof companyId === "string" && target?.driver === "local"
+      ? resolveAntigravityCandidateAdmission({ companyId }) : undefined;
+    const result: AdapterInfo[] = registeredAdapters.map((adapter) => ({
+      ...buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),
+      ...(candidate && adapter.type === "paperclip_runner" && !disabledSet.has(adapter.type) && !externalRecords.has(adapter.type)
+        ? { candidateHarnesses: [{ agent: "antigravity" as const, model: candidate.model }] } : {}),
+    })).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);
   });

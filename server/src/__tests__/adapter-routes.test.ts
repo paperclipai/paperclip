@@ -21,6 +21,7 @@ const mockPluginLoader = vi.hoisted(() => ({
   getOrExtractUiParserSource: vi.fn(),
   reloadExternalAdapter: vi.fn(),
 }));
+const mockCandidateAdmission = vi.hoisted(() => vi.fn());
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -52,6 +53,10 @@ let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/acpx-qualification.js", async () => ({
+    ...await vi.importActual("../services/native-runtime/acpx-qualification.js"),
+    resolveAntigravityCandidateAdmission: mockCandidateAdmission,
+  }));
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
@@ -145,6 +150,28 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.requiresMaterializedRuntimeSkills).toBe("boolean");
       expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
     }
+  });
+  it("projects only the enabled company-local candidate and exact model", async () => {
+    mockCandidateAdmission.mockImplementation(({ companyId }) => companyId === "company-1"
+      ? { agent: "antigravity", model: "exact-google-model", profileDigest: "private-profile", nativeClosureDigest: "private-closure" } : undefined);
+    const local = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    const scoped = await request(local).get("/api/adapters?companyId=company-1");
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses)
+      .toEqual([{ agent: "antigravity", model: "exact-google-model" }]);
+    expect(JSON.stringify(scoped.body)).not.toContain("private-profile");
+    expect(JSON.stringify(scoped.body)).not.toContain("private-closure");
+    for (const query of ["", "?companyId=other-company"]) {
+      const response = await request(local).get(`/api/adapters${query}`);
+      expect(response.status).toBe(200);
+      expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+    }
+    const remote = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "ssh" }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=remote");
+    expect(remote.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
+    const disabled = await request(local).get("/api/adapters?companyId=company-1");
+    expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
   });
 
   it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {

@@ -729,6 +729,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           )
         : agent.adapterConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
+        companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
         adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,
       });
@@ -741,6 +742,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           }) : null;
       const nativeProvider = codexCliVersion
         ? resolvePaperclipRunnerNativeProviderInput({
+            companyId: agent.companyId,
             backend: nativeRuntimeResolution.profile.backend,
             adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
@@ -864,6 +866,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         nativeRunnerInstanceId = randomUUID();
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
+    }
+    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
+      && nativeExecution.provider.agent === "antigravity") {
+      nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
     }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
       adapterType: agent.adapterType,

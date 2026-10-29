@@ -30,7 +30,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -1099,6 +1099,41 @@ describe("managed AI connections", () => {
       await expect(access(transcript)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await Promise.all([resumed.cleanup(), peer.cleanup()]); }
   });
+  it("isolates the selected Google AI credential for pending native Antigravity preparation", async () => {
+    const owner = "antigravity-managed-key";
+    const token = "saved-antigravity-key";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(companyId, owner, { provider: "google", method: "api_key", ownership: "personal",
+      name: "Antigravity Google AI", apiKey: token, allAgents: true, agentIds: [] }, token);
+    await service.setDefault(companyId, owner, saved.grantId);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
+      binding: { provider: "google", method: "api_key", mode: "responsible_user" } as const,
+      config: { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model", env: {
+        GEMINI_API_KEY: "ambient-key", GOOGLE_API_KEY: "ambient-other-key", GEMINI_HOME: "/ambient/home",
+        GOOGLE_APPLICATION_CREDENTIALS: "/ambient/google.json", GOOGLE_CLOUD_ACCESS_TOKEN: "ambient-oauth-token",
+      } } };
+    const runtime = await prepareManagedAiRuntime(db, input);
+    const reopened = await prepareManagedAiRuntime(db, input);
+    try {
+      expect(runtime.attribution).toMatchObject({ provider: "google", method: "api_key", connectionId: saved.connectionId, grantId: saved.grantId });
+      expect(runtime.config).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: input.config.model,
+        env: { GEMINI_API_KEY: token, GOOGLE_API_KEY: "", GOOGLE_APPLICATION_CREDENTIALS: "", GOOGLE_CLOUD_ACCESS_TOKEN: "" } });
+      expect(runtime.config.env.GEMINI_HOME).toBe(path.join(runtime.home!, "provider"));
+      const settingsFile = path.join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "settings.json");
+      expect(JSON.parse(await readFile(settingsFile, "utf8"))).toEqual({ auth: { type: "gemini-api-key" } });
+      expect(await readFile(settingsFile, "utf8")).not.toContain(token);
+      expect((await stat(settingsFile)).mode & 0o777).toBe(0o600);
+      expect(managedAiSessionFingerprintConfig(runtime.config, runtime.home))
+        .toEqual(managedAiSessionFingerprintConfig(reopened.config, reopened.home));
+      expect(input.config.env.GEMINI_HOME).toBe("/ambient/home");
+      await expect(prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob" })).rejects.toThrow();
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
+      await expect(prepareManagedAiRuntime(db, input)).rejects.toThrow();
+    } finally { await Promise.all([runtime.cleanup(), reopened.cleanup()]); }
+    await expect(access(runtime.home!)).rejects.toThrow();
+    await expect(access(reopened.home!)).rejects.toThrow();
+  });
+
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));
     const command = path.join(root, "gemini");
@@ -2062,17 +2097,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const owner = `restart-${provider}`;
     const intent = { provider, method: "subscription", ownership: "personal", name: "Interrupted sign-in", allAgents: false, agentIds: [] } as const;
     await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: provider === "anthropic" ? "claude_local" : "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockRejectedValue(new Error("No credential yet"));
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockRejectedValue(new Error("No credential yet"));
     try {
       const login = localAiLoginService(db);
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "sign_in_required", error: "The server restarted during sign-in. Start sign-in again." });
       await expect(login.check(companyId, "bob", { ...intent, agentIds: [] }, id)).rejects.toThrow("not found");
-      reader.mockResolvedValue("completed-before-restart");
+      reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("fixture-local-token");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -2108,7 +2143,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { reader.mockRestore(); }
   });
   it.each(["anthropic", "openai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails");
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -2131,7 +2166,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it.each(["anthropic", "openai"] as const)("lets authenticated users connect only their own isolated %s login", async provider => {
     const owner = `self-hosted-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("isolated-fixture-token");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "isolated-fixture-token", accountLabel: undefined });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

@@ -1,0 +1,115 @@
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AiConnectionLoginIntent } from "@paperclipai/shared";
+import type { LocalBrowserLoginState } from "../services/local-ai-browser-login.js";
+
+const mocks = vi.hoisted(() => ({ root: vi.fn(), browser: vi.fn(), credential: vi.fn(), save: vi.fn(), notify: vi.fn(), activity: vi.fn() }));
+vi.mock("../home-paths.js", () => ({ resolvePaperclipInstanceRoot: mocks.root }));
+vi.mock("../services/local-ai-browser-login.js", () => ({ startLocalBrowserLogin: mocks.browser }));
+vi.mock("../services/local-ai-credentials.js", () => ({ readVerifiedLocalAiCredentialDetails: mocks.credential }));
+vi.mock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ save: mocks.save }) }));
+vi.mock("../services/delivery-work-notifications.js", () => ({ DELIVERY_QUEUES: { localLoginCleanup: "localLoginCleanup" }, notifyDeliveryWork: mocks.notify }));
+vi.mock("../services/activity-log.js", () => ({ logActivity: mocks.activity }));
+import { localAiLoginService } from "../services/local-ai-login.js";
+
+const intent: AiConnectionLoginIntent = { provider: "google", method: "subscription", name: "Google account", ownership: "personal", allAgents: true, agentIds: [] };
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); vi.clearAllMocks(); });
+
+// This suite exercises service ordering with an explicit transaction result
+// queue. It does not replace database authorization/concurrency coverage; the
+// native child/Google protocol has its own controlled-process Runner suite.
+function database() {
+  const selections: unknown[][] = [];
+  let session: Record<string, any>;
+  const db: any = {
+    selections,
+    get session() { return session; },
+    async transaction(run: (tx: unknown) => unknown) { return run(db); },
+    async execute() {},
+    select() {
+      if (!selections.length) throw new Error("Unexpected test database selection");
+      const values = selections.shift()!;
+      const result: any = { from: () => result, where: () => result, for: () => result, orderBy: () => result, limit: () => result,
+        then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(values).then(resolve, reject) };
+      return result;
+    },
+    insert() { return { async values(value: Record<string, unknown>) { session = { ...value, createdAt: new Date() }; } }; },
+    update() { return { set(value: Record<string, unknown>) { return { async where() { Object.assign(session, value); } }; } }; },
+  };
+  return db;
+}
+
+async function fixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-google-local-login-service-"))); roots.push(root);
+  mocks.root.mockReturnValue(root);
+  let release: () => void;
+  const retirement = new Promise<void>(resolve => { release = resolve; });
+  const browser: LocalBrowserLoginState = { authorizationUrl: "https://accounts.google.com/fixture", abort: vi.fn(() => retirement) };
+  mocks.browser.mockReturnValue(browser);
+  mocks.credential.mockResolvedValue({ credential: "private-native-credential", accountLabel: "person@example.test" });
+  mocks.save.mockResolvedValue({ connectionId: "connection-1", grantId: "grant-1" });
+  const db = database(), service = localAiLoginService(db);
+  db.selections.push([], [], [{ id: "local-environment", driver: "local", status: "active" }]);
+  const attempt = await service.start("company", "user", intent);
+  const home = join(root, "ai-local-logins", attempt.sessionId);
+  return { db, service, browser, attempt, home, release: release! };
+}
+
+describe("Google local sign-in service admission", () => {
+  it("does not check or promote an early refresh-token file until native authenticate finishes", async () => {
+    const f = await fixture();
+    await mkdir(join(f.home, "antigravity-acp"), { mode: 0o700 });
+    await writeFile(join(f.home, "antigravity-acp", "acp_token.json"), "early-native-token", { mode: 0o600 });
+    f.db.selections.push([f.db.session]);
+    expect(await f.service.check("company", "user", intent, f.attempt.sessionId)).toMatchObject({ status: "sign_in_required", authorizationUrl: f.browser.authorizationUrl });
+    f.db.selections.push([f.db.session]);
+    await expect(f.service.complete("company", "user", f.attempt.sessionId, intent)).rejects.toThrow("Finish Google browser sign-in");
+    expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
+    f.release(); f.db.selections.push([f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
+  });
+
+  it("returns the verified account email and passes it to the saved connection", async () => {
+    const f = await fixture(); f.browser.outcome = "success";
+    f.db.selections.push([f.db.session]);
+    expect(await f.service.check("company", "user", intent, f.attempt.sessionId)).toEqual({ status: "ready", accountLabel: "person@example.test" });
+    f.release(); f.db.selections.push([f.db.session]);
+    expect(await f.service.complete("company", "user", f.attempt.sessionId, intent)).toEqual({ connectionId: "connection-1", grantId: "grant-1" });
+    expect(mocks.save).toHaveBeenCalledWith("company", "user", intent, "private-native-credential", { id: f.attempt.sessionId }, expect.any(Date), undefined, "person@example.test");
+    await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires a fresh browser exchange after server process state is lost", async () => {
+    const db = database(), service = localAiLoginService(db);
+    const session = { id: "unknown-browser-process", aiConnection: intent, status: "waiting_for_user", connectionMethod: "local_subscription", expiresAt: new Date(Date.now() + 60_000) };
+    mocks.root.mockReturnValue(await realpath(tmpdir()));
+    db.selections.push([session]);
+    expect(await service.check("company", "user", intent, session.id)).toMatchObject({ status: "sign_in_required", error: "The server restarted during sign-in. Start sign-in again." });
+    db.selections.push([session]);
+    await expect(service.complete("company", "user", session.id, intent)).rejects.toThrow("Finish Google browser sign-in");
+    expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  it.each(["cancel", "expiry", "restart", "complete"] as const)("awaits physical browser retirement before deleting the login home on %s", async action => {
+    const f = await fixture();
+    let operation: Promise<unknown>;
+    if (action === "cancel") {
+      f.db.selections.push([f.db.session]); operation = f.service.cancel("company", "user", f.attempt.sessionId);
+    } else if (action === "expiry") {
+      f.db.session.expiresAt = new Date(Date.now() - 1);
+      f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]); operation = f.service.reapExpired();
+    } else if (action === "restart") {
+      f.db.selections.push([], [f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
+      operation = f.service.start("company", "user", intent, true);
+    } else {
+      f.browser.outcome = "success";
+      f.db.selections.push([f.db.session]); operation = f.service.complete("company", "user", f.attempt.sessionId, intent);
+    }
+    await vi.waitFor(() => expect(f.browser.abort).toHaveBeenCalledOnce());
+    await expect(access(f.home)).resolves.toBeUndefined();
+    f.release(); await operation;
+    await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});

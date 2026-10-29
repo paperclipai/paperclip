@@ -140,6 +140,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
   stateDirectory?: string;
@@ -3772,10 +3773,12 @@ describe("runtime question fallback", () => {
 });
 
 describe("native provider bootstrap environment", () => {
-  it.each(["pi", "cursor", "copilot"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
+  it.each(["pi", "cursor", "copilot", "antigravity"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
     const provider = { kind: "acpx", agent } as NativeExecutionInput["provider"];
     const host = { PATH: "/host/bin", HOME: "/host/home", OPENROUTER_API_KEY: "ambient-pi",
       CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot",
+      GEMINI_API_KEY: "ambient-google", GOOGLE_API_KEY: "ambient-other-google", GEMINI_HOME: "/ambient-google-home",
+      GOOGLE_APPLICATION_CREDENTIALS: "/ambient-google-credential.json", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "ambient-google-subscription",
       PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
     expect(resolveNativeProviderEnvironment(provider, undefined, host)).toEqual({ PATH: "/host/bin", HOME: "/host/home" });
     const explicit = { COPILOT_GITHUB_TOKEN: "explicit-company-binding" };
@@ -11857,6 +11860,48 @@ describe("runnerd provider runtime wiring", () => {
       for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
         await expect(access(join(agentHome, name))).rejects.toMatchObject({ code: "ENOENT" });
       }
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = priorHome;
+    }
+  });
+
+  it("projects the selected Antigravity subscription and copies refreshes from the exact native home after close", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    const privateRoot = await realpath(isolatedStateDirectory);
+    process.env.PAPERCLIP_HOME = privateRoot;
+    const managedHome = join(privateRoot, "antigravity-managed-home");
+    await mkdir(join(managedHome, "antigravity-acp"), { recursive: true, mode: 0o700 });
+    const credential = (project?: string) => JSON.stringify({
+      client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+      refresh_token: "fixture-google-refresh", token_uri: "https://oauth2.googleapis.com/token", scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+      ...(project ? { project_id: project } : {}),
+    });
+    const managedToken = join(managedHome, "antigravity-acp", "acp_token.json");
+    await writeFile(managedToken, credential(), { mode: 0o600 });
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model: "caller-selected-model", permissionMode: "deny-all" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    const close = vi.fn(async () => undefined);
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current,
+        runnerInstanceId: "antigravity-credential-close", managedAiCredentialHome: managedHome,
+        runnerEnvironment: { GEMINI_HOME: "/ambient", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed" } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const transport = state.createTransport.mock.calls.at(-1)![0];
+      expect(transport.environment).toMatchObject({ PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential() });
+      expect(transport.environment?.GEMINI_HOME).toBeUndefined();
+      await mkdir(transport.acpxRuntimeDirectory!, { recursive: true, mode: 0o700 });
+      const runtimeHome = join(await resolveAcpxRuntimeRoot(transport.acpxRuntimeDirectory!, execution.session.normalizedSessionId!), "antigravity-home", "antigravity-acp");
+      await mkdir(runtimeHome, { recursive: true, mode: 0o700 });
+      for (const name of ["auth-refresh.json", "auth-refresh.json.tmp"]) await writeFile(join(runtimeHome, name), credential("resolved-project"), { mode: 0o600 });
+      const session = await backend.openSession({} as never);
+      await session.close({ reason: "completed" });
+      expect(close).toHaveBeenCalledOnce();
+      expect(await readFile(managedToken, "utf8")).toBe(credential("resolved-project"));
+      for (const name of ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp"]) await expect(access(join(runtimeHome, name))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = priorHome;
