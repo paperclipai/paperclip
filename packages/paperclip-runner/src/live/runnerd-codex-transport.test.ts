@@ -5618,7 +5618,7 @@ it.each([false, true])("retains the versioned command-environment profile across
   const options = {
     stateDirectory: directory, codexCommand,
     runnerBinary: defaultCapabilityRunnerdBinary(),
-    prpIdentity: identity, environment: { PATH: "/explicit/tools", LANG: "C.UTF-8" },
+    prpIdentity: identity, environment: { PATH: "/opt/homebrew/bin:/explicit/tools", LANG: "C.UTF-8" },
     lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
   };
   const first = createCapabilityRunnerdCodexTransport(options);
@@ -5627,7 +5627,7 @@ it.each([false, true])("retains the versioned command-environment profile across
     await first.transport.close();
     const provider = JSON.parse(await readFile(join(directory, "runner", "codex-provider-state.json"), "utf8"));
     expect(provider.config.driver).toBe("codex_app_server_command_environment_v2");
-    expect(provider.config.commandEnvironment.PATH).toBe("/explicit/tools");
+    expect(provider.config.commandEnvironment.PATH).toBe("/opt/homebrew/bin:/explicit/tools");
     const nextIdentity = rotated ? { ...identity, runId: "run-env-second", turnId: "turn-env-second", itemId: "item-env-second" } : identity;
     const compatible = createCapabilityRunnerdCodexTransport({
       ...options, prpIdentity: nextIdentity, environment: rotated ? {} : options.environment,
@@ -5638,6 +5638,7 @@ it.each([false, true])("retains the versioned command-environment profile across
       expect(resumed.config.driver).toBe("codex_app_server_command_environment_v2");
       expect(resumed.config.commandEnvironment).toEqual(provider.config.commandEnvironment);
       expect(resumed.config.args).toContain(commandEnvironmentPolicy);
+      expect(resumed.config.args.join("\n")).toContain('"/opt/homebrew"="read"');
     } finally {
       await compatible.transport.close();
     }
