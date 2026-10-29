@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import {
   buildRemoteGitDeltaBundleScript,
   GIT_SHALLOW_MAX_BYTES,
+  GitShallowMetadataError,
   isMissingGitPrerequisiteError,
   createImportedGitRef,
   createRemoteGitExportRef,
@@ -2107,11 +2108,11 @@ export async function prepareSandboxManagedRuntime(input: {
                       const shallow = toBuffer(await input.client.readFile(remoteShallowPath, {
                         onProgress: (transferred, total) => {
                           if (transferred > GIT_SHALLOW_MAX_BYTES || (total !== null && total > GIT_SHALLOW_MAX_BYTES)) {
-                            throw new Error("Git shallow metadata exceeds its byte limit");
+                            throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${Math.max(transferred, total ?? 0)} > ${GIT_SHALLOW_MAX_BYTES})`);
                           }
                         },
                       }));
-                      if (shallow.byteLength > GIT_SHALLOW_MAX_BYTES) throw new Error("Git shallow metadata exceeds its byte limit");
+                      if (shallow.byteLength > GIT_SHALLOW_MAX_BYTES) throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallow.byteLength} > ${GIT_SHALLOW_MAX_BYTES})`);
                       await fs.writeFile(localShallowPath, shallow);
                       await input.client.remove(remoteShallowPath).catch(() => undefined);
                     }

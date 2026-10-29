@@ -689,6 +689,11 @@ export async function deleteLocalGitRef(input: {
   }).catch(() => undefined);
 }
 
+/** Invalid restore metadata is an integrity rejection, not a dropped transfer. */
+export class GitShallowMetadataError extends Error {
+  readonly code = "WORKSPACE_RESTORE_UNSAFE_ARCHIVE";
+}
+
 export const GIT_SHALLOW_MAX_BYTES = 64 * 1024;
 export const GIT_SHALLOW_MAX_BOUNDARIES = 256;
 
@@ -706,15 +711,18 @@ export async function fetchGitBundleIntoLocalRef(input: {
     return input.baseSha;
   }
 
-  if (input.shallowPath && (await fs.stat(input.shallowPath)).size > GIT_SHALLOW_MAX_BYTES) {
-    throw new Error("Git shallow metadata exceeds its byte limit");
+  const shallowSize = input.shallowPath ? (await fs.stat(input.shallowPath)).size : 0;
+  if (shallowSize > GIT_SHALLOW_MAX_BYTES) {
+    throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallowSize} > ${GIT_SHALLOW_MAX_BYTES})`);
   }
   const shallow = input.shallowPath ? await fs.readFile(input.shallowPath, "utf8") : "";
-  if (Buffer.byteLength(shallow) > GIT_SHALLOW_MAX_BYTES) throw new Error("Git shallow metadata exceeds its byte limit");
+  const shallowBytes = Buffer.byteLength(shallow);
+  if (shallowBytes > GIT_SHALLOW_MAX_BYTES)
+    throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallowBytes} > ${GIT_SHALLOW_MAX_BYTES})`);
   if (shallow.trim()) {
     const boundaries = [...new Set(shallow.trim().split("\n"))];
-    if (boundaries.length > GIT_SHALLOW_MAX_BOUNDARIES) throw new Error("Git shallow metadata exceeds its boundary limit");
-    const deadline = Date.now() + 60_000;
+    if (boundaries.length > GIT_SHALLOW_MAX_BOUNDARIES) throw new GitShallowMetadataError(`Git shallow metadata exceeds its boundary limit (${boundaries.length} > ${GIT_SHALLOW_MAX_BOUNDARIES})`);
+    let deadline = Date.now() + 60_000;
     const importGit = (cwd: string, args: string[], options: NonNullable<Parameters<typeof runLocalGit>[2]> = {}) => {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("Git shallow history import timed out");
@@ -722,7 +730,7 @@ export async function fetchGitBundleIntoLocalRef(input: {
     };
     const objectFormat = (await importGit(input.localDir, ["rev-parse", "--show-object-format"])).stdout.trim();
     const oid = objectFormat === "sha256" ? /^[a-f0-9]{64}$/ : /^[a-f0-9]{40}$/;
-    if (!boundaries.every((boundary) => oid.test(boundary))) throw new Error("Invalid Git shallow boundaries");
+    if (!boundaries.every((boundary) => oid.test(boundary))) throw new GitShallowMetadataError(`Invalid Git shallow boundaries for host object format ${objectFormat}`);
     const staging = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-bundle-"));
     try {
       // Git bundles have no shallow protocol. Unpack into a private repository
@@ -739,11 +747,19 @@ export async function fetchGitBundleIntoLocalRef(input: {
         if (error.code !== "ENOENT") throw error;
         return "";
       })).trim().split("\n").filter(Boolean);
+      // Boundary inspection has its own small budget. It must not consume the
+      // transfer budget needed to save a valid large bundle after the probes.
+      const probeStarted = Date.now(), probeDeadline = probeStarted + 15_000;
+      const probeGit = (args: string[]) => {
+        const remaining = probeDeadline - Date.now();
+        if (remaining <= 0) throw new Error("Git shallow boundary inspection timed out");
+        return runLocalGit(staging, args, { timeout: remaining });
+      };
       const knownCommits = new Map<string, boolean>();
       const hasCommit = async (commit: string): Promise<boolean> => {
         if (knownCommits.has(commit)) return knownCommits.get(commit)!;
         try {
-          await importGit(staging, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+          await probeGit(["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
           knownCommits.set(commit, true);
           return true;
         } catch (error) {
@@ -759,7 +775,7 @@ export async function fetchGitBundleIntoLocalRef(input: {
         // Keep that connection when possible; adding its boundary unconditionally
         // would hide a real merge-base and reject concurrent host changes.
         if (!await hasCommit(boundary)) continue; // An unrelated tip is not in this bundle.
-        const parents = await importGit(staging, ["rev-parse", `${boundary}^@`]);
+        const parents = await probeGit(["rev-parse", `${boundary}^@`]);
         let missingParent = false;
         for (const parent of parents.stdout.trim().split("\n").filter(Boolean)) {
           if (!await hasCommit(parent)) {
@@ -769,6 +785,7 @@ export async function fetchGitBundleIntoLocalRef(input: {
         }
         if (missingParent) retainedBoundaries.push(boundary);
       }
+      deadline += Date.now() - probeStarted;
       if (retainedBoundaries.length) await fs.writeFile(path.join(staging, "shallow"), `${[...new Set(retainedBoundaries)].join("\n")}\n`);
       await importGit(staging, ["update-ref", input.exportRef, head]);
       await importGit(input.localDir, ["fetch", "--force", "--update-shallow", staging, `${input.exportRef}:${input.importedRef}`], {

@@ -578,16 +578,22 @@ describe("git workspace sync", () => {
     }
   });
 
-  it.each([false, true])("imports shallow full bundles without truncating existing host ancestry (host has history: %s)", async (hostHasHistory) => {
+  it.each(["missing", "complete", "shallow"])("imports shallow full bundles without truncating existing host ancestry (host history: %s)", async (hostHistory) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-shallow-bundle-"));
     cleanupDirs.push(root);
     const source = await createRepo(root);
+    await writeFile(path.join(source, "tracked.txt"), "host baseline\n");
+    await git(source, ["commit", "-am", "host baseline"]);
+    await git(source, ["branch", "baseline"]);
     await writeFile(path.join(source, "tracked.txt"), "published work\n");
     await git(source, ["commit", "-am", "published"]);
     const published = await git(source, ["rev-parse", "HEAD"]);
     const host = path.join(root, "host");
-    await git(root, ["clone", source, host]);
-    if (!hostHasHistory) {
+    await git(root, hostHistory === "shallow"
+      ? ["clone", "--depth=1", "--branch", "baseline", `file://${source}`, host]
+      : ["clone", source, host]);
+    const originalShallow = hostHistory === "shallow" ? await readFile(path.join(host, ".git", "shallow"), "utf8") : null;
+    if (hostHistory === "missing") {
       // A host containing just the original base, never the separately fetched PR.
       await git(host, ["reset", "--hard", "HEAD^"]);
       await git(host, ["reflog", "expire", "--expire=now", "--all"]);
@@ -636,6 +642,7 @@ describe("git workspace sync", () => {
       else process.env.GIT_TRACE2_EVENT = previousTrace;
     }
     expect(await git(host, ["rev-list", "HEAD"])).toBe(before);
+    if (originalShallow) expect(await readFile(path.join(host, ".git", "shallow"), "utf8")).toBe(originalShallow);
     expect(await git(host, ["fsck", "--connectivity-only"])).not.toContain("missing");
 
     await writeFile(shallowPath, `${published}\n../../config\n`);

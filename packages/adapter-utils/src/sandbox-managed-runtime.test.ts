@@ -4288,7 +4288,7 @@ describe("sandbox git-bundle export transport", () => {
     expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
   });
 
-  it.each([false, true])("retries the full bundle through the native branch when the delta misses its prerequisite (concurrent host commit: %s)", async (concurrentHostCommit) => {
+  it.each([[false, false], [true, false], [false, true]])("retries the native full bundle with concurrent host work %s and oversized transfer %s", async (concurrentHostCommit, oversizedTransfer) => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
     cleanupDirs.push(rootDir);
@@ -4312,6 +4312,18 @@ describe("sandbox git-bundle export transport", () => {
     const stagedBase = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
 
     const client = makeTransportClient(true, capture);
+    let shallowProgressCalls = 0, completedShallowRead = false;
+    if (oversizedTransfer) {
+      const read = client.readFile.bind(client);
+      client.readFile = async (remotePath, options) => {
+        if (remotePath.endsWith("git-shallow.txt")) {
+          shallowProgressCalls++;
+          await options?.onProgress?.(0, 64 * 1024 + 1);
+          completedShallowRead = true;
+        }
+        return read(remotePath, options);
+      };
+    }
     const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
@@ -4331,6 +4343,13 @@ describe("sandbox git-bundle export transport", () => {
     await git(localWorkspaceDir, ["gc", "--prune=now"]);
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
 
+    if (oversizedTransfer) {
+      await expect(prepared.restoreWorkspace()).rejects.toThrow("byte limit");
+      expect(shallowProgressCalls).toBe(1);
+      expect(completedShallowRead).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
     await prepared.restoreWorkspace();
 
     // Two bundle exports rode native file mappings: the delta attempt and the
