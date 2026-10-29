@@ -3,10 +3,16 @@ use super::*;
 #[test]
 fn first_task_confirmation_repairs_misplaced_metadata_without_becoming_a_question() {
     let directory = temporary_directory("first-task-confirmation-repair");
-    let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../generated/capability/semantic-tool-contracts.json"
-    ))
-    .unwrap();
+    // Read the current generated schema at test execution instead of embedding
+    // test-only data outside the release crate's hashed build-input closure.
+    let contracts: Value = serde_json::from_str(
+        &fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/capability/semantic-tool-contracts.json"),
+        )
+        .expect("read the generated semantic tool contracts"),
+    )
+    .expect("parse the generated semantic tool contracts");
     let definition = contracts
         .as_array()
         .unwrap()
