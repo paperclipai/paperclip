@@ -1,5 +1,6 @@
 import { composeCopilotSystemInstructions, COPILOT_TASK_ORIENTATION_INSTRUCTIONS } from "./copilot-profile.js";
 import { configuredEnvironmentProjection } from "../../configured-environment.js";
+import { preconfiguredHomeEnvironment } from "../preconfigured-home.js";
 import {
   chmod,
   lstat,
@@ -81,6 +82,45 @@ describe("ACPX runtime sandbox", () => {
     }
   });
 
+  it("reuses a prepared Claude home without importing old permission settings", async () => {
+    const fixture = await sandboxFixture("claude");
+    const home = await realpath(fixture.root);
+    const profile = join(home, "profile");
+    await mkdir(profile, {mode: 0o700});
+    const skills = join(home, "skills");
+    await mkdir(skills);
+    await writeFile(join(skills, "SKILL.md"), "Shared skills");
+    await symlink(skills, join(profile, "skills"));
+    await writeFile(join(profile, "settings.json"), '{"agentOwned":true}');
+    const environment = { HOME: home, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: profile };
+    const first = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", environment, providerPolicy: {readOnly:true} });
+    await first.initializeOwnedConfiguration!();
+    expect(first.agentHomeDirectory).toBe(profile);
+    expect(first.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.persistedEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.launchEnvironment.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBe("1");
+    expect(first.protectedPaths).toContain(profile);
+    const settings = JSON.parse(await readFile(join(profile, "settings.json"), "utf8"));
+    expect(settings.agentOwned).toBeUndefined();
+    expect(settings.model).toBe(fixture.binding.requestedModel);
+    expect(await readFile(join(profile, "skills", "SKILL.md"), "utf8")).toBe("Shared skills");
+    const other = await sandboxFixture("claude");
+    const second = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment });
+    expect(second.agentHomeDirectory).toBe(profile);
+    expect(second.root).not.toBe(first.root);
+    const conflicting = { ...environment, CLAUDE_CONFIG_DIR: "ignored-relative-path" };
+    const overridden = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: conflicting });
+    expect(overridden.agentHomeDirectory).toBe(profile);
+    expect(overridden.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(conflicting.CLAUDE_CONFIG_DIR).toBe("ignored-relative-path");
+    expect(preconfiguredHomeEnvironment(conflicting)).toEqual(preconfiguredHomeEnvironment(environment));
+    const alias = join(home, "profile-alias");
+    await symlink(profile, alias);
+    for (const invalid of ["relative-profile", alias]) {
+      await expect(prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: {...environment, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: invalid} })).rejects.toThrow("prepared_harness_home_invalid");
+    }
+  });
+
   it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
     const fixture = await sandboxFixture("grok");
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });
@@ -97,6 +137,14 @@ describe("ACPX runtime sandbox", () => {
     expect(config).toContain('[compat.claude]\nhooks = false\nmcps = false');
     expect(await readFile(requirementsPath, "utf8")).toContain('disable_bypass_permissions_mode = true');
     expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it.each([true, false])("preserves Grok search policy %s above compatible project settings", async disabled => {
+    const fixture = await sandboxFixture("grok");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, grokDisableWebSearch: disabled }, agent: "grok" });
+    expect(await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8")).toContain(`disable_web_search = ${disabled}`);
+    const requirements = await readFile(join(sandbox.agentHomeDirectory, "requirements.toml"), "utf8");
+    expect(requirements.includes("disable_web_search = true")).toBe(disabled);
   });
 
   it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {

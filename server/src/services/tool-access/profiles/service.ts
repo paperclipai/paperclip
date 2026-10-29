@@ -1,3 +1,5 @@
+import type { ConnectionManagementContext } from "../../connection-management.js";
+import { connectionActorUserId } from "../actor.js";
 import { assertProfileEntryInputs } from "../../tool-profile-entry-validation.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
@@ -156,6 +158,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
     input: ReviewToolProfileNewTools,
     actor?: ActorInfo,
   ): Promise<ToolProfileNewToolsReviewResult> {
+    await actor?.managementContext?.reauthorize();
     const profile = await getProfileRow(profileId);
     const review = await listProfileNewTools(profile.id, profile.companyId);
     if (review.tools.length === 0)
@@ -213,7 +216,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
         reviewedByAgentId:
           actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
         reviewedByUserId:
-          actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+          connectionActorUserId(actor),
         updatedAt: nowAt,
       })
       .where(
@@ -460,8 +463,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     createProfile: async (
       companyId: string,
-      input: CreateToolProfileWithEntries,
+      input: CreateToolProfileWithEntries, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileWithDetails> => {
+      await managementContext?.reauthorize();
       await assertProfileEntryInputs(db, companyId, input.entries ?? []);
       const [row] = await db
         .insert(toolProfiles)
@@ -487,8 +491,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     updateProfile: async (
       profileId: string,
-      input: UpdateToolProfileWithEntries,
+      input: UpdateToolProfileWithEntries, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileWithDetails> => {
+      await managementContext?.reauthorize();
       const existing = await getProfileRow(profileId);
       if (input.entries) {
         await assertProfileEntryInputs(db, existing.companyId, input.entries);
@@ -538,8 +543,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     duplicateProfile: async (
       profileId: string,
-      input: DuplicateToolProfile,
+      input: DuplicateToolProfile, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileWithDetails> => {
+      await managementContext?.reauthorize();
       const existing = await getProfileRow(profileId);
       const [entries, bindings] = await Promise.all([
         db
@@ -614,13 +620,14 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     deleteProfile: async (
       profileId: string,
-      input: DeleteToolProfile,
+      input: DeleteToolProfile, managementContext?: ConnectionManagementContext,
     ): Promise<{
       profile: ToolProfile;
       summary: ToolProfileSummary;
       reassignedToProfileId: string | null;
       reassignedBindingCount: number;
     }> => db.transaction(async tx => {
+      await managementContext?.reauthorize();
       const existing = await getProfileRow(profileId, undefined, tx);
       const db = tx as unknown as Db;
       await tx.select({ id: toolProfiles.id }).from(toolProfiles)
@@ -715,8 +722,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     addProfileEntry: async (
       profileId: string,
-      input: CreateToolProfileEntryForProfile,
+      input: CreateToolProfileEntryForProfile, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      await managementContext?.reauthorize();
       const db = tx as unknown as Db;
       const profile = await getProfileRow(profileId, undefined, tx);
       await assertProfileEntryInputs(tx, profile.companyId, [input]);
@@ -755,8 +763,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     updateProfileEntry: async (
       entryId: string,
-      input: UpdateToolProfileEntry,
+      input: UpdateToolProfileEntry, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      await managementContext?.reauthorize();
       const db = tx as unknown as Db;
       const [existing] = await db
         .select()
@@ -798,7 +807,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
       return toProfileEntry(row);
     }),
 
-    deleteProfileEntry: async (entryId: string): Promise<ToolProfileEntry> => db.transaction(async tx => {
+    deleteProfileEntry: async (entryId: string, managementContext?: ConnectionManagementContext): Promise<ToolProfileEntry> => db.transaction(async tx => {
+      await managementContext?.reauthorize();
       const db = tx as unknown as Db;
       const [existing] = await tx.select().from(toolProfileEntries).where(eq(toolProfileEntries.id, entryId));
       if (!existing) throw notFound("Tool profile entry not found");
@@ -820,6 +830,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
       input: CreateToolProfileBindingForProfile,
       actor?: ActorInfo,
     ): Promise<ToolProfileBinding> => db.transaction(async tx => {
+      await actor?.managementContext?.reauthorize();
       const db = tx as unknown as Db;
       const [profile] = await tx.select().from(toolProfiles).where(eq(toolProfiles.id, profileId)).for("no key update");
       if (!profile) throw notFound("Tool profile not found");
@@ -841,7 +852,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
           createdByAgentId:
             actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
           createdByUserId:
-            actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+            connectionActorUserId(actor),
         })
         .returning();
       await db
@@ -853,8 +864,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
 
     unbindProfile: async (
       profileId: string,
-      input: UnbindToolProfileBinding,
+      input: UnbindToolProfileBinding, managementContext?: ConnectionManagementContext,
     ): Promise<{ unbound: number }> => db.transaction(async tx => {
+      await managementContext?.reauthorize();
       const db = tx as unknown as Db;
       const [profile] = await tx.select().from(toolProfiles).where(eq(toolProfiles.id, profileId)).for("no key update");
       if (!profile) throw notFound("Tool profile not found");

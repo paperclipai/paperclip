@@ -3,6 +3,7 @@ import {
   Activity,
   BadgeDollarSign,
   BookOpenText,
+  FileCode2,
   History,
   KeyRound,
   Library,
@@ -39,6 +40,7 @@ const localIcons = {
   permissions: ShieldCheck,
   "api-keys": KeyRound,
   revisions: History,
+  advanced: FileCode2,
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
 
 const auditItems = [

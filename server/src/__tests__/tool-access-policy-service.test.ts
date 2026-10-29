@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -34,7 +34,9 @@ import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_POLICY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function legacySideEffectKey(invocation: typeof toolInvocations.$inferSelect, argumentsHash: string) {
@@ -215,8 +217,11 @@ describeEmbeddedPostgres("tool access policy service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-policy-");
-    db = createDb(tempDb.connectionString);
+    if (externalDatabaseUrl) db = createDb(externalDatabaseUrl);
+    else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-policy-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 20_000);
 
   afterEach(async () => {
@@ -244,6 +249,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -1105,18 +1111,111 @@ describeEmbeddedPostgres("tool access policy service", () => {
       .where(eq(toolInvocations.id, invocation.id));
     expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
     expect(invocation.policyExplanation?.consumedRateAdmissions).toEqual([
-      { policyId: ratePolicy.id, versionHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { policyId: ratePolicy.id, versionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bucketKey: `${ratePolicy.id}:agent:${input.actor.agentId}|tool:send_email` },
     ]);
     const counters = await db.select().from(toolRateLimitCounters);
     expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
     expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
     expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
     expect((await db.select().from(toolRateLimitCounters))[0].remaining).toBe(0);
-    // Neither a new invocation nor an accidental consuming recheck can borrow
-    // another invocation's already-spent slot.
+    // A fresh invocation cannot borrow another invocation's already-spent slot.
+    // Execution revalidation retains its own durable admission.
     expect(await svc.decide(input, { admittedInvocationId: randomUUID() })).toMatchObject({ decision: "rate_limited" });
-    expect(await svc.decide({ ...input, consumeRateLimit: true }, { admittedInvocationId: invocation.id }))
-      .toMatchObject({ decision: "rate_limited" });
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+  });
+
+  it("atomically charges a new rule once across concurrent retries of the same invocation", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    const added = await svc.createPolicy(company.id, { name: "New admission", policyType: "rate_limit", priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    const oldCounters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(oldCounters);
+    const results = await Promise.all(Array.from({ length: 4 }, () => svc.admitInvocation(input, invocation.id)));
+    expect(results.every(result => result.allowed)).toBe(true);
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+    const [saved] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id));
+    expect(saved.policyExplanation?.consumedRateAdmissions).toHaveLength(2);
+    const { consumedRateAdmissions: oldAdmissions, ...oldExplanation } = invocation.policyExplanation!;
+    expect(saved.policyExplanation).toMatchObject(oldExplanation);
+    expect(saved.policyExplanation?.consumedRateAdmissions).toEqual(expect.arrayContaining(oldAdmissions as unknown[]));
+  });
+
+  it("allows only one of two admitted invocations to spend a newly added final slot", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation(2);
+    const initial = await svc.decide({ ...input, consumeRateLimit: true });
+    expect(initial.allowed).toBe(true);
+    const { invocation: second } = await svc.recordInvocation(input, initial);
+    await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, second.id));
+    const added = await svc.createPolicy(company.id, { name: "One competing slot", policyType: "rate_limit", priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    const results = await Promise.all([invocation.id, second.id].map(id => svc.admitInvocation(input, id)));
+    expect(results.filter(result => result.allowed)).toHaveLength(1);
+    expect(results.filter(result => result.decision === "rate_limited")).toHaveLength(1);
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+  });
+
+  it("rolls back new rate charges when a later policy rejects the invocation", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await svc.createPolicy(company.id, { name: "Before rejection", policyType: "rate_limit", priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    await svc.createPolicy(company.id, { name: "Later rejection", policyType: "block", priority: 10,
+      selectors: { toolName: "send_email" } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ decision: "deny" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)))[0].policyExplanation)
+      .toEqual(invocation.policyExplanation);
+  });
+
+  it("rolls back rate charges when saving the admission receipt fails and admits a retry once", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    const added = await svc.createPolicy(company.id, { name: "Receipt failure", policyType: "rate_limit", priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    await db.execute(sql`create function sleep_admission_fail() returns trigger language plpgsql as $$ begin
+      raise exception 'receipt write unavailable'; end $$`);
+    await db.execute(sql`create trigger sleep_admission_fail before update of policy_explanation on tool_invocations
+      for each row execute function sleep_admission_fail()`);
+    try {
+      await expect(svc.admitInvocation(input, invocation.id)).rejects.toThrow();
+      expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id))).toEqual([]);
+      expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)))[0].policyExplanation)
+        .toEqual(invocation.policyExplanation);
+    } finally {
+      await db.execute(sql`drop trigger sleep_admission_fail on tool_invocations`);
+      await db.execute(sql`drop function sleep_admission_fail()`);
+    }
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+  });
+
+  it.each([2, 4])("preserves spent slots when a rate limit changes from three to %s", async limit => {
+    const { company, input, ratePolicy, svc } = await admittedRateLimitedInvocation(3);
+    await svc.updatePolicy({ companyId: company.id, policyId: ratePolicy.id,
+      body: { config: { limit, windowSeconds: 3600, keyBy: ["agent", "tool"] } } });
+    const results = await Promise.all(Array.from({ length: limit }, () => svc.decide({ ...input, consumeRateLimit: true })));
+    expect(results.filter(result => result.allowed)).toHaveLength(limit - 1);
+    expect(results.filter(result => result.decision === "rate_limited")).toHaveLength(1);
+    expect(await db.select().from(toolRateLimitCounters)).toMatchObject([{ limit, remaining: 0 }]);
+  });
+
+  it.each(["pending", "approved"] as const)("retains a waiting invocation's consumed slot without bypassing %s approval policy", async approvalState => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await db.update(toolInvocations).set({ status: "awaiting_approval", policyDecision: "require_approval", approvalState })
+      .where(eq(toolInvocations.id, invocation.id));
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review admitted sends",
+      policyType: "require_approval", priority: 2, selectors: { toolName: "send_email" } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id }))
+      .toMatchObject({ allowed: false, decision: "require_approval" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
   });
 
   it("rechecks a newly added rate policy rather than borrowing an older policy's consumed slot", async () => {
@@ -1169,15 +1268,19 @@ describeEmbeddedPostgres("tool access policy service", () => {
       { actorType: "system" }, { actorId: randomUUID() }, { agentId: null }, { runId: null }, { issueId: null }, { gatewayId: null },
       { applicationId: null }, { connectionId: null }, { catalogEntryId: null }, { toolName: "different_tool" },
       { providerType: null }, { applicationKey: null }, { upstreamToolName: null }, { argumentsHash: "different" },
-      { status: "authorized" }, { policyDecision: "deny" }, { policyDecision: "require_approval", approvalState: "pending" },
+      { status: "authorized" }, { status: "succeeded" }, { status: "awaiting_approval" },
+      { status: "awaiting_approval", policyDecision: "require_approval", approvalState: "rejected" }, { policyDecision: "deny" }, { policyDecision: "require_approval", approvalState: "pending" },
     ];
     for (const mutation of mutations) {
       await db.update(toolInvocations).set(mutation).where(eq(toolInvocations.id, invocation.id));
       expect(await svc.decide(input, options), JSON.stringify(mutation)).toMatchObject({ decision: "rate_limited" });
+      expect(await svc.admitInvocation(input, invocation.id), JSON.stringify(mutation)).toMatchObject({ decision: "deny" });
       await db.update(toolInvocations).set({ ...invocation, status: "executing" }).where(eq(toolInvocations.id, invocation.id));
     }
     expect(await svc.decide({ ...input, request: { ...input.request, arguments: { to: "another@example.test" } } }, options))
       .toMatchObject({ decision: "rate_limited" });
+    expect(await svc.admitInvocation({ ...input, request: { ...input.request, arguments: { to: "another@example.test" } } }, invocation.id))
+      .toMatchObject({ decision: "deny" });
   });
 
   it("rejects unsupported policy semantics at create and update time", async () => {

@@ -124,6 +124,18 @@ activity links and the original task. Existing credential redaction remains.
 Bridge admission grants no cancellation, retry, recovery resolution or
 provider-trace administration authority.
 
+The recovery-actions GET also accepts `inspectSourceRunId` and optional
+`inspectSourceActionId`. The explicit path requires the same readable task and
+exact company/task/run/action binding, including resolved retained actions.
+Run-only selection lists at most 20 actions; action selection observes current
+recorded-source identity with an eight-lease ceiling. This path does not run
+read revalidation, mutate recovery/Retry state, call providers or inspect files.
+Only closed reason/policy values supplement the existing recorded failure;
+the observation is neither historical cause nor permission to execute. Local
+[HTTP/database regressions](../../server/src/services/workspace-recovery-source.test.ts)
+cover exact selection, foreign action denial, reused allocations, redaction,
+bounded lookup and unchanged persisted state. Deployed agent use is unverified.
+
 Evidence: `source-only` — scoped review of `f10210990a3c9cad1a4359318388f237de3169dd`:
 [run routes](../../server/src/routes/agents.ts),
 [task links](../../server/src/routes/activity.ts),

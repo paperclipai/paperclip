@@ -32,7 +32,7 @@ it("admits all26 current Pi cases through pinned installed public CLI/server wit
 });
 it("admits existing Codex onboarding, useful-file revision and restart journeys without broadening other cells", async () => {
   const { env, server } = await fixture();
-  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart"]) {
+  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart", "everyday-workflows.runner-codex.daytona.recover-controller"]) {
     const cell = runnerMatrix.find(e => e.id === id)!;
     expect(cell).toBeDefined();
     expect(await verifyInstalledCli(env, [cell])).toMatchObject({ serverRoot: server, defaultRuntimeResolution: true, qualificationOverride: false });

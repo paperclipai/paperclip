@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { conflict } from "../../../errors.js";
+import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
@@ -13,6 +14,9 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   assertConfigurationFields(data);
   const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");
   if (!current) return null;
+  if (options?.expectedConfigurationRevision && options.expectedConfigurationRevision !== agentConfigurationRevision(current)) {
+    throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
+  }
   if (options?.expectedConfiguration && Object.entries(options.expectedConfiguration).some(([key, value]) =>
     !isDeepStrictEqual(current[key as keyof typeof current], value))) {
     throw conflict("Agent configuration changed while saving. Refresh the roster and review the changes again.");

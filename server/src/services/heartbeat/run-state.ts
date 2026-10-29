@@ -1,4 +1,5 @@
-import { conversationEventCondition } from "./conversation-events.js";
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -1173,7 +1174,8 @@ export function createHeartbeatRunState(db: Db) {
       id: heartbeatRuns.id, status: heartbeatRuns.status,
       error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
       runnerProfileJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.runnerProfileJson} is null then null
-        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync') end`,
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
+          'nativeResourceDisposition', ${heartbeatRuns.runnerProfileJson}->'nativeResourceDisposition') end`,
       resultJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.resultJson} is null then null
         else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
       contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
@@ -1723,6 +1725,9 @@ export function createHeartbeatRunState(db: Db) {
           if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return 0;
         }
       }
+      const goals = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
+        .where(and(...conditions, sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)).limit(1);
+      if (goals.length) await notifyExternalConversationSettlement(tx, { companyId });
       return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
     });
   }
@@ -1965,7 +1970,7 @@ export function createHeartbeatRunState(db: Db) {
 
     listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
-        .select()
+        .select(conversationOnly ? conversationEventColumns(runId) : getTableColumns(heartbeatRunEvents))
         .from(heartbeatRunEvents)
         .where(
           and(

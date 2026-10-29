@@ -19,6 +19,49 @@ describe("assigned MCP runner tools", () => {
   const searchName = "paperclip_search_assigned_tools";
   const callName = "paperclip_call_assigned_tool";
 
+  it.each([undefined, "on_demand"] as const)("advertises usable page limits through MCP discovery (%s)", async delivery => {
+    const f = fixture(Array.from({ length: 25 }, (_, i) => descriptor(`operation_${i}`)));
+    const assigned = await createAssignedMcpTools({ ...f, delivery });
+    const bridge = await startOpenCodeMcpBridge({
+      tools: assigned.definitions(tools => tools.length <= 2), handler: call => assigned.execute(call),
+    });
+    let id = 0;
+    const rpc = async (method: string, params?: Record<string, unknown>) => {
+      const response = await fetch(bridge.url, {
+        method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
+      });
+      return (await response.json()).result;
+    };
+    try {
+      const listing = await rpc("tools/list");
+      const search = listing.tools.find((tool: { name: string }) => tool.name === searchName);
+      const limit = search.inputSchema.properties.limit;
+      for (const description of [search.description, limit.description]) {
+        expect(description).toContain(`${limit.minimum} to ${limit.maximum}`);
+        expect(description).toContain(`default ${limit.default}`);
+      }
+      expect(limit).toMatchObject({ minimum: 1, maximum: 20, default: 5 });
+      const page = async (args: Record<string, unknown>) => {
+        const result = await rpc("tools/call", { name: searchName, arguments: args });
+        expect(result.isError).not.toBe(true);
+        return JSON.parse(result.content[0].text);
+      };
+      expect((await page({ query: "" })).tools).toHaveLength(limit.default);
+      const first = await page({ query: "", limit: limit.maximum });
+      expect(first.tools).toHaveLength(limit.maximum);
+      const second = await page({ query: "", limit: limit.maximum, offset: first.nextOffset });
+      expect(second.nextOffset).toBeNull();
+      expect(new Set([...first.tools, ...second.tools].map((tool: { name: string }) => tool.name)).size).toBe(25);
+      for (const invalid of [21, 50]) {
+        await expect(assigned.execute({ tool: searchName, arguments: { query: "", limit: invalid } }))
+          .rejects.toThrow("assigned_mcp_tool_invalid_arguments");
+      }
+    } finally {
+      await bridge.close();
+    }
+  });
+
   it.each(["page", "escaped schema"])("keeps on-demand %s results valid through the OpenCode MCP bridge", async variant => {
     const schema = { type: "object", description: variant === "page" ? "x".repeat(20_000) : "\"\\\u0000🙂".repeat(30_000) };
     const f = fixture(Array.from({ length: variant === "page" ? 5 : 1 }, (_, i) => ({

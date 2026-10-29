@@ -14,6 +14,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
@@ -31,6 +32,28 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+const historyResult = sql<Record<string, unknown> | null>`case
+  when jsonb_typeof(${heartbeatRuns.resultJson}) = 'object' then (
+    select coalesce(jsonb_object_agg(field.key, case
+      when field.key = 'apiToolReceipts' and jsonb_typeof(field.value) = 'object' then (
+        select coalesce(jsonb_object_agg(receipt.key, (
+          select jsonb_object_agg(detail.key, detail.value)
+          from jsonb_each(receipt.value) as detail(key, value)
+          where detail.key in ('state', 'operationId', 'result')
+        )), '{}'::jsonb)
+        from jsonb_each(field.value) as receipt(key, value)
+        where receipt.value->'state' = '"completed"'::jsonb
+          and jsonb_typeof(receipt.value->'operationId') = 'string'
+      )
+      when field.key = 'workspaceRestoreRecovery' and jsonb_typeof(field.value) = 'object' then (
+        select coalesce(jsonb_object_agg(detail.key, detail.value), '{}'::jsonb)
+        from jsonb_each(field.value) as detail(key, value)
+        where detail.key = 'schema'
+      )
+      else field.value end), '{}'::jsonb)
+    from jsonb_each(${heartbeatRuns.resultJson}) as field(key, value)
+    where field.key in ('apiToolReceipts', 'conversationContinuation', 'workspaceRestoreFailure', 'workspaceRestoreRecovery')
+  ) else ${heartbeatRuns.resultJson} end`;
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -335,7 +358,7 @@ export async function buildExecutionContinuation(input: {
       ? { kind: "description" as const, id: issue.id, revision: hashObjectiveSource(issue.description) }
       : { kind: "title" as const, id: issue.id, revision: hashObjectiveSource(issue.title) };
   const priorRuns = await db
-    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode, retryOfRunId: heartbeatRuns.retryOfRunId })
+    .select({ id: heartbeatRuns.id, result: historyResult, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode, retryOfRunId: heartbeatRuns.retryOfRunId })
     .from(heartbeatRuns)
     .where(
       and(
@@ -394,7 +417,15 @@ export async function buildExecutionContinuation(input: {
     // Admission records the board operator's authority separately from the
     // message author. At dispatch, prove that exact queue was adopted by this
     // run; caller-supplied continuation context cannot grant this authority.
-    const continuationAuthorizations = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+    const queueIntentId = z.string().guid().safeParse(explicitContinuation.queuedCommentInterruptId);
+    const nativeQueuedContinuation = predecessor?.runtimeMode === "native" && ["cancelled", "failed"].includes(predecessor.status);
+    const [recordedQueue] = nativeQueuedContinuation && input.runId && queueIntentId.success ? await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, queueIntentId.data), eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.status, "coalesced"),
+      eq(agentWakeupRequests.runId, input.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    )) : [];
+    const continuationAuthorizations = [...reconciliations.map(row => object(row.evidence.explicitUserContinuation)),
+      ...(recordedQueue ? [object(object(recordedQueue.payload?.queuedCommentInterrupt).continuation)] : [])]
       .filter(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
         value.commentId === explicitContinuation.commentId &&
@@ -429,6 +460,12 @@ export async function buildExecutionContinuation(input: {
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
+          : value.interactionId
+          ? interactions.some(interaction => interaction.id === value.interactionId && interaction.id === triggerInteraction?.id &&
+              ["accepted", "answered", "rejected"].includes(interaction.status) &&
+              interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
+                object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
+                queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
           : rows.some(comment => comment.id === value.commentId &&
               comment.authorType === "user" &&
               (!("commentUpdatedAt" in value || "commentBodyHash" in value || value.automaticRetry) || (

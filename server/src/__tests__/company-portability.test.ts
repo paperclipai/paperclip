@@ -6095,7 +6095,7 @@ describe("company portability", () => {
     await expect(portability.importBundle(input, "user-1")).rejects.toMatchObject({ status: 422, details: { code: "paperclip_runner_dot_disabled" } });
     expect(agentSvc.create).not.toHaveBeenCalled();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
-    await expect(portability.importBundle({ ...input, adapterOverrides: { claudecoder: { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-build-1.0.13" } } } }, "user-1"))
+    await expect(portability.importBundle({ ...input, adapterOverrides: { claudecoder: { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.4" } } } }, "user-1"))
       .rejects.toMatchObject({ status: 422, details: { code: "paperclip_runner_rollout_disabled" } });
     expect(agentSvc.create).not.toHaveBeenCalled();
     await portability.importBundle(input, "user-1");
@@ -6104,6 +6104,27 @@ describe("company portability", () => {
     expect(createdConfig.dotBindingId).toBeUndefined();
     const { resolvePaperclipRunnerProviderProfile } = await import("../services/native-runtime/provider-profile.js");
     expect(() => resolvePaperclipRunnerProviderProfile(createdConfig)).toThrow(expect.objectContaining({ code: "paperclip_runner_dot_config_invalid" }));
+  });
+
+  it("imports qualified Grok without the experimental flag and preserves its model and effort", async () => {
+    const portability = companyPortabilityService({} as any);
+    const exported = await portability.exportBundle("company-1", { include: { company: false, agents: true, projects: false, issues: false } });
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ id: "agent-created", ...input }));
+    instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    const adapterConfig = { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high" };
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all", collisionStrategy: "rename",
+      adapterOverrides: { claudecoder: { adapterType: "paperclip_runner", adapterConfig } },
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "paperclip_runner", adapterConfig: expect.objectContaining(adapterConfig),
+    }), { createdByUserId: "user-1" });
   });
 
   it("accepts native OpenCode imports without the experimental flag", async () => {

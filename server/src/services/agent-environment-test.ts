@@ -5,11 +5,12 @@ import { randomUUID } from "node:crypto";
 import { agents, companies, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { aiRoutingHarness, ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, type AiConnectionBinding } from "@paperclipai/shared";
 import { requireServerAdapter } from "../adapters/index.js";
 import { forbidden, HttpError, unprocessable } from "../errors.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -22,6 +23,19 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+function finishManagedConnectionTest(adapterType: string, context: AdapterEnvironmentTestContext, result: AdapterEnvironmentTestResult): AdapterEnvironmentTestResult {
+  const target = context.executionTarget;
+  if (result.status === "fail" || adapterType !== "paperclip_runner" || context.config.provider !== "acpx"
+    || !isCloudManagedInstance() || target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask
+    || !result.checks.some(check => /hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified")
+    || !result.checks.some(check => check.code === "acpx_remote_runtime_unverified" && check.level === "warn")) return result;
+  const checks = result.checks.map(check => check.code === "acpx_remote_runtime_unverified" && check.level === "warn"
+    ? { ...check, code: "acpx_remote_runtime_managed", level: "info" as const,
+        message: "The remote platform is supported. Paperclip manages Runner preparation and verifies its runtime before execution." }
+    : check);
+  return { ...result, checks, status: checks.some(check => check.level === "error") ? "fail" : checks.some(check => check.level === "warn") ? "warn" : "pass" };
+}
+
 export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: PluginWorkerManager) {
   const instanceSettings = instanceSettingsService(db);
   const environmentsSvc = environmentService(db);
@@ -591,11 +605,13 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         const rejected = error instanceof HttpError && asRecord(error.details)?.code === "ai_connection_api_key_rejected";
         result.checks.push({ code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
       }
-      return result;
+      return finishManagedConnectionTest(adapterType, context, result);
     }
+    let providerTestPassed = false;
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
       const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
+      providerTestPassed = probe.status === "pass";
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
     }
@@ -603,7 +619,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       result.status = "fail";
       result.checks.push({ code: "ai_connection_validation_incomplete", level: "error", message: "The selected account has not completed a provider hello test. Retry before adopting it." });
     }
-    return result;
+    return providerTestPassed ? finishManagedConnectionTest(adapterType, context, result) : result;
   }
 
 

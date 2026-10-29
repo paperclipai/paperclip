@@ -1,4 +1,4 @@
-name: Runner Direct Live Protocol Evals
+name: Runner Live Protocol Evals
 
 on:
   schedule:
@@ -30,10 +30,17 @@ on:
           - subscription
         default: api_key
         required: false
+      accounting_mode:
+        description: "Controlled Codex/Claude costs and traces, or explicit legacy provider qualification"
+        type: choice
+        options:
+          - controlled
+          - legacy
+        default: controlled
       max_infrastructure_retries:
         description: "Automatic retries only for explicitly retryable infrastructure failures (0-3)"
         type: number
-        default: 1
+        default: 0
 
 permissions:
   contents: read
@@ -51,6 +58,9 @@ jobs:
     permissions:
       contents: read
     outputs:
+      accounting_mode: ${{ steps.mode.outputs.mode }}
+      retry_count: ${{ steps.mode.outputs.retries }}
+      controller_lock_sha256: ${{ steps.mode.outputs.controller_lock_sha256 }}
       test_runner: ${{ steps.runner.outputs.runner }}
       max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
       max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
@@ -139,12 +149,35 @@ jobs:
           test "$resolved" = "$EVALS_SHA"
           echo "sha=$resolved" >> "$GITHUB_OUTPUT"
 
-      - name: Validate retry envelope
+      - name: Validate accounting mode and retry envelope
+        id: mode
         env:
-          RETRIES: ${{ github.event_name == 'schedule' && 1 || inputs.max_infrastructure_retries }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACCOUNTING_MODE: ${{ inputs.accounting_mode || 'controlled' }}
+          RETRIES: ${{ inputs.max_infrastructure_retries || 0 }}
+          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = schedule ]; then ACCOUNTING_MODE=controlled; RETRIES=0; fi
           [[ "$RETRIES" =~ ^[0-3]$ ]]
+          case "$ACCOUNTING_MODE" in
+            controlled)
+              test "$TARGET_SHA" = "$GITHUB_SHA"
+              test "$GITHUB_RUN_ATTEMPT" = 1
+              test "$RETRIES" = 0
+              if ! jq -e '.schema == "paperclip.runner-eval.hosted-policy/v1"' <<< "${CONTROLLER_POLICY_JSON:-}" >/dev/null; then
+                echo 'Controlled runs require a reviewed RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON; no provider work started.' >&2
+                exit 1
+              fi
+              lock_sha="$(jq -er '.controllerLockSha256 | select(type == "string" and test("^[a-f0-9]{64}$"))' <<< "$CONTROLLER_POLICY_JSON")"
+              echo "controller_lock_sha256=$lock_sha" >> "$GITHUB_OUTPUT"
+              ;;
+            legacy) test "$EVENT_NAME" = workflow_dispatch ;;
+            *) exit 1 ;;
+          esac
+          echo "mode=$ACCOUNTING_MODE" >> "$GITHUB_OUTPUT"
+          echo "retries=$RETRIES" >> "$GITHUB_OUTPUT"
 
       - name: Select paid test runner
         id: runner
@@ -265,6 +298,8 @@ jobs:
           REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
           ROSTERS: ${{ inputs.rosters || 'all' }}
           GROK_AUTHENTICATION: ${{ inputs.grok_authentication || 'api_key' }}
+          ACCOUNTING_MODE: ${{ needs.authorize.outputs.accounting_mode }}
+          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
         run: |
           set -euo pipefail
           if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
@@ -285,6 +320,13 @@ jobs:
             --campaign-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --max-parallel "$MAX_PARALLEL" \
             --output runner-protocol-eval-catalog.json
+          if [ "$ACCOUNTING_MODE" = controlled ]; then
+            jq -e 'all(.cells[]; (.provider == "codex" and (.acpxAgent // "") == "" and .driver == "codex_app_server") or (.provider == "acpx" and .acpxAgent == "claude" and .driver == "acpx_runtime"))' runner-protocol-eval-catalog.json >/dev/null || {
+              echo 'Controlled selection supports native Codex and ACPX Claude only; select their rosters explicitly.' >&2; exit 1;
+            }
+            maximum="$(jq -er '.maxCells | select(type == "number" and floor == . and . > 0 and . <= 512)' <<< "$CONTROLLER_POLICY_JSON")"
+            jq -e --argjson maximum "$maximum" '.cells | length <= $maximum' runner-protocol-eval-catalog.json >/dev/null
+          fi
 
       - name: Require the chat-report renderer before paid execution
         run: |
@@ -408,16 +450,234 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  build_controller:
+    name: Build trusted controller without private archive access
+    needs: [authorize, target_lock]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      runtime_receipt_sha256: ${{ steps.build.outputs.runtime_receipt_sha256 }}
+    steps:
+      - name: Select accounting mode
+        run: test '${{ needs.authorize.outputs.accounting_mode }}' = controlled || test '${{ needs.authorize.outputs.accounting_mode }}' = legacy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      - name: Download resolved lockfile for review binding
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-controller-lock
+
+      - name: Build portable controller in an unprivileged job
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: build
+        env:
+          EXPECTED_LOCK_SHA256: ${{ needs.authorize.outputs.controller_lock_sha256 }}
+          RESOLVED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RESOLVED_LOCK_SHA256" = "$EXPECTED_LOCK_SHA256"
+          lock="$RUNNER_TEMP/runner-controller-lock/pnpm-lock.yaml"
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/runner-controller-pnpm-store"
+          node packages/paperclip-runner/scripts/controlled-evals/build-runtime.mjs \
+            "$RUNNER_TEMP/runner-protocol-runtime" "$GITHUB_SHA" > "$RUNNER_TEMP/controller-runtime-receipt.json"
+          echo "runtime_receipt_sha256=$(jq -r .receiptSha256 "$RUNNER_TEMP/controller-runtime-receipt.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the trusted controller code for every worker
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: ${{ runner.temp }}/runner-protocol-runtime/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Download controller artifact for a credential-free transport test
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.upload.outputs.artifact-id }}
+          path: ${{ runner.temp }}/runner-controller-roundtrip
+
+      - name: Verify the real uploaded controller inventory before private preparation
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          PAPERCLIP_CONTROLLER_TRANSPORT_DIRECTORY: ${{ runner.temp }}/runner-controller-roundtrip
+          PAPERCLIP_CONTROLLER_RECEIPT_SHA256: ${{ steps.build.outputs.runtime_receipt_sha256 }}
+        run: node --test .github/tests/runner-controller-artifact-transport.test.mjs
+
+  prepare_controller:
+    name: Prepare one shared cost and trace manifest
+    needs: [authorize, catalog, build_runner, build_controller]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    environment: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-history' || '' }}
+    outputs:
+      artifact_id: ${{ needs.build_controller.outputs.artifact_id }}
+      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
+      runtime_receipt_sha256: ${{ needs.build_controller.outputs.runtime_receipt_sha256 }}
+    steps:
+      - name: Select accounting mode
+        run: test '${{ needs.authorize.outputs.accounting_mode }}' = controlled || test '${{ needs.authorize.outputs.accounting_mode }}' = legacy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate private eval-repository token
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: paperclipai/paperclip-evals
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        with:
+          repository: paperclipai/paperclip-evals
+          ref: ${{ needs.authorize.outputs.evals_sha }}
+          path: .paperclip-evals
+          token: ${{ steps.evals_token.outputs.value }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        with:
+          node-version: 24
+
+      - name: Download the complete campaign catalog
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-catalog
+
+      - name: Download the immutable provider runtime
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-build
+
+      - name: Download trusted controller built without archive permissions
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.build_controller.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-protocol-runtime
+
+      - name: Verify copied controller before private preparation
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          EXPECTED_LOCK_SHA256: ${{ needs.authorize.outputs.controller_lock_sha256 }}
+          RUNTIME_RECEIPT_SHA256: ${{ needs.build_controller.outputs.runtime_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          node packages/paperclip-runner/scripts/controlled-evals/verify-runtime.mjs "$RUNNER_TEMP/runner-protocol-runtime" "$GITHUB_SHA" "$RUNTIME_RECEIPT_SHA256"
+          test "$(jq -r '.inputs["pnpm-lock.yaml"]' "$RUNNER_TEMP/runner-protocol-runtime/runtime.json")" = "$EXPECTED_LOCK_SHA256"
+
+      - name: Compile requests and bind the reviewed operating policy
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: prepare
+        env:
+          PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
+          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C .paperclip-evals rev-parse HEAD)" = "$PAPERCLIP_PROTOCOL_EVALS_SHA"
+          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report --help | grep -q -- --controller-manifest
+          (cd runner-protocol-build && sha256sum --check runner-protocol-build.tar.gz.sha256)
+          mkdir runner-protocol-build/extracted
+          tar -xzf runner-protocol-build/runner-protocol-build.tar.gz -C runner-protocol-build/extracted
+          policy="$RUNNER_TEMP/runner-controller-policy.json"
+          POLICY_PATH="$policy" python3 - <<'PYTHON'
+          import os
+          with os.fdopen(os.open(os.environ["POLICY_PATH"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as target:
+              target.write(os.environ["CONTROLLER_POLICY_JSON"])
+          PYTHON
+          worker="/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}"
+          python3 .paperclip-evals/evals/paperclip-runner/tools/prepare_controlled_campaign.py \
+            --catalog runner-protocol-catalog/runner-protocol-eval-catalog.json \
+            --runnerd runner-protocol-build/extracted/paperclip-runnerd \
+            --worker-runnerd "$worker/runner/paperclip-runnerd" \
+            --github-run-id "$GITHUB_RUN_ID" --definitions-revision "$PAPERCLIP_PROTOCOL_EVALS_SHA" \
+            --output "$RUNNER_TEMP/prepared-requests.json"
+          control="$RUNNER_TEMP/runner-protocol-control"
+          node "$RUNNER_TEMP/runner-protocol-runtime/controlled-evals/hosted.mjs" prepare \
+            runner-protocol-catalog/runner-protocol-eval-catalog.json "$RUNNER_TEMP/prepared-requests.json" \
+            "$policy" runner-protocol-build/extracted "$control" > "$RUNNER_TEMP/control-preparation.json"
+          cp "$policy" "$control/hosted-policy.json"
+          echo "manifest_sha256=$(jq -r .manifestSha256 "$RUNNER_TEMP/control-preparation.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Obtain private archive credentials for transfer steps only
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: private_history_credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Retain the identical manifest and policy in private storage
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: node "$RUNNER_TEMP/runner-protocol-runtime/private-history.mjs" upload protocol-control "$GITHUB_RUN_ID" "$RUNNER_TEMP/runner-protocol-control"
+
   eval_shard_0:
     name: Direct eval ${{ matrix.rosterId }} / ${{ matrix.caseId }}
-    needs: [authorize, catalog, build_runner]
+    needs: [authorize, catalog, build_runner, prepare_controller]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 18
     permissions:
       contents: read
       id-token: write
     environment:
-      name: runner-e2e-paid
+      name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel_per_shard) }}
@@ -435,6 +695,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+          if [ '${{ needs.authorize.outputs.accounting_mode }}' = controlled ]; then
+            test '${{ needs.authorize.outputs.target_sha }}' = "$GITHUB_SHA"
+            test "$GITHUB_RUN_ATTEMPT" = 1
+          fi
           triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
           test "$triggering_actor_id" = "$ACTOR_ID" || test "$TRIGGERING_ACTOR" != "$ACTOR"
           for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
@@ -484,10 +748,30 @@ jobs:
           tar --extract --gzip --file runner-protocol-build.tar.gz --directory extracted
           test -x extracted/paperclip-runnerd
 
+      - name: Download the trusted portable controller
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
+          path: /tmp/paperclip-runner-controlled-${{ github.run_id }}/runtime
+
+      - name: Verify controller code before archive access
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: verify_controller
+        env:
+          RUNTIME_RECEIPT_SHA256: ${{ needs.prepare_controller.outputs.runtime_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          root="/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}"
+          node packages/paperclip-runner/scripts/controlled-evals/verify-runtime.mjs "$root/runtime" "$GITHUB_SHA" "$RUNTIME_RECEIPT_SHA256"
+          cp -a runner-protocol-build/extracted "$root/runner"
+
       # Keep the host policy aligned with runner-full-stack-e2e.yml. This is
       # deliberately before any provider credential or web-identity step.
       - name: Provision Codex sandbox on the disposable trusted runner
         if: matrix.provider == 'codex' || matrix.rosterId == 'protocol-live-acpx-codex-control'
+        env:
+          CONTROLLED_RUNNER_ROOT: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && format('/tmp/paperclip-runner-controlled-{0}/runner', github.run_id) || '' }}
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
@@ -499,7 +783,7 @@ jobs:
           let restricted = "0";
           try { restricted = readFileSync("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "utf8").trim(); } catch {}
           if (restricted !== "1") process.exit(0);
-          const root = realpathSync(path.join(process.env.GITHUB_WORKSPACE, "runner-protocol-build/extracted/portable"));
+          const root = realpathSync(process.env.CONTROLLED_RUNNER_ROOT ? path.join(process.env.CONTROLLED_RUNNER_ROOT, "portable") : path.join(process.env.GITHUB_WORKSPACE, "runner-protocol-build/extracted/portable"));
           const runnerRequire = createRequire(path.join(root, "package.json"));
           const acpRequire = createRequire(runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
           const codexRequire = createRequire(acpRequire.resolve("@openai/codex/package.json"));
@@ -517,6 +801,44 @@ jobs:
           writeFileSync(profilePath, `abi <abi/4.0>,\ninclude <tunables/global>\nprofile ${name} "${binary}" flags=(unconfined) {\n  userns,\n}\n`, {mode:0o600, flag:"wx"});
           execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
           NODE
+
+      - name: Obtain private archive credentials for transfer steps only
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: private_history_credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download the identical private campaign manifest
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          CELL_ID: ${{ matrix.cellId }}
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: node "/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}/runtime/private-history.mjs" download protocol-control "$GITHUB_RUN_ID" "/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}/control" "$CELL_ID"
+
+      - name: Verify current worker admission before provider credentials
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          MANIFEST_SHA256: ${{ needs.prepare_controller.outputs.manifest_sha256 }}
+          PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: ${{ matrix.cellId }}
+        run: |
+          set -euo pipefail
+          root="/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}"
+          node "$root/runtime/controlled-evals/hosted.mjs" verify "$root/control/controller-manifest.json" "$MANIFEST_SHA256" "$PAPERCLIP_RUNNER_EVAL_EXECUTION_ID"
+          {
+            echo "PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST=$root/control/controller-manifest.json"
+            echo "PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI=$root/runtime/controlled-evals/archive.mjs"
+            echo "PAPERCLIP_RUNNER_EVAL_EXECUTION_ID=$PAPERCLIP_RUNNER_EVAL_EXECUTION_ID"
+          } >> "$GITHUB_ENV"
 
       - name: Prepare short-lived AgentCore web identity
         if: matrix.credentialName == 'AWS_AGENTCORE_OIDC'
@@ -547,7 +869,9 @@ jobs:
           CASE_ID: ${{ matrix.caseId }}
           CREDENTIAL_NAME: ${{ matrix.credentialName }}
           PROVIDER: ${{ matrix.provider }}
-          MAX_INFRASTRUCTURE_RETRIES: ${{ github.event_name == 'schedule' && 1 || inputs.max_infrastructure_retries }}
+          MAX_INFRASTRUCTURE_RETRIES: ${{ needs.authorize.outputs.retry_count }}
+          ACCOUNTING_MODE: ${{ needs.authorize.outputs.accounting_mode }}
+          BRAINTRUST_API_KEY: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && secrets.BRAINTRUST_API_KEY || '' }}
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
@@ -577,7 +901,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p cell-output/runs
-          if [ "$CREDENTIAL_NAME" != "AWS_AGENTCORE_OIDC" ]; then
+          if [ "$ACCOUNTING_MODE" != controlled ] && [ "$CREDENTIAL_NAME" != "AWS_AGENTCORE_OIDC" ]; then
             test -n "${!CREDENTIAL_NAME:-}"
           fi
           if [ "$PROVIDER" = "claude_managed" ]; then
@@ -586,13 +910,23 @@ jobs:
             test -n "$PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION"
             test -n "$PAPERCLIP_CLAUDE_MANAGED_ENVIRONMENT_ID"
           fi
+          runner_cli=runner-protocol-build/extracted/portable/dist/cli/eval-session.js
+          runner_package=runner-protocol-build/extracted/paperclip-runner.tgz
+          runnerd=runner-protocol-build/extracted/paperclip-runnerd
+          if [ "$ACCOUNTING_MODE" = controlled ]; then
+            test -n "$BRAINTRUST_API_KEY"
+            root="/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}"
+            runner_cli="$root/runtime/controlled-evals/run.mjs"
+            runner_package="$root/runner/paperclip-runner.tgz"
+            runnerd="$root/runner/paperclip-runnerd"
+          fi
           set +e
           python3 .paperclip-evals/evals/paperclip-runner/tools/run_live_roster.py run \
             --roster ".paperclip-evals/evals/paperclip-runner/rosters/$ROSTER_FILE" \
             --case "$CASE_ID" \
-            --runner-cli runner-protocol-build/extracted/portable/dist/cli/eval-session.js \
-            --runner-package runner-protocol-build/extracted/paperclip-runner.tgz \
-            --runnerd runner-protocol-build/extracted/paperclip-runnerd \
+            --runner-cli "$runner_cli" \
+            --runner-package "$runner_package" \
+            --runnerd "$runnerd" \
             --runs-root cell-output/runs \
             --summary-path cell-output/roster-summary.json \
             --max-infrastructure-retries "$MAX_INFRASTRUCTURE_RETRIES" \
@@ -621,14 +955,28 @@ jobs:
             caseId: process.env.CASE_ID,
             ...(authenticationMode ? { authenticationMode } : {}),
             ...(authenticationEvidenceFailure ? { authenticationEvidenceFailure } : {}),
+            accountingMode: process.env.ACCOUNTING_MODE,
             exitCode: Number(process.env.CELL_EXIT_CODE),
           }, null, 2)}\n`, { mode: 0o600 });
           if (authenticationEvidenceFailure) throw new Error(authenticationEvidenceFailure);
           NODE
           exit "$status"
 
-      - name: Upload access-controlled cell attempt
-        if: always()
+      - name: Retain controlled cell evidence in private storage
+        if: always() && needs.authorize.outputs.accounting_mode == 'controlled' && steps.private_history_credentials.outcome == 'success' && steps.verify_controller.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          CELL_ID: ${{ matrix.cellId }}
+        run: |
+          test -d cell-output
+          node "/tmp/paperclip-runner-controlled-${GITHUB_RUN_ID}/runtime/private-history.mjs" upload "protocol-cell-$CELL_ID" "$GITHUB_RUN_ID" cell-output
+
+      - name: Upload legacy cell attempt
+        if: always() && needs.authorize.outputs.accounting_mode == 'legacy'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.cellId }}
@@ -639,14 +987,14 @@ jobs:
   eval_shard_1:
     name: Direct eval ${{ matrix.rosterId }} / ${{ matrix.caseId }}
     if: needs.catalog.outputs.matrix_1_present == 'true'
-    needs: [authorize, catalog, build_runner]
+    needs: [authorize, catalog, build_runner, prepare_controller]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 18
     permissions:
       contents: read
       id-token: write
     environment:
-      name: runner-e2e-paid
+      name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel_per_shard) }}
@@ -655,13 +1003,15 @@ jobs:
 
   report:
     name: Merge attempts and render canonical Evalbook
-    if: always() && !cancelled() && needs.catalog.result == 'success' && needs.build_runner.result == 'success'
-    needs: [authorize, catalog, build_runner, eval_shard_0, eval_shard_1]
+    if: always() && !cancelled() && needs.catalog.result == 'success' && needs.build_runner.result == 'success' && needs.prepare_controller.result == 'success'
+    needs: [authorize, catalog, build_runner, prepare_controller, eval_shard_0, eval_shard_1]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       actions: read
       contents: read
+      id-token: write
+    environment: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-history' || '' }}
     outputs:
       public_report_ready: ${{ steps.public_report.outputs.ready }}
     steps:
@@ -701,17 +1051,6 @@ jobs:
         with:
           version: 9.15.4
 
-      - name: Resolve trusted report lockfile without lifecycle scripts
-        run: |
-          set -euo pipefail
-          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
-          test -s pnpm-lock.yaml
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          cache: pnpm
-
       - name: Download immutable campaign catalog
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -724,7 +1063,59 @@ jobs:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
 
-      - name: Download every access-controlled cell
+      - name: Download the retained controller code
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-protocol-runtime
+
+      - name: Verify retained controller bytes
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          RUNTIME_RECEIPT_SHA256: ${{ needs.prepare_controller.outputs.runtime_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          node packages/paperclip-runner/scripts/controlled-evals/verify-runtime.mjs "$RUNNER_TEMP/runner-protocol-runtime" "$GITHUB_SHA" "$RUNTIME_RECEIPT_SHA256"
+
+      - name: Obtain private archive credentials for transfer steps only
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        id: private_history_credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Restore private manifest and every available controlled cell
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          MANIFEST_SHA256: ${{ needs.prepare_controller.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/runner-protocol-runtime/private-history.mjs"
+          control="$RUNNER_TEMP/runner-protocol-control"
+          node "$archive" download protocol-control "$GITHUB_RUN_ID" "$control" report
+          test "$(sha256sum "$control/controller-manifest.json" | cut -d ' ' -f 1)" = "$MANIFEST_SHA256"
+          mkdir -p downloaded-runner-protocol-evals
+          while IFS= read -r cell; do
+            node "$archive" download "protocol-cell-$cell" "$GITHUB_RUN_ID" "downloaded-runner-protocol-evals/runner-protocol-eval-$GITHUB_RUN_ID-1-$cell" || echo 'A private cell is unavailable; its allocation remains held.'
+          done < <(jq -r '.attempts[].executionId' "$control/controller-manifest.json")
+          {
+            echo "PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST=$control/controller-manifest.json"
+            echo "PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI=$RUNNER_TEMP/runner-protocol-runtime/controlled-evals/archive.mjs"
+          } >> "$GITHUB_ENV"
+
+      - name: Download every legacy cell
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
         id: download_cells
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -734,7 +1125,7 @@ jobs:
           merge-multiple: false
 
       - name: Retry cell download after artifact transport failure
-        if: steps.download_cells.outcome == 'failure'
+        if: needs.authorize.outputs.accounting_mode == 'legacy' && steps.download_cells.outcome == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -770,15 +1161,27 @@ jobs:
 
       - name: Render the access-controlled canonical Evalbook report
         run: |
-          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
+          control_args=()
+          if [ -n "${PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST:-}" ]; then
+            control_args=(--controller-manifest "$PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST" --controller-archive-cli "$PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI")
+          fi
+          set +e
+          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report "${control_args[@]}" \
             --runs-root runner-protocol-merged/runs \
             --output runner-protocol-merged/report \
             --viewer-root runner-protocol-build/extracted/dist-issue-thread \
             --inventory .paperclip-evals/evals/paperclip-runner/inventory.json \
-            --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json
+            --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json > runner-protocol-merged/accounting-report.json
+          status=$?
+          set -e
           cp runner-protocol-merged/campaign.json runner-protocol-merged/report/campaign.json
+          if [ -n "${PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST:-}" ]; then
+            cp "$PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST" runner-protocol-merged/controller-manifest.json
+          fi
+          exit "$status"
 
       - name: Render the same canonical grid from a public-safe evidence projection
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
         run: |
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs sanitize \
             --runs-root runner-protocol-merged/runs \
@@ -793,24 +1196,28 @@ jobs:
           cp runner-protocol-merged/campaign.json runner-protocol-merged/public-report/campaign.json
 
       - name: Set up report browser verification
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 9.15.4
 
       - name: Verify the actual chat viewer before publication
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
         run: |
-          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/runner-report-pnpm-store"
           pnpm --filter @paperclipai/paperclip-runner exec playwright install --with-deps chromium
           node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root runner-protocol-merged/public-report --screenshots runner-protocol-merged/viewer-proof
           node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root runner-protocol-merged/report
 
       - name: Enforce the static public allowlist
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
         id: public_report
         run: |
           node --input-type=module -e 'import { validatePublicProtocolEvalReport } from "./packages/paperclip-runner/scripts/publish-runner-protocol-eval-history.mjs"; await validatePublicProtocolEvalReport("runner-protocol-merged/public-report", { viewerRoot: "runner-protocol-build/extracted/dist-issue-thread" });'
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Add campaign result to the workflow summary
+        if: always()
         run: |
           {
             echo '## Runner direct live protocol evals'
@@ -818,8 +1225,20 @@ jobs:
             jq -r '"- Cells: \(.totals.passed)/\(.totals.selected) passed\n- Behavior failures: \(.totals.behaviorFailures)\n- Infrastructure failures: \(.totals.infrastructureFailures)\n- Paperclip: `\(.source.paperclip.sha)`\n- Evals: `\(.source.evals.sha)`"' runner-protocol-merged/campaign.json
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload access-controlled canonical Evalbook and raw attempts
-        if: always()
+      - name: Retain controlled Evalbook and accounting in private storage
+        if: always() && needs.authorize.outputs.accounting_mode == 'controlled' && steps.private_history_credentials.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: |
+          test -d runner-protocol-merged
+          node "$RUNNER_TEMP/runner-protocol-runtime/private-history.mjs" upload protocol-report "$GITHUB_RUN_ID" runner-protocol-merged
+
+      - name: Upload legacy canonical Evalbook and raw attempts
+        if: always() && needs.authorize.outputs.accounting_mode == 'legacy'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-protocol-eval-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -828,7 +1247,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload publisher-only sanitized Evalbook
-        if: steps.public_report.outputs.ready == 'true'
+        if: needs.authorize.outputs.accounting_mode == 'legacy' && steps.public_report.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}

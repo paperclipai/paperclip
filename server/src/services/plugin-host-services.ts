@@ -1,4 +1,6 @@
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
+import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
+import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { pluginAgentRuntimeState, pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
@@ -3564,54 +3566,82 @@ export function buildHostServices(
         if (notifyWorker) {
           const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
+          let active = true;
           const cleanup = () => {
-            unsubscribe();
+            stopDelivery();
             clearTimeout(timeoutTimer);
             activeSubscriptions.delete(entry);
           };
-
-          const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
-            const payload = event.payload as Record<string, unknown> | undefined;
-            if (!payload || payload.runId !== run.id) return;
-
-            if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
-              notifyWorker("agents.sessions.event", {
-                sessionId: params.sessionId,
-                runId: run.id,
-                seq: (payload.seq as number) ?? 0,
-                eventType: "chunk",
-                stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
-                payload: payload,
-              });
-            } else if (event.type === "heartbeat.run.status") {
-              const status = payload.status as string;
-              if (TERMINAL_STATUSES.has(status)) {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: status === "succeeded" ? "done" : "error",
-                  stream: "system",
-                  message: status === "succeeded"
-                    ? (typeof payload.finalText === "string" ? payload.finalText : null)
-                    : `Run ${status}`,
-                  payload: payload,
-                });
-                cleanup();
-              } else {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: "status",
-                  stream: "system",
-                  message: `Run status: ${status}`,
-                  payload: payload,
-                });
-              }
+          const failDelivery = () => {
+            if (!active) return;
+            cleanup();
+            try {
+              notifyWorker("agents.sessions.event", { sessionId: params.sessionId, runId: run.id,
+                seq: 0, eventType: "error", stream: "system", message: "Run event delivery unavailable",
+                payload: { reason: "delivery_unavailable" } });
+            } catch (err) {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session delivery unavailable");
             }
+          };
+          const delivery = createLiveEventDelivery({
+            socket: {
+              get readyState() { return active ? 1 : 3; },
+              send(encoded, callback) {
+                const event = JSON.parse(encoded) as import("@paperclipai/shared").LiveEvent;
+                const payload = event.payload;
+                if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
+                  notifyWorker("agents.sessions.event", {
+                    sessionId: params.sessionId,
+                    runId: run.id,
+                    seq: (payload.seq as number) ?? 0,
+                    eventType: "chunk",
+                    stream: (payload.stream as string) ?? null,
+                    message: (payload.chunk as string) ?? (payload.message as string) ?? null,
+                    payload: payload,
+                  });
+                } else if (event.type === "heartbeat.run.status") {
+                  const status = payload.status as string;
+                  if (TERMINAL_STATUSES.has(status)) {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: status === "succeeded" ? "done" : "error",
+                      stream: "system",
+                      message: status === "succeeded"
+                        ? (typeof payload.finalText === "string" ? payload.finalText : null)
+                        : `Run ${status}`,
+                      payload: payload,
+                    });
+                    cleanup();
+                  } else {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: "status",
+                      stream: "system",
+                      message: `Run status: ${status}`,
+                      payload: payload,
+                    });
+                  }
+                }
+                callback?.();
+              },
+              close: failDelivery,
+            },
+            authorize: createLiveRunEventRedactor(db),
+            decorate: async event => event,
+            onError: err => {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session event redaction failed");
+              failDelivery();
+            },
           });
+          const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+            if (event.payload.runId === run.id &&
+                ["heartbeat.run.log", "heartbeat.run.event", "heartbeat.run.status"].includes(event.type)) delivery.enqueue(event);
+          });
+          const stopDelivery = () => { active = false; delivery.dispose(); unsubscribe(); };
 
           // Safety-net timeout: if the run never reaches a terminal status,
           // force-cleanup the subscription to prevent unbounded leaks.
@@ -3620,10 +3650,10 @@ export function buildHostServices(
               { pluginId, pluginKey, runId: run.id },
               "session event subscription timed out — forcing cleanup",
             );
-            cleanup();
+            failDelivery();
           }, SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS);
 
-          const entry = { unsubscribe, timer: timeoutTimer };
+          const entry = { unsubscribe: stopDelivery, timer: timeoutTimer };
           activeSubscriptions.add(entry);
         }
 

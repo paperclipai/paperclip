@@ -7,12 +7,18 @@ import { assertWorkspaceManifestDiskSpace } from "./workspace-manifest.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import type { WorkspaceDurableSeedPaths } from "./sandbox-managed-runtime.js";
 
-export function workspaceSeedGeneration(baseline: DirectorySnapshot, git: GitWorkspaceSnapshot | null, repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = []): string {
+export function workspaceSeedGeneration(baseline: DirectorySnapshot, git: GitWorkspaceSnapshot | null, repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [], scope: "workspace" | "company" = "workspace"): string {
   const identity = (snapshot: GitWorkspaceSnapshot | null): unknown => snapshot && ({
-    head: snapshot.headCommit, branch: snapshot.branchName, origin: snapshot.originUrl,
+    head: snapshot.headCommit, ...(scope === "workspace" ? { branch: snapshot.branchName } : {}), origin: snapshot.originUrl,
     repositories: snapshot.repositories?.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) })),
   });
-  return createHash("sha256").update("verified-seed-v1\0").update(JSON.stringify([directorySnapshotSha256(baseline), identity(git), repositories.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) }))])).digest("hex");
+  return createHash("sha256").update(scope === "company" ? "verified-company-seed-v1\0" : "verified-seed-v1\0").update(JSON.stringify([directorySnapshotSha256(baseline), identity(git), repositories.map((repo) => ({ path: repo.path, git: identity(repo.snapshot) }))])).digest("hex");
+}
+
+export function workspaceSeedCloneSnapshot(snapshot: GitWorkspaceSnapshot): GitWorkspaceSnapshot {
+  return { ...snapshot, branchName: null,
+    ...(snapshot.repositories ? { repositories: snapshot.repositories.map(repository => ({ ...repository, snapshot: workspaceSeedCloneSnapshot(repository.snapshot) })) } : {}),
+  };
 }
 async function digest(file: string): Promise<string> {
   const hash = createHash("sha256");
@@ -161,12 +167,15 @@ async function cacheUsage(root: string, limits: SeedCacheLimits): Promise<{ gene
 export async function publishWorkspaceSeedGeneration(
   root: string, generation: string, seed: WorkspaceDurableSeedPaths,
   options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits>; eviction?: Partial<SeedCacheEviction>;
-    now?: () => number; verify?: () => Promise<boolean> } = {},
+    scope?: "workspace" | "company"; now?: () => number; verify?: () => Promise<boolean> } = {},
 ): Promise<boolean> {
-  const limits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
+  const configuredLimits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
+  const limits = options.scope === "company" ? { ...configuredLimits,
+    workspaceGenerations: configuredLimits.companyGenerations, workspaceBytes: configuredLimits.companyBytes,
+  } : configuredLimits;
   const eviction = { ...WORKSPACE_SEED_CACHE_EVICTION, ...options.eviction };
   if (!/^[a-f0-9]{64}$/.test(generation)
-    || Object.values(limits).some(value => !Number.isSafeInteger(value) || value < 0)) return false;
+    || Object.values(configuredLimits).some(value => !Number.isSafeInteger(value) || value < 0)) return false;
   root = path.resolve(root);
   const company = path.resolve(options.companyDirectory ?? root);
   if (root !== company && path.dirname(root) !== company) return false;
@@ -201,6 +210,7 @@ export async function publishWorkspaceSeedGeneration(
         if (!stat.isFile() || stat.isSymbolicLink()) return false;
         incomingBytes += stat.size;
       }
+      if (incomingBytes > configuredLimits.workspaceBytes) return false;
       if (workspace.generations + 1 > limits.workspaceGenerations || workspace.bytes + incomingBytes > limits.workspaceBytes
         || totalGenerations + 1 > limits.companyGenerations || totalBytes + incomingBytes > limits.companyBytes
         || workspaces + (workspaceExists ? 0 : 1) > limits.companyWorkspaces) return false;
@@ -211,6 +221,7 @@ export async function publishWorkspaceSeedGeneration(
     if (initialCapacity === "existing") return true;
     let incomingBytes = 4096;
     for (const archive of [seed.workspaceArchivePath, seed.gitArchivePath]) if (archive) incomingBytes += (await fs.lstat(archive)).size;
+    if (incomingBytes > configuredLimits.workspaceBytes) return false;
     const plan = { generation, incomingBytes, limits, eviction, now: options.now?.() ?? Date.now() };
     if (initialCapacity === false && !await evictSeedGenerations(company, root, { ...plan, apply: false })) return false;
     if (options.verify && !await options.verify()) return false;

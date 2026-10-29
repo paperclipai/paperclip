@@ -9,12 +9,14 @@ import { runnerSuites } from "../catalog.js";
 import { productJourneys, parseTargetConfig, preparationPreview } from "./catalog.js";
 import { journeyFixtures } from "./fixtures.js";
 import { taskProperties } from "./task-properties.js";
+import { askQuestion, taskCreate } from "./basic-flows.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 import { validateJourneyCollection } from "./collection.js";
+import { captureProductScreenshot } from "./product-screenshot.js";
 import { validateOnboardingArtifact } from "./artifact-evidence.js";
 
 const cleanupGraceMs = 600_000;
@@ -99,9 +101,11 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of ["catalog.ts", "task-properties.ts", "basic-flows.ts", "basic-evidence.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  definitionHash.update(await readFile(path.join(import.meta.dirname, "../user-actions.ts")));
+  definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
-  const expected = config.journeys.map(id => `product-journeys.${config.id}.${id === "cloud-onboarding" ? config.modelProfileId : "browser"}.${config.executionEnvironment}.${id}`);
+  const expected = config.journeys.map(id => `product-journeys.${config.id}.${id === "cloud-onboarding" ? config.modelProfileId : id === "ask-question" ? "configured-agent" : "browser"}.${config.executionEnvironment}.${id}`);
   let reportPersisted = false;
   const failFinalization = (code: string) => {
     for (const result of results) {
@@ -160,7 +164,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       const profile = id === "cloud-onboarding" ? runnerSuites.flatMap(suite => suite.profiles).find(p => p.id === config.modelProfileId) : undefined;
       const result: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2", executionId: expected[index]!, suiteId: "product-journeys", suiteDefinitionHash,
-        source, attempt: 1, status: "failed", profileId: profile?.id ?? "browser", environmentId: config.executionEnvironment, caseId: id,
+        source, attempt: 1, status: "failed", profileId: id === "ask-question" ? "configured-agent" : profile?.id ?? "browser", environmentId: config.executionEnvironment, caseId: id,
         provider: profile?.provider ?? null, model: profile?.model ?? null, runtimeMode: profile?.generation ?? "none", startedAt, finishedAt: startedAt, durationMs: 0, cleanup: "not_started", productJourney: evidence,
       };
       results.push(result);
@@ -187,7 +191,15 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
           evidence.startingState = ready.startingState;
           await persist();
           phase = "journey";
-          await taskProperties(ready, session!, campaignId, evidence);
+          if (id === "ask-question") {
+            if (!ready.agent) throw new JourneyError("blocked", "configured_agent_required");
+            result.profileId = "configured-agent";
+            result.provider = ready.agent.provider;
+            result.model = ready.agent.model;
+            result.runtimeMode = ready.agent.runtimeMode;
+            await askQuestion(ready, session!, campaignId, evidence);
+          } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
+          else await taskProperties(ready, session!, campaignId, evidence);
         }
         evidence.deployment = ready.identity;
         evidence.startingState = ready.startingState;
@@ -197,7 +209,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.status = "passed";
         const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
         await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
-        await ready.page.screenshot({ path: path.join(evidenceDir, `${id}.png`) });
+        await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}.png`));
         result.screenshots = [{ id, label: productJourneys.find(j => j.id === id)!.label, file: `${id}.png` }];
       } catch (error) {
         const failure = journeyFailure(error);
@@ -206,6 +218,18 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.status = "failed";
         result.error = failure.code;
         result.failureClass = failure.outcome === "failed" ? "candidate_failure" : "permanent_infrastructure";
+        // Retain failed product screens only after tenant setup, never login screens.
+        if (ready && phase === "journey") {
+          try {
+            const url = new URL(ready.page.url());
+            if (url.origin === ready.api.origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname)) {
+              const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
+              await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
+              await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`));
+              result.screenshots = [{ id: `${id}-failed`, label: "Failed journey screen", file: `${id}-failed.png` }];
+            }
+          } catch { /* Preserve the original failure when its page is unavailable. */ }
+        }
         if (id === "cloud-onboarding" || !ready) prerequisiteFailure = failure;
       }
       result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);

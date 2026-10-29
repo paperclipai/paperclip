@@ -1,5 +1,7 @@
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
+  { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
+  { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "task-properties", label: "Assign a task to the signed-in user", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["tasks/properties"], paid: false },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
@@ -9,7 +11,7 @@ export function preparationPreview(config: TargetConfig) {
     target: { id: config.id, mode: config.mode, executionEnvironment: config.executionEnvironment },
     journeys: config.journeys.map(id => productJourneys.find(journey => journey.id === id)!),
     configuration: config.baseline,
-    lifetime: config.mode === "existing-cloud" ? "persistent; clean run-owned resources only" : config.mode === "new-cloud" ? "disposable; delete on pass, retain failures for 24 hours" : "managed instance; remove after every attempt",
+    lifetime: config.mode === "existing-cloud" ? "persistent; clean run-owned resources only" : config.mode === "new-cloud" ? "disposable; delete on pass, retain failures up to 24 hours" : "managed instance; remove after every attempt",
     limits: config.limits, authentication: config.mode === "managed-self-hosted" ? "local-trusted" : "normal email-code sign-in",
     modelProfileId: config.modelProfileId ?? null,
     maxDisposableStacks: config.mode === "new-cloud" ? 1 : 0,
@@ -38,6 +40,7 @@ export function parseTargetConfig(value: unknown): TargetConfig {
   if (c.mode === "new-cloud" && c.baseline.connections.length) throw new Error("onboarding_requires_ui_connection_setup");
   if (c.mode !== "new-cloud" && c.journeys.includes("cloud-onboarding")) throw new Error("onboarding_requires_fresh_cloud_workspace");
   if (c.journeys.includes("cloud-onboarding") && (!c.limits.modelBudgetCents || !c.limits.maxRuns)) throw new Error("paid_journey_requires_limits");
+  if (c.journeys.includes("ask-question") && (!c.limits.modelBudgetCents || c.limits.maxRuns !== 1)) throw new Error("question_requires_one_bounded_run");
   if (c.mode !== "managed-self-hosted" && !c.adapterModule) throw new Error("cloud_target_requires_private_adapter");
   if (c.mode === "managed-self-hosted" && c.executionEnvironment !== "local") throw new Error("unsupported_self_hosted_environment");
   return { ...c, ...(c.journeys.includes("cloud-onboarding") ? { modelProfileId: c.modelProfileId ?? "runner-codex" as const } : {}), headed: c.headed ?? false, journeys: c.journeys as JourneyId[] };

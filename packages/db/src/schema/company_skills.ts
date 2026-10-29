@@ -70,14 +70,78 @@ export type CompanySkillVersionFileInventoryEntry = CompanySkillFileInventoryEnt
   executable?: boolean;
 };
 
+export type SkillPackageStorageReceipt = {
+  durable?: boolean;
+  format: "tar-gzip-v1";
+  provider: "local_disk" | "s3";
+  archiveKey: string;
+  archiveSha256: string;
+  archiveBytes: number;
+  manifestKey: string;
+  manifestSha256: string;
+  manifestBytes: number;
+  fileCount: number;
+  totalBytes: number;
+};
+
+export type SkillPackageUpload = {
+  token: string;
+  legacy?: boolean;
+  provider: "local_disk" | "s3";
+  archiveKey: string;
+  manifestKey: string;
+  expiresAt: string;
+};
+
+/** Exact input to the v1 packager. File bodies never live in this recipe. */
+export type SkillPackageRestoreRecipe = {
+  version: 1;
+  sourceId: string;
+  repositoryId: string;
+  repositoryUrl: string;
+  commitSha: string;
+  skillPath: string | null;
+  manifest: {
+    format: "paperclip-skill-package/v1";
+    contentHash: string;
+    totalBytes: number;
+    files: Array<{ path: string; kind: CompanySkillFileInventoryEntry["kind"]; encoding: "utf8" | "base64";
+      executable: boolean; size: number; sha256: string }>;
+  };
+};
+
+export type SkillPackageFileMapping = CompanySkillFileInventoryEntry & { sourcePath: string; encoding?: "utf8" | "base64" };
+
+/** Durable deletion receipts survive company/snapshot deletion until storage confirms removal. */
+export const skillPackageDeletions = pgTable("skill_package_deletions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id").notNull(),
+  provider: text("provider").notNull(),
+  archiveKey: text("archive_key").notNull(),
+  manifestKey: text("manifest_key").notNull(),
+  deleteAfter: timestamp("delete_after", { withTimezone: true }).notNull(),
+}, table => ({ due: index("skill_package_deletions_due_idx").on(table.deleteAfter, table.id) }));
+
 /** Immutable repository bytes shared by all skill versions from the same package. */
 export const companySkillRepositorySnapshots = pgTable("company_skill_repository_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   contentHash: text("content_hash").notNull(),
-  fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull(),
+  // Legacy payload only. New packages retain bytes in the configured storage backend.
+  fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull().default([]),
+  storage: jsonb("storage").$type<SkillPackageStorageReceipt>(),
+  upload: jsonb("upload").$type<SkillPackageUpload>(),
+  restore: jsonb("restore").$type<SkillPackageRestoreRecipe>(),
+  // These deadlines are consumed by the delivery coordinator, never polled per turn.
+  migrationAt: timestamp("migration_at", { withTimezone: true }).defaultNow(),
+  maintenanceAt: timestamp("maintenance_at", { withTimezone: true }).defaultNow(),
+  restoreRetryAt: timestamp("restore_retry_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, table => ({ content: uniqueIndex("company_skill_repository_snapshots_content_idx").on(table.companyId, table.contentHash) }));
+}, table => ({
+  content: uniqueIndex("company_skill_repository_snapshots_content_idx").on(table.companyId, table.contentHash),
+  migration: index("company_skill_snapshots_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),
+  maintenance: index("company_skill_snapshots_maintenance_idx").on(table.maintenanceAt).where(sql`${table.maintenanceAt} is not null`),
+}));
 
 export const companySkillVersions = pgTable(
   "company_skill_versions",
@@ -87,6 +151,9 @@ export const companySkillVersions = pgTable(
     companySkillId: uuid("company_skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
     repositorySnapshotId: uuid("repository_snapshot_id").references(() => companySkillRepositorySnapshots.id, { onDelete: "restrict" }),
     repositorySkillPath: text("repository_skill_path"),
+    packageSnapshotId: uuid("package_snapshot_id").references(() => companySkillRepositorySnapshots.id, { onDelete: "restrict" }),
+    packageFileMap: jsonb("package_file_map").$type<SkillPackageFileMapping[]>(),
+    migrationAt: timestamp("migration_at", { withTimezone: true }).defaultNow(),
     revisionNumber: integer("revision_number").notNull(),
     label: text("label"),
     releaseId: text("release_id"),
@@ -98,6 +165,9 @@ export const companySkillVersions = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    migrationIdx: index("company_skill_versions_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),
+    packageSnapshotIdx: index("company_skill_versions_package_snapshot_idx").on(table.packageSnapshotId),
+    repositorySnapshotIdx: index("company_skill_versions_repository_snapshot_idx").on(table.repositorySnapshotId),
     companySkillRevisionUniqueIdx: uniqueIndex("company_skill_versions_skill_revision_idx").on(
       table.companySkillId,
       table.revisionNumber,

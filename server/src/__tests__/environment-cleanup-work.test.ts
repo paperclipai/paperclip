@@ -17,17 +17,20 @@ import { historicalCleanupVerificationService } from "../services/historical-cle
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_CLEANUP_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined, db: ReturnType<typeof createDb>;
   let companyId: string, environmentId: string, draining: boolean, failing: boolean;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerEnvironmentCleanupWork> | undefined;
   let releases: ReturnType<typeof vi.fn>, inspections: ReturnType<typeof vi.fn>, reads: ReturnType<typeof vi.spyOn>;
   const errors: unknown[] = [], disposers: Array<() => void> = [];
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("environment-cleanup-work-");
-    db = createDb(database.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    if (!external) database = await startEmbeddedPostgresTestDatabase("environment-cleanup-work-");
+    db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
@@ -225,12 +228,20 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     for (let i = 0; i < 33; i++) {
       const lease = await pending(); await environmentService(db).releaseLease(lease.id, "failed", { cleanupStatus: "success" });
     }
-    await start(true); await settle(300_000); await settle(300_000); expect(inspections).toHaveBeenCalledTimes(33); await quiet();
+    await start(true);
+    await vi.waitFor(async () => {
+      await settle(300_000);
+      expect(inspections).toHaveBeenCalledTimes(33);
+    }, { timeout: 5000 });
+    await quiet();
   });
   it("keeps unknown historical resources scheduled until provider confirmation", async () => {
     const lease = await pending(); await environmentService(db).releaseLease(lease.id, "failed", { cleanupStatus: "success" });
     inspections.mockResolvedValueOnce({ providerLeaseId: lease.providerLeaseId, state: "unknown" });
-    await start(true); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await start(true);
+    // The provider sweep finishes before its pending-state read registers the
+    // retry. Readiness intentionally does not wait for historical verification.
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now()));
     await settle(300_000); expect(inspections).toHaveBeenCalledTimes(2); await quiet();
   });
 });

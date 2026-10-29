@@ -65,6 +65,70 @@ it("applies the company byte cap across workspace roots", async () => {
   expect(await fs.readdir(f.company)).toEqual(["workspace"]);
 });
 
+it("admits multiple recent workspaces into the company bucket without applying one workspace's quota to their sum", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const options = { companyDirectory: f.company, scope: "company" as const,
+    limits: { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 100_000 } };
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+  for (const index of [1, 2]) {
+    const cached = await readWorkspaceSeedGeneration(f.workspace, generation(index));
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("x".repeat(8192));
+  }
+});
+
+it.each(["companyGenerations", "companyBytes"] as const)("keeps the shared bucket within %s and preserves recently used seeds", async limit => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const options = { companyDirectory: f.company, scope: "company" as const,
+    limits: { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 100_000,
+      [limit]: limit === "companyBytes" ? 25_000 : 2 } };
+  for (const index of [1, 2]) expect(await publishWorkspaceSeedGeneration(f.workspace, generation(index), f.seed, options)).toBe(true);
+  const verify = vi.fn(async () => true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, { ...options, verify })).toBe(false);
+  expect(verify).not.toHaveBeenCalled();
+  expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2)]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("x".repeat(8192));
+});
+
+it("evicts an old legacy workspace seed to make room for a new shared generation", async () => {
+  const f = await fixture(); const now = Date.now();
+  await fs.writeFile(f.archive, "x".repeat(8192));
+  const limits = { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 40_000 };
+  const legacy = path.join(f.company, "legacy");
+  const legacyArchive = path.join(f.root, "legacy.tar"); await fs.writeFile(legacyArchive, "y".repeat(15_000));
+  expect(await publishWorkspaceSeedGeneration(legacy, generation(0), { workspaceArchivePath: legacyArchive },
+    { companyDirectory: f.company, limits, now: () => now })).toBe(true);
+  const receipt = path.join(legacy, generation(0), "receipt.json");
+  await fs.utimes(receipt, new Date(now - 2 * 60 * 60 * 1000), new Date(now - 2 * 60 * 60 * 1000));
+  const options = { companyDirectory: f.company, scope: "company" as const, limits, now: () => now };
+  for (const index of [1, 2, 3]) expect(await publishWorkspaceSeedGeneration(f.workspace, generation(index), f.seed, options)).toBe(true);
+  expect(await fs.readdir(f.company)).toEqual(["workspace"]);
+  expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2), generation(3)]);
+  expect(await fs.readFile(legacyArchive, "utf8")).toBe("y".repeat(15_000));
+});
+
+it("retains the individual seed byte ceiling when the shared bucket has room", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const verify = vi.fn(async () => true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, scope: "company", limits: { workspaceBytes: 8192 }, verify,
+  })).toBe(false);
+  expect(verify).not.toHaveBeenCalled();
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("x".repeat(8192));
+});
+
+it("rechecks the individual shared seed byte ceiling after verification", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const verify = vi.fn(async () => { await fs.writeFile(f.archive, "y".repeat(30_000)); return true; });
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, scope: "company", limits: { workspaceBytes: 20_000, companyBytes: 100_000 }, verify,
+  })).toBe(false);
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("y".repeat(30_000));
+});
+
 it("serializes concurrent archive publication against the aggregate byte cap", async () => {
   const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(1024));
   const options = { companyDirectory: f.company, limits: { companyBytes: 5500 } };

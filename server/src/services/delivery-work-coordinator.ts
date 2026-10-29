@@ -26,6 +26,9 @@ export function createDeliveryWorkCoordinator(input: {
       onSettled?: (hints?: ReadonlySet<string>) => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;
+      // Opt in only when run has recorded per-item failure backoffs. Other
+      // eligible items may already be due, unlike an unchanged failed deadline.
+      nextRunAtOnError?: () => number | null;
       // An empty queue's maintenance may wait until dispatch admission reopens.
       // Notifications and unresolved producer writes still reconcile in drain.
       pausePassiveMaintenance?: boolean;
@@ -65,9 +68,10 @@ export function createDeliveryWorkCoordinator(input: {
         dirty = false;
         const finish = beginIdleTrackedWork();
         const attempt = new AbortController();
+        let runFailed = false;
         controller = attempt;
         running = Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
-          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal)).then(() => workerStopped ? false : task.hasPending()).then(pending => {
+          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending()).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }
@@ -78,9 +82,17 @@ export function createDeliveryWorkCoordinator(input: {
           }
         }).catch(error => {
           schedule(task.retryMs);
+          let failure = error;
+          try {
+            const scopedRetry = runFailed && task.nextRunAtOnError;
+            const next = input.canRun() ? (scopedRetry ? scopedRetry() : task.nextRunAt?.()) : null;
+            if (next != null && (scopedRetry || next > Date.now())) schedule(0, Math.max(Date.now(), next));
+          } catch (deadlineError) {
+            failure = new AggregateError([error, deadlineError], "Delivery failure deadline could not be read");
+          }
           // Logging must never turn a recoverable sweep failure into an
           // unhandled rejection or prevent other queues from running.
-          try { if (!workerStopped) input.onError(error, queue); } catch { /* Recovery remains scheduled. */ }
+          try { if (!workerStopped) input.onError(failure, queue); } catch { /* Recovery remains scheduled. */ }
         }).finally(() => {
           running = null;
           controller = null;
@@ -113,7 +125,7 @@ export function createDeliveryWorkCoordinator(input: {
       } };
       workers.set(queue, worker);
       const ready = Promise.resolve().then(() => { start(); return running; });
-      return { ready, wake };
+      return { ready, ...worker };
     },
     async stop() {
       stopped = true;

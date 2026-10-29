@@ -35,7 +35,7 @@ Agent access: [companion](../agent-access-map/steering.md).
 
 Open an assigned task (`/issues/:issueId`). Start work, then send follow-ups while
 the agent runs. Use the queued-message controls to edit, reorder, discard,
-steer, or interrupt when offered. Use the composer stop/pause control separately.
+steer, or interrupt when offered. After Stop, choose **Send** on a saved queue to explicitly continue it without recreating the messages or attachments. Native steering still requires an active turn; Send after Stop is a separate user decision. Use the composer stop/pause control separately.
 Both task presentations need attention when changing their shared behavior.
 
 ### `agent-chat`
@@ -77,6 +77,10 @@ consumed message whose send response and queue snapshot arrive late. A started
 run's input receipt removes that message from pending, while a separate unsent
 message stays queued. Admission to a run that has not started is not delivery.
 A later retry of the same message remains visible in its new authoritative queue.
+A queued turn's own starting input stays in history before execution, including
+board messages that reopen a task. Later inputs keep their queue controls and
+full canonical order. A maintenance hold displays its current admission wait;
+drain release and expiry prompt normal admission without a manual retry.
 Receipts retain the primary wake and coalesced source queue IDs. They clear a late
 snapshot even when its target names the preceding run or is null.
 

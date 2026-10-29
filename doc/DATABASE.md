@@ -49,6 +49,18 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+Native session resume selects its newest progress barrier within the existing
+32-run task/session window in one SQL snapshot. Only the chosen checkpoint source
+returns its saved native input, checkpoint, tool fingerprint, wake envelope, and
+canonical task brief. Unused bootstrap candidates do not return full context or
+profiles. Wrong runtime, nonterminal status, process identity, provider events,
+invalid but non-null checkpoints, and future checkpoint barriers retain their
+existing selection rules. Stored run payloads and history reads stay complete.
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
+An optional `PAPERCLIP_SESSION_RESUME_BENCHMARK_DATABASE_URL` must name a dedicated
+test database ending in `_test`; otherwise the harness starts disposable PostgreSQL.
+
 Agent request authentication uses a compact run-identity read. It omits saved
 execution payloads, results, and log excerpts from the query response. The read
 still locks the task before the run and reconciles pending steering from durable
@@ -754,6 +766,17 @@ Rollback by setting the marker to `0` and restarting. No schema changes are
 required. This mechanism does not sleep claimed workspaces or replace a durable
 scheduler for their background work.
 
+## Native finalization history and idle sleep
+
+Idle sleep retains committed native finalization records as audit history.
+A record permits sleep only after its owned run, accepted result, assessment,
+applied status decision, and effect deliveries agree on completion. Leases,
+retries, recovery requests, unfinished accounting, and incomplete run projections
+keep the instance awake. Historical controller identity alone does not block sleep.
+The exact run also needs its successful workspace-finalization receipt. Pending
+final-reply recovery shares its discovery predicate with the recovery worker, and
+live warm sessions remain local work through close/checkpoint completion.
+
 ## Feedback history and idle sleep
 
 Automatic idle checks treat private, unshared feedback as saved data. A sent
@@ -1240,6 +1263,30 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+### Installed skill packages
+
+`company_skill_repository_snapshots` retains its identity and company/content-hash
+uniqueness. Despite its historical name, it can also hold editable skill packages.
+Migration 0414 (`0414_sleepy_payback.sql`) adds `storage` (archive/manifest receipts) and `upload` (a bounded
+pending attempt). `file_inventory` remains the legacy payload, defaulting to `[]`.
+`company_skill_versions.package_snapshot_id` and `package_file_map` preserve the
+public version file inventory without storing its contents again. Existing repository
+snapshot/entrypoint references and version IDs remain unchanged. Reference indexes
+support bounded orphan checks; restrictive FKs protect retained version packages.
+Version mappings preserve kinds and encodings when identical bytes share a package.
+Authored saves mark the storage receipt `durable`; retirement atomically respects that
+marker even when the save joins a concurrent Git upload.
+
+`skill_package_deletions` is a durable object-deletion outbox populated by snapshot
+update/delete triggers. Its company ID deliberately has no cascading company FK:
+cleanup must retain exact object keys after company deletion. Upload promotion skips
+retirement; replacing a pending token retires only the old attempt's unique keys.
+The same migration adds exact-commit restore recipes and indexed conversion/maintenance
+deadlines. A bounded coordinator worker automatically converts and clears verified
+legacy payloads; no migration command is required. Warm reads exclude recipe manifests.
+See [package storage](skill-package-storage.md) for acquisition, retention, compatibility
+overrides, independent restore verification and coordinated backup policy.
+
 ### Project repository skill synchronization
 
 `project_skill_sources` stores durable workspace import jobs and originating project
@@ -1418,3 +1465,23 @@ human's decision to leave a pending request in history. They are independent of
 The board-only dismissal path locks the task then interaction, checks audience,
 and never enqueues a continuation. Ordinary deferred requests are excluded from
 completion arbitration; protected authorization gates remain active.
+
+### GitHub inherited review-wait reads
+
+Passive GitHub review waits select only the assessment's `reviewedCommit` JSON
+value. The read preserves its JSON type for strict comparison with the review
+head. It still checks current requester provenance, company and agent bindings,
+connection state, repository identity, latest review, and processed publication.
+The complete assessment remains stored for review and publication.
+
+The synthetic PostgreSQL benchmark captures the service-generated baseline and
+treatment queries, compares complete outputs, and measures raw DataRow bytes:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-github-review-wait.ts --baseline-ref=663fe667d66d3863d0919a8724f1d99500feef0b
+```
+
+It uses disposable embedded PostgreSQL by default. A disposable local database
+named `review_wait_benchmark...` can be supplied through
+`PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
+DataRow bytes exclude response metadata and transport overhead.

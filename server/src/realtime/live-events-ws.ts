@@ -1,3 +1,4 @@
+import { createLiveEventDelivery } from "./live-event-delivery.js";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -13,11 +14,14 @@ import { activityToastIdentity } from "./activity-toast-identity.js";
 import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { trackIdleWork } from "../services/task-admission.js";
+import { createLiveRunEventRedactor } from "../services/live-run-event-redaction.js";
 
 interface WsSocket {
   readyState: number;
   ping(): void;
-  send(data: string): void;
+  bufferedAmount?: number;
+  send(data: string, callback?: (error?: Error) => void): void;
+  on(event: "message", listener: (data: Buffer, isBinary: boolean) => void): void;
   terminate(): void;
   close(code?: number, reason?: string): void;
   on(event: "pong", listener: () => void): void;
@@ -41,7 +45,7 @@ interface WsServer {
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocket: { OPEN: number };
-  WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
+  WebSocketServer: new (opts: { noServer: boolean; maxPayload: number }) => WsServer;
 };
 
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
@@ -253,7 +257,8 @@ export function setupLiveEventsWebSocketServer(
     resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const redactRunEvent = createLiveRunEventRedactor(db);
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
 
@@ -303,6 +308,11 @@ export function setupLiveEventsWebSocketServer(
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
+        const decision = await access.decide({ actor: context!.actor, action: "company_scope:read",
+          resource: { type: "company", companyId: event.companyId } });
+        if (!decision.allowed) return null;
+      }
       const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
       if (issueId) {
         readBindings.push({ companyId: event.companyId, scopeKind: "issue", issueId });
@@ -347,33 +357,29 @@ export function setupLiveEventsWebSocketServer(
       if (event.type.startsWith("plugin.")) return event;
       return null;
     }
-    let delivery = Promise.resolve();
-    let pending = 0;
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      if (++pending > 1000) { socket.close(1013, "event backlog"); return; }
-      delivery = delivery.then(async () => {
-        if (socket.readyState !== WebSocket.OPEN) return;
-        // Check at delivery time, including after a grant is revoked while the
-        // subscription remains open. Never cache successful privacy decisions.
-        const visible = await visibleEvent(event);
-        if (visible) {
-          // Relevance is independent of authorization and cache delivery. A
-          // failed relevance lookup must keep the authorized update flowing.
-          let toastEligible = false;
-          try {
-            toastEligible = await taskToastEligible(db, visible,
-              context.actor.type === "board" ? context.actor.userId ?? null : null);
-          } catch (err) {
-            logger.warn({ err, companyId: context.companyId }, "task toast eligibility failed");
-          }
-          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ ...visible, toastEligible }));
-        }
-      }).catch(err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"))
-        .finally(() => { pending -= 1; });
+    const delivery = createLiveEventDelivery({ socket, authorize: async event => {
+      const visible = await visibleEvent(event);
+      if (!visible || visible.type !== "heartbeat.run.event") return visible;
+      const payload = visible.payload.payload;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("prpEvent" in payload)) return visible;
+      return redactRunEvent(visible);
+    },
+      decorate: async visible => {
+        let toastEligible = false;
+        try {
+          toastEligible = await taskToastEligible(db, visible,
+            context.actor.type === "board" ? context.actor.userId ?? null : null);
+        } catch (err) { logger.warn({ err, companyId: context.companyId }, "task toast eligibility failed"); }
+        return { ...visible, toastEligible };
+      },
+      onError: err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"),
     });
-
-    cleanupByClient.set(socket, unsubscribe);
+    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, event => delivery.enqueue(event));
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) { socket.close(1003, "text messages required"); return; }
+      delivery.receive(data.toString());
+    });
+    cleanupByClient.set(socket, () => { unsubscribe(); delivery.dispose(); });
     aliveByClient.set(socket, true);
 
     socket.on("pong", () => {

@@ -74,6 +74,17 @@ or open `/apps/chat/connect`. Complete that provider's endpoint setup, then
 open its settings (`/apps/chat/:endpointId/settings`). Follow identity linking
 as the intended sender before messaging the agent externally.
 
+### `delegated-configuration`
+
+Ask a standard agent to configure a disposable app or account from its assigned
+task. The agent uses REST or admitted native `search_api` / `call_api`, reuses
+saved accounts and drafts, and returns the exact saved setup link when human
+authentication, consent, credential entry or identity confirmation is required.
+Open that link as the addressed person. Personal ownership stays with that
+person; audit attribution stays with the acting agent. Existing agents retain
+their explicit grants and restrictions. See the [access companion](../agent-access-map/connection-setup.md)
+and [native admission contract](../agent-access-map/README.md#native-rest-transport).
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
@@ -219,6 +230,35 @@ the intended sender, and send a disposable message. Verify one task and a useful
 reply in the originating conversation. Inspect an unlinked sender's denial and
 the endpoint's pause behavior. Repeat independently for each provider at issue;
 Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
+
+### `delegated-configuration`
+
+Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
+uses production agent creation, persistent keys, run JWTs, native tool bindings,
+human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
+setup, ownership, attribution, scope, trust, work modes and revocation. The
+[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
+cover pending choices, consent precedence and failed grant loading with API mocks.
+These are separate from live provider setup and model success.
+
+Manual: Have the agent perform authorized setup, then open its saved handoff as
+the addressed person. Reload before completing the required human step; verify
+the same resource, saved access choices, human ownership and acting-agent audit
+remain. Complete the step, verify the exact task continues, and confirm that
+revoked authority or cancelled work prevents continuation. An ordinary bot-token
+repair or an unchanged credential must not complete a signing-key request.
+
+For Google, request a specific service set, leave and reopen setup, and inspect
+the addressed user's pending choices. Another user's or organization grant must
+not supply those choices. A newer actual consent supersedes the saved request;
+a token refresh does not. A failed grant read must not broaden the selection.
+For Vercel personal setup, verify the selected credential belongs to the
+responsible person and new bindings record the configuring human as creator.
+Agent-initiated API changes retain the acting agent in audit; the human callback
+retains its actual human actor.
+Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
+field-specific credential entry and saved rotation recovery, and the
+[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
 
 ## Gotchas
 

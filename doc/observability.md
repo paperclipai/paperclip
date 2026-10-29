@@ -35,6 +35,13 @@ maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
 
+An initialized SDK does not confirm ingestion. Verify a fresh trace from the
+deployed revision at the configured destination. A rejected export can leave
+the application healthy. For Honeycomb, configure the ingest key in the
+`x-honeycomb-team` entry of `OTEL_EXPORTER_OTLP_HEADERS`; see
+[Honeycomb authentication](https://docs.honeycomb.io/api/query-annotations/authorization).
+Keep credential values out of logs and diagnostic reports.
+
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
@@ -226,12 +233,21 @@ connection instructions, and agent identity. Their names are
 when a later setup step fails before the provider lifecycle trace starts.
 
 `task.execution_attempt` owns one invocation of the server executor, from its
-admission reads through preparation, provider dispatch, completion, reply persistence,
-and cleanup. It starts a new root trace with a link to the active trigger. It
+admission reads through preparation, provider dispatch, and inline settlement.
+Deferred native workspace finalization and reply persistence can finish after
+this root ends. It starts a new root trace with a link to the active trigger. It
 therefore follows the operator's root sampler even when the HTTP trigger was not
 sampled. Async-local ownership parents same-run preparation and nested phases to
 the current attempt. Concurrent runs have separate contexts. A phase invoked
 without a live matching attempt still starts an independent linked root.
+
+`task.workspace_finalization` owns each deferred native workspace finalization
+check. It starts when the background worker checks the run, including its
+admission and ownership checks, and ends when that check returns or fails.
+Workspace restore phases nest under this root using the same hashed run ID.
+It does not extend an earlier execution attempt or include time waiting for
+the background worker to run. Retries have separate roots. A check that finds
+no eligible work can end without a restore child.
 
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
@@ -313,6 +329,9 @@ attempt or owning phase:
 | `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
 | `runtime_context.instructions`, `.skills`, `.mcp` | The three concurrent runtime-context branches. Their durations overlap. |
 | `runtime_context.asset_*` | Source reads, manifest hashing, cache lookup, cold materialization, and exact file verification on cold and warm paths. |
+| `skills.inventory`, `.wait`, `.bundled`, `.releases`, `.folders`, `.local_sources` | Company skill reconciliation, waiting for an existing company refresh, and its bundled imports, release verification, folder, and local-source work beneath runtime skill preparation. Inventory children overlap their parent. |
+| `skills.cache.acquire`, `skills.rows`, `skills.version.read`, `skills.repository.read`, `skills.version.materialize`, `skills.version.verify` | Dedicated connection/transaction startup plus advisory-lock acquisition, authorized skill rows, frozen version and repository reads, and exact runtime materialization/validation. Lock acquisition ends before the protected work; version verification is inside materialization. Only bounded file counts are added. |
+| `skills.consume` | The caller's delivery and durable version-pinning callback while the cache lock remains held. |
 | `workspace_sync.prepare_host_current`, `.prepare_durable_seed`, `.prepare_adopt_remote` | Runtime preparation under the selected inbound mode, including snapshot and staging work. A warm mismatch may produce a second preparation; it is real repeated work. |
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
@@ -333,6 +352,41 @@ attempt or owning phase:
 | `completion.*` | Completion handler, run-log finalization, terminal persistence, accounting, liveness, and continuation summaries. |
 | `response.resolve`, `.authorize`, `.add_comment`, `.transaction*`, `.row_lock`, `.write`, `.publish` | Response selection, existing authorization, comment transaction including commit or rollback, row wait, insert, and external publication enqueue. |
 | `execution.realtime` | Synchronous live-event and plugin publication dispatch. It does not measure browser receipt or paint. |
+
+For bounded native OpenCode diagnosis, set
+`PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` as an agent/environment variable.
+The existing configured-environment projection carries it into the native Runner.
+It defaults off. The Runner creates an authenticated loopback OTLP sink and enables
+the pinned OpenCode runtime's internal tracing. The sink discards logs, resource
+attributes, span attributes, events, and unknown span names. It retains only closed
+phase names, wall timestamps, and success/failure, with a 1 MiB request limit,
+128 retained measurements, and 16 measurements per phase. No operator OTLP endpoint
+or ingestion credential is passed to OpenCode.
+
+For fresh remote diagnostic runs, the selected pack must contain the current
+build's OpenCode proxy. An otherwise compatible image pack can predate the
+collector. Such a pack cannot satisfy the diagnostic request. The existing
+verified pack preparation path selects or stages the current proxy; it can add
+startup time or fail admission when matching runtime assets are unavailable.
+Ordinary runs retain compatible image-pack reuse. Recovery retains the pack
+identity already admitted for that session.
+
+Available phases cover context/instruction loading, skill discovery, tool and model
+resolution, model streaming (`ai.streamText`, including stream consumption), Git
+discovery/default branch, snapshots, dependency installation, and plugin startup.
+These intervals overlap; do not sum them as elapsed time. At each terminal turn,
+already-received measurements travel in one `harness.diagnostic` event through the
+existing durable PRP channel. Late exports may be absent; collection never waits
+for a provider flush or delays terminal publication to complete the diagnostic.
+Late spans from a prior completed turn are discarded at the next boundary.
+
+The server validates the closed fields again and records them under a foldable
+`provider.runtime` group inside `native.session.execute`. The normal operator
+endpoint gate controls Honeycomb export. The single diagnostic batch stays in the instance run log. Its OTel projection
+does not write duplicate phase rows or await additional database work before
+terminal consumption. Without an endpoint, no provider child spans are exported. Raw OpenCode OTLP must
+never be sent directly to the operator endpoint: it can contain prompts and
+authorization attributes before the loopback sink removes them.
 
 Detail phases emit at most 16 spans of each name per attempt. Larger receipt and
 asset inventories continue under the containing group without unbounded per-row
@@ -566,8 +620,9 @@ An unsampled HTTP request therefore cannot suppress an otherwise sampled
 background run. An operator who disables root sampling still gets no spans.
 Without an OTLP endpoint, tracing remains silent and does not export data.
 
-The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters, and
-`task.execution_attempt` for server preparation and settlement. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the three root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
+`task.execution_attempt` for server preparation and settlement, and
+`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 
@@ -1953,6 +2008,12 @@ Preparation failures emit a failed span even when no native session starts.
 It carries no skill contents, identifiers, locations, or credentials. It uses the
 existing run performance events and operator-configured OpenTelemetry endpoint;
 no first-party Telemetry event is added.
+
+The `skills.*` detail spans above distinguish inventory reconciliation and lock
+acquisition from repository transfer and file validation. A repository-backed
+skill's authored `SKILL.md` is not its complete runtime payload: the generated
+discovery entrypoint includes the pinned repository under `.paperclip-repository`.
+Measure the delivered bundle's file count and bytes when reproducing its cost.
 
 Runtime preparation refreshes the company inventory once per listing. Local and
 catalog directories remain direct sources, so edits are visible on the next

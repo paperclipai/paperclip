@@ -21,6 +21,7 @@ import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-scr
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
+import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -89,7 +90,8 @@ interface Input {
   workspacePath: string;
   privateDir: string;
   deadlineAt: number;
-  restart(controllerDowntimeMs?: number): Promise<void>;
+  restartCount?: number;
+  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerOutageReceipt | void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -168,9 +170,7 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
-  const requireRemoteRestart = caseId === "recover-controller" && execution.environment.id === "daytona"
-    && execution.profile.generation === "native" && (execution.profile.provider === "codex"
-      || execution.profile.provider === "acpx");
+  const requireRemoteRestart = controllerOutageForExecution(execution, process.env) !== undefined;
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -550,9 +550,9 @@ export async function runEverydayFlow(input: Input) {
   async function sourceReady() {
     await recordSource("source-saved-before-interruption", "source-before-interruption.json", true);
   }
-  async function remoteRestartBoundary(runId?: string) {
+  async function remoteRestartBoundary(runId?: string, recovered = false) {
     await refresh();
-    const active = ev.runs.filter(run => run.status === "running" && run.nativeIssueId === parent!.id
+    const active = ev.runs.filter(run => (run.status === "running" || (recovered && run.status === "succeeded")) && run.nativeIssueId === parent!.id
       && (!runId || run.id === runId));
     if (active.length !== 1) throw new Error("Remote restart boundary unexercised: the original run is not active");
     const run = active[0]!;
@@ -561,7 +561,7 @@ export async function runEverydayFlow(input: Input) {
       api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`),
     ]);
     return observeRemoteRestartBoundary(run, rows, leases, { companyId: fixtures.company.id,
-      agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id });
+      agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }, recovered);
   }
   async function prepareStopBoundary() {
     // Providers can finish a short first turn before the browser can click
@@ -596,6 +596,11 @@ export async function runEverydayFlow(input: Input) {
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-remote-restart.ts",
+      "controller-outage.ts",
+      "controller-recovery-observer.ts",
+      "upgrade-artifacts.ts",
+      "server.ts",
+      "server-stop.ts",
       "native-event-envelope.ts",
       "run-observations.ts",
       "everyday-artifact.py",
@@ -937,27 +942,34 @@ export async function runEverydayFlow(input: Input) {
       } else {
         await reply(LATE_REQUIREMENT);
         note("followup-submitted-before-interruption");
-        if (requireRemoteRestart) {
-          const before = await waitForRemoteRestartBoundary({
-            deadlineAt: input.deadlineAt, load: async () => {
-              await refresh();
-              const original = ev.runs.find(run => run.id === active.id);
-              if (!original || original.status !== "running") return { run: original };
-              const rows = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${active.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
-              if (!rows.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed")) return { run: original };
-              return { run: original, boundary: await remoteRestartBoundary(active.id) };
-            } });
-          ev.remoteRestart = { before };
-          await input.evidence("remote-restart-before.json", before);
-        } else ev.allowedInterruptedRuns.push(active.id);
-        await input.restart(requireRemoteRestart ? 125_000 : undefined);
-        note("controller-restarted");
-        await openParent();
-        if (requireRemoteRestart) {
-          const after = await remoteRestartBoundary(active.id);
-          ev.remoteRestart!.after = after;
-          await input.evidence("remote-restart-after.json", after);
-          if (!gradeRemoteRestart(ev.remoteRestart)[0]!.passed) throw new Error("Remote restart changed the original native process, lease or receipt prefix");
+        for (let restartIndex = 0; restartIndex < (requireRemoteRestart ? input.restartCount ?? 1 : 1); restartIndex += 1) {
+          let currentBefore: RemoteRestartEvidence["before"];
+          if (requireRemoteRestart) {
+            const before = await waitForRemoteRestartBoundary({
+              deadlineAt: input.deadlineAt, load: async () => {
+                await refresh();
+                const original = ev.runs.find(run => run.id === active.id);
+                if (!original || original.status !== "running") return { run: original };
+                const rows = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${active.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+                if (!rows.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed")) return { run: original };
+                return { run: original, boundary: await remoteRestartBoundary(active.id) };
+              } });
+            currentBefore = before;
+            ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
+            await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
+          } else ev.allowedInterruptedRuns.push(active.id);
+          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, requireRemoteRestart ? 125_000 : undefined);
+          if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
+          note("controller-restarted");
+          await openParent();
+          if (requireRemoteRestart) {
+            const after = await remoteRestartBoundary(active.id, true);
+            ev.remoteRestart!.after = after;
+            if (!outage || !currentBefore) throw new Error("Missing replacement fault evidence");
+            ev.remoteRestart!.replacements!.push({ before: currentBefore, after, outage });
+            await input.evidence(`remote-restart-${restartIndex + 1}-after.json`, { after, outage });
+            if (!gradeRemoteRestart(ev.remoteRestart)[0]!.passed) throw new Error("Remote restart changed the original native process, lease or receipt prefix");
+          }
         }
       }
     }
@@ -1636,7 +1648,7 @@ export async function runEverydayFlow(input: Input) {
             api.get<StoryIssue>(`/api/issues/${parent!.id}`),
           ]);
           if (!Array.isArray(operationRows) || !Array.isArray(recovery.actions) || !("active" in recovery)) throw new Error("Remote restart finalization evidence is incomplete");
-          const final = { run: projectRemoteRestartRun(run), events: projectRemoteRestartEvents(run, rows),
+          const final = { observedAt: new Date().toISOString(), run: projectRemoteRestartRun(run), events: projectRemoteRestartEvents(run, rows),
             operations: operationRows.map(operation => ({ companyId: operation.companyId, heartbeatRunId: operation.heartbeatRunId,
               issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId, phase: operation.phase, status: operation.status })),
             scheduledRetry: issue.scheduledRetry,

@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -55,7 +56,7 @@ import {
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
-import { executionIssueCondition } from "./issue-visibility.js";
+import { executionIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -161,6 +162,7 @@ type AttentionListOptions = AttentionFeedQuery & {
   actor?: AuthorizationActor;
   /** Internal-only escape hatch for callers that need one stable, unpaginated feed snapshot. */
   allowUnscopedAll?: boolean;
+  excludeSources?: readonly AttentionSourceKind[];
 };
 
 type AttentionServiceOptions = {
@@ -765,10 +767,14 @@ function collapsePendingConfirmationsToNewest<T extends {
   issueId: string;
   kind: string;
   createdAt: Date;
+  payload: unknown;
 }>(rows: T[]) {
+  // Quality gates bind independent outputs; a newer visual approval must not
+  // hide a still-pending copy approval (or affect its badge count).
+  const independent = (row: T) => Boolean(row.payload && typeof row.payload === "object" && "qualityReview" in row.payload && row.payload.qualityReview);
   const newestByGroup = new Map<string, T>();
   for (const row of rows) {
-    if (row.kind !== "request_confirmation") continue;
+    if (row.kind !== "request_confirmation" || independent(row)) continue;
     const groupKey = `${row.issueId}:${row.kind}`;
     const newest = newestByGroup.get(groupKey);
     if (
@@ -782,6 +788,7 @@ function collapsePendingConfirmationsToNewest<T extends {
 
   return rows.filter((row) => (
     row.kind !== "request_confirmation"
+    || independent(row)
     || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
   ));
 }
@@ -822,6 +829,7 @@ async function issueSummaryMap(
   companyId: string,
   issueIds: Array<string | null | undefined>,
   readCondition: SQL<boolean> = sql<boolean>`true`,
+  includeConversations = false,
 ) {
   const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
   if (ids.length === 0) return new Map<string, IssueSummaryRow>();
@@ -854,7 +862,9 @@ async function issueSummaryMap(
     .where(and(
       eq(issues.companyId, companyId),
       inArray(issues.id, ids),
-      executionIssueCondition(),
+      includeConversations
+        ? or(executionIssueCondition(), and(visibleIssueCondition(), isNotNull(issues.conversationAgentId)))
+        : executionIssueCondition(),
       readCondition,
     ));
   return new Map(rows.map((row) => [row.id, {
@@ -1185,83 +1195,72 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         collected.push({ ...item, dismissal });
       };
 
-      const pendingApprovals = await db
-        .select({
-          id: approvals.id,
-          type: approvals.type,
-          status: approvals.status,
-          requestedByAgentId: approvals.requestedByAgentId,
-          requestedByUserId: approvals.requestedByUserId,
-          payload: approvals.payload,
-          createdAt: approvals.createdAt,
-          updatedAt: approvals.updatedAt,
-        })
-        .from(approvals)
-        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
-        .orderBy(desc(approvals.updatedAt), desc(approvals.id));
+      if (!options.excludeSources?.includes("approval")) {
+        const pendingApprovals = await db
+          .select({
+            id: approvals.id,
+            linkedIssueId: firstApprovalIssueId(),
+            type: approvals.type,
+            status: approvals.status,
+            requestedByAgentId: approvals.requestedByAgentId,
+            requestedByUserId: approvals.requestedByUserId,
+            payload: approvals.payload,
+            createdAt: approvals.createdAt,
+            updatedAt: approvals.updatedAt,
+          })
+          .from(approvals)
+          .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending"), approvalExecutionIssueCondition()))
+          .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
-      const pendingApprovalIds = pendingApprovals.map((approval) => approval.id);
-      const approvalIssueRows = pendingApprovalIds.length > 0
-        ? await db
-          .select({ approvalId: issueApprovals.approvalId, issueId: issueApprovals.issueId })
-          .from(issueApprovals)
-          .where(and(
-            eq(issueApprovals.companyId, companyId),
-            inArray(issueApprovals.approvalId, pendingApprovalIds),
-          ))
-          .orderBy(asc(issueApprovals.approvalId), asc(issueApprovals.issueId))
-        : [];
-      const approvalIssueMap = new Map<string, string>();
-      for (const row of approvalIssueRows) {
-        if (!approvalIssueMap.has(row.approvalId)) approvalIssueMap.set(row.approvalId, row.issueId);
-      }
-      const readableApprovalIssues = await issueSummaryMap(
-        db,
-        companyId,
-        approvalIssueRows.map((row) => row.issueId),
-        readCondition,
-      );
-
-      for (const approval of pendingApprovals) {
-        const linkedIssueId = approvalIssueMap.get(approval.id) ?? null;
-        if (linkedIssueId && !readableApprovalIssues.has(linkedIssueId)) continue;
-        const dedupKey = `approval:${approval.id}`;
-        const title = approvalTitle(approval.type, approval.payload);
-        add(createItem({
+        const readableApprovalIssues = await issueSummaryMap(
+          db,
           companyId,
-          sourceKind: "approval",
-          subject: {
-            kind: "approval",
-            id: approval.id,
+          pendingApprovals.map((row) => row.linkedIssueId),
+          readCondition,
+        );
+
+        for (const approval of pendingApprovals) {
+          const linkedIssueId = approval.linkedIssueId ?? null;
+          if (linkedIssueId && !readableApprovalIssues.has(linkedIssueId)) continue;
+          const dedupKey = `approval:${approval.id}`;
+          const title = approvalTitle(approval.type, approval.payload);
+          add(createItem({
             companyId,
-            title,
-            identifier: null,
-            status: approval.status,
-            href: `/${prefix}/approvals/${approval.id}`,
-            metadata: {
-              type: approval.type,
-              requestedByAgentId: approval.requestedByAgentId,
-              requestedByUserId: approval.requestedByUserId,
-              issueId: approvalIssueMap.get(approval.id) ?? null,
+            sourceKind: "approval",
+            subject: {
+              kind: "approval",
+              id: approval.id,
+              companyId,
+              title,
+              identifier: null,
+              status: approval.status,
+              href: `/${prefix}/approvals/${approval.id}`,
+              metadata: {
+                type: approval.type,
+                requestedByAgentId: approval.requestedByAgentId,
+                requestedByUserId: approval.requestedByUserId,
+                issueId: approval.linkedIssueId ?? null,
+              },
             },
-          },
-          whyNow: "Approval is pending a board decision.",
-          decisionVerbs: decisionVerbs(
-            { id: "approve", label: "Approve", description: "Approve the request." },
-            { id: "reject", label: "Reject", description: "Reject the request." },
-            { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
-          ),
-          inlineResolvable: approval.type !== "request_board_approval",
-          entryRule: "approvals.status = 'pending'",
-          exitRule: "Approval leaves pending status.",
-          dedupKey,
-          severity: "medium",
-          activityAt: toIso(approval.updatedAt),
-          createdAt: toIso(approval.createdAt),
-          updatedAt: toIso(approval.updatedAt),
-          relatedIssue: null,
-          detail: approvalDetail(approval.type, approval.payload),
-        }));
+            whyNow: "Approval is pending a board decision.",
+            decisionVerbs: decisionVerbs(
+              { id: "approve", label: "Approve", description: "Approve the request." },
+              { id: "reject", label: "Reject", description: "Reject the request." },
+              { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
+            ),
+            inlineResolvable: approval.type !== "request_board_approval",
+            entryRule: "approvals.status = 'pending'",
+            exitRule: "Approval leaves pending status.",
+            dedupKey,
+            severity: "medium",
+            activityAt: toIso(approval.updatedAt),
+            createdAt: toIso(approval.createdAt),
+            updatedAt: toIso(approval.updatedAt),
+            relatedIssue: null,
+            detail: approvalDetail(approval.type, approval.payload),
+          }));
+        }
+
       }
 
       const interactionRows = await db
@@ -1316,7 +1315,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
-        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
+        // A pending human request remains actionable in a persistent chat even
+        // though its idle container is intentionally absent from work queues.
+        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition, true),
         issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
         planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
       ]);
@@ -1430,6 +1431,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      if (!options.excludeSources?.includes("join_request")) {
       const pendingJoins = await db
         .select({
           id: joinRequests.id,
@@ -1489,6 +1491,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: null,
           detail: genericDetail(label, []),
         }));
+      }
+
       }
 
       const recoveryRows = await db

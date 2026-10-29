@@ -2,6 +2,7 @@ import { z } from "zod";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { DbOrTransaction } from "./runtime-types.js";
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 
 export const taskRetryInputSchema = z.object({
   // This is a server-selected snapshot of the durable queue, not client input.
@@ -89,6 +90,7 @@ export async function releaseUnadmittedTaskRetryInput(db: Db, input: { companyId
       eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.retryActionId),
     )).for("update");
     if (receipt?.runId) return;
+    await notifyChatInboundWakeNotices(tx, { companyId: input.companyId, issueId: issue.id });
     await tx.update(agentWakeupRequests).set({ status: "deferred_issue_execution", finishedAt: null,
       payload: sql`${agentWakeupRequests.payload} - 'coalescedIntoWakeupRequestId'`, updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.status, "coalesced"),

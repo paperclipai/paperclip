@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -143,6 +144,7 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           reason: input.reason, actorId, pricing: input.pricing }).returning();
         // Original provider value and fingerprint remain immutable. cost_cents
         // is the effective valuation, backed by this append-only correction.
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const [updated] = await tx.update(costEvents).set({ costCents: sql`${input.correctedCents}::numeric`,
           reportedCostCents: event.event.reportedCostCents ?? normalizeCents(event.exact), costStatus: input.pricing.source === "rate_card" ? "estimated" : "reported", pricingProvenance: input.pricing,
         }).where(eq(costEvents.id, eventId)).returning();

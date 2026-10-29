@@ -651,7 +651,11 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     );
     assert.ok(providerJobs.length > 0, `${name} needs a provider-secret job`);
     for (const block of providerJobs) {
-      assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
+      if (name === "runner-protocol-live-evals.yml") {
+        assert.ok(block.includes("name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}"));
+        assert.ok(block.includes("test '${{ needs.authorize.outputs.target_sha }}' = \"$GITHUB_SHA\""));
+        assert.ok(block.includes('test "$GITHUB_RUN_ATTEMPT" = 1'));
+      } else assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
       assert.match(
         block,
         /\n    steps:(?: &[A-Za-z0-9_-]+)?\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,

@@ -1221,6 +1221,21 @@ describe("qualified ACPX runtime sidecar", () => {
     },
   );
 
+  it.each([true, false])("admits the current Grok effort/search fields before host checks (search disabled: %s)", async grokDisableWebSearch => {
+    const sidecar = startSidecar(), model = "grok-4.7";
+    sidecar.write(initializeRequest(1, "grok", model));
+    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true,
+      result: { profile: { agent: "grok", commandDigest: resolveQualifiedAcpxProfile("grok", model).commandDigest } } });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.open",
+      params: { runtimeDirectory: "/unused", workingDirectory: "/", normalizedSessionId: "grok-effort-open",
+        agent: "grok", model, permissionMode: "approve-all", grokEffort: "high", grokDisableWebSearch,
+        systemInstructions: "Test instructions", tools: [] } });
+    // The working-directory gate stops this real process before installation,
+    // credentials, or inference. The old pack rejected the new fields instead.
+    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false,
+      error: { code: "ACPX_ADMISSION_BINDING", message: "ACPX working directory must be a non-root directory" } });
+  });
+
   it.each([
     ["pi", { piThinkingLevel: "medium" }, "Pi thinking level"],
     ["codex", { piThinkingLevel: "low" }, "only supported by Pi"],

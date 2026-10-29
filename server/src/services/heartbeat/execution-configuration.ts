@@ -96,13 +96,16 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
   const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);
-  const unsupportedObservability = !["codex_local", "claude_local"].includes(initialHarness)
+  const observabilityKind = (harness: string) => harness === "codex_local" ? "codex" as const
+    : harness === "claude_local" ? "claude" as const
+      : harness === "opencode_local" && agent.adapterType === "paperclip_runner" ? "opencode" as const : undefined;
+  const unsupportedObservability = !observabilityKind(initialHarness)
     ? "unsupported_harness" as const : preconfiguredHome && initialHarness === "codex_local" ? "unsupported_home_mode" as const : undefined;
   const observabilitySnapshot: ResolvedAgentObservability = await agentObservabilityService(db).resolve(agent.companyId, { runId: run.id, agentId: agent.id, responsibleUserId, issueId, unavailableReason: unsupportedObservability })
     .catch(() => unavailableAgentObservability(agent.companyId, "configuration_invalid"));
   const identityRedactor = createAgentIdentityRedactor();
-  const earlyObservability = unsupportedObservability === undefined && (initialHarness === "codex_local" || initialHarness === "claude_local")
-    ? agentObservabilityLaunch(observabilitySnapshot, { kind: initialHarness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  const earlyObservability = unsupportedObservability === undefined && observabilityKind(initialHarness)
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: observabilityKind(initialHarness)!, companyId: agent.companyId, agentId: agent.id }) : undefined;
   identityRedactor.values.push(...observabilitySecretValues(earlyObservability));
   onIdentityRedactorPrepared(identityRedactor);
   // The executor keeps these values in its failure redactor before any later
@@ -335,8 +338,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : undefined;
   identityRedactor.values.push(...createAgentIdentityRedactor(agentIdentity?.privateKeyPem).values);
   const harness = agentHarnessType(agent.adapterType, runtimeConfig);
-  const observability = unsupportedObservability !== "unsupported_home_mode" && (harness === "codex_local" || harness === "claude_local")
-    ? agentObservabilityLaunch(observabilitySnapshot, { kind: harness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  const observability = unsupportedObservability !== "unsupported_home_mode" && observabilityKind(harness)
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: observabilityKind(harness)!, companyId: agent.companyId, agentId: agent.id }) : undefined;
   identityRedactor.values.push(...observabilitySecretValues(observability));
   identityRedactor.values.sort((a, b) => b.length - a.length);
   if (observabilitySnapshot.state === "unavailable") {

@@ -9,6 +9,7 @@ import { Transform } from "node:stream";
 import { and, asc, eq } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issues, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { freshWorkspaceSchema, type PluginFreshWorkspace } from "@paperclipai/plugin-sdk";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { getStorageService } from "../storage/index.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
@@ -16,6 +17,22 @@ import { readSnapshot } from "./workspace-recovery-snapshot.js";
 import { conflict, forbidden } from "../errors.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
+
+export function isBoundFreshPluginTaskDirectory(input: {
+  companyId: string; issueId: string; workspaceId: string | null;
+  workspace: ExecutionWorkspace | null;
+  owner: { agentId: string; environmentId: string; pluginKey: unknown; driverKey: unknown };
+}): boolean {
+  const workspace = input.workspace;
+  if (!workspace || workspace.id !== input.workspaceId || workspace.companyId !== input.companyId ||
+      workspace.sourceIssueId !== input.issueId || workspace.status !== "active" ||
+      workspace.mode !== "isolated_workspace" || workspace.strategyType !== "project_primary" ||
+      workspace.providerType !== "adapter_managed" || workspace.repoUrl || workspace.branchName ||
+      workspace.cwd !== `/workspaces/${workspace.id}` ||
+      !isDeepStrictEqual(workspace.metadata?.runnerTaskWorkspaceOwner, input.owner)) return false;
+  const fresh = freshWorkspaceSchema.safeParse(workspace.metadata?.runnerTaskFreshWorkspace);
+  return fresh.success && fresh.data.attemptId === workspace.id;
+}
 
 export async function stageProviderFreshWorkspace(input: {
   db: Db; companyId: string; issueId: string; attemptId: string; sourceRunId: string;

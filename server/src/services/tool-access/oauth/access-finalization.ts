@@ -1,3 +1,5 @@
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
@@ -38,6 +40,7 @@ async function finalizeOAuthAccess(
     actor?: ActorInfo,
     requestingAgentId?: string,
   ): Promise<FinishToolAppResult> {
+    await actor?.managementContext?.reauthorize();
     if (requestingAgentId)
       await assertAgentsInCompany(companyId, [requestingAgentId]);
     let connection = await getConnectionRow(connectionId, companyId);
@@ -49,7 +52,7 @@ async function finalizeOAuthAccess(
       throw badRequest("This connection does not use browser sign-in");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be finished");
-    const actorUserId = actor?.actorType === "user" ? actor.actorId : null;
+    const actorUserId = connectionActorUserId(actor);
     if (!actorUserId)
       throw badRequest("Finishing browser sign-in requires a signed-in user");
 
@@ -112,33 +115,37 @@ async function finalizeOAuthAccess(
       ) {
         throw conflict("This connection already uses a company identity");
       }
-      [connection] = await db
-        .update(toolConnections)
-        .set({
-          credentialPolicy: "per_user",
-          credentialRefs: connection.credentialRefs.filter(
-            (ref) => ref.name !== "oauth.access_token",
-          ),
-          credentialSecretRefs: connection.credentialSecretRefs.filter(
-            (ref) =>
-              ref.configPath !== "oauth.access_token" &&
-              ref.configPath !== "oauth.refresh_token",
-          ),
-          status: "active",
-          enabled: true,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(toolConnections.id, connection.id),
-            eq(toolConnections.companyId, companyId),
-          ),
-        )
-        .returning();
-      await syncCredentialBindings(
-        connection,
-        personalGrant.credentialSecretRefs,
-      );
+      connection = await writeToolConnectionHealthChange(db, connection, async tx => {
+        const [updated] = await tx
+          .update(toolConnections)
+          .set({
+            credentialPolicy: "per_user",
+            credentialRefs: connection.credentialRefs.filter(
+              (ref) => ref.name !== "oauth.access_token",
+            ),
+            credentialSecretRefs: connection.credentialSecretRefs.filter(
+              (ref) =>
+                ref.configPath !== "oauth.access_token" &&
+                ref.configPath !== "oauth.refresh_token",
+            ),
+            status: "active",
+            enabled: true,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(toolConnections.id, connection.id),
+              eq(toolConnections.companyId, companyId),
+            ),
+          )
+          .returning();
+        await syncCredentialBindings(
+          updated,
+          personalGrant.credentialSecretRefs,
+          tx,
+        );
+        return updated;
+      });
     } else if (
       connection.credentialPolicy !== "shared" ||
       connection.credentialSecretRefs.length === 0
@@ -323,6 +330,7 @@ async function finalizeOAuthAccess(
               updatedAt: nowAt,
             })
             .where(eq(connectionGrants.id, personalGrant.id));
+          await notifyToolConnectionHealth(tx, connection);
           [connection] = await tx
             .update(toolConnections)
             .set({

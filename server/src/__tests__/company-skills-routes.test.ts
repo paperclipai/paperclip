@@ -1264,7 +1264,7 @@ describe("company skill mutation permissions", () => {
     const response = await request(createApp(agent)).post("/api/companies/company-1/skills/import")
       .send({ source: "https://github.com/acme/public-skills" });
     expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect(mockCaptureRunIdentity).toHaveBeenCalledWith(expect.anything(), { companyId: "company-1", agentId: agent.agentId, runId: "run-1" });
+    expect(mockCaptureRunIdentity).toHaveBeenCalledWith(expect.anything(), { companyId: "company-1", agentId: agent.agentId, runId: "run-1" }, { readScope: "identity" });
     expect(mockSkillSourceService.importFromUrl).toHaveBeenCalledWith("company-1", expect.anything(),
       expect.objectContaining({ setup: { userId: "validated-owner", agentId: agent.agentId, localTrusted: false } }));
   });

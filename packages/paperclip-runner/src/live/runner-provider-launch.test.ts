@@ -19,6 +19,17 @@ const environment: RunnerProviderLaunchEnvironment = {
 };
 
 describe("built-in provider launch preparation", () => {
+  it.each([true, false])("binds Grok search policy %s into the prepared descriptor", disabled => {
+    const selected = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", grokDisableWebSearch: disabled },
+      requirements.identity, { model: "grok-4.7" }, null, "");
+    const launch = createRunnerProviderLaunch(selected, environment);
+    expect(launch).toHaveProperty("grokDisableWebSearch", disabled);
+    const prepared = { configurationId: "grok-policy", requirementsDigest: runnerLaunchRequirementsDigest(selected), provider: launch };
+    expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
+    expect(() => validatePreparedRunnerLaunch(selected, { ...prepared, provider: { ...launch, grokDisableWebSearch: !disabled } }))
+      .toThrow("runner_prepared_launch_requirements_mismatch");
+  });
+
   it("binds disabled hosted search to the prepared launch and overrides execution-host arguments", () => {
     const disabled = runnerProviderLaunchRequirements({ provider: "codex", disableCodexWebSearch: true },
       requirements.identity, { model: requirements.model }, null, "");

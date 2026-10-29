@@ -308,6 +308,7 @@ export const issueAssigneeAdapterOverridesSchema = z
   .object({
     adapterConfig: z.record(z.string(), z.unknown())
       .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
+      .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => key.toUpperCase() === "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"), "Prepared harness homes must be provisioned by the execution environment, not on a task")
       .optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -444,7 +445,19 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const requiredQualityReviewSchema = z.object({
+  version: z.literal(1),
+  deliverables: z.array(z.object({
+    key: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
+    label: z.string().trim().min(1).max(120),
+  }).strict()).min(1).max(10),
+}).strict().superRefine((value, ctx) => {
+  if (new Set(value.deliverables.map(item => item.key)).size !== value.deliverables.length)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Quality review deliverable keys must be unique", path: ["deliverables"] });
+});
+
 export const issueExecutionPolicySchema = z.object({
+  requiredQualityReview: requiredQualityReviewSchema.optional(),
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
@@ -1170,6 +1183,11 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    savedSetup: z.object({ endpointId: z.string().guid(), connectionId: z.string().guid(), action: z.enum(["enter_credentials", "rotate_credentials", "confirm_identity"]).optional(), credentialRotation: z.object({ previousId: z.string().guid().nullable() }).strict().optional(), credentialEntry: z.object({
+      previousGenerations: z.record(z.string().refine(field => ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"].includes(field)), z.string().uuid().nullable()).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 5),
+      requireAll: z.boolean(),
+    }).strict().optional() }).strict()
+      .refine(value => value.action !== "rotate_credentials" || !!value.credentialRotation, "Rotation requests need a completion boundary").optional(),
     accessRequest: z.object({
       connectionId: z.string().guid(),
       connectionName: z.string().trim().min(1).max(160),
@@ -1240,6 +1258,8 @@ export const suggestedTaskDraftSchema = z
       .pipe(z.string().trim().max(20000))
       .nullable()
       .optional(),
+    initialPlan: z.string().trim().min(1).max(200000).nullable().optional(),
+    requiredQualityReview: requiredQualityReviewSchema.optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
@@ -1575,8 +1595,18 @@ export const requestConfirmationCustomTargetSchema =
     revisionNumber: z.number().int().positive().nullable().optional(),
   });
 
+export const requestConfirmationIssueAttachmentTargetSchema =
+  requestConfirmationTargetBaseSchema.extend({
+    type: z.literal("issue_attachment"),
+    issueId: z.string().guid().nullable().optional(),
+    attachmentId: z.string().guid(),
+    assetId: z.string().guid(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/, "sha256 must identify the exact attachment bytes"),
+  });
+
 export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
   requestConfirmationCustomTargetSchema,
 ]);
 
@@ -1608,7 +1638,13 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+const qualityReviewBindingSchema = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/),
+  requirementHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
+
 export const requestConfirmationPayloadSchema = z.object({
+  qualityReview: qualityReviewBindingSchema.optional(),
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
@@ -1825,6 +1861,8 @@ export const requestItemVerdictValueSchema = z.enum([
 ]);
 
 export const requestItemVerdictsItemSchema = z.object({
+  qualityReview: qualityReviewBindingSchema.optional(),
+  target: requestConfirmationTargetSchema.nullable().optional(),
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
@@ -1860,7 +1898,12 @@ export const requestItemVerdictsPayloadSchema = z
   })
   .superRefine((value, ctx) => {
     const itemIds = new Set<string>();
+    const qualityKeys = new Set<string>();
     for (const [index, item] of value.items.entries()) {
+      if (item.qualityReview) {
+        if (qualityKeys.has(item.qualityReview.key)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Quality review keys must be unique within one request", path: ["items", index, "qualityReview", "key"] });
+        qualityKeys.add(item.qualityReview.key);
+      }
       if (itemIds.has(item.id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

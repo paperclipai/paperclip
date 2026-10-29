@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { grokPublicInstallVersion } from '../grok-public-install-sandbox.mjs';
 import { startPackedRegistry, writePackedRegistryCatalog } from '../public-install-registry.mjs';
 
 const script = fileURLToPath(new URL('../public-install-registry.mjs', import.meta.url));
@@ -15,8 +16,8 @@ const scratch = async body => {
 };
 const environment = root => ({ ...process.env, HOME: root, npm_config_cache: join(root, 'cache'),
   npm_config_userconfig: join(root, 'no-npmrc'), npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false', npm_config_fetch_retries: '0', npm_config_fetch_timeout: '10000' });
-const run = (command, args, cwd) => new Promise((resolve, reject) => {
-  const child = spawn(command, args, { cwd, env: environment(cwd), stdio: ['ignore', 'pipe', 'pipe'] });
+const run = (command, args, cwd, env = environment(cwd)) => new Promise((resolve, reject) => {
+  const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { output += chunk; });
   child.once('error', reject);
@@ -58,6 +59,37 @@ const installedFiles = directory => {
   walk(directory);
   return entries.sort(([a], [b]) => a.localeCompare(b));
 };
+
+test('synthetic Grok versions install from packed bytes even when the hash starts with leading-zero digits', { timeout: 30_000 }, async () => scratch(async root => {
+  const sourceRevision = '096091501644cf20f2e35d1ab02b28c35579b973';
+  const cases = [
+    { version: `0.0.0-grok-verify.${sourceRevision.slice(0, 12)}`, rejected: true },
+    { version: grokPublicInstallVersion(sourceRevision) },
+    { version: grokPublicInstallVersion('8fd48a8d52038fd0d8b286f3742ea13ce40a7ab9') },
+  ];
+  for (const [index, { version, rejected }] of cases.entries()) {
+    const cwd = join(root, String(index)), source = join(cwd, 'source'), assets = join(cwd, 'assets'), consumer = join(cwd, 'consumer');
+    for (const directory of [join(source, 'package'), assets, consumer]) mkdirSync(directory, { recursive: true });
+    writeFileSync(join(source, 'package/package.json'), JSON.stringify({ name: '@ci/grok-version', version }));
+    execFileSync('tar', ['-czf', join(assets, 'package.tgz'), '-C', source, 'package']);
+    await writePackedRegistryCatalog(assets);
+    writeFileSync(join(consumer, 'package.json'), '{"private":true}');
+    const userconfig = join(cwd, 'user.npmrc'), globalconfig = join(cwd, 'global.npmrc');
+    writeFileSync(userconfig, ''); writeFileSync(globalconfig, '');
+    const env = { PATH: process.env.PATH, HOME: cwd, npm_config_cache: join(cwd, 'cache'),
+      npm_config_userconfig: userconfig, npm_config_globalconfig: globalconfig,
+      npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false', npm_config_fetch_retries: '0' };
+    const registry = await startPackedRegistry(assets);
+    try {
+      const install = run('npm', ['install', '--registry', registry.url, '--replace-registry-host=never', '--ignore-scripts', '--omit=dev', ...registry.specs], consumer, env);
+      if (rejected) await assert.rejects(install, /ETARGET/);
+      else {
+        await install;
+        assert.equal(JSON.parse(readFileSync(join(consumer, 'node_modules/@ci/grok-version/package.json'))).version, version);
+      }
+    } finally { await registry.close(); }
+  }
+}));
 
 test('real npm installs identical packed bytes, bundles, optional dependencies and bins without running scripts early', { timeout: 90_000 }, async () => scratch(async root => {
   const assets = fixture(root, { publicDependency: true }), catalog = await writePackedRegistryCatalog(assets);

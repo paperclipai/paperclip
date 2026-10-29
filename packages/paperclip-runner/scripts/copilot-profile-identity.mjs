@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const fixture = resolve(root, "test/fixtures/copilot-profile-v63-identity.json");
+const fixture = resolve(root, "test/fixtures/copilot-profile-v81-identity.json");
 const historical = JSON.parse(readFileSync(resolve(root, "test/fixtures/copilot-profile-v12-identity.json"), "utf8"));
-const declaration = { ...historical.declaration, agentProfileVersion: 63 };
+const declaration = { ...historical.declaration, agentProfileVersion: 81 };
 delete declaration.permissionIdentitySourceSha256;
 const sources = {
   displayEventSourceSha256: "src/drivers/acpx/copilot-events.ts",
@@ -44,6 +44,8 @@ const sources = {
   assetOwnershipSourceSha256: "src/drivers/acpx/provider-assets-root.ts",
   assetInstallerSourceSha256: "scripts/install-copilot-assets.mjs",
   credentialBindingSourceSha256: "src/drivers/acpx/environment.ts",
+  admissionDiagnosticsSourceSha256: "src/drivers/acpx/admission-diagnostics.ts",
+  grokAdmissionSourceSha256: "src/drivers/acpx/grok-effort.ts",
   sidecarErrorSourceSha256: "src/cli/acpx-sidecar-input.ts",
   profileSourceSha256: "src/drivers/acpx/copilot-profile.ts",
   metadataProbeSourceSha256: "src/drivers/copilot-metadata-probe.ts",
@@ -69,6 +71,7 @@ const sources = {
   semanticValidatorsSourceSha256: "src/protocol/generated/standalone-validators.ts",
   semanticSchemaBundleSourceSha256: "src/protocol/generated/schema-bundle.ts",
   semanticSidecarProtocolSourceSha256: "src/drivers/acpx/sidecar-protocol.ts",
+  preparedHarnessHomeSourceSha256: "src/drivers/preconfigured-home.ts",
   runtimeHostSourceSha256: "src/drivers/acpx/runtime-host.ts",
   runtimeAdapterSourceSha256: "src/drivers/acpx/codex-runtime-adapter.ts",
   runtimeSandboxSourceSha256: "src/drivers/acpx/runtime-sandbox.ts",

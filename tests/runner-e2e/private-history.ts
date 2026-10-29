@@ -13,8 +13,10 @@ export const PRIVATE_HISTORY_PREFIX = "runner-e2e-private/bounded-v1";
 export const PRIVATE_ARCHIVE_BYTES = 264 * 1024 * 1024;
 
 export function privateArtifactKey(kind: string, runId: string) {
-  if (!["evidence", "report"].includes(kind) || !/^[1-9][0-9]{0,19}$/.test(runId)) {
-    throw new Error("Private history needs an evidence/report kind and numeric workflow run ID");
+  if (!(["evidence", "report", "protocol-control", "protocol-report"].includes(kind)
+      || /^protocol-cell-[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(kind)
+      || /^manual-cell-[0-9a-f]{64}$/.test(kind) || kind === "manual-report") || !/^[1-9][0-9]{0,19}$/.test(runId)) {
+    throw new Error("Private history needs a supported artifact kind and numeric workflow run ID");
   }
   return `${PRIVATE_HISTORY_PREFIX}/campaigns/gha-${runId}-1/${kind}.zip`;
 }
@@ -44,14 +46,31 @@ export async function verifyPrivateHistory(publisher: BoundedHistoryPublisher, b
   }
 }
 
+export interface PrivateEvidenceCompleteness {
+  meaning: "available-files-and-transfer-only";
+  doesNotAttestFeatureOutcome: true;
+  cells: Array<{ executionId: string; availableFileInventoryComplete: true; requiredPassEvidenceComplete: boolean | null; missingRequiredEvidence: string[] }>;
+}
+
 type TransferOptions = {
   operation: "upload" | "download";
-  kind: "evidence" | "report";
+  kind: string;
   runId: string;
   directory: string;
   bucket: string;
   publisher: BoundedHistoryPublisher;
+  receiptIdentity?: string;
+  evidenceCompleteness?: PrivateEvidenceCompleteness;
 };
+
+function privateTransferReceiptKey(options: TransferOptions) {
+  const key = privateArtifactKey(options.kind, options.runId);
+  if (options.receiptIdentity !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(options.receiptIdentity)) {
+    throw new Error("Invalid private transfer receipt identity");
+  }
+  const identity = options.receiptIdentity === undefined ? "" : `.${createHash("sha256").update(options.receiptIdentity).digest("hex")}`;
+  return `${key}.${options.operation}${identity}-receipt.json`;
+}
 
 export async function transferPrivateArtifact(options: TransferOptions) {
   privateArtifactKey(options.kind, options.runId);
@@ -77,14 +96,16 @@ async function transferVerifiedArtifact(options: TransferOptions) {
       "--range", `bytes=0-${PRIVATE_ARCHIVE_BYTES}`, archive]);
     if ((await lstat(archive)).size > PRIVATE_ARCHIVE_BYTES) throw new Error("Private archive exceeds transfer allowance");
     const metadata = await archivePrivateEvidence("unpack", archive, options.directory);
-    return { ...metadata, uri: `s3://${options.bucket}/${key}` };
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(archive)) hash.update(chunk);
+    return { ...metadata, uri: `s3://${options.bucket}/${key}`, sha256: hash.digest("hex") };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
 }
 
 export async function retainPrivateTransfer(options: TransferOptions, receipt: string, receiptPublisher?: () => BoundedHistoryPublisher) {
-  const key = privateArtifactKey(options.kind, options.runId);
+  const receiptKey = privateTransferReceiptKey(options);
   await verifyPrivateHistory(options.publisher, options.bucket);
   let result: Awaited<ReturnType<typeof transferVerifiedArtifact>> | undefined;
   let failure: unknown;
@@ -96,12 +117,14 @@ export async function retainPrivateTransfer(options: TransferOptions, receipt: s
   if (receiptPublisher) {
     await options.publisher.save();
     const snapshot = JSON.stringify({ ...JSON.parse(await readFile(receipt, "utf8")),
+      ...(options.receiptIdentity === undefined ? {} : { receiptIdentity: options.receiptIdentity }),
+      ...(options.evidenceCompleteness === undefined ? {} : { evidenceCompleteness: options.evidenceCompleteness }),
       transfer: result ? { status: "complete", ...result } : { status: "failed_or_unknown" },
       receiptUpload: { status: "pending_at_snapshot", maxBytes: 1024 * 1024 } });
     if (Buffer.byteLength(snapshot) > 1024 * 1024) throw new Error("Private transfer receipt exceeds allowance");
     await writeFile(`${receipt}.transfer.json`, snapshot, { mode: 0o600, flag: "wx" });
     try {
-      await receiptPublisher().upload(options.bucket, `${key}.${options.operation}-receipt.json`, `${receipt}.transfer.json`, "application/json", "private, no-store", true);
+      await receiptPublisher().upload(options.bucket, receiptKey, `${receipt}.transfer.json`, "application/json", "private, no-store", true);
     } catch (retentionError) {
       throw new AggregateError(failure ? [failure, retentionError] : [retentionError], "Private transfer receipt retention failed; local receipts remain authoritative");
     }
@@ -111,16 +134,21 @@ export async function retainPrivateTransfer(options: TransferOptions, receipt: s
 }
 
 async function main() {
-  const [operation, kind, runId, directory] = process.argv.slice(2);
+  const [operation, kind, runId, directory, receiptIdentity] = process.argv.slice(2);
   if (!["verify", "upload", "download"].includes(operation ?? "") || !kind || !runId || !directory) {
-    throw new Error("Usage: private-history.ts verify|upload|download evidence|report RUN_ID DIRECTORY");
+    throw new Error("Usage: private-history.ts verify|upload|download KIND RUN_ID DIRECTORY [RECEIPT_ID]");
   }
   privateArtifactKey(kind, runId);
+  if (receiptIdentity !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(receiptIdentity)
+      || kind === "protocol-control" && operation === "download" && !receiptIdentity || process.argv.length > 7) {
+    throw new Error("Shared protocol downloads require a bounded unique receipt identity");
+  }
   if (process.env.GITHUB_ACTIONS === "true" && (process.env.GITHUB_RUN_ATTEMPT !== "1" || process.env.GITHUB_RUN_ID !== runId)) {
     throw new Error("Private bounded history accepts only the initial attempt of this workflow run");
   }
   const bucket = process.env.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET ?? "";
-  const receipt = path.resolve(`private-history-${operation}-${kind}-${runId}.json`);
+  const label = kind.startsWith("protocol-") ? createHash("sha256").update(`${kind}:${receiptIdentity ?? ""}`).digest("hex") : kind;
+  const receipt = path.resolve(`private-history-${operation}-${label}-${runId}.json`);
   await (await open(receipt, "wx", 0o600)).close();
   const publisher = new BoundedHistoryPublisher(receipt);
   if (operation === "verify") {
@@ -130,7 +158,7 @@ async function main() {
   }
   const receiptPublisher = operation === "upload" || process.env.GITHUB_ACTIONS === "true"
     ? () => new BoundedHistoryPublisher(`${receipt}.retention.json`) : undefined;
-  const result = await retainPrivateTransfer({ operation: operation as "upload" | "download", kind: kind as "evidence" | "report", runId, directory, bucket, publisher }, receipt, receiptPublisher);
+  const result = await retainPrivateTransfer({ operation: operation as "upload" | "download", kind, runId, directory, bucket, publisher, receiptIdentity }, receipt, receiptPublisher);
   console.log(JSON.stringify(process.env.GITHUB_ACTIONS === "true" ? { version: 1, privateTransferCompleted: true } : result));
 }
 

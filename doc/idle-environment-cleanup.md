@@ -101,3 +101,48 @@ moves here. Other maintenance duties, external probes, and connected transports
 still affect idle traffic. No Cloud alarm coverage or host-sleep exemption changes.
 These tests prove the changed workers become quiet and recover; they do not prove
 deployed suspension or fleet savings.
+
+## Custom-image setup expiry
+
+Setup expiry uses a separate `custom-image-expiry` worker. The custom-image
+service owns the active-status predicate, the earliest saved `expiresAt`, and
+provider cancellation. Startup registers the worker in the existing enabled
+heartbeat housekeeping path; the maintenance tick no longer calls its sweep.
+
+All supported setup producers live in `environment-custom-images.ts`: initial
+creation, provider refresh, cancellation/failure status, and promotion. They
+register intent in their owning transaction. A provider refresh can move the
+deadline earlier; a terminal transition removes it. Historical verification
+metadata does not change active expiry eligibility and does not need this signal.
+Environment deletion can only remove obligations; an already scheduled pass
+observes the removal. Independent SQL and other DB roots are outside the existing
+process-local notification contract.
+
+No active dated session means no recurring reads or provider calls. Overdue
+batches and failures retain a bounded retry, while first writes and failed
+reconciliation survive drain. A missing expiry retains the existing behavior
+(no inferred expiration); sleep safety still treats unsupported live resources
+conservatively. Provider cancellation, failure state, and historical resource
+verification keep their existing semantics. No Cloud alarm coverage changes.
+
+## Historical retry test observation
+
+The historical verification worker intentionally does not delay server readiness.
+Its provider sweep finishes before the following database pending-state read
+registers a retry deadline. The regression test now waits for that future
+deadline before inspecting it; sweep completion alone is not scheduler settlement.
+The runtime worker, retry interval, and readiness contract are unchanged.
+
+A controlled 150ms delay before the real pending-state query reproduced the
+current CI failure: the immediate assertion observed a null deadline. The
+corrected assertion passed with the same delay. The temporary delay was removed,
+and all 14 cleanup tests passed against an isolated PostgreSQL database. The
+existing external test-database hook is carried at the stack foundation so
+intermediate branches can use this same verification path.
+
+An initial attempt at the foundation could not start embedded PostgreSQL because
+that earlier branch lacked the external fixture hook. A broader fixture wait for
+all idle holds to clear then failed three cases that legitimately retain pending
+cleanup obligations. That wait was removed. Only the historical deadline assertion
+changed; its requirement is now a deadline strictly in the future. The complete
+suite passes with the original readiness and idle-hold behavior preserved.
