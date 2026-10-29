@@ -32,6 +32,14 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AI_PROVIDER_URL",
     "PAPERCLIP_AGENT_KEY_ID",
@@ -1745,7 +1753,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_options_and_effort(message, cwd, options, None)
+        self.start_turn_with_options_and_effort(message, cwd, options, None, None)
     }
 
     pub(crate) fn start_turn_with_options_and_effort(
@@ -1754,6 +1762,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
         effort: Option<&Value>,
+        run_id: Option<&str>,
     ) -> Result<Value, LocalRunnerError> {
         let CodexTurnOptions {
             skills,
@@ -1825,6 +1834,13 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        // The retained proxy's launch environment belongs to its first run.
+        // Only runnerd's rotated authority supplies the current run identity.
+        if self.config.provider == "opencode" {
+            if let Some(run_id) = run_id {
+                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+        }
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }

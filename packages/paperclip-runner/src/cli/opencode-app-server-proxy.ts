@@ -53,6 +53,7 @@ let eventPump: Promise<void> | null = null;
 let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
+let activeRunId = process.env.PAPERCLIP_RUN_ID ?? "runnerd-run";
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
@@ -151,7 +152,7 @@ async function open(
       driverKind: "opencode_server",
       driverSessionId: threadId,
       providerSessionId: threadId,
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? threadId,
       activeTurnId: null,
@@ -163,7 +164,7 @@ async function open(
     session = recovered.session;
   } else {
     session = await driver.openSession({
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? `runnerd-${Date.now()}`,
       workingDirectory: cwd,
@@ -365,6 +366,16 @@ async function handle(message: RpcMessage): Promise<void> {
     case "turn/start": {
       if (!session) throw new Error("OpenCode thread is not open");
       assertOpenCodeProxyCollaborationMode(params);
+      if (params.paperclipRunId !== undefined) {
+        const runId = params.paperclipRunId;
+        if (typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId))
+          throw new Error("Invalid Paperclip run identity");
+        if (runId !== activeRunId) {
+          if (!session.attachRun) throw new Error("OpenCode run attachment unavailable");
+          await session.attachRun({ runId });
+          activeRunId = runId;
+        }
+      }
       const inputItems = Array.isArray(params.input)
         ? params.input.map(record)
         : [];
