@@ -53,7 +53,11 @@ export function parseBudgetDollarsToCents(value: string): number | undefined {
   if (!trimmed) {
     return undefined;
   }
-  const cents = Math.round(Number(trimmed) * 100);
+  const dollars = Number(trimmed);
+  if (!Number.isFinite(dollars) || dollars < 0) {
+    return undefined;
+  }
+  const cents = Math.round(dollars * 100);
   return Number.isFinite(cents) && cents >= 0 && cents <= MAX_BUDGET_CENTS ? cents : undefined;
 }
 
