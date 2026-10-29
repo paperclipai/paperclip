@@ -1,8 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { issueRoutes } from "../routes/issues.js";
-import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { randomBytes, randomUUID } from "node:crypto";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, agentWakeupRequests, approvals, chatConversations, chatEndpoints,
@@ -11,7 +11,7 @@ import {
   toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { settleSlackConversation } from "../services/slack-conversation-lifecycle.js";
+import { latestTaskRun, settleSlackConversation } from "../services/slack-conversation-lifecycle.js";
 import { externalConversationStateSql, resumeExternalConversation } from "../services/slack-conversation-state.js";
 import { executionIssueCondition } from "../services/issue-visibility.js";
 import { dashboardService } from "../services/dashboard.js";
@@ -297,4 +297,107 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(issueApprovals).values({ companyId: review.companyId, issueId: review.issueId, approvalId: approval.id });
     expect(await settle(review)).toBe(false);
   });
+
+  it("finds the task's newest run exactly as the coalesce match does", async () => {
+    const f = await fixture();
+    const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "other task" }).returning({ id: issues.id });
+    const forms: Array<Partial<typeof heartbeatRuns.$inferInsert>> = [
+      { contextSnapshot: { issueId: f.issueId } },
+      { contextSnapshot: { taskId: f.issueId } },
+      { contextSnapshot: { issueId: null, taskId: f.issueId } },
+      { contextSnapshot: {}, nativeIssueId: f.issueId },
+      { contextSnapshot: { issueId: null, taskId: null }, nativeIssueId: f.issueId },
+      { contextSnapshot: { issueId: other!.id, taskId: f.issueId } },
+      { contextSnapshot: { issueId: other!.id }, nativeIssueId: f.issueId },
+      { contextSnapshot: { taskId: other!.id }, nativeIssueId: f.issueId },
+      { contextSnapshot: { issueId: "" }, nativeIssueId: f.issueId },
+      { contextSnapshot: { issueId: f.issueId.toUpperCase() } },
+      { contextSnapshot: {}, nativeIssueId: other!.id },
+    ];
+    const ids: string[] = [];
+    for (const form of forms) {
+      const [row] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded", ...form })
+        .returning({ id: heartbeatRuns.id });
+      ids.push(row!.id);
+    }
+    const coalesceMatch = async (issueId: string) => (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issueId}`))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1))[0]?.id ?? null;
+    for (const [index, id] of ids.entries()) {
+      await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() + (index + 1) * 60_000) }).where(eq(heartbeatRuns.id, id));
+      for (const issueId of [f.issueId, other!.id, f.issueId.toUpperCase(), "not-a-uuid"]) {
+        expect((await latestTaskRun(db, f.companyId, issueId))?.id ?? null, `${index} ${issueId}`).toBe(await coalesceMatch(issueId));
+      }
+    }
+    const tie = new Date(Date.now() + 3_600_000);
+    await db.update(heartbeatRuns).set({ createdAt: tie }).where(inArray(heartbeatRuns.id, [ids[1]!, ids[3]!]));
+    expect((await latestTaskRun(db, f.companyId, f.issueId))?.id).toBe(await coalesceMatch(f.issueId));
+    expect([ids[1], ids[3]]).toContain(await coalesceMatch(f.issueId));
+  });
+
+  it("fetches the same run blocks whatever the company's other runs hold", async () => {
+    const f = await fixture();
+    const padded = (context: Record<string, unknown>) => ({
+      ...context,
+      paperclipWake: { comments: [{ body: randomBytes(6 * 1024).toString("base64") }] },
+    });
+    const addHistory = async (count: number) => {
+      const rows = Array.from({ length: count }, (_, index) => ({
+        companyId: f.companyId, agentId: f.agentId, status: "succeeded", finishedAt: new Date(),
+        createdAt: new Date(Date.now() + index), contextSnapshot: padded({ issueId: randomUUID(), source: "chat:slack" }),
+      }));
+      for (let index = 0; index < rows.length; index += 100) await db.insert(heartbeatRuns).values(rows.slice(index, index + 100));
+      await db.execute(sql`ANALYZE heartbeat_runs`);
+    };
+    class Measured extends Error {
+      constructor(readonly blocks: number, readonly settled: boolean) {
+        super("measured");
+      }
+    }
+    const shapes: Record<string, string[]> = {
+      default: [],
+      "generic plan": ["SET LOCAL plan_cache_mode = force_generic_plan"],
+      "custom plan": ["SET LOCAL plan_cache_mode = force_custom_plan"],
+    };
+    const settleBlocks = (settings: string[]) => db.transaction(async (tx) => {
+      for (const setting of settings) await tx.execute(sql.raw(setting));
+      const blocks = async () => {
+        const [row] = (await tx.execute(sql`
+          with rel as (
+            select 'heartbeat_runs'::regclass::oid as oid
+            union all select reltoastrelid from pg_class where oid = 'heartbeat_runs'::regclass and reltoastrelid <> 0
+          )
+          select coalesce(sum(pg_stat_get_xact_blocks_fetched(c.oid)), 0)::text as blocks
+          from pg_class c
+          where c.oid in (select oid from rel) or c.oid in (select indexrelid from pg_index where indrelid in (select oid from rel))
+        `)) as unknown as Array<{ blocks: string }>;
+        return Number(row!.blocks);
+      };
+      const before = await blocks();
+      const settled = await settleSlackConversation(tx as unknown as typeof db, f.companyId, f.issueId);
+      throw new Measured((await blocks()) - before, settled);
+    }).then(
+      () => { throw new Error("expected the measurement transaction to roll back"); },
+      (error: unknown) => {
+        if (error instanceof Measured) return error;
+        throw error;
+      },
+    );
+    const measureAll = async () => {
+      const measured: Record<string, Measured> = {};
+      for (const [shape, settings] of Object.entries(shapes)) measured[shape] = await settleBlocks(settings);
+      return measured;
+    };
+    await addHistory(600);
+    const small = await measureAll();
+    await addHistory(1200);
+    const large = await measureAll();
+    for (const shape of Object.keys(shapes)) {
+      expect(small[shape]!.settled, shape).toBe(true);
+      expect(large[shape]!.settled, shape).toBe(true);
+      expect(small[shape]!.blocks, shape).toBeGreaterThan(0);
+      expect(large[shape]!.blocks - small[shape]!.blocks, shape).toBeLessThanOrEqual(8);
+    }
+  }, 240_000);
 });
