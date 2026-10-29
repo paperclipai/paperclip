@@ -45,7 +45,7 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
     paperclipHome = path.join(root, "paperclip-home");
     sharedCodexHome = path.join(root, "shared-codex-home");
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}', "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-shared"}', "utf8");
 
     for (const key of ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"]) {
       savedEnv[key] = process.env[key];

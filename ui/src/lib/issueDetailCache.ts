@@ -1,10 +1,18 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
 const ISSUE_DETAIL_QUERY_PREFIX = ["issues", "detail"] as const;
 export const ISSUE_DETAIL_STALE_TIME_MS = 60_000;
+/**
+ * Freshness window for a prefetched first comments page. Matches the global
+ * query staleTime so a warm navigation that arrives within the window renders
+ * the seeded comments without an immediate refetch (no loading state), while a
+ * later revisit still revalidates in the background.
+ */
+export const ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS = 30_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -30,7 +38,8 @@ function isCompleteIssueSnapshot(value: unknown): value is Issue {
   if (typeof value !== "object" || value === null) return false;
   const issue = value as Partial<Issue>;
   return (
-    isNonEmptyString(issue.id)
+    issue.listProjection === undefined
+    && isNonEmptyString(issue.id)
     && isNonEmptyString(issue.companyId)
     && typeof issue.title === "string"
     && typeof issue.status === "string"
@@ -76,6 +85,9 @@ export function getCachedIssueDetail(
 
   const cachedEntries = queryClient.getQueriesData<Issue>({ queryKey: ISSUE_DETAIL_QUERY_PREFIX });
   return cachedEntries
+    // Core reads share invalidation/mutation updates with detail, but cannot
+    // stand in for its related data or suppress the enrichment request.
+    .filter(([key]) => key.length === ISSUE_DETAIL_QUERY_PREFIX.length + 1)
     .map(([, cachedIssue]) => cachedIssue)
     .find((cachedIssue): cachedIssue is Issue =>
       isCompleteIssueSnapshot(cachedIssue) && matchesIssueRef(cachedIssue, refs)
@@ -104,11 +116,35 @@ export function seedIssueDetailCache(
   return merged;
 }
 
+/** Seed saved projections without replacing lists already read or refreshed. */
+export function seedIssueDetailProjections(
+  queryClient: QueryClient,
+  issue: Issue,
+  issueRef?: string | null,
+) {
+  const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
+  if (issue.planDocument !== undefined && queryClient.getQueryData(planKey) === undefined) {
+    queryClient.setQueryData(planKey, issue.planDocument);
+  }
+  if (issue.workProducts !== undefined) {
+    for (const ref of collectIssueRefs(issueRef, issue)) {
+      const key = queryKeys.issues.workProducts(ref);
+      // The stored request can already be pending when core arrives. Its
+      // background refresh should not hold the first saved cards behind a gate.
+      if (queryClient.getQueryData(key) === undefined) {
+        queryClient.setQueryData(key, issue.workProducts);
+      }
+    }
+  }
+}
+
 export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
+  options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = await issuesApi.get(issueRef);
+  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
+  seedIssueDetailProjections(queryClient, issue, issueRef);
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 
@@ -121,7 +157,7 @@ export function getIssueDetailQueryOptions(
 ) {
   return {
     queryKey: queryKeys.issues.detail(issueRef),
-    queryFn: () => fetchIssueDetail(queryClient, issueRef),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchIssueDetail(queryClient, issueRef, { signal }),
     placeholderData: getCachedIssueDetail(queryClient, issueRef, options?.placeholderIssue ?? undefined),
   };
 }
@@ -142,4 +178,46 @@ export function prefetchIssueDetail(
     queryFn: () => fetchIssueDetail(queryClient, issueRef),
     staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
+}
+
+/**
+ * Warm the first page of the issue-detail comment feed under the exact infinite
+ * query key IssueDetail mounts, so a subsequent navigation paints comments from
+ * cache instead of waiting on a fetch. Keyed by issue ref and always background
+ * revalidated by the mounted query, so it never surfaces stale cross-issue data.
+ */
+export function prefetchIssueComments(queryClient: QueryClient, issueRef: string) {
+  return queryClient.prefetchInfiniteQuery({
+    queryKey: queryKeys.issues.comments(issueRef),
+    queryFn: ({ pageParam }: { pageParam: string | null }) =>
+      issuesApi.listComments(issueRef, {
+        order: "desc",
+        limit: ISSUE_COMMENT_PAGE_SIZE,
+        ...(pageParam ? { after: pageParam } : {}),
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: IssueComment[]) =>
+      getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
+    staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    pages: 1,
+  });
+}
+
+/**
+ * Prefetch everything the issue-detail first paint needs — the detail snapshot
+ * and the first comments page — for instant warm navigation from a list row.
+ * Seeds the full list-row snapshot when provided so the header + description
+ * paint immediately with no loading state.
+ */
+export function prefetchIssueDetailForNavigation(
+  queryClient: QueryClient,
+  issueRef: string,
+  options?: {
+    issue?: Issue | null;
+  },
+) {
+  return Promise.all([
+    prefetchIssueDetail(queryClient, issueRef, options),
+    prefetchIssueComments(queryClient, issueRef),
+  ]);
 }

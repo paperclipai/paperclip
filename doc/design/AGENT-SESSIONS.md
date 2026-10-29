@@ -44,7 +44,7 @@ Hold every session to these five, regardless of size:
 ## Reviewing like a designer
 
 - **Contact sheet**: the diff images under `tests/storybook-visual/test-results/` are your primary review surface; ask the agent to assemble them into a browsable before/after page (or use `npx playwright show-report` from `tests/storybook-visual/`).
-- **Live test drive**: for big changes, ask for a running instance from the worktree — `pnpm paperclipai worktree init` once, then `PORT=3300 pnpm dev:once` gives an isolated Paperclip (own database, own config; your real instance is untouched). Click around; real use surfaces what screenshots can't.
+- **Live test drive**: for big changes, ask for a running instance from the worktree — `npx paperclipai worktree init` once, then `PORT=3300 pnpm dev:once` gives an isolated Paperclip (own database, own config; your real instance is untouched). Click around; real use surfaces what screenshots can't.
 - **Side-by-side Storybook**: old on one port, new on another (`pnpm storybook` in each checkout), flip tabs.
 - Trust your eyes over the agent's summary. If something looks wrong, say so plainly ("the text in the red boxes is illegible") — vague feedback is fine, the screenshots give the agent the precision.
 

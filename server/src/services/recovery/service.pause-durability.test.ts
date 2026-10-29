@@ -5,6 +5,9 @@ const run = (errorCode: string | null) =>
   ({ errorCode } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
 
 describe("pause durability: continuation retry classification", () => {
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_failed", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled"])("does not grant %s another recovery budget", (code) => {
+    expect(classifyContinuationFailure(run(code))).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("agent_paused is retryable so work resumes (Option A: Resume Continues Work)", () => {
     // Pause still emits errorCode agent_paused for observability, but it is NOT
     // non-retryable. On resume the agent becomes invokable again and this classifies
@@ -22,6 +25,12 @@ describe("pause durability: continuation retry classification", () => {
 
   it("timed_out (timeout) still retries as transient infra", () => {
     const c = classifyContinuationFailure(run("timeout"));
+    expect(c.kind).toBe("transient_infra");
+    expect(c.maxAttempts).toBeGreaterThan(0);
+  });
+
+  it("codex harness crashes retry as transient infra", () => {
+    const c = classifyContinuationFailure(run("codex_harness_crash"));
     expect(c.kind).toBe("transient_infra");
     expect(c.maxAttempts).toBeGreaterThan(0);
   });

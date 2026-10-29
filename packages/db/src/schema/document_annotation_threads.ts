@@ -12,6 +12,7 @@ import { documentRevisions } from "./document_revisions.js";
 import { documents } from "./documents.js";
 import { issues } from "./issues.js";
 import { routines } from "./routines.js";
+import { cases } from "./cases.js";
 
 export const documentAnnotationThreads = pgTable(
   "document_annotation_threads",
@@ -20,6 +21,7 @@ export const documentAnnotationThreads = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
     routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
+    caseId: uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
     documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
     documentKey: text("document_key").notNull(),
     status: text("status").$type<DocumentAnnotationThreadStatus>().notNull().default("open"),
@@ -64,6 +66,11 @@ export const documentAnnotationThreads = pgTable(
       table.routineId,
       table.status,
     ),
+    companyCaseStatusIdx: index("document_annotation_threads_company_case_status_idx").on(
+      table.companyId,
+      table.caseId,
+      table.status,
+    ),
     companyCurrentRevisionOpenIdx: index("document_annotation_threads_company_current_revision_open_idx").on(
       table.companyId,
       table.documentId,
@@ -76,7 +83,7 @@ export const documentAnnotationThreads = pgTable(
     ),
     exactlyOneOwnerChk: check(
       "document_annotation_threads_exactly_one_owner_chk",
-      sql`num_nonnulls(${table.issueId}, ${table.routineId}) = 1`,
+      sql`num_nonnulls(${table.issueId}, ${table.routineId}, ${table.caseId}) = 1`,
     ),
   }),
 );

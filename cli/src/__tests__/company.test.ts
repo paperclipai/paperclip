@@ -49,18 +49,119 @@ function company(overrides: Record<string, unknown> = {}) {
     issueCounter: 1,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
-    attachmentMaxBytes: 1073741824,
     requireBoardApprovalForNewAgents: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#5c5fff",
     logoAssetId: null,
     createdAt: "2026-06-04T00:00:00.000Z",
     updatedAt: "2026-06-04T00:00:00.000Z",
     logoUrl: null,
     ...overrides,
+  };
+}
+
+function allImportEntities(): CompanyPortabilityPreviewResult["include"] {
+  return {
+    company: true,
+    agents: true,
+    projects: true,
+    issues: true,
+    skills: true,
+  };
+}
+
+function sourceCompanyManifest(): NonNullable<CompanyPortabilityPreviewResult["manifest"]["company"]> {
+  return {
+    path: "COMPANY.md",
+    name: "Source Co",
+    description: null,
+    logoPath: null,
+    requireBoardApprovalForNewAgents: false,
+    feedbackDataSharingEnabled: false,
+    feedbackDataSharingConsentAt: null,
+    feedbackDataSharingConsentByUserId: null,
+    feedbackDataSharingTermsVersion: null,
+  };
+}
+
+function ceoManifest(): CompanyPortabilityPreviewResult["manifest"]["agents"][number] {
+  return {
+    slug: "ceo",
+    name: "CEO",
+    path: "agents/ceo/AGENT.md",
+    skills: [],
+    role: "ceo",
+    title: null,
+    icon: null,
+    capabilities: null,
+    reportsToSlug: null,
+    reportsToExistingAgentId: null,
+    reportsToExistingAgentSlug: null,
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    permissions: {},
+    permissionGrants: [],
+    budgetMonthlyCents: 0,
+    metadata: null,
+  };
+}
+
+function alphaProjectManifest(): CompanyPortabilityPreviewResult["manifest"]["projects"][number] {
+  return {
+    slug: "alpha",
+    name: "Alpha",
+    path: "projects/alpha/PROJECT.md",
+    description: null,
+    ownerAgentSlug: null,
+    leadAgentSlug: null,
+    targetDate: null,
+    color: null,
+    icon: null,
+    status: null,
+    executionWorkspacePolicy: null,
+    workspaces: [],
+    env: null,
+    metadata: null,
+  };
+}
+
+function kickoffIssueManifest(): CompanyPortabilityPreviewResult["manifest"]["issues"][number] {
+  return {
+    slug: "kickoff",
+    identifier: null,
+    title: "Kickoff",
+    path: "projects/alpha/issues/kickoff/TASK.md",
+    projectSlug: "alpha",
+    projectWorkspaceKey: null,
+    assigneeAgentSlug: "ceo",
+    description: null,
+    recurring: false,
+    routine: null,
+    legacyRecurrence: null,
+    status: null,
+    priority: null,
+    labelIds: [],
+    billingCode: null,
+    executionWorkspaceSettings: null,
+    assigneeAdapterOverrides: null,
+    comments: [],
+    metadata: null,
+  };
+}
+
+function openAiEnvInput(): CompanyPortabilityPreviewResult["envInputs"][number] {
+  return {
+    key: "OPENAI_API_KEY",
+    description: null,
+    agentSlug: "ceo",
+    projectSlug: null,
+    kind: "secret",
+    requirement: "required",
+    defaultValue: null,
+    portability: "portable",
   };
 }
 
@@ -300,13 +401,7 @@ describe("buildCompanyDashboardUrl", () => {
 describe("renderCompanyImportPreview", () => {
   it("summarizes the preview with counts, selection info, and truncated examples", () => {
     const preview: CompanyPortabilityPreviewResult = {
-      include: {
-        company: true,
-        agents: true,
-        projects: true,
-        issues: true,
-        skills: true,
-      },
+      include: allImportEntities(),
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
       collisionStrategy: "rename",
@@ -336,50 +431,14 @@ describe("renderCompanyImportPreview", () => {
           companyId: "company-src",
           companyName: "Source Co",
         },
-        includes: {
-          company: true,
-          agents: true,
-          projects: true,
-          issues: true,
-          skills: true,
-        },
-        company: {
-          path: "COMPANY.md",
-          name: "Source Co",
-          description: null,
-          attachmentMaxBytes: null,
-          brandColor: null,
-          logoPath: null,
-          requireBoardApprovalForNewAgents: false,
-          feedbackDataSharingEnabled: false,
-          feedbackDataSharingConsentAt: null,
-          feedbackDataSharingConsentByUserId: null,
-          feedbackDataSharingTermsVersion: null,
-        },
+        includes: allImportEntities(),
+        company: sourceCompanyManifest(),
         sidebar: {
           agents: ["ceo"],
           projects: ["alpha"],
         },
         agents: [
-          {
-            slug: "ceo",
-            name: "CEO",
-            path: "agents/ceo/AGENT.md",
-            skills: [],
-            role: "ceo",
-            title: null,
-            icon: null,
-            capabilities: null,
-            reportsToSlug: null,
-            reportsToExistingAgentId: null,
-            reportsToExistingAgentSlug: null,
-            adapterType: "codex_local",
-            adapterConfig: {},
-            runtimeConfig: {},
-            permissions: {},
-            budgetMonthlyCents: 0,
-            metadata: null,
-          },
+          ceoManifest(),
         ],
         skills: [
           {
@@ -398,73 +457,20 @@ describe("renderCompanyImportPreview", () => {
           },
         ],
         projects: [
-          {
-            slug: "alpha",
-            name: "Alpha",
-            path: "projects/alpha/PROJECT.md",
-            description: null,
-            ownerAgentSlug: null,
-            leadAgentSlug: null,
-            targetDate: null,
-            color: null,
-            icon: null,
-            status: null,
-            executionWorkspacePolicy: null,
-            workspaces: [],
-            env: null,
-            metadata: null,
-          },
+          alphaProjectManifest(),
         ],
         issues: [
-          {
-            slug: "kickoff",
-            identifier: null,
-            title: "Kickoff",
-            path: "projects/alpha/issues/kickoff/TASK.md",
-            projectSlug: "alpha",
-            projectWorkspaceKey: null,
-            assigneeAgentSlug: "ceo",
-            description: null,
-            recurring: false,
-            routine: null,
-            legacyRecurrence: null,
-            status: null,
-            priority: null,
-            labelIds: [],
-            billingCode: null,
-            executionWorkspaceSettings: null,
-            assigneeAdapterOverrides: null,
-            comments: [],
-            metadata: null,
-          },
+          kickoffIssueManifest(),
         ],
         envInputs: [
-          {
-            key: "OPENAI_API_KEY",
-            description: null,
-            agentSlug: "ceo",
-            projectSlug: null,
-            kind: "secret",
-            requirement: "required",
-            defaultValue: null,
-            portability: "portable",
-          },
+          openAiEnvInput(),
         ],
       },
       files: {
         "COMPANY.md": "# Source Co",
       },
       envInputs: [
-        {
-          key: "OPENAI_API_KEY",
-          description: null,
-          agentSlug: "ceo",
-          projectSlug: null,
-          kind: "secret",
-          requirement: "required",
-          defaultValue: null,
-          portability: "portable",
-        },
+        openAiEnvInput(),
       ],
       warnings: ["One warning"],
       errors: ["One error"],
@@ -503,10 +509,24 @@ describe("renderCompanyImportResult", () => {
           { slug: "cto", id: "agent-2", action: "updated", name: "CTO", reason: "replace strategy" },
           { slug: "ops", id: null, action: "skipped", name: "Ops", reason: "skip strategy" },
         ],
+        skills: [
+          {
+            originalKey: "company/source/review",
+            originalSlug: "review",
+            key: "company/target/review-2",
+            slug: "review-2",
+            id: "skill-1",
+            action: "renamed",
+            reason: "rename strategy",
+          },
+        ],
         projects: [
           { slug: "app", id: "project-1", action: "created", name: "App", reason: null },
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
+        ],
+        routines: [
+          { slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly report", status: "paused" },
         ],
         envInputs: [],
         warnings: ["Review API keys"],
@@ -521,8 +541,10 @@ describe("renderCompanyImportResult", () => {
     expect(rendered).toContain("Company");
     expect(rendered).toContain("https://paperclip.example/PAP/dashboard");
     expect(rendered).toContain("3 agents total (1 created, 1 updated, 1 skipped)");
+    expect(rendered).toContain("1 skill total (1 renamed)");
     expect(rendered).toContain("3 projects total (1 created, 1 updated, 1 skipped)");
     expect(rendered).toContain("Agent results");
+    expect(rendered).toContain("Skill results");
     expect(rendered).toContain("Project results");
     expect(rendered).toContain("Using claude-local adapter");
     expect(rendered).toContain("Review API keys");
@@ -532,13 +554,7 @@ describe("renderCompanyImportResult", () => {
 describe("import selection catalog", () => {
   it("defaults to everything and keeps project selection separate from task selection", () => {
     const preview: CompanyPortabilityPreviewResult = {
-      include: {
-        company: true,
-        agents: true,
-        projects: true,
-        issues: true,
-        skills: true,
-      },
+      include: allImportEntities(),
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
       collisionStrategy: "rename",
@@ -556,19 +572,11 @@ describe("import selection catalog", () => {
           companyId: "company-src",
           companyName: "Source Co",
         },
-        includes: {
-          company: true,
-          agents: true,
-          projects: true,
-          issues: true,
-          skills: true,
-        },
+        includes: allImportEntities(),
         company: {
           path: "COMPANY.md",
           name: "Source Co",
           description: null,
-          attachmentMaxBytes: null,
-          brandColor: null,
           logoPath: "images/company-logo.png",
           requireBoardApprovalForNewAgents: false,
           feedbackDataSharingEnabled: false,
@@ -581,25 +589,7 @@ describe("import selection catalog", () => {
           projects: ["alpha"],
         },
         agents: [
-          {
-            slug: "ceo",
-            name: "CEO",
-            path: "agents/ceo/AGENT.md",
-            skills: [],
-            role: "ceo",
-            title: null,
-            icon: null,
-            capabilities: null,
-            reportsToSlug: null,
-            reportsToExistingAgentId: null,
-            reportsToExistingAgentSlug: null,
-            adapterType: "codex_local",
-            adapterConfig: {},
-            runtimeConfig: {},
-            permissions: {},
-            budgetMonthlyCents: 0,
-            metadata: null,
-          },
+          ceoManifest(),
         ],
         skills: [
           {
@@ -618,45 +608,10 @@ describe("import selection catalog", () => {
           },
         ],
         projects: [
-          {
-            slug: "alpha",
-            name: "Alpha",
-            path: "projects/alpha/PROJECT.md",
-            description: null,
-            ownerAgentSlug: null,
-            leadAgentSlug: null,
-            targetDate: null,
-            color: null,
-            icon: null,
-            status: null,
-            executionWorkspacePolicy: null,
-            workspaces: [],
-            env: null,
-            metadata: null,
-          },
+          alphaProjectManifest(),
         ],
         issues: [
-          {
-            slug: "kickoff",
-            identifier: null,
-            title: "Kickoff",
-            path: "projects/alpha/issues/kickoff/TASK.md",
-            projectSlug: "alpha",
-            projectWorkspaceKey: null,
-            assigneeAgentSlug: "ceo",
-            description: null,
-            recurring: false,
-            routine: null,
-            legacyRecurrence: null,
-            status: null,
-            priority: null,
-            labelIds: [],
-            billingCode: null,
-            executionWorkspaceSettings: null,
-            assigneeAdapterOverrides: null,
-            comments: [],
-            metadata: null,
-          },
+          kickoffIssueManifest(),
         ],
         envInputs: [],
       },
@@ -704,6 +659,61 @@ describe("import selection catalog", () => {
     expect(selectedFiles).toContain("projects/alpha/notes.md");
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/TASK.md");
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/details.md");
+  });
+
+  it("includes extension file even when all entities are deselected", () => {
+    const preview: CompanyPortabilityPreviewResult = {
+      include: allImportEntities(),
+      targetCompanyId: "company-123",
+      targetCompanyName: "Imported Co",
+      collisionStrategy: "rename",
+      selectedAgentSlugs: [],
+      plan: {
+        companyAction: "create",
+        agentPlans: [],
+        projectPlans: [],
+        issuePlans: [],
+      },
+      manifest: {
+        schemaVersion: 1,
+        generatedAt: "2026-03-23T18:00:00.000Z",
+        source: {
+          companyId: "company-src",
+          companyName: "Source Co",
+        },
+        includes: allImportEntities(),
+        company: sourceCompanyManifest(),
+        sidebar: {
+          agents: [],
+          projects: [],
+        },
+        agents: [],
+        skills: [],
+        projects: [],
+        issues: [],
+        envInputs: [],
+      },
+      files: {
+        ".paperclip.yaml": "schema: paperclip/v1\n",
+      },
+      envInputs: [],
+      warnings: [],
+      errors: [],
+    };
+
+    const catalog = buildImportSelectionCatalog(preview);
+    const state = buildDefaultImportSelectionState(catalog);
+
+    state.company = false;
+    state.projects.clear();
+    state.issues.clear();
+    state.agents.clear();
+    state.skills.clear();
+
+    const selectedFiles = buildSelectedFilesFromImportSelection(catalog, state);
+
+    expect(selectedFiles).toContain(".paperclip.yaml");
+    expect(selectedFiles).toHaveLength(1);
   });
 });
 
@@ -757,6 +767,7 @@ describe("default adapter overrides", () => {
             adapterConfig: {},
             runtimeConfig: {},
             permissions: {},
+            permissionGrants: [],
             budgetMonthlyCents: 0,
             metadata: null,
           },
@@ -776,6 +787,7 @@ describe("default adapter overrides", () => {
             adapterConfig: {},
             runtimeConfig: {},
             permissions: {},
+            permissionGrants: [],
             budgetMonthlyCents: 0,
             metadata: null,
           },

@@ -6,7 +6,9 @@ import {
   applyIssueFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
+  normalizeIssueFilterState,
   resolveIssueFilterWorkspaceId,
+  searchIssueFilterOptions,
   shouldIncludeIssueFilterWorkspaceOption,
 } from "./issue-filters";
 
@@ -22,6 +24,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -67,6 +70,30 @@ function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {
 }
 
 describe("issue filters", () => {
+  it("hides automation by default while an opt-in includes every creation source", () => {
+    const issues = [makeIssue({ id: "human", createdByUserId: "person" }), makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" }), makeIssue({ id: "system" })];
+    expect(applyIssueFilters(issues, defaultIssueFilterState, null, true).map((issue) => issue.id)).toEqual(["human"]);
+    expect(applyIssueFilters(issues, { ...defaultIssueFilterState, showAgentCreatedTasks: true }, null, true)).toEqual(issues);
+    // Membership and task-detail collections can explicitly bypass creation visibility.
+    expect(applyIssueFilters(issues, defaultIssueFilterState, null, false)).toEqual(issues);
+    expect(countActiveIssueFilters(defaultIssueFilterState, true)).toBe(0);
+    expect(countActiveIssueFilters({ ...defaultIssueFilterState, showAgentCreatedTasks: true }, true)).toBe(1);
+  });
+
+  it("defaults legacy and invalid preferences to hidden without losing other filters", () => {
+    expect(normalizeIssueFilterState({ hideRoutineExecutions: false, statuses: ["todo"] })).toMatchObject({ showAgentCreatedTasks: false, statuses: ["todo"] });
+    expect(normalizeIssueFilterState({ showAgentCreatedTasks: "true" }).showAgentCreatedTasks).toBe(false);
+    expect(normalizeIssueFilterState({ showAgentCreatedTasks: true }).showAgentCreatedTasks).toBe(true);
+  });
+
+  it("searches filter options case-insensitively without mutating the source", () => {
+    const options = [{ name: "Alpha Agent" }, { name: "Release QA" }];
+    expect(searchIssueFilterOptions(options, "  qa ", (option) => option.name)).toEqual([
+      { name: "Release QA" },
+    ]);
+    expect(options).toHaveLength(2);
+  });
+
   it("filters issues by creator across agents and users", () => {
     const issues = [
       makeIssue({ id: "agent-match", createdByAgentId: "agent-1" }),

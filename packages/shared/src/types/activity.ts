@@ -8,6 +8,7 @@ export interface ActivityEvent {
   entityId: string;
   agentId: string | null;
   runId: string | null;
+  responsibleUserId?: string | null;
   details: Record<string, unknown> | null;
   createdAt: Date;
 }

@@ -1,29 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { accessApi } from "../api/access";
-import { ApiError } from "../api/client";
+import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { inboxDismissalsApi } from "../api/inboxDismissals";
-import { approvalsApi } from "../api/approvals";
-import { authApi } from "../api/auth";
-import { dashboardApi } from "../api/dashboard";
-import { heartbeatsApi } from "../api/heartbeats";
-import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  useLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
+import {
   buildInboxDismissedAtByKey,
-  computeInboxBadgeData,
-  getRecentTouchedIssues,
   loadDismissedInboxAlerts,
   saveDismissedInboxAlerts,
   loadReadInboxItems,
   saveReadInboxItems,
   READ_ITEMS_KEY,
 } from "../lib/inbox";
-
-const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
-const INBOX_BADGE_ISSUE_LIMIT = 500;
-const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_BADGE_HOT_PATH_STALE_MS = 30_000;
 
 export function useDismissedInboxAlerts() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxAlerts);
@@ -55,7 +46,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     ? queryKeys.inboxDismissals(companyId)
     : ["inbox-dismissals", "__disabled__"] as const;
 
-  const { data: dismissals = [] } = useQuery({
+  const { data: dismissals = [], isLoading, error } = useQuery({
     queryKey,
     queryFn: () => inboxDismissalsApi.list(companyId!),
     enabled: !!companyId,
@@ -88,9 +79,28 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     },
     onSettled: () => {
       if (!companyId) return;
-      queryClient.invalidateQueries({ queryKey });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      invalidateDismissalConsumers();
     },
+  });
+
+  function invalidateDismissalConsumers() {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+    // The attention feed derives its rows from server-side dismissals, so any
+    // dismiss/snooze/restore must re-pull it to keep the queue and curtains in sync.
+    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+  }
+
+  const snoozeMutation = useMutation({
+    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    onSettled: invalidateDismissalConsumers,
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.restore(companyId!, itemKey),
+    onSettled: invalidateDismissalConsumers,
   });
 
   const dismissedAtByKey = useMemo(
@@ -98,11 +108,27 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     [dismissals],
   );
 
+  // Stable identities (react-query keeps `mutate` referentially stable) so
+  // consumers can hand these to memoized rows without breaking memoization.
+  const dismissMutate = dismissMutation.mutate;
+  const snoozeMutate = snoozeMutation.mutate;
+  const restoreMutate = restoreMutation.mutate;
+  const dismiss = useCallback((itemKey: string) => dismissMutate({ itemKey }), [dismissMutate]);
+  const snooze = useCallback(
+    (itemKey: string, snoozedUntil: string) => snoozeMutate({ itemKey, snoozedUntil }),
+    [snoozeMutate],
+  );
+  const restore = useCallback((itemKey: string) => restoreMutate({ itemKey }), [restoreMutate]);
+
   return {
     dismissals,
+    isLoading,
+    error,
     dismissedAtByKey,
-    dismiss: (itemKey: string) => dismissMutation.mutate({ itemKey }),
-    isPending: dismissMutation.isPending,
+    dismiss,
+    snooze,
+    restore,
+    isPending: dismissMutation.isPending || snoozeMutation.isPending || restoreMutation.isPending,
   };
 }
 
@@ -140,78 +166,33 @@ export function useReadInboxItems() {
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
-  const { dismissed: dismissedAlerts } = useDismissedInboxAlerts();
-  const { dismissedAtByKey } = useInboxDismissals(companyId);
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-  });
-
-  const { data: approvals = [] } = useQuery({
-    queryKey: queryKeys.approvals.list(companyId!),
-    queryFn: () => approvalsApi.list(companyId!),
+  const locallyArchivedIssueIds = useLocalInboxArchiveIssueIds(companyId);
+  const badgeQueryKey = queryKeys.sidebarBadges(companyId ?? "__disabled__");
+  const sharedBadges = useSharedPollingQuery({
+    companyId,
+    resourceKey: "inbox-badge",
+    queryKey: badgeQueryKey,
     enabled: !!companyId,
   });
-
-  const { data: joinRequests = [] } = useQuery({
-    queryKey: queryKeys.access.joinRequests(companyId!),
-    queryFn: async () => {
-      try {
-        return await accessApi.listJoinRequests(companyId!, "pending_approval");
-      } catch (err) {
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          return [];
-        }
-        throw err;
-      }
-    },
-    enabled: !!companyId,
-    retry: false,
-  });
-
-  const { data: dashboard } = useQuery({
-    queryKey: queryKeys.dashboard(companyId!),
-    queryFn: () => dashboardApi.summary(companyId!),
-    enabled: !!companyId,
-  });
-
-  const { data: mineIssuesRaw = [] } = useQuery({
-    queryKey: queryKeys.issues.listMineByMe(companyId!),
-    queryFn: () =>
-      issuesApi.list(companyId!, {
-        touchedByUserId: "me",
-        inboxArchivedByUserId: "me",
-        status: INBOX_ISSUE_STATUSES,
-        limit: INBOX_BADGE_ISSUE_LIMIT,
-      }),
+  const { data: badges, dataUpdatedAt } = useQuery({
+    queryKey: badgeQueryKey,
+    queryFn: () => sidebarBadgesApi.get(companyId!),
     enabled: !!companyId,
     refetchOnWindowFocus: false,
-    staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
+    staleTime: 30_000,
   });
+  usePublishSharedQueryData(sharedBadges, badges, dataUpdatedAt);
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
-  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
-
-  const { data: heartbeatRuns = [] } = useQuery({
-    queryKey: [...queryKeys.heartbeats(companyId!), "limit", INBOX_BADGE_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(companyId!, undefined, INBOX_BADGE_HEARTBEAT_RUN_LIMIT, { summary: true }),
-    enabled: !!companyId,
-    refetchOnWindowFocus: false,
-    staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
-  });
-
-  return useMemo(
-    () =>
-      computeInboxBadgeData({
-        approvals,
-        joinRequests,
-        dashboard,
-        heartbeatRuns,
-        mineIssues,
-        dismissedAlerts,
-        dismissedAtByKey,
-        currentUserId,
-      }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
-  );
+  return useMemo(() => {
+    const unreadIssueIds = badges?.unreadIssueIds ?? [];
+    const archivedUnread = unreadIssueIds.filter((id) => locallyArchivedIssueIds.has(id)).length;
+    return {
+      inbox: Math.max(0, (badges?.inbox ?? 0) - archivedUnread),
+      approvals: badges?.approvals ?? 0,
+      failedRuns: badges?.failedRuns ?? 0,
+      joinRequests: badges?.joinRequests ?? 0,
+      mineIssues: unreadIssueIds.length - archivedUnread,
+      alerts: 0,
+    };
+  }, [badges, locallyArchivedIssueIds]);
 }

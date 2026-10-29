@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import type { Request } from "express";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
@@ -7,10 +8,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, executionWorkspaces, goals, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess, executionWorkspaceRepositoryRoots, executionWorkspaceRepositories, executionWorkspaces, goals, issueAccessGrants, issues, projects, projectAccessMembers, projectWorkspaces, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import { taskRepositoryRelativePath } from "../services/execution-workspace-repositories.js";
 import { errorHandler } from "../middleware/index.js";
+import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import {
+  createFileResourceAvailabilityLimiter,
   createFileResourceLimiter,
   createFileResourceListLimiter,
   fileResourceRoutes,
@@ -85,6 +89,7 @@ async function seedGraph(db: Db, input: {
     { id: companyId, name: `Company ${suffix}`, issuePrefix: `F${prefixSuffix}` },
     { id: otherCompanyId, name: `Other ${suffix}`, issuePrefix: `G${prefixSuffix}` },
   ]);
+  await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
   await db.insert(goals).values([
     { id: goalId, companyId, title: "Goal", level: "company", status: "active" },
     { id: otherGoalId, companyId: otherCompanyId, title: "Other goal", level: "company", status: "active" },
@@ -199,12 +204,28 @@ describeEmbeddedPostgres("workspace file resources", () => {
   let db: Db;
 
   beforeAll(async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
+  });
+
+  it("withholds private task files and private cross-project targets", async () => {
+    const { projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+    await fs.writeFile(path.join(projectRoot, "secret.txt"), "PRIVATE_FILE", "utf8");
+    await fs.writeFile(path.join(targetProjectRoot, "secret.txt"), "PRIVATE_TARGET", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    await db.update(issues).set({ visibility: "private", responsibleUserId: "owner" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(404);
+    await db.update(issues).set({ visibility: "open" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(200);
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.targetProjectId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ projectId: graph.targetProjectId, workspaceId: graph.targetProjectWorkspaceId, path: "secret.txt" }).expect(404);
   });
 
   it("resolves and reads a project file without exposing absolute paths", async () => {
@@ -294,6 +315,284 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(resolved.workspaceKind).toBe("project_workspace");
     expect(resolved.displayPath).toBe("README.md");
     expect(resolved.capabilities.preview).toBe(true);
+  });
+
+  it.each(["missing", "denied", "symlink loop", "overlong path"])("skips an unused %s configured alternative while keeping explicit reads strict", async alternative => {
+    const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+      await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await fs.writeFile(path.join(executionRoot, "report.txt"), "CURRENT_TASK_REPORT");
+      if (alternative === "missing" || alternative === "symlink loop") {
+        await fs.rm(projectRoot, { recursive: true });
+        if (alternative === "symlink loop") await fs.symlink(projectRoot, projectRoot);
+      } else if (alternative === "overlong path") {
+        await db.update(projectWorkspaces).set({ cwd: path.join(projectRoot, "x".repeat(512)) }).where(eq(projectWorkspaces.id, graph.projectWorkspaceId));
+      } else {
+        const [privateIssue] = await db.insert(issues).values({ companyId: graph.companyId, title: "Private alternative source", visibility: "private", responsibleUserId: "private-owner" }).returning();
+        await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: privateIssue.id, name: "Private alternative", cwd: projectRoot,
+          mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" });
+        await fs.writeFile(path.join(projectRoot, "report.txt"), "PRIVATE_ALTERNATIVE_BYTES");
+      }
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const base = `/api/issues/${graph.issueId}/file-resources`;
+      const listed = await request(app).get(`${base}/list`).expect(200);
+      expect(listed.body.items).toEqual(expect.arrayContaining([expect.objectContaining({ relativePath: "report.txt" })]));
+      await request(app).get(`${base}/resolve`).query({ path: "report.txt" }).expect(200);
+      const preview = await request(app).get(`${base}/content`).query({ path: "report.txt" }).expect(200);
+      expect(preview.body.content.data).toBe("CURRENT_TASK_REPORT");
+      const download = await request(app).get(`${base}/content`).query({ path: "report.txt", download: true }).expect(200);
+      expect(download.text).toBe("CURRENT_TASK_REPORT");
+      const explicit = { projectId: graph.projectId, workspaceId: graph.projectWorkspaceId };
+      for (const target of [explicit, { workspace: "project" }]) {
+        await request(app).get(`${base}/list`).query(target).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/resolve`).query({ ...target, path: "report.txt" }).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt" }).expect(alternative === "denied" ? 200 : 404);
+        await request(app).get(`${base}/content`).query({ ...target, path: "report.txt", download: true }).expect(alternative === "denied" ? 200 : 404);
+      }
+      const batch = await request(app).post(`${base}/availability`).send({ queries: [
+        { path: "report.txt" }, { workspace: "execution", path: "report.txt" },
+        { workspace: "project", path: "report.txt" }, { ...explicit, path: "report.txt" },
+      ] }).expect(200);
+      expect(batch.body.results).toEqual([
+        expect.objectContaining({ openable: true, resource: expect.objectContaining({ workspaceKind: "execution_workspace" }) }),
+        expect.objectContaining({ openable: true, resource: expect.objectContaining({ workspaceKind: "execution_workspace" }) }),
+        alternative === "denied" ? expect.objectContaining({ openable: true }) : expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
+        alternative === "denied" ? expect.objectContaining({ openable: true }) : expect.objectContaining({ openable: false, unavailableReason: "not_found", resource: null }),
+      ]);
+      expect(JSON.stringify(batch.body)).not.toContain(projectRoot);
+      expect(JSON.stringify(batch.body)).not.toContain("PRIVATE_ALTERNATIVE_BYTES");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("reads projectless task files before and after organizational project assignment", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+    await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, strategyType: "project_primary", providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.writeFile(path.join(executionRoot, "report.txt"), "Task-owned report", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    for (const projectId of [null, graph.targetProjectId]) {
+      await db.update(issues).set({ projectId }).where(eq(issues.id, graph.issueId));
+      const result = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "report.txt" }).expect(200);
+      expect(result.body.content.data).toBe("Task-owned report");
+      expect(result.body.resource.workspaceKind).toBe("execution_workspace");
+    }
+  });
+
+  it("reads task-bound files regardless of historical private sources and leaves legacy ledgers unchanged", async () => {
+    const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+      const canonicalCwd = await fs.realpath(executionRoot);
+      const rootKey = createHash("sha256").update(canonicalCwd).digest("hex");
+      const privateIssueId = crypto.randomUUID();
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+      await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await db.update(projectWorkspaces).set({ cwd: executionRoot }).where(eq(projectWorkspaces.id, graph.projectWorkspaceId));
+      await db.insert(issues).values({ id: privateIssueId, companyId: graph.companyId, title: "Private source task", visibility: "private", responsibleUserId: "private-owner" });
+      const [source] = await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: privateIssueId,
+        name: "Private source workspace", cwd: executionRoot, mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" }).returning();
+      await fs.writeFile(path.join(executionRoot, "secret.txt"), "PRIVATE_ROOT_BYTES");
+      const [task] = await db.select().from(issues).where(eq(issues.id, graph.issueId));
+      await db.update(executionWorkspaces).set({ sourceIssueId: privateIssueId, name: "Private original workspace metadata" })
+        .where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(await canActorReadExecutionWorkspace(db, { type: "board", userId: "board-user", source: "session", companyIds: [graph.companyId] }, task.executionWorkspaceId!)).toBe(false);
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const targets = [{ workspace: "execution" }, { projectId: graph.projectId, workspaceId: graph.projectWorkspaceId }];
+      const reads = () => targets.flatMap(target => [
+        request(app).get(`/api/issues/${graph.issueId}/file-resources/list`).query(target),
+        request(app).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ ...target, path: "secret.txt" }),
+        request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ ...target, path: "secret.txt" }),
+        request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ ...target, path: "secret.txt", download: true }),
+        request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`).send({ queries: [{ ...target, path: "secret.txt" }] }),
+      ]);
+      const allow = async () => {
+        for (const pending of reads()) {
+          const response = await pending;
+          expect(response.status).toBe(200);
+          if (response.body.kind === "workspace_file_availability") {
+            expect(response.body.results).toEqual([expect.objectContaining({ openable: true })]);
+          }
+          for (const hidden of [source.id, privateIssueId, "Private source workspace", "Private original workspace metadata"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
+        }
+      };
+      await allow();
+      expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId))).toEqual([]);
+      expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId))).toEqual([]);
+      const [grant] = await db.insert(issueAccessGrants).values({ issueId: privateIssueId, subjectType: "user", subjectId: "board-user", source: "explicit" }).returning();
+      for (const pending of reads()) expect((await pending).status).toBe(200);
+      const content = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "secret.txt" }).expect(200);
+      expect(content.body.content.data).toBe("PRIVATE_ROOT_BYTES");
+      await db.insert(executionWorkspaceRepositoryAccess).values({ companyId: graph.companyId, rootKey, canonicalCwd, kind: "source", scopeId: source.id });
+      const provenance = await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId));
+      await db.update(executionWorkspaces).set({ cwd: targetProjectRoot }).where(eq(executionWorkspaces.id, source.id));
+      await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+      await allow();
+      await db.update(issueAccessGrants).set({ revokedAt: null }).where(eq(issueAccessGrants.id, grant.id));
+      await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "secret.txt" }).expect(200);
+      await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, source.id));
+      await allow();
+      expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId))).toEqual(provenance);
+      expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId))).toEqual([]);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("ignores an unrelated private project alias while reading the current task root", async () => {
+    const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+      await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.targetProjectId));
+      await db.update(projectWorkspaces).set({ cwd: executionRoot }).where(eq(projectWorkspaces.id, graph.targetProjectWorkspaceId));
+      await fs.writeFile(path.join(executionRoot, "private-project.txt"), "PRIVATE_CONFIGURED_PROJECT");
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "private-project.txt" }).expect(200);
+      await db.insert(projectAccessMembers).values({ companyId: graph.companyId, projectId: graph.targetProjectId, subjectType: "user", subjectId: "board-user" });
+      const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: "private-project.txt" }).expect(200);
+      expect(response.body.content.data).toBe("PRIVATE_CONFIGURED_PROJECT");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ["configured", "ancestor"], ["configured", "descendant"],
+    ["execution", "ancestor"], ["execution", "descendant"],
+  ] as const)("allows files in authorized roots despite %s private %s aliases and retained history", async (ownerKind, relation) => {
+    const { root, projectRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const ancestor = path.join(root, "work"), descendant = path.join(ancestor, "private");
+      await fs.mkdir(descendant, { recursive: true });
+      const publicRoot = relation === "ancestor" ? ancestor : descendant;
+      const privateRoot = relation === "ancestor" ? descendant : ancestor;
+      const relativeFile = relation === "ancestor" ? "private/secret.txt" : "secret.txt";
+      await fs.writeFile(path.join(publicRoot, relativeFile), "PRIVATE_OVERLAPPING_ROOT_BYTES");
+      const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot: publicRoot });
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+      await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await db.update(projectWorkspaces).set({ cwd: publicRoot }).where(eq(projectWorkspaces.id, graph.projectWorkspaceId));
+      let ownerId: string;
+      let privateIssueId: string | null = null;
+      if (ownerKind === "configured") {
+        ownerId = graph.targetProjectId;
+        await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, ownerId));
+        await db.update(projectWorkspaces).set({ cwd: privateRoot }).where(eq(projectWorkspaces.id, graph.targetProjectWorkspaceId));
+        expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.projectId, ownerId))).toEqual([]);
+      } else {
+        const [task] = await db.insert(issues).values({ companyId: graph.companyId, title: "Private overlapping task", visibility: "private", responsibleUserId: "private-owner" }).returning();
+        privateIssueId = task.id;
+        const [workspace] = await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: task.id,
+          name: "Private overlapping workspace", cwd: privateRoot, mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" }).returning();
+        ownerId = workspace.id;
+      }
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const targets = [{ workspace: "execution" }, { projectId: graph.projectId, workspaceId: graph.projectWorkspaceId }];
+      const readState = async () => ({
+        access: await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId)),
+        policies: await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId)),
+      });
+      const allow = async () => {
+        const before = await readState();
+        for (const target of targets) {
+          for (const [endpoint, query] of [
+            ["list", {}], ["resolve", { path: relativeFile }], ["content", { path: relativeFile }], ["content", { path: relativeFile, download: true }],
+          ] as const) {
+            const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/${endpoint}`).query({ ...target, ...query }).expect(200);
+            for (const hidden of [ownerId, "Private overlapping"]) expect(JSON.stringify(response.body)).not.toContain(hidden);
+          }
+          const availability = await request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`)
+            .send({ queries: [{ ...target, path: relativeFile }] }).expect(200);
+          expect(availability.body.results).toEqual([expect.objectContaining({ openable: true })]);
+        }
+        expect(await readState()).toEqual(before);
+      };
+      await allow();
+      const grant = ownerKind === "configured"
+        ? (await db.insert(projectAccessMembers).values({ companyId: graph.companyId, projectId: ownerId, subjectType: "user", subjectId: "board-user" }).returning())[0]!
+        : (await db.insert(issueAccessGrants).values({ issueId: privateIssueId!, subjectType: "user", subjectId: "board-user", source: "explicit" }).returning())[0]!;
+      const beforeAllowedReads = await readState();
+      for (const target of targets) {
+        const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ ...target, path: relativeFile }).expect(200);
+        expect(response.body.content.data).toBe("PRIVATE_OVERLAPPING_ROOT_BYTES");
+      }
+      expect(await readState()).toEqual(beforeAllowedReads);
+      const canonicalCwd = await fs.realpath(privateRoot);
+      await db.insert(executionWorkspaceRepositoryAccess).values({ companyId: graph.companyId,
+        rootKey: createHash("sha256").update(canonicalCwd).digest("hex"), canonicalCwd,
+        kind: ownerKind === "configured" ? "project_source" : "source", scopeId: ownerId });
+      if (ownerKind === "configured") {
+        await db.update(projectWorkspaces).set({ cwd: targetProjectRoot }).where(eq(projectWorkspaces.id, graph.targetProjectWorkspaceId));
+        await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, grant.id));
+      } else {
+        await db.update(executionWorkspaces).set({ cwd: targetProjectRoot }).where(eq(executionWorkspaces.id, ownerId));
+        await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+      }
+      await allow();
+      expect(await fs.readFile(path.join(publicRoot, relativeFile), "utf8")).toBe("PRIVATE_OVERLAPPING_ROOT_BYTES");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps sibling string-prefix roots independent without registering file readers", async () => {
+    const { root, projectRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const privateRoot = path.join(root, "work"), publicRoot = path.join(root, "worker");
+      await fs.mkdir(privateRoot); await fs.mkdir(publicRoot);
+      await fs.writeFile(path.join(publicRoot, "public.txt"), "PUBLIC_SIBLING_BYTES");
+      const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot: publicRoot });
+      await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.targetProjectId));
+      await db.update(projectWorkspaces).set({ cwd: privateRoot }).where(eq(projectWorkspaces.id, graph.targetProjectWorkspaceId));
+      const [privateIssue] = await db.insert(issues).values({ companyId: graph.companyId, title: "Private sibling", visibility: "private", responsibleUserId: "private-owner" }).returning();
+      await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: privateIssue.id, cwd: privateRoot,
+        name: "Private sibling", mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" });
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const target = { workspace: "execution", path: "public.txt" };
+      const content = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query(target).expect(200);
+      expect(content.body.content.data).toBe("PUBLIC_SIBLING_BYTES");
+      await request(app).get(`/api/issues/${graph.issueId}/file-resources/list`).query({ workspace: "execution" }).expect(200);
+      await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ ...target, download: true }).expect(200);
+      const availability = await request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`).send({ queries: [target] }).expect(200);
+      expect(availability.body.results).toEqual([expect.objectContaining({ openable: true })]);
+      expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, graph.companyId))).toEqual([]);
+      expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, graph.companyId))).toEqual([]);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not confuse identical repositories in unrelated available roots with private file provenance", async () => {
+    const { root, projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    try {
+      const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, graph.issueId));
+      const [publicWorkspace] = await db.update(executionWorkspaces).set({ projectId: null, projectWorkspaceId: null, providerType: "local_fs" }).where(eq(executionWorkspaces.sourceIssueId, graph.issueId)).returning();
+      const [privateIssue] = await db.insert(issues).values({ companyId: graph.companyId, title: "Unrelated private repository", visibility: "private", responsibleUserId: "private-owner" }).returning();
+      const [privateWorkspace] = await db.insert(executionWorkspaces).values({ companyId: graph.companyId, sourceIssueId: privateIssue.id,
+        name: "Unrelated source", cwd: targetProjectRoot, mode: "shared_workspace", strategyType: "task_directory", providerType: "local_fs" }).returning();
+      const identity = "https://github.com/fixture/same-repo.git", relativePath = taskRepositoryRelativePath(identity);
+      for (const workspace of [publicWorkspace, privateWorkspace]) {
+        await fs.mkdir(path.join(workspace.cwd!, relativePath), { recursive: true });
+        await fs.writeFile(path.join(workspace.cwd!, relativePath, "report.txt"), workspace.id === publicWorkspace.id ? "PUBLIC_COPY" : "PRIVATE_COPY");
+        await db.insert(executionWorkspaceRepositories).values({ companyId: graph.companyId, executionWorkspaceId: workspace.id,
+          repositoryIdentity: identity, repoUrl: identity, relativePath, requestKey: workspace.id, state: "ready" });
+      }
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution", path: `${relativePath}/report.txt` }).expect(200);
+      expect(response.body.content.data).toBe("PUBLIC_COPY");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("reads a selected source independently of task project while retaining source privacy", async () => {
+    const { projectRoot, targetProjectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot });
+    await fs.writeFile(path.join(projectRoot, "source.txt"), "Selected source", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    for (const projectId of [null, graph.targetProjectId]) {
+      await db.update(issues).set({ projectId }).where(eq(issues.id, graph.issueId));
+      const result = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "source.txt" }).expect(200);
+      expect(result.body.content.data).toBe("Selected source");
+      expect(result.body.resource.workspaceId).toBe(graph.projectWorkspaceId);
+    }
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.projectId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "source.txt" }).expect(404);
   });
 
   it("auto-discovers unhinted same-company project files when issue workspaces miss", async () => {
@@ -980,7 +1279,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(linkedSecret.status).toBe(403);
   });
 
-  it("rejects denied paths, non-regular files, oversized text, binary, and HTML while previewing SVG as source", async () => {
+  it("rejects denied paths, non-regular files, oversized text and binary while returning HTML and SVG as text", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
     await fs.mkdir(path.join(projectRoot, ".git"), { recursive: true });
@@ -999,7 +1298,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       isInstanceAdmin: false,
     });
 
-    for (const filePath of [".git/config", "folder", "big.txt", "blob.bin", "index.html"]) {
+    for (const filePath of [".git/config", "folder", "big.txt", "blob.bin"]) {
       const res = await request(app)
         .get(`/api/issues/${graph.issueId}/file-resources/content`)
         .query({ workspace: "project", path: filePath });
@@ -1011,6 +1310,19 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(svg.status).toBe(200);
     expect(svg.body.resource.previewKind).toBe("text");
     expect(svg.body.content.data).toContain("<svg");
+    const html = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "project", path: "index.html" });
+    expect(html.status).toBe(200);
+    expect(html.headers["content-type"]).toContain("application/json");
+    expect(html.headers["x-content-type-options"]).toBe("nosniff");
+    expect(html.body.resource).toMatchObject({ contentType: "text/html", previewKind: "text", capabilities: { preview: true } });
+    expect(html.body.content).toEqual({ encoding: "utf8", data: "<script>alert(1)</script>" });
+    const downloaded = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "project", path: "index.html", download: "1" });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="index.html"');
   });
 
   it("rejects remote workspaces without fetching provider resources", async () => {
@@ -1078,11 +1390,11 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
 
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(404);
 
     const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, graph.issueId));
     const listDenials = rows.filter((row) => row.action === "issue.file_resource_list_denied");
@@ -1160,6 +1472,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const resolveLimitedService: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1221,6 +1536,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const contentLimitedService: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1294,6 +1612,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1380,6 +1701,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         slowListStarted?.();
         await slowList;
@@ -1438,6 +1762,189 @@ describeEmbeddedPostgres("workspace file resources", () => {
     const third = await request(app).get(`/api/issues/${graph.issueId}/file-resources/list`);
     expect(third.status).toBe(429);
   });
+
+  it("returns mixed deduplicated availability results with one aggregate audit event", async () => {
+    const { root, projectRoot, targetProjectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, {
+      projectRoot,
+      targetProjectRoot,
+      executionRoot,
+      targetProjectSourceType: "remote_managed",
+    });
+    await fs.mkdir(path.join(projectRoot, "docs"), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, "README.md"), "# Visible\n", "utf8");
+    await fs.writeFile(path.join(projectRoot, "docs", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(projectRoot, "archive.bin"), Buffer.from([0, 1, 2, 3]));
+    await fs.writeFile(path.join(projectRoot, "large.txt"), Buffer.alloc(WORKSPACE_FILE_TEXT_MAX_BYTES + 1, "a"));
+    await fs.writeFile(path.join(projectRoot, ".env"), "TOKEN=secret\n", "utf8");
+    await fs.writeFile(path.join(root, "outside-secret.txt"), "outside\n", "utf8");
+    await fs.symlink(path.join(root, "outside-secret.txt"), path.join(projectRoot, "escape.txt"));
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({
+        queries: [
+          { workspace: "project", path: "README.md" },
+          { workspace: "project", path: "./README.md" },
+          { workspace: "project", path: "docs/" },
+          { workspace: "project", path: "archive.bin" },
+          { workspace: "project", path: "large.txt" },
+          { workspace: "project", path: ".env" },
+          { workspace: "project", path: "../outside-secret.txt" },
+          { workspace: "project", path: path.join(root, "host-secret.txt") },
+          { workspace: "project", path: "escape.txt" },
+          { workspace: "project", path: "missing.ts" },
+          {
+            workspace: "project",
+            projectId: graph.targetProjectId,
+            workspaceId: graph.targetProjectWorkspaceId,
+            path: "remote.txt",
+          },
+        ],
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.kind).toBe("workspace_file_availability");
+    expect(response.body.results).toHaveLength(10);
+    const byPath = new Map(response.body.results.map((result: { query: { path: string } }) => [result.query.path, result]));
+    expect(byPath.get("README.md")).toMatchObject({ openable: true, resource: { kind: "file" } });
+    expect(byPath.get("docs/")).toMatchObject({ openable: true, resource: { kind: "directory" } });
+    expect(byPath.get("archive.bin")).toMatchObject({ openable: false, unavailableReason: "unsupported_content" });
+    expect(byPath.get("large.txt")).toMatchObject({ openable: false, unavailableReason: "too_large" });
+    expect(byPath.get(".env")).toMatchObject({ openable: false, unavailableReason: "denied_secret", resource: null });
+    expect(byPath.get("../outside-secret.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "outside_workspace",
+      resource: null,
+    });
+    expect(byPath.get("host-secret.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "invalid_path",
+      resource: null,
+    });
+    expect(byPath.get("escape.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "outside_workspace",
+      resource: null,
+    });
+    expect(byPath.get("missing.ts")).toMatchObject({ openable: false, unavailableReason: "not_found", resource: null });
+    expect(byPath.get("remote.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "remote_workspace",
+      resource: { kind: "remote_resource" },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(root);
+
+    const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, graph.issueId));
+    const availabilityRows = rows.filter((row) => row.action === "issue.file_resource_availability");
+    expect(availabilityRows).toHaveLength(1);
+    expect(availabilityRows[0]?.details).toMatchObject({
+      outcome: "success",
+      requestedCount: 11,
+      uniqueCount: 10,
+      openableCount: 2,
+      unavailableCount: 8,
+    });
+    expect(JSON.stringify(availabilityRows[0]?.details)).not.toContain(root);
+  });
+
+  it("reports ambiguous auto-discovery as one unavailable result", async () => {
+    const { projectRoot, targetProjectRoot, executionRoot, root } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot });
+    const extraRoot = path.join(root, "extra-project");
+    await fs.mkdir(extraRoot, { recursive: true });
+    await fs.writeFile(path.join(targetProjectRoot, "shared.md"), "target\n", "utf8");
+    await fs.writeFile(path.join(extraRoot, "shared.md"), "extra\n", "utf8");
+    const extraProjectId = crypto.randomUUID();
+    await db.insert(projects).values({
+      id: extraProjectId,
+      companyId: graph.companyId,
+      name: "Extra project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: crypto.randomUUID(),
+      companyId: graph.companyId,
+      projectId: extraProjectId,
+      name: "Extra workspace",
+      sourceType: "local_path",
+      cwd: extraRoot,
+      isPrimary: true,
+    });
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "shared.md" }] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.results).toEqual([
+      {
+        query: { path: "shared.md", workspace: "auto", projectId: null, workspaceId: null },
+        openable: false,
+        unavailableReason: "ambiguous_workspace_path",
+        resource: null,
+      },
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain(root);
+  });
+
+  it("enforces board access, company boundaries, and the 100-query cap", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const agentId = crypto.randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: graph.companyId,
+      name: "Availability audit agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    });
+    const agentApp = createApp(db, {
+      type: "agent",
+      agentId,
+      companyId: graph.companyId,
+      source: "agent_key",
+    });
+    const otherCompanyApp = createApp(db, {
+      type: "board",
+      userId: "other-board",
+      companyIds: [graph.otherCompanyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const boardApp = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    expect((await request(agentApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(403);
+    expect((await request(otherCompanyApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(404);
+    expect((await request(boardApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: Array.from({ length: 101 }, (_, index) => ({ path: `file-${index}.ts` })) })).status).toBe(400);
+  });
 });
 
 describeEmbeddedPostgres("file resource route guards", () => {
@@ -1470,6 +1977,9 @@ describeEmbeddedPostgres("file resource route guards", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1521,5 +2031,66 @@ describeEmbeddedPostgres("file resource route guards", () => {
     expect((await firstResponse).status).toBe(200);
     const third = await request(app).get("/api/issues/issue-1/file-resources/resolve").query({ path: "README.md" });
     expect(third.status).toBe(429);
+  });
+
+  it("uses a batch-specific availability limiter", async () => {
+    const companyId = crypto.randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Availability rate limit company",
+      issuePrefix: "AVL",
+    });
+    let releaseSlowAvailability: (() => void) | null = null;
+    let slowAvailabilityStarted: (() => void) | null = null;
+    const slowAvailability = new Promise<void>((resolve) => {
+      releaseSlowAvailability = resolve;
+    });
+    const availabilityStarted = new Promise<void>((resolve) => {
+      slowAvailabilityStarted = resolve;
+    });
+    const service: WorkspaceFileResourceService = {
+      getIssue: vi.fn(async () => ({ companyId })),
+      availability: vi.fn(async () => {
+        slowAvailabilityStarted?.();
+        await slowAvailability;
+        return { kind: "workspace_file_availability", results: [] };
+      }),
+      list: vi.fn(async () => { throw new Error("not used"); }),
+      resolve: vi.fn(async () => { throw new Error("not used"); }),
+      readContent: vi.fn(async () => { throw new Error("not used"); }),
+      prepareDownload: vi.fn(async () => { throw new Error("not used"); }),
+    };
+    const app = createApp(
+      db,
+      {
+        type: "board",
+        userId: "board-user",
+        companyIds: [companyId],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      {
+        service,
+        availabilityLimiter: createFileResourceAvailabilityLimiter({
+          maxConcurrent: 1,
+          maxRequests: 2,
+          windowMs: 60_000,
+        }),
+      },
+    );
+
+    const firstRequest = request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] });
+    const firstResponse = firstRequest.then((response) => response);
+    await availabilityStarted;
+    expect((await request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(429);
+    releaseSlowAvailability?.();
+    expect((await firstResponse).status).toBe(200);
+    expect((await request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(429);
   });
 });

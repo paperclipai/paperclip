@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "decisions_running_recovery_idx" ON "decisions" USING btree ("updated_at","id") WHERE "decisions"."status" = 'decided' AND "decisions"."execution_status" = 'running';

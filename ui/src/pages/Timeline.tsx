@@ -5,7 +5,7 @@
  * (`GET /companies/:companyId/timeline`). Rendering is the board-locked
  * Direction C (PAP-12422): dense rows, mini-map brush, custom inline SVG.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, Clock3, Coins, GanttChartSquare, Minus, Plus, RotateCcw, type LucideIcon } from "lucide-react";
 import type { WorkTimelineResult } from "@paperclipai/shared";
@@ -24,16 +24,83 @@ import {
   clampZoomScale,
   defaultZoomForWindow,
   nearestZoomForScale,
+  type VisibleTimelineWindow,
   type ZoomLevel,
   zoomScaleForLevel,
 } from "@/components/timeline/WorkTimelineChart";
 import { formatDuration, TIMELINE_COLORS } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
+import { useLocation } from "@/lib/router";
+import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
+const TIMELINE_PAGE_LIMIT = 500;
+
 interface DateRangeState {
   fromDate: string;
   toDate: string;
+}
+
+function timelineEventKey(event: WorkTimelineResult["events"][number]) {
+  return `${event.actorId}\0${event.kind}\0${event.issueId}\0${event.at}`;
+}
+
+function timelineEdgeKey(edge: WorkTimelineResult["edges"][number]) {
+  return `${edge.fromActorId}\0${edge.toActorId}\0${edge.issueId}\0${edge.at}\0${edge.kind}`;
+}
+
+export async function loadTimelineWindow(
+  companyId: string,
+  params: WorkTimelineParams,
+  signal?: AbortSignal,
+): Promise<WorkTimelineResult> {
+  const actors = new Map<string, WorkTimelineResult["actors"][number]>();
+  const spans = new Map<string, WorkTimelineResult["spans"][number]>();
+  const events = new Map<string, WorkTimelineResult["events"][number]>();
+  const edges = new Map<string, WorkTimelineResult["edges"][number]>();
+  let offset = 0;
+  let firstPage: WorkTimelineResult | null = null;
+  let totalIssues = 0;
+  let capped = false;
+
+  while (true) {
+    const page = await workTimelineApi.get(companyId, {
+      ...params,
+      limit: TIMELINE_PAGE_LIMIT,
+      offset,
+    }, { signal });
+    firstPage ??= page;
+    totalIssues = Math.max(totalIssues, page.pagination.totalIssues);
+    capped ||= page.window.capped;
+
+    for (const actor of page.actors) actors.set(actor.id, actor);
+    for (const span of page.spans) spans.set(span.runId, span);
+    for (const event of page.events) events.set(timelineEventKey(event), event);
+    for (const edge of page.edges) edges.set(timelineEdgeKey(edge), edge);
+
+    if (!page.pagination.hasMore) break;
+    const nextOffset = page.pagination.offset + page.pagination.limit;
+    if (nextOffset <= offset) throw new Error("Timeline pagination did not advance");
+    offset = nextOffset;
+  }
+
+  if (!firstPage) throw new Error("Timeline response was empty");
+  return {
+    actors: Array.from(actors.values()),
+    spans: Array.from(spans.values()),
+    events: Array.from(events.values()),
+    edges: Array.from(edges.values()),
+    pagination: {
+      limit: TIMELINE_PAGE_LIMIT,
+      offset: 0,
+      totalIssues,
+      hasMore: false,
+    },
+    window: {
+      ...firstPage.window,
+      capped,
+    },
+  };
 }
 
 function dateInputValue(date: Date): string {
@@ -89,11 +156,12 @@ function spanEndMs(span: WorkTimelineResult["spans"][number], fallbackEndMs: num
 
 function spanWindowOverlap(
   span: WorkTimelineResult["spans"][number],
+  rawFallbackEndMs: number,
   windowFromMs: number,
   windowToMs: number,
 ) {
   const rawStartMs = spanStartMs(span);
-  const rawEndMs = spanEndMs(span, windowToMs);
+  const rawEndMs = spanEndMs(span, rawFallbackEndMs);
   const startMs = Math.max(rawStartMs, windowFromMs);
   const endMs = Math.min(rawEndMs, windowToMs);
   return {
@@ -109,25 +177,34 @@ function spanWindowTokens(span: WorkTimelineResult["spans"][number], rawMs: numb
   return Math.round(totalTokens * (clippedMs / rawMs));
 }
 
-function timelineSummary(data: WorkTimelineResult) {
+function dataWindow(data: WorkTimelineResult): VisibleTimelineWindow {
+  return {
+    fromMs: new Date(data.window.from).getTime(),
+    toMs: new Date(data.window.to).getTime(),
+  };
+}
+
+export function timelineSummary(data: WorkTimelineResult, visibleWindow: VisibleTimelineWindow = dataWindow(data)) {
   const actorById = new Map(data.actors.map((actor) => [actor.id, actor]));
   const activeAgentIds = new Set<string>();
-  const windowFromMs = new Date(data.window.from).getTime();
-  const windowToMs = new Date(data.window.to).getTime();
+  const fullWindow = dataWindow(data);
+  const windowFromMs = Math.max(fullWindow.fromMs, Math.min(fullWindow.toMs, visibleWindow.fromMs));
+  const windowToMs = Math.max(windowFromMs, Math.min(fullWindow.toMs, visibleWindow.toMs));
   let activeMs = 0;
   let totalTokens = 0;
+  let runs = 0;
 
   for (const span of data.spans) {
-    if (actorById.get(span.actorId)?.type === "agent") {
-      activeAgentIds.add(span.actorId);
-    }
-    const overlap = spanWindowOverlap(span, windowFromMs, windowToMs);
+    const overlap = spanWindowOverlap(span, fullWindow.toMs, windowFromMs, windowToMs);
+    if (overlap.clippedMs <= 0) continue;
+    runs += 1;
+    if (actorById.get(span.actorId)?.type === "agent") activeAgentIds.add(span.actorId);
     activeMs += overlap.clippedMs;
     totalTokens += spanWindowTokens(span, overlap.rawMs, overlap.clippedMs);
   }
 
   return {
-    runs: data.spans.length,
+    runs,
     agents: activeAgentIds.size,
     activeMs,
     totalTokens,
@@ -227,29 +304,38 @@ function TimelineSummaryStats({
   );
 }
 
-export function Timeline() {
+export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const location = useLocation();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const scopedProjectId = useMemo(
+    () => streamlinedUiEnabled ? new URLSearchParams(location.search).get("projectId") || undefined : undefined,
+    [location.search, streamlinedUiEnabled],
+  );
   const [zoom, setZoom] = useState<ZoomLevel>("day");
   const [zoomScale, setZoomScale] = useState<number | undefined>(undefined);
   const zoomTouched = useRef(false);
   const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [dateRange, setDateRange] = useState<DateRangeState>(() => presetRange("7d"));
+  const [visibleWindow, setVisibleWindow] = useState<VisibleTimelineWindow | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Timeline" }]);
-  }, [setBreadcrumbs]);
+    if (!embedded) {
+      setBreadcrumbs([{ label: scopedProjectId ? "Project Timeline" : "Timeline" }]);
+    }
+  }, [embedded, scopedProjectId, setBreadcrumbs]);
 
   const dateRangeError = rangeError(dateRange);
   const params: WorkTimelineParams | null = useMemo(() => {
     const window = rangeWindow(dateRange);
     if (!window) return null;
-    return window;
-  }, [dateRange]);
+    return scopedProjectId ? { ...window, projectId: scopedProjectId } : window;
+  }, [dateRange, scopedProjectId]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate],
-    queryFn: () => workTimelineApi.get(selectedCompanyId!, params!),
+    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate, scopedProjectId ?? null],
+    queryFn: ({ signal }) => loadTimelineWindow(selectedCompanyId!, params!, signal),
     enabled: !!selectedCompanyId && !!params,
   });
 
@@ -260,11 +346,23 @@ export function Timeline() {
     setZoomScale(undefined);
   }, [data]);
 
+  useEffect(() => {
+    setVisibleWindow(null);
+  }, [data?.window.from, data?.window.to]);
+
+  const handleVisibleWindowChange = useCallback((nextWindow: VisibleTimelineWindow) => {
+    setVisibleWindow((current) => (
+      current?.fromMs === nextWindow.fromMs && current.toMs === nextWindow.toMs
+        ? current
+        : nextWindow
+    ));
+  }, []);
+
   if (!selectedCompanyId) {
     return (
       <>
-        <RequestCollapsedSidebar />
-        <EmptyState icon={GanttChartSquare} message="Select a company to view its work timeline." />
+        {!embedded && <RequestCollapsedSidebar />}
+        <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
       </>
     );
   }
@@ -272,7 +370,9 @@ export function Timeline() {
   const header = (
     <div className="flex items-center gap-2">
       <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
-      <h1 className="text-3xl font-semibold tracking-tight">Work Timeline</h1>
+      <h1 className="text-3xl font-semibold tracking-tight">
+        {scopedProjectId ? "Project Timeline" : "Work Timeline"}
+      </h1>
     </div>
   );
 
@@ -293,7 +393,7 @@ export function Timeline() {
     setZoomScale(undefined);
   };
 
-  const summary = data ? timelineSummary(data) : null;
+  const summary = data ? timelineSummary(data, visibleWindow ?? dataWindow(data)) : null;
 
   const rangeControls = (
     <label className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -375,7 +475,7 @@ export function Timeline() {
 
   return (
     <div className="space-y-6">
-      <RequestCollapsedSidebar />
+      {!embedded && <RequestCollapsedSidebar />}
       {header}
       {toolbar}
 
@@ -403,7 +503,10 @@ export function Timeline() {
       {data && !isLoading && !dateRangeError && (
         data.spans.length === 0 ? (
           <div className="space-y-3">
-            <EmptyState icon={GanttChartSquare} message="No activity in this window." />
+            <EmptyState
+              icon={GanttChartSquare}
+              message={scopedProjectId ? "No project activity in this window." : "No activity in this window."}
+            />
             <div className="flex flex-wrap items-center justify-end gap-3">
               {rangeControls}
             </div>
@@ -416,6 +519,7 @@ export function Timeline() {
                 data={data}
                 zoom={zoom}
                 zoomScale={zoomScale}
+                onVisibleWindowChange={handleVisibleWindowChange}
                 onZoomScaleChange={(nextScale, nextZoom = nearestZoomForScale(nextScale)) => {
                   zoomTouched.current = true;
                   setZoomScale(nextScale);

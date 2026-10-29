@@ -10,7 +10,7 @@ import {
   externalObjectLivenessOverlay,
 } from "../lib/status-colors";
 import {
-  externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectLivenessLabel,
   externalObjectIconForKey,
@@ -65,7 +65,11 @@ function externalObjectPillTone(object: ExternalObjectPillData, statusLabel: str
   if (isMergedExternalObject(object, statusLabel)) {
     return "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400";
   }
-  return externalObjectStatusIcon[object.statusCategory] ?? externalObjectStatusIconDefault;
+  // A liveness problem (auth required, rate limited, unreachable) overrides the last
+  // known status tone so a warning is visible even when the status looks healthy.
+  return externalObjectStatusIcon[object.liveness]
+    ?? externalObjectStatusIcon[object.statusCategory]
+    ?? externalObjectStatusIconDefault;
 }
 
 function externalObjectStatusIconKey(
@@ -114,7 +118,7 @@ export function ExternalObjectPill({
   const providerLabel = externalObjectProviderLabel(object.providerKey);
   const typeLabel = externalObjectTypeLabel(object.objectType);
   const displayKey = externalObjectDisplayLabel(object.providerKey, object.objectType, object.displayKey);
-  const statusLabel = object.statusLabel ?? externalObjectCategoryLabel(object.statusCategory);
+  const statusLabel = externalObjectDisplayStatusLabel(object);
   const tone = externalObjectPillTone(object, statusLabel);
   const valueLabel = externalObjectValueLabel(object, displayKey, statusLabel);
   const statusIconKey = externalObjectStatusIconKey(object, statusLabel);

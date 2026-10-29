@@ -1,115 +1,148 @@
 /**
- * Plugin secrets host-side handler — resolves secret references through the
- * Paperclip secret provider system.
- *
- * When a plugin worker calls `ctx.secrets.resolve(secretRef)`, the JSON-RPC
- * request arrives at the host with `{ secretRef }`. This module provides the
- * concrete `HostServices.secrets` adapter that:
- *
- * 1. Parses the `secretRef` string to identify the secret.
- * 2. Looks up the secret record and its latest version in the database.
- * 3. Delegates to the configured `SecretProviderModule` to decrypt /
- *    resolve the raw value.
- * 4. Returns the resolved plaintext value to the worker.
- *
- * ## Secret Reference Format
- *
- * A `secretRef` is a **secret UUID** — the primary key (`id`) of a row in
- * the `company_secrets` table. Operators place these UUIDs into plugin
- * config values; plugin workers resolve them at execution time via
- * `ctx.secrets.resolve(secretId)`.
- *
- * ## Security Invariants
- *
- * - Resolved values are **never** logged, persisted, or included in error
- *   messages (per PLUGIN_SPEC.md §22).
- * - The handler is capability-gated: only plugins with `secrets.read-ref`
- *   declared in their manifest may call it (enforced by `host-client-factory`).
- * - The host handler itself does not cache resolved values. Each call goes
- *   through the secret provider to honour rotation.
- *
- * @see PLUGIN_SPEC.md §22 — Secrets
- * @see host-client-factory.ts — capability gating
- * @see services/secrets.ts — secretService used by agent env bindings
+ * Plugin secrets host-side handler. Plugin workers may resolve shared
+ * `secret_ref` config bindings only with an explicit company context.
  */
 
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companySecretBindings } from "@paperclipai/db";
+import type { EnvSecretRefBinding, SecretProjectionClass, SecretVersionSelector } from "@paperclipai/shared";
+import { envBindingSecretRefSchema } from "@paperclipai/shared";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
-
-export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+import { secretService } from "./secrets.js";
+import { unprocessable } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
 
-function invalidSecretRef(secretRef: string): Error {
-  const err = new Error(`Invalid secret reference: ${secretRef}`);
+function invalidSecretRef(secretRef: unknown): Error {
+  const rendered = typeof secretRef === "string" ? secretRef : JSON.stringify(secretRef);
+  const err = new Error(
+    `Invalid secret reference for plugin: ${rendered ?? "<empty>"}. Use { type: "secret_ref", secretId, version? }`,
+  );
   err.name = "InvalidSecretRefError";
   return err;
+}
+
+function requireCompanyId(companyId: unknown): string {
+  if (typeof companyId !== "string" || companyId.trim().length === 0) {
+    throw unprocessable("companyId is required for plugin secret resolution");
+  }
+  return companyId.trim();
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseSecretRefBinding(value: unknown): EnvSecretRefBinding | null {
+  const parsed = envBindingSecretRefSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function assertSecretRefBinding(
+  value: unknown,
+  path: string,
+  rejectLegacyUuid = false,
+): EnvSecretRefBinding | null {
+  if (rejectLegacyUuid && typeof value === "string" && isUuidSecretRef(value)) {
+    throw unprocessable(
+      `Plugin secret ref at ${path} must use { type: "secret_ref", secretId, version? }`,
+    );
+  }
+  if (!isPlainRecord(value) || value.type !== "secret_ref") return null;
+  const parsed = parseSecretRefBinding(value);
+  if (!parsed) {
+    throw unprocessable(`Invalid secret_ref binding at ${path}`);
+  }
+  return parsed;
+}
+
+export interface PluginConfigSecretRefBinding {
+  secretId: string;
+  configPath: string;
+  versionSelector?: SecretVersionSelector;
+  required?: boolean;
+  label?: string | null;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
-/**
- * Extract secret reference UUIDs from a plugin's configJson, scoped to only
- * the fields annotated with `format: "secret-ref"` in the schema.
- *
- * When no schema is provided, falls back to collecting all UUID-shaped strings
- * (backwards-compatible for plugins without a declared instanceConfigSchema).
- */
+/** Extract shared object-shaped secret refs from plugin config. */
+export function extractSecretRefBindingsFromConfig(
+  configJson: unknown,
+  schema?: Record<string, unknown> | null,
+): PluginConfigSecretRefBinding[] {
+  if (configJson == null || typeof configJson !== "object") return [];
+
+  const refsByPath = new Map<string, PluginConfigSecretRefBinding>();
+  const addRef = (binding: EnvSecretRefBinding, configPath: string) => {
+    refsByPath.set(configPath, {
+      secretId: binding.secretId,
+      configPath,
+      versionSelector: binding.version ?? "latest",
+      required: true,
+      label: configPath,
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
+    });
+  };
+
+  const secretPaths = collectSecretRefPaths(schema);
+  for (const dotPath of secretPaths) {
+    const current = readConfigValueAtPath(configJson as Record<string, unknown>, dotPath);
+    const binding = assertSecretRefBinding(current, dotPath, true);
+    if (binding) addRef(binding, dotPath);
+  }
+
+  function walk(value: unknown, path: string): void {
+    const binding = assertSecretRefBinding(value, path || "$");
+    if (binding) {
+      addRef(binding, path || "$");
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => walk(item, path ? `${path}.${index}` : String(index)));
+      return;
+    }
+    if (!isPlainRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, path ? `${path}.${key}` : key);
+    }
+  }
+
+  walk(configJson, "");
+  return [...refsByPath.values()];
+}
+
+/** Backward-compatible helper returning only secret IDs. */
 export function extractSecretRefsFromConfig(
   configJson: unknown,
   schema?: Record<string, unknown> | null,
 ): Set<string> {
-  return new Set(extractSecretRefPathsFromConfig(configJson, schema).keys());
+  return new Set(extractSecretRefBindingsFromConfig(configJson, schema).map((ref) => ref.secretId));
 }
 
+/** Backward-compatible helper returning secret IDs grouped by config path. */
 export function extractSecretRefPathsFromConfig(
   configJson: unknown,
   schema?: Record<string, unknown> | null,
 ): Map<string, Set<string>> {
   const refs = new Map<string, Set<string>>();
-  const addRef = (secretRef: string, path: string) => {
-    const existing = refs.get(secretRef) ?? new Set<string>();
-    existing.add(path);
-    refs.set(secretRef, existing);
-  };
-  if (configJson == null || typeof configJson !== "object") return new Map();
-
-  const secretPaths = collectSecretRefPaths(schema);
-
-  // If schema declares secret-ref paths, extract only those values.
-  if (secretPaths.size > 0) {
-    for (const dotPath of secretPaths) {
-      const current = readConfigValueAtPath(configJson as Record<string, unknown>, dotPath);
-      if (typeof current === "string" && isUuidSecretRef(current)) {
-        addRef(current, dotPath);
-      }
-    }
-    return refs;
+  for (const ref of extractSecretRefBindingsFromConfig(configJson, schema)) {
+    const paths = refs.get(ref.secretId) ?? new Set<string>();
+    paths.add(ref.configPath);
+    refs.set(ref.secretId, paths);
   }
-
-  // Fallback: no schema or no secret-ref annotations — collect all UUIDs.
-  // This preserves backwards compatibility for plugins that omit
-  // instanceConfigSchema.
-  function walkAll(value: unknown): void {
-    if (typeof value === "string") {
-      if (isUuidSecretRef(value)) addRef(value, "$");
-    } else if (Array.isArray(value)) {
-      for (const item of value) walkAll(item);
-    } else if (value !== null && typeof value === "object") {
-      for (const v of Object.values(value as Record<string, unknown>)) walkAll(v);
-    }
-  }
-
-  walkAll(configJson);
   return refs;
 }
 
@@ -117,69 +150,28 @@ export function extractSecretRefPathsFromConfig(
 // Handler factory
 // ---------------------------------------------------------------------------
 
-/**
- * Input shape for the `secrets.resolve` handler.
- *
- * Matches `WorkerToHostMethods["secrets.resolve"][0]` from `protocol.ts`.
- */
 export interface PluginSecretsResolveParams {
-  /** The secret reference string (a secret UUID). */
-  secretRef: string;
+  /** Shared secret reference object from company-scoped plugin config. */
+  secretRef: string | EnvSecretRefBinding;
+  /** Authorized company context for this worker invocation. */
+  companyId?: string;
+  /** Config path that produced this ref. Required when a secret appears in multiple paths. */
+  configPath?: string;
+  actorType?: "agent" | "user" | "system" | "plugin";
+  actorId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
 }
 
-/**
- * Options for creating the plugin secrets handler.
- */
 export interface PluginSecretsHandlerOptions {
-  /** Database connection. */
   db: Db;
-  /**
-   * The plugin ID using this handler.
-   * Used for logging context only; never included in error payloads
-   * that reach the plugin worker.
-   */
   pluginId: string;
 }
 
-/**
- * The `HostServices.secrets` adapter for the plugin host-client factory.
- */
 export interface PluginSecretsService {
-  /**
-   * Resolve a secret reference to its current plaintext value.
-   *
-   * @param params - Contains the `secretRef` (UUID of the secret)
-   * @returns The resolved secret value
-   * @throws {Error} If the secret is not found, has no versions, or
-   *   the provider fails to resolve
-   */
   resolve(params: PluginSecretsResolveParams): Promise<string>;
 }
 
-/**
- * Create a `HostServices.secrets` adapter for a specific plugin.
- *
- * The returned service looks up secrets by UUID, fetches the latest version
- * material, and delegates to the appropriate `SecretProviderModule` for
- * decryption.
- *
- * @example
- * ```ts
- * const secretsHandler = createPluginSecretsHandler({ db, pluginId });
- * const handlers = createHostClientHandlers({
- *   pluginId,
- *   capabilities: manifest.capabilities,
- *   services: {
- *     secrets: secretsHandler,
- *     // ...
- *   },
- * });
- * ```
- *
- * @param options - Database connection and plugin identity
- * @returns A `PluginSecretsService` suitable for `HostServices.secrets`
- */
-/** Simple sliding-window rate limiter for secret resolution attempts. */
 function createRateLimiter(maxAttempts: number, windowMs: number) {
   const attempts = new Map<string, number[]>();
 
@@ -199,40 +191,95 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
-
-  // Rate limit: max 30 resolution attempts per plugin per minute
+  const { db, pluginId } = options;
   const rateLimiter = createRateLimiter(30, 60_000);
+
+  async function lookupBinding(input: {
+    companyId: string;
+    secretId: string;
+    versionSelector: SecretVersionSelector;
+    configPath?: string;
+  }) {
+    const conditions = [
+      eq(companySecretBindings.companyId, input.companyId),
+      eq(companySecretBindings.targetType, "plugin"),
+      eq(companySecretBindings.targetId, pluginId),
+      eq(companySecretBindings.secretId, input.secretId),
+    ];
+    if (input.configPath) {
+      conditions.push(eq(companySecretBindings.configPath, input.configPath));
+    }
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(...conditions));
+    const matchingVersion = rows.filter(
+      (row) => row.versionSelector === String(input.versionSelector),
+    );
+    return matchingVersion;
+  }
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
-      const { secretRef } = params;
+      if (typeof params.secretRef === "string") {
+        throw invalidSecretRef(params.secretRef.trim() || "<empty>");
+      }
 
-      // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
-      // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
+      const bindingRef = parseSecretRefBinding(params.secretRef);
+      if (!bindingRef) throw invalidSecretRef(params.secretRef);
+
+      const companyId = requireCompanyId(params.companyId);
+
+      if (!rateLimiter.check(`${companyId}:${pluginId}`)) {
         const err = new Error("Rate limit exceeded for secret resolution");
         err.name = "RateLimitExceededError";
         throw err;
       }
 
-      // ---------------------------------------------------------------
-      // 1. Validate the ref format
-      // ---------------------------------------------------------------
-      if (!secretRef || typeof secretRef !== "string" || secretRef.trim().length === 0) {
-        throw invalidSecretRef(secretRef ?? "<empty>");
+      const versionSelector = bindingRef.version ?? "latest";
+      const bindings = await lookupBinding({
+        companyId,
+        secretId: bindingRef.secretId,
+        versionSelector,
+        configPath: params.configPath,
+      });
+
+      if (bindings.length === 0) {
+        throw unprocessable(
+          `Secret is not bound to plugin:${pluginId}${params.configPath ? ` at ${params.configPath}` : ""}`,
+          { code: "binding_missing" },
+        );
+      }
+      if (bindings.length > 1) {
+        throw unprocessable(
+          "Plugin secret reference is ambiguous; pass configPath when resolving this secret",
+          { code: "binding_ambiguous" },
+        );
       }
 
-      const trimmedRef = secretRef.trim();
-
-      if (!isUuidSecretRef(trimmedRef)) {
-        throw invalidSecretRef(trimmedRef);
-      }
-
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      const binding = bindings[0]!;
+      return secretService(db).resolveSecretValue(companyId, bindingRef.secretId, versionSelector, {
+        bindingContext: {
+          consumerType: "plugin",
+          consumerId: pluginId,
+          configPath: binding.configPath,
+          actorType: params.actorType ?? "plugin",
+          actorId: params.actorId ?? pluginId,
+          issueId: params.issueId ?? null,
+          heartbeatRunId: params.heartbeatRunId ?? null,
+          pluginId,
+        },
+        accessContext: {
+          consumerType: "plugin_worker",
+          consumerId: pluginId,
+          configPath: binding.configPath,
+          actorType: params.actorType ?? "plugin",
+          actorId: params.actorId ?? pluginId,
+          issueId: params.issueId ?? null,
+          heartbeatRunId: params.heartbeatRunId ?? null,
+          pluginId,
+        },
+      });
     },
   };
 }

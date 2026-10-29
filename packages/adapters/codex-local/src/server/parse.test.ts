@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -8,6 +10,19 @@ import {
 } from "./parse.js";
 
 describe("parseCodexJsonl", () => {
+  it.each(["turn.failed", "error", "turn.completed"])("does not invent zero usage for %s without counters", (type) => {
+    expect(parseCodexJsonl(JSON.stringify({ type }))).toMatchObject({
+      sawProtocolTerminalEvent: true, usageReported: false, usageComplete: false,
+    });
+  });
+  it.each([{}, { input_tokens: 0 }, { input_tokens: -1, output_tokens: 0 }, { input_tokens: 1, output_tokens: 0, cached_input_tokens: 2 }])("rejects missing or invalid completion counters: %j", (usage) => {
+    expect(parseCodexJsonl(JSON.stringify({ type: "turn.completed", usage })).usageComplete).toBe(false);
+  });
+  it("distinguishes explicit zero usage from missing usage", () => {
+    expect(parseCodexJsonl(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 0, output_tokens: 0 } }))).toMatchObject({
+      usageReported: true, usageComplete: true, usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+    });
+  });
   it("captures session id, assistant summary, usage, and error message", () => {
     const stdout = [
       JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
@@ -26,11 +41,16 @@ describe("parseCodexJsonl", () => {
       sessionId: "thread_123",
       summary: "Recovered response",
       usage: {
-        inputTokens: 10,
+        inputTokens: 8,
         cachedInputTokens: 2,
         outputTokens: 4,
       },
+      usageBasis: "per_run",
       errorMessage: "resume failed",
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
+      usageReported: true,
+      usageComplete: false,
     });
   });
 
@@ -59,12 +79,107 @@ describe("parseCodexJsonl", () => {
       sessionId: "thread_123",
       summary: "Fixed the issue and verified the targeted tests pass.",
       usage: {
-        inputTokens: 10,
+        inputTokens: 8,
         cachedInputTokens: 2,
         outputTokens: 4,
       },
+      usageBasis: "per_run",
       errorMessage: null,
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
+      usageReported: true,
+      usageComplete: true,
     });
+  });
+});
+
+describe("isCodexHarnessCrash", () => {
+  const crashedMidTurnStream = [
+    JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Checking out the issue now." },
+    }),
+    JSON.stringify({ type: "item.started", item: { type: "command_execution" } }),
+  ].join("\n");
+
+  it("classifies a nonzero exit with no protocol-terminal event as a harness crash", () => {
+    const parsed = parseCodexJsonl(crashedMidTurnStream);
+    expect(parsed.sawProtocolEvent).toBe(true);
+    expect(parsed.sawProtocolTerminalEvent).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: 1, ...parsed })).toBe(true);
+  });
+
+  it("does not classify runs whose turn reached a protocol-terminal event", () => {
+    const failedInProtocol = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({ type: "turn.failed", error: { message: "the model rejected the request" } }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...failedInProtocol })).toBe(false);
+
+    const completedThenFailedExit = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4 },
+        }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...completedThenFailedExit })).toBe(false);
+  });
+
+  it("does not classify successful exits or streams that never spoke the protocol", () => {
+    expect(isCodexHarnessCrash({ exitCode: 0, ...parseCodexJsonl(crashedMidTurnStream) })).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: null, ...parseCodexJsonl(crashedMidTurnStream) })).toBe(false);
+
+    const neverStarted = parseCodexJsonl("error: unexpected argument '--bogus-flag'\n");
+    expect(neverStarted.sawProtocolEvent).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: 2, ...neverStarted })).toBe(false);
+  });
+
+  it("stays structural: agent output discussing network errors does not affect classification", () => {
+    const parsed = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: "The deploy failed with connection reset by peer; investigating." },
+        }),
+        JSON.stringify({ type: "turn.failed", error: { message: "agent gave up" } }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...parsed })).toBe(false);
+    expect(
+      isCodexTransientUpstreamError({
+        stdout: "connection reset by peer while running the deploy",
+        errorMessage: "agent gave up",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("classifyCodexAuthRefreshFailure", () => {
+  it("classifies explicit refresh-token failure messages", () => {
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "provider error: refresh_token_reused" })).toBe(
+      "refresh_token_reused",
+    );
+    expect(classifyCodexAuthRefreshFailure({ stderr: "OAuth failed: refresh token has expired" })).toBe(
+      "refresh_token_expired",
+    );
+    expect(classifyCodexAuthRefreshFailure({ stdout: "OAuth failed: invalid_grant" })).toBe(
+      "refresh_token_invalidated",
+    );
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "credential refresh returned 401 Unauthorized" })).toBe(
+      "refresh_token_invalidated",
+    );
+  });
+
+  it("does not classify bare 401 or quota messages as auth-refresh failures", () => {
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBeNull();
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "You've hit your usage limit for GPT-5." })).toBeNull();
   });
 });
 

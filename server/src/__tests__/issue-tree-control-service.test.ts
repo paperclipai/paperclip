@@ -2,12 +2,16 @@ import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   companies,
+  applyPendingMigrations,
+  closeRegisteredClients,
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -18,8 +22,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { issueService } from "../services/issues.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_TREE_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -33,11 +39,18 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    if (externalUrl) {
+      await applyPendingMigrations(externalUrl);
+      db = createDb(externalUrl);
+      return;
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-tree-control-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
     await db.delete(issueComments);
@@ -49,6 +62,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
   });
 
   afterAll(async () => {
+    if (externalUrl) await closeRegisteredClients(externalUrl);
     await tempDb?.cleanup();
   });
 
@@ -137,7 +151,6 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         createdAt: new Date("2026-04-21T10:03:00.000Z"),
       },
     ]);
-
     const svc = issueTreeControlService(db);
     const preview = await svc.preview(companyId, rootIssueId, { mode: "pause" });
 
@@ -314,6 +327,14 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         createdAt: new Date("2026-04-21T10:03:00.000Z"),
       },
     ]);
+    const [pendingInteraction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: runningChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      payload: { version: 1, prompt: "Continue?" },
+    }).returning();
 
     const svc = issueTreeControlService(db);
     const cancel = await svc.createHold(companyId, rootIssueId, {
@@ -340,6 +361,11 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       [todoChildId]: "cancelled",
       [doneChildId]: "done",
     });
+    const [expiredInteraction] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, pendingInteraction!.id));
+    expect(expiredInteraction?.status).toBe("expired");
 
     await db
       .update(issues)
@@ -605,6 +631,58 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     const checkedOutLegacyFullPauseRoot = await issueSvc.checkout(rootIssueId, agentId, ["todo"], rootRunId);
     expect(checkedOutLegacyFullPauseRoot.status).toBe("in_progress");
     expect(checkedOutLegacyFullPauseRoot.checkoutRunId).toBe(rootRunId);
+  });
+
+  it("previews only executable current assignees as resume wake targets", async () => {
+    const companyId = randomUUID();
+    const rootId = randomUUID();
+    const readyAgentId = randomUUID();
+    const parkedAgentId = randomUUID();
+    const previousAgentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Resume preview", issuePrefix: "RESUME",
+    });
+    await db.insert(agents).values([readyAgentId, parkedAgentId, previousAgentId].map((id) => ({
+      id, companyId, name: id, role: "engineer", status: "idle", adapterType: "process",
+    })));
+    const children = ["todo", "in_progress", "in_review", "blocked", "backlog", "done"].map((status) => ({
+      id: randomUUID(), companyId, parentId: rootId, title: status, status,
+      assigneeAgentId: status === "blocked" || status === "backlog" ? parkedAgentId : readyAgentId,
+    }));
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "Unassigned root", status: "todo" },
+      ...children,
+    ]);
+    const svc = issueTreeControlService(db);
+    const pause = await svc.createHold(companyId, rootId, {
+      mode: "pause",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+    expect(pause.hold.members?.find((member) => member.issueId === children[5].id)).toMatchObject({
+      skipped: true, skipReason: "terminal_status",
+    });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, children[5].id));
+    // A previous executor is observable while stopping, but is not the current assignee to wake.
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId: previousAgentId, invocationSource: "assignment",
+      status: "running", contextSnapshot: { issueId: children[0].id },
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, children[0].id));
+
+    const preview = await svc.preview(companyId, rootId, { mode: "resume" });
+    expect(preview.totals.affectedIssues).toBe(7);
+    expect(preview.affectedAgents).toEqual([{ agentId: readyAgentId, issueCount: 4, activeRunCount: 0 }]);
+    expect(preview.totals.affectedAgents).toBe(1);
+    expect(preview.warnings).toContainEqual({
+      code: "resume_tasks_remain_idle",
+      message: "Blocked, backlog, and unassigned tasks will be unpaused but will not start.",
+      issueIds: [rootId, children[3].id, children[4].id].sort(),
+    });
+    const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    expect(rows.find((row) => row.id === children[3].id)?.status).toBe("blocked");
+    expect(rows.find((row) => row.id === children[4].id)?.status).toBe("backlog");
+    expect((await svc.getHold(companyId, pause.hold.id))?.status).toBe("active");
   });
 
   it("resumes subtree pauses by releasing matching pause holds", async () => {

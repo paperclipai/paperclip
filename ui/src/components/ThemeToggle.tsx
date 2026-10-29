@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTheme } from "../context/ThemeContext";
 
-type ThemeToggleVariant = "icon" | "menu-action";
+type ThemeToggleVariant = "icon" | "menu-action" | "compact-menu-action";
 
 interface ThemeToggleProps {
   className?: string;
@@ -14,7 +14,10 @@ interface ThemeToggleProps {
    * other surface that just wants a toggle affordance.
    *
    * `menu-action`: full-width row with label + description + icon —
-   * matches the surrounding `MenuAction` rows in `SidebarAccountMenu`.
+   * suitable for explanatory menus.
+   *
+   * `compact-menu-action`: compact label + icon row — matches the
+   * surrounding actions in `SidebarAccountMenu`.
    */
   variant?: ThemeToggleVariant;
   /**
@@ -40,6 +43,25 @@ export function ThemeToggle({ className, variant = "icon", onAfterToggle }: Them
   function handleClick() {
     toggleTheme();
     onAfterToggle?.();
+  }
+
+  if (variant === "compact-menu-action") {
+    return (
+      <button
+        type="button"
+        className={cn(
+          "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-accent",
+          className,
+        )}
+        onClick={handleClick}
+        aria-label={label}
+      >
+        <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+          <Icon className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      </button>
+    );
   }
 
   if (variant === "menu-action") {

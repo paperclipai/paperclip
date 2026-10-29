@@ -1,4 +1,4 @@
-import { envBindingSchema, type SecretVersionSelector } from "@paperclipai/shared";
+import { envBindingSchema, type SecretProjectionClass, type SecretVersionSelector } from "@paperclipai/shared";
 
 interface AgentSecretBindingSyncService {
   syncSecretRefsForTarget?: (
@@ -10,6 +10,8 @@ interface AgentSecretBindingSyncService {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
+      projectionClass?: SecretProjectionClass;
+      projectionAllowlistKey?: string | null;
     }>,
     options?: { replaceAll?: boolean },
   ) => Promise<unknown>;
@@ -39,10 +41,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function collectSecretRefs(adapterConfig: unknown): Array<{
+export function collectSecretRefs(adapterConfig: unknown): Array<{
   secretId: string;
   configPath: string;
   versionSelector?: SecretVersionSelector;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }> {
   const config = asRecord(adapterConfig);
   if (!config) return [];
@@ -50,6 +54,8 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
     secretId: string;
     configPath: string;
     versionSelector?: SecretVersionSelector;
+    projectionClass?: SecretProjectionClass;
+    projectionAllowlistKey?: string | null;
   }> = [];
 
   const envValue = asRecord(config.env);
@@ -62,6 +68,8 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
       secretId: binding.secretId,
       configPath: `env.${key}`,
       versionSelector: binding.version ?? "latest",
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
     });
   }
 
@@ -75,13 +83,15 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
       secretId: binding.secretId,
       configPath: key,
       versionSelector: binding.version ?? "latest",
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
     });
   }
 
   return refs;
 }
 
-function collectUserSecretRefs(adapterConfig: unknown): Array<{
+export function collectUserSecretRefs(adapterConfig: unknown): Array<{
   definitionKey: string;
   configPath: string;
   envKey: string;

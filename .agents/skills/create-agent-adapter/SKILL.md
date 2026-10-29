@@ -1,11 +1,9 @@
 ---
 name: create-agent-adapter
 description: >
-  Technical guide for creating a new Paperclip agent adapter. Use when building
-  a new adapter package, adding support for a new AI coding tool (e.g. a new
-  CLI agent, API-based agent, or custom process), or when modifying the adapter
-  system. Covers the required interfaces, module structure, registration points,
-  and conventions derived from the existing claude-local and codex-local adapters.
+  Create or modify Paperclip agent adapters across server, UI, and CLI surfaces.
+  Use when adding support for a new CLI agent, API agent, custom process, or
+  adapter package.
 ---
 
 # Creating a Paperclip Agent Adapter
@@ -158,7 +156,7 @@ Guidelines:
 - Use `info` for successful checks and context.
 
 Severity policy is product-critical: warnings are not save blockers.  
-Example: for `claude_local`, detected `ANTHROPIC_API_KEY` must be a `warn`, not an `error`, because Claude can still run (it just uses API-key auth instead of subscription auth).
+Example: for `claude_local`, an explicitly configured `ANTHROPIC_API_KEY` or selected managed API connection is `info`: the user chose that authentication. An ambient server key overriding subscription login remains `warn`, not `error`.
 
 ---
 

@@ -46,6 +46,12 @@ function renderChart(
   });
 }
 
+async function flushTimelineEffects(count = 5) {
+  for (let index = 0; index < count; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function timelineSample(): WorkTimelineResult {
   return {
     actors: [
@@ -150,13 +156,37 @@ describe("WorkTimelineChart", () => {
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
   });
 
-  it("renders configured agent icons in the actor gutter instead of generated initials", () => {
+  it("reports the currently visible time window when the chart scrolls", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
+    const onVisibleWindowChange = vi.fn();
+    const data = timelineSample();
+    renderChart(data, { onVisibleWindowChange });
+
+    await flushTimelineEffects();
+
+    const scroller = container.querySelector<HTMLElement>("[data-testid='work-timeline-scroll']")!;
+    expect(onVisibleWindowChange).toHaveBeenCalled();
+
+    flushSync(() => {
+      scroller.scrollLeft = 0;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushTimelineEffects();
+
+    const lastCall = onVisibleWindowChange.mock.calls.at(-1)?.[0];
+    expect(lastCall?.fromMs).toBe(new Date(data.window.from).getTime());
+    expect(lastCall?.toMs).toBeCloseTo(new Date("2026-07-02T01:00:00.000Z").getTime(), -3);
+  });
+
+  it("renders cached persona images in the actor gutter", () => {
     renderChart(timelineSample());
 
     const gutter = container.querySelector<SVGSVGElement>("[data-testid='work-timeline-actor-gutter']");
 
-    expect(gutter?.querySelector(".lucide-code")).not.toBeNull();
-    expect(gutter?.querySelector(".lucide-shield")).not.toBeNull();
+    const portraits = gutter?.querySelectorAll('image[data-testid="timeline-agent-icon"]');
+    expect(portraits?.length).toBe(2);
+    expect(portraits?.[0].getAttribute("href")).toContain("/api/agent-avatars/cap-v1/");
+    expect(portraits?.[1].getAttribute("href")).toContain("/api/agent-avatars/cap-v1/");
     expect(gutter?.textContent).not.toContain("CC");
   });
 

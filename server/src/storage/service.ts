@@ -1,9 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { Readable } from "node:stream";
 import type { StorageService, StorageProvider, PutFileInput, PutFileResult } from "./types.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { cleanupStorageFailure } from "./failure-cleanup.js";
 
 const MAX_SEGMENT_LENGTH = 120;
+
+async function cancellable<T>(signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return action();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([action(), cancelled]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
 
 function sanitizeSegment(value: string): string {
   const cleaned = value
@@ -79,10 +93,13 @@ function assertPutFileInput(input: PutFileInput): void {
   if (!input.contentType || input.contentType.trim().length === 0) {
     throw unprocessable("contentType is required");
   }
-  if (!(input.body instanceof Buffer)) {
-    throw unprocessable("body must be a Buffer");
+  if (!(input.body instanceof Buffer) && !(input.body instanceof Readable)) {
+    throw unprocessable("body must be a Buffer or Readable");
   }
-  if (input.body.length <= 0) {
+  if (!Buffer.isBuffer(input.body) && (!("byteSize" in input) || !Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || !/^[0-9a-f]{64}$/.test(input.sha256))) {
+    throw unprocessable("Streamed files require an exact byte size and SHA-256");
+  }
+  if (("byteSize" in input ? input.byteSize : input.body.length) <= 0) {
     throw unprocessable("File is empty");
   }
 }
@@ -93,39 +110,48 @@ export function createStorageService(provider: StorageProvider): StorageService 
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);
-      const objectKey = buildObjectKey(input.companyId, input.namespace, input.originalFilename);
-      const byteSize = input.body.length;
+      const objectKey = input.objectKey ?? buildObjectKey(input.companyId, input.namespace, input.originalFilename);
+      ensureCompanyPrefix(input.companyId, objectKey);
+      const byteSize = "byteSize" in input ? input.byteSize : input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
-      await provider.putObject({
-        objectKey,
-        body: input.body,
-        contentType,
-        contentLength: byteSize,
-      });
+      try {
+        await provider.putObject({
+          objectKey,
+          body: input.body,
+          contentType,
+          contentLength: byteSize,
+          signal: input.signal,
+        });
+      } catch (error) {
+        await cleanupStorageFailure(signal => provider.deleteObject({ objectKey, signal }));
+        throw error;
+      } finally {
+        if (input.body instanceof Readable) input.body.destroy();
+      }
 
       return {
         provider: provider.id,
         objectKey,
         contentType,
         byteSize,
-        sha256: hashBuffer(input.body),
+        sha256: "sha256" in input ? input.sha256 : hashBuffer(input.body),
         originalFilename: input.originalFilename,
       };
     },
 
     async getObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.getObject({ objectKey, range: options?.range });
+      return provider.getObject({ objectKey, range: options?.range, signal: options?.signal });
     },
 
-    async headObject(companyId: string, objectKey: string) {
+    async headObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      return provider.headObject({ objectKey });
+      return cancellable(options?.signal, () => provider.headObject({ objectKey, signal: options?.signal }));
     },
 
-    async deleteObject(companyId: string, objectKey: string) {
+    async deleteObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      await provider.deleteObject({ objectKey });
+      await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal }));
     },
   };
 }

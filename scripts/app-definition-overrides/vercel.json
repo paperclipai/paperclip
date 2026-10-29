@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "slug": "vercel",
+  "name": "Vercel",
+  "description": "Deploy websites and configure projects, environment variables, and domains in your Vercel team.",
+  "categories": ["developer"],
+  "featured": false,
+  "availability": {"available": true},
+  "branding": {"logoUrl": "/brands/apps/vercel.svg", "darkLogoUrl": "/brands/apps/vercel-dark.svg"},
+  "urlPatterns": ["https://vercel.com/*", "https://api.vercel.com/*", "https://mcp.vercel.com/*"],
+  "docsUrl": "https://vercel.com/docs/rest-api",
+  "methods": [{
+    "key": "rest-api-key",
+    "label": "Connect Vercel",
+    "transport": "rest_api",
+    "auth": "api_key",
+    "ownershipModes": ["customer"],
+    "whenToUse": "Deploy and configure projects using a Vercel access token scoped to your team.",
+    "defaults": {"serverUrl": "https://api.vercel.com"},
+    "guidanceMd": "Create a Vercel access token for the team agents should operate, then enter the team ID from Team Settings. The token needs permission to read projects and to create deployments, update project settings, manage environment variables, and attach domains. Deployment and resource usage may incur Vercel charges. Preview deployments are the default; production requires an explicit target.",
+    "riskTier": "S4",
+    "credentialFields": [{
+      "key": "authorization",
+      "label": "Vercel access token",
+      "type": "password",
+      "required": true,
+      "placeholder": "Enter Vercel access token",
+      "secret": true,
+      "helperMd": "Create a token at Vercel Account Settings → Tokens. Select the intended team and an appropriate expiration. Your Vercel role controls its permissions; reconnect with a new token if it expires or cannot deploy. The token stays in the Paperclip vault."
+    }],
+    "keyPlacement": {"location": "header", "name": "Authorization", "prefix": "Bearer "},
+    "tenantFields": [{
+      "key": "teamId",
+      "label": "Vercel team ID",
+      "type": "text",
+      "required": true,
+      "placeholder": "team_…",
+      "helperMd": "Copy the Team ID from Vercel Team Settings → General. Every action stays in this team; agents cannot override it.",
+      "validation": {"pattern": "^team_[A-Za-z0-9]+$", "maxLength": 100}
+    }],
+    "requiredResourceFilters": ["team", "project", "environment"],
+    "consoleLinks": {"keys": "https://vercel.com/account/tokens", "docs": "https://vercel.com/docs/rest-api"}
+  }]
+}

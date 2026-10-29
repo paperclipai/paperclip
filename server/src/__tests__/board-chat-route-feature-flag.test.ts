@@ -19,6 +19,11 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+  supersedeFastResponse: vi.fn(async () => undefined),
+}));
+
 vi.mock("../routes/authz.js", () => ({
   getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
   assertCompanyAccess: () => {},
@@ -28,7 +33,7 @@ async function createApp(deploymentMode: "local_trusted" | "authenticated" = "lo
   const { boardChatRoutes } = await import("../routes/board-chat.js");
   const app = express();
   app.use(express.json());
-  app.use("/api", boardChatRoutes({} as any, { deploymentMode }));
+  app.use("/api", boardChatRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, { deploymentMode }));
   return app;
 }
 

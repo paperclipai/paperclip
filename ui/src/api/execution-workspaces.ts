@@ -4,6 +4,7 @@ import type {
   ExecutionWorkspaceStatus,
   ExecutionWorkspaceCloseReadiness,
   WorkspaceOverviewResponse,
+  WorkspaceLoginHandoffTicketResponse,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
@@ -58,6 +59,7 @@ export const executionWorkspacesApi = {
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
     },
   ) => {
     const params = new URLSearchParams();
@@ -66,6 +68,7 @@ export const executionWorkspacesApi = {
     if (filters?.issueId) params.set("issueId", filters.issueId);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.reuseEligible) params.set("reuseEligible", "true");
+    if (filters?.selectableForTask) params.set("selectableForTask", "true");
     params.set("summary", "true");
     const qs = params.toString();
     return api.get<ExecutionWorkspaceSummary[]>(
@@ -114,6 +117,23 @@ export const executionWorkspacesApi = {
       `/execution-workspaces/${id}/runtime-commands/${action}`,
       sanitizeWorkspaceRuntimeControlTarget(target),
     ),
+  repair: (id: string) =>
+    api.post<{ workspace: ExecutionWorkspace; operation: WorkspaceOperation }>(
+      `/execution-workspaces/${id}/runtime-commands/repair`,
+      {},
+    ),
+  /**
+   * Mint a single-use workspace login handoff (PAP-17572).
+   *
+   * The returned URL carries a short-lived ticket, so the caller must navigate to
+   * it rather than store or share it. The server answers the navigation with an
+   * HTTP redirect, which is what keeps the ticket out of browser history.
+   */
+  requestLoginHandoff: (id: string, next?: string) =>
+    api.post<WorkspaceLoginHandoffTicketResponse>(
+      `/execution-workspaces/${id}/login-handoff`,
+      next ? { next } : {},
+    ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
   /**
    * Reconcile a git-worktree branch divergence via the S4 (`PAP-1586`) op.
@@ -129,7 +149,11 @@ export const executionWorkspacesApi = {
    *   never trusted); no `reason` needed.
    * - `mode: "override"` — audited break-glass; the server rejects agent actors, re-checks
    *   `runtime:manage` permission, and requires a non-empty operator `reason`.
+   * - `mode: "quarantine_restore"` — lossless dirty-worktree repair; the server quarantines the
+   *   dirty changes onto a rescue branch and restores the recorded branch. No `reason` needed.
    */
-  reconcile: (id: string, body: { mode: "forward" } | { mode: "override"; reason: string }) =>
-    api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
+  reconcile: (
+    id: string,
+    body: { mode: "forward" } | { mode: "override"; reason: string } | { mode: "quarantine_restore" },
+  ) => api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
 };

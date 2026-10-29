@@ -38,10 +38,28 @@ export interface LowTrustReviewPresetPolicy {
   rawOutputDisposition: typeof LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION;
 }
 
+export interface AssignmentAuthorizationPolicy extends Record<string, unknown> {
+  mode?: "company_default" | "protected";
+  /** @deprecated Use `protectedAgent.blockAssignment`. */
+  protectedAgentRequiresApproval?: boolean;
+}
+
+export interface ProtectedAgentAuthorizationPolicy extends Record<string, unknown> {
+  /** Hard-block assignment until a company administrator removes the block. */
+  blockAssignment?: boolean;
+  blockReason?: string;
+  /** @deprecated Legacy hard-block alias. This does not create an approval. */
+  requiresApproval?: boolean;
+  /** @deprecated Legacy metadata retained for compatibility. */
+  approvalReason?: string;
+}
+
 export interface TrustAuthorizationPolicy extends Record<string, unknown> {
   trustPreset?: TrustPreset;
   reviewPreset?: LowTrustReviewPresetPolicy;
   trustBoundary?: LowTrustBoundary;
+  assignmentPolicy?: AssignmentAuthorizationPolicy;
+  protectedAgent?: ProtectedAgentAuthorizationPolicy;
 }
 
 export type SourceTrustArtifactKind = "issue" | "comment" | "document" | "work_product";

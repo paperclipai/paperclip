@@ -14,12 +14,14 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockEnvironmentCustomImageService = vi.hoisted(() => ({
@@ -48,6 +50,7 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForEphemeralAccess: vi.fn(),
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
+  replaceSecretRefsForInstanceTarget: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -71,8 +74,12 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
+  resolvePluginSandboxProviderConfigSchema: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),
   validatePluginSandboxProviderConfig: vi.fn(async ({ provider, config }) => ({
     normalizedConfig: config,
@@ -116,19 +123,44 @@ function createApp(actor: Record<string, unknown>) {
     (req as typeof req & { actor: Record<string, unknown> }).actor = actor;
     next();
   });
-  app.use("/api", environmentRoutes({} as never));
+  app.use("/api", environmentRoutes({
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+  } as never));
   app.use(errorHandler);
   return app;
 }
 
 describe("environment instance routes", () => {
+  it.each(["post", "patch"])("rejects client-written sandbox platform evidence on %s", async method => {
+    mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
+    const app = createApp({ type: "board", source: "local_implicit", isInstanceAdmin: true });
+    const payload = { ...(method === "post" ? { name: "Fixture", driver: "local", config: {} } : {}), metadata: { paperclipSandboxPlatformProbes: { "company-1": { v: 1 } } } };
+    const res = method === "post" ? await request(app).post("/api/companies/company-1/environments").send(payload)
+      : await request(app).patch("/api/environments/env-1").send(payload);
+    expect(res.status).toBe(422);
+    expect(res.body.details?.code ?? res.body.code).toBe("environment_platform_probe_reserved");
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+  });
+  it.each([null, { userNote: "replacement" }])("passes explicit user metadata replacement through without copying an old probe (%j)", async metadata => {
+    const existing = createEnvironment({ metadata: { userNote: "old", paperclipSandboxPlatformProbes: { "company-1": { v: 1, marker: "stale" } } } });
+    mockEnvironmentService.getById.mockResolvedValue(existing);
+    mockEnvironmentService.update.mockResolvedValue({ ...existing, metadata });
+    const app = createApp({ type: "board", source: "local_implicit", isInstanceAdmin: true });
+    const res = await request(app).patch("/api/environments/env-1").send({ metadata });
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.update).toHaveBeenCalledExactlyOnceWith("env-1", { metadata }, { db: expect.anything() });
+    expect(res.body.metadata).toEqual(metadata);
+  });
   beforeEach(() => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.create.mockReset();
+    mockEnvironmentService.update.mockReset();
     Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
     mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
       activeTemplate: null,
@@ -145,6 +177,8 @@ describe("environment instance routes", () => {
     mockSecretService.resolveSecretValueForEphemeralAccess.mockReset();
     mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockResolvedValue([]);
 
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     mockEnvironmentService.list.mockResolvedValue([]);
@@ -252,16 +286,19 @@ describe("environment instance routes", () => {
         driver: "local",
         status: "active",
       }),
+      undefined,
+      { db: expect.anything() },
     );
-    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
-      "company-1",
+    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
       { targetType: "environment", targetId: "env-1" },
       [],
+      { db: expect.anything() },
     );
     expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
       {},
+      { db: expect.anything() },
     );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
     expect(mockLogActivity.mock.calls.map((call) => call[1].companyId)).toEqual(["company-1", "company-2"]);
@@ -295,11 +332,16 @@ describe("environment instance routes", () => {
       envVars,
       expect.objectContaining({ fieldPath: "envVars" }),
     );
-    expect(mockEnvironmentService.create).toHaveBeenCalledWith(expect.objectContaining({ envVars }));
+    expect(mockEnvironmentService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ envVars }),
+      undefined,
+      { db: expect.anything() },
+    );
     expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
       envVars,
+      { db: expect.anything() },
     );
   });
 

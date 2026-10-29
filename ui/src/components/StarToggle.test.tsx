@@ -92,15 +92,30 @@ describe("StarToggle", () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 
-  it("surfaces a retry affordance on error for the button variant", async () => {
+  it("surfaces an icon-only retry affordance on error for the detail variant", async () => {
     await render(<StarToggle starred size="button" error resourceName="Alpha" onToggle={() => {}} />);
     const btn = button();
-    expect(btn?.textContent).toContain("Retry star");
+    expect(btn?.textContent).toBe("");
+    expect(btn?.getAttribute("data-variant")).toBe("ghost");
     expect(btn?.getAttribute("title")).toBe("Couldn't save — retry");
   });
 
-  it("renders the labelled Star/Starred button variant", async () => {
+  it("renders the unstarred detail variant as an unfilled icon without an outline", async () => {
+    await render(<StarToggle starred={false} size="button" resourceName="Alpha" onToggle={() => {}} />);
+    const btn = button();
+    expect(btn?.textContent).toBe("");
+    expect(btn?.getAttribute("data-variant")).toBe("ghost");
+    expect(btn?.getAttribute("aria-label")).toBe("Star Alpha");
+    expect(btn?.querySelector("svg")?.getAttribute("class")).not.toContain("fill-amber-500");
+  });
+
+  it("renders the detail variant as a filled, icon-only star without an outline", async () => {
     await render(<StarToggle starred size="button" resourceName="Alpha" onToggle={() => {}} />);
-    expect(button()?.textContent).toContain("Starred");
+    const btn = button();
+    expect(btn?.textContent).toBe("");
+    expect(btn?.getAttribute("data-variant")).toBe("ghost");
+    expect(btn?.getAttribute("data-size")).toBe("icon-sm");
+    expect(btn?.getAttribute("aria-label")).toBe("Unstar Alpha");
+    expect(btn?.querySelector("svg")?.getAttribute("class")).toContain("fill-amber-500");
   });
 });

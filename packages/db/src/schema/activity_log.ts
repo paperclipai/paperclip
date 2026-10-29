@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -15,12 +16,32 @@ export const activityLog = pgTable(
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
     runId: uuid("run_id").references(() => heartbeatRuns.id),
+    responsibleUserId: text("responsible_user_id"),
     details: jsonb("details").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyCreatedIdx: index("activity_log_company_created_idx").on(table.companyId, table.createdAt),
+    companyAgentCreatedIdx: index("activity_log_company_agent_created_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt,
+    ),
+    companyResponsibleUserCreatedIdx: index("activity_log_company_responsible_user_created_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
+    ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    companyEntityCreatedIdx: index("activity_log_company_entity_created_idx").on(
+      table.companyId,
+      table.entityType,
+      table.entityId,
+      table.createdAt,
+    ),
+    companyUserIssueActorIdx: index("activity_log_company_user_issue_actor_idx")
+      .on(table.companyId, table.actorId, table.entityId)
+      .where(sql`${table.actorType} = 'user' AND ${table.entityType} = 'issue'`),
   }),
 );

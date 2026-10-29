@@ -1,9 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
+
+// These fixtures verify command discovery, environment and real CLI execution.
+// Callback bridge startup/teardown has its own execution-target coverage; starting
+// that server here adds unrelated process and polling work to command assertions.
+vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+    "@paperclipai/adapter-utils/execution-target",
+  );
+  return {
+    ...actual,
+    startAdapterExecutionTargetPaperclipBridge: async () => null,
+  };
+});
 
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -88,6 +101,11 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
+      // Both sandbox fixtures install their fake CLI up front. Never fall back
+      // to a network install if discovery regresses on another host or shell.
+      if (input.args?.some(arg => arg.includes("curl https://cursor.com/install"))) {
+        throw new Error("Sandbox fixture did not discover its preinstalled Cursor CLI");
+      }
       return await runChildProcess(`cursor-sandbox-execute-${counter}`, input.command, input.args ?? [], {
         cwd: input.cwd ?? process.cwd(),
         env: input.env ?? {},
@@ -252,6 +270,8 @@ describe("cursor execute", () => {
 
   it("injects company-library runtime skills into the Cursor skills home before execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-runtime-skill-"));
+    const processHome = path.join(root, "process-home");
+    const configuredHome = path.join(root, "configured-home");
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "agent");
     const runtimeSkillsRoot = path.join(root, "runtime-skills");
@@ -262,7 +282,7 @@ describe("cursor execute", () => {
     const asciiHeartDir = await createSkillDir(runtimeSkillsRoot, "ascii-heart");
 
     const previousHome = process.env.HOME;
-    process.env.HOME = root;
+    process.env.HOME = processHome;
 
     try {
       const result = await execute({
@@ -284,6 +304,7 @@ describe("cursor execute", () => {
           command: commandPath,
           cwd: workspace,
           model: "auto",
+          env: { HOME: configuredHome },
           paperclipRuntimeSkills: [
             {
               name: "paperclip",
@@ -307,10 +328,12 @@ describe("cursor execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect((await fs.lstat(path.join(root, ".cursor", "skills", "ascii-heart"))).isSymbolicLink()).toBe(true);
-      expect(await fs.realpath(path.join(root, ".cursor", "skills", "ascii-heart"))).toBe(
+      const installedSkill = path.join(configuredHome, ".cursor", "skills", "ascii-heart");
+      expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(installedSkill)).toBe(
         await fs.realpath(asciiHeartDir),
       );
+      await expect(fs.lstat(path.join(processHome, ".cursor", "skills", "ascii-heart"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -383,7 +406,7 @@ describe("cursor execute", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 10_000);
+  });
 
   it("keeps explicit command overrides for remote sandbox execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-sandbox-explicit-"));

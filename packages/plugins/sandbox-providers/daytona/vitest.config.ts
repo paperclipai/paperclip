@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/plugins/sandbox-providers/daytona/src/**/*.test.ts"],
+    include: [path.join(dirname, "src/**/*.test.ts")],
     environment: "node",
   },
 });

@@ -66,6 +66,10 @@ User rulings from the tune-session gallery review; all intentionally visible, sn
 - `pnpm typecheck` + full `pnpm test:storybook-visual` — re-running independently (in progress).
 - Eyeball-pass note: the Phase 0 baseline was captured at the master fork point before any change, and the suite compares current rendering to it at `maxDiffPixels: 0` — pixel-equality with master-at-fork is machine-proven; side-by-side Storybook remains available on request (`pnpm storybook` here + `-p 6007` on master).
 
+## List-interaction parity policy (Run 3 follow-up, Jul 9 2026)
+
+**Policy (human-directed):** the inbox and tasks lists render the same material (task rows, status icons, parent/child trees, workspace groups), so their interactivity is the same by default — hover treatment (rounded `bg-accent/50` band), hover-follows-selection with the pointer-moved guard, j/k + arrow-key traversal that includes group headers, ArrowLeft/ArrowRight collapse/expand on both group headers and parent tasks, and Enter to open. View-specific capabilities stay view-specific (inbox: archive/read shortcuts on the archivable tab; tasks: kanban view). New list surfaces should adopt this contract rather than invent their own.
+
 ## Baseline reconcile — Run 3 setup (Jul 7, 2026)
 
 Fresh worktree from origin/master (3b16ac380) on `design/component-convergence`. The baseline-manifest archive is still unpublished (placeholder URL), so the 510 local baselines were seeded from the Run 1 worktree (`~/Projects/DEV/paperclip-design-simplify`, `tests/storybook-visual/__snapshots__/`, branch head 44ab1ad17) into gitignored `tests/storybook-visual/.snapshots/`. First run: 497/510 green; 6 stories (12 snapshots, both themes) diffed, each verified against a specific master commit that postdates the baselines, then re-baselined — nothing else touched:
@@ -95,3 +99,126 @@ Executed on `design/component-convergence` (worktree focused-agnesi). Scope C2/C
 ## Tune session — CLOSED (Jul 6, 2026)
 
 User approved the complete new design language via gallery v4 + live test drive on the :3300 worktree instance ("ship it"). Merged origin/master (12 commits; one conflict — upstream deliberately removed the Wakes-on-confirm chip, deletion accepted). 296 snapshots re-baselined; gates 3/3 CLEAN; typecheck green; final suite verification run against the new baseline. Remaining roadmap: Run 3 (cards/pills/C11 sidebar + investigations + AgentDetail story), issue→task rename run, Run 4 (palette classes + toast), ESLint ratchet.
+
+## Decision cards flattened to two types (design session, Jul 29 2026)
+
+**Five colour/icon vocabularies collapse to two, borrowed from the task status system.** User feedback on `/decisions`: the card types carried "several visual and categorizing inconsistencies". Figma reference — current `1148-1253`, proposed `1148-2169` (PCLP-Core). Every row now resolves to `blocking` (failed run, agent error, blocked dependency, recovery, budget) or `review` (approval, confirmation, review, join request), and each borrows a task status rather than declaring its own palette: blocking → `blocked` (red `CircleMinus`), review → `in_review` (violet `CircleDot`), rendered through `<StatusGlyph>` off `--status-task-icon-*`. `attentionTone`/`attentionToneStyle`/`TONE_STYLE` and the per-source `SourceMeta.icon` are deleted; source kinds keep their own *wording* only. Zero new tokens — the point is that the queue and the task list now share one vocabulary by construction (principle 5).
+
+Also in the same change, per the proposed mock: the 4px left accent rail is gone (colour lives in the glyph); rows became `rounded-xl` cards spaced 16px apart; issue key + project moved up into a `/`-separated meta breadcrumb; the expand affordance became a bottom-left "See more"/"See less" button; and the expanded state lost its separately tinted/bordered drawer — note, gallery and resolver now flow in the card's own column.
+
+Three deliberate deviations from the mock, each flagged to the user:
+
+- **The card border stays.** The mock drops it, which reads correctly in dark mode (`--card` 0.205 on `--background` 0.145) but is fatal in light mode, where both tokens are `oklch(1 0 0)` — a borderless card would be invisible white-on-white. Kept `border border-border`; in dark mode it is `oklch(1 0 0 / 10%)` and barely perceptible, so the intended look survives.
+- **Radius is `rounded-xl` (11.2px), not the mock's literal 12px.** 12 is off the multiplicative ladder codified Jul 8; minting a one-off token for a 0.8px delta would reopen B4 for nothing.
+- **`IssueThreadInteractionCard` keeps its action bar internally.** The mock hoists those buttons out into the card footer beside "See less". That component is shared with the issue-thread surface, so hoisting would silently restyle the chat thread too — out of scope for a decisions-card change, and a separate call.
+
+**Severity is no longer chrome.** The Critical/High badge (`severityBadge`, deleted) was a third colour vocabulary competing with the type colour — an orange HIGH chip next to a red error icon was exactly the reported inconsistency. Severity survives as a filter/group dimension in the toolbar, so nothing is lost, only relocated. `severityStyle` is left in place (dead but pre-existing; not this change's scope).
+
+**Verb order is now fixed across states.** Collapsed and expanded rows both order verbs outline → destructive → affirmative, right-aligned, so the affirmative button sits in the same place whether or not a row is expanded (previously collapsed rows ran Approve/Reject/Request revision left-to-right and expanded rows ran Approve/Request revision/Reject, left-aligned). Per-row training moved from a header icon button into the row's overflow menu, matching the mock's header (recency + overflow only); the inline "Trained ✓" badge stays and remains the tested `onTrain` path, since Radix menu items are portal-mounted and this repo does not open them in jsdom.
+
+## Decision-card follow-ups: task keys, self-blocking, stuck quicklook (design session, Jul 29 2026)
+
+Three defects surfaced by the flattened cards, each fixed at its own layer.
+
+**Task key missing on the rows most obviously about a task.** The meta breadcrumb read only `relatedIssue`, but the feed stores the task in two shapes: when the subject IS the task (review, blocked dependency) the identifier sits on `subject` and `relatedIssue` is null; when the subject hangs off a task (thread interaction) the task arrives as `relatedIssue`. `attentionTaskRef` (ui/src/lib/attention.ts) resolves both with one rule, preferring `relatedIssue` when both exist — it is the record the subject alone cannot describe — and returning null for rows genuinely unattached (hire approval, agent error) so they stay blank rather than borrowing a key. 1 of 17 seeded rows → 13. Still open, needs a server change: an approval can carry `subject.metadata.issueId` while `relatedIssue` is null, which reaches the client as a bare UUID with no key or href.
+
+**Every blocked row claimed it was blocked by itself.** Both `blocker_attention` call sites in server/src/services/attention.ts fell back to the blocked task's own identity when no `blocks` relation was loaded — one hardcoded `{ id: issue.id, identifier: issue.identifier }` outright — so the UI rendered "PAP-23 — Blocked by PAP-23" for all eleven seeded rows. `resolveBlockingIssue` prefers the loaded relation, then a blockerAttention sample identifier, then null (the row falls back to its `whyNow` line, which is honest about not knowing). It also rejects a self-referential relation row as corrupt. The dedup key deliberately keeps its original fallback chain including the issue's own identifier: it is the identity dismissals are recorded against, and narrowing it would resurrect dismissed rows.
+
+**Quicklook stuck open after expanding a row.** Reported as "the hover task card gets stuck and keeps displaying even when I hover off". Root cause is a self-sustaining loop in the shared `IssueLinkQuicklook`, not in the decision card: Radix returns focus to the trigger when a popover closes, and that link opens the quicklook `onFocus` — so every dismissal refocused the trigger, which reopened the card. Fixed by declining the focus hand-back (`onCloseAutoFocus` prevented, symmetric with the existing `onOpenAutoFocus`): a preview must not move focus in either direction. Added alongside it, a pointer-escape guard that closes on any pointer move clear of both boxes, since the only other close paths were `mouseleave` on trigger/content and no leave fires when the layout shifts an element out from under a stationary pointer. The guard needs both `:hover` and geometry to agree the pointer is gone before closing, so a resting pointer is never dropped, and exempts focus-opened quicklooks for keyboard users.
+
+Separately, evidence thumbnails in an expanded card no longer carry a task quicklook at all (`disableIssueQuicklook`): `Link` upgrades any /issues/ href into a hover preview, which here popped a text card over the very screenshot being examined, and expanding a row mounts that gallery directly under the pointer.
+
+## Card-level selection ring is keyboard-only (design session, Jul 29 2026)
+
+User: "it seems weird that only cards with see more/less have a focus state and not the rest… disable focus state for decision cards but retain the focus state for each interactive component (within cards) for accessibility purposes."
+
+The card-wide stroke was never a focus state — it is the **keyboard cursor**, marking the row that j/k, e, x and s act on. It leaked into mouse use because `handleToggleExpand` set the selection as a side effect of a click, and only expandable rows have a See more/less toggle to click. Hence the reported inconsistency: clicking one kind of card ringed it, and no other card could ever be ringed.
+
+Fixed by tracking how the selection was made and drawing the ring only for a keyboard-driven one. Clicking still sets the selection, so keyboard actions continue to target the row you just used — it simply draws nothing.
+
+**The ring is deliberately kept for j/k navigation** rather than removed outright, which the literal request would imply. Those keys dismiss and snooze the selected row; with no indicator an operator would be firing destructive actions at an invisible target. Flagged to the user as the one place the card-level state survives, and it is theirs to remove if they want it gone there too.
+
+Focus states on everything inside a card are untouched: the See more/less toggle, decision verbs, the task key, the project link, evidence thumbnails and the row menu all keep their `focus-visible` rings.
+
+## Decision card eyebrow: project dropped, "·" separator (design session, Jul 29 2026)
+
+Per the proposed mock, the decision card eyebrow is now **decision kind · task key** and nothing else.
+
+**Project identity left the card.** It cost the eyebrow's width on every row to repeat a fact the operator has usually just chosen — the queue filters and groups by project from the toolbar — and it competed with the task key, which is the identifier an operator actually navigates by. The project is still one click away on the task itself.
+
+**The separator changed from "/" to "·".** The eyebrow started as a breadcrumb (kind / key / project), but with the project gone it is a flat list of two facts, not a hierarchy. A slash implies containment those two segments do not have; a middle dot just separates. `ProjectMeta` and its `ProjectTile` import were deleted from the row rather than left unused.
+
+## Standard task preview card (design session, Jul 29 2026)
+
+**`IssueQuicklookCard` restructured to the proposed mock, and this is now the app-wide standard** — every hover preview of a task renders it, so the same three rows appear in the same order everywhere:
+
+1. meta — status glyph · task key [· project] …………… last activity
+2. title
+3. summary — first lines of the description
+
+The meta row splits: identity left, recency pinned right. Identity leads because a preview answers "which task is this?", and a title alone does not. The status glyph switches from `StatusIcon` to `StatusGlyph`, so a preview speaks the same status vocabulary as the flattened decision cards and the task list.
+
+**Status carries no word of its own.** An earlier revision of this card gave status a line under the title ("In review · 1d ago", in `foreground`); the final mock removes it and moves the timestamp up into the meta row, leaving the glyph to be the status — which is what the glyph already is on task rows and decision cards. That leaves shape and colour as the only visual signal, so the glyph is passed a `title`, rendering as `role="img"` with the status as its accessible name. The status stays available to a screen reader without spending a line, and a test pins that (the glyph must carry it and the visible text must not).
+
+Three shapes the meta row holds, all specified by the mock:
+
+1. **no project** — glyph, key, timestamp hard right; no separator is rendered
+2. **project** — a "·", the tile and the name join the left group
+3. **truncation** — a long project name ellipsizes; the key and the timestamp are `shrink-0`, so the two facts that identify the task survive at any width. Verified live: with a 47-character project name the key and timestamp hold their exact widths (39.7px / 36.1px) and only the name clips.
+
+Two judgment calls:
+
+- **The project tile is untinted.** `ProjectTile` supports a colour, and the decision card's old chip used it, but a preview is a quiet surface and the project colour would be the loudest thing on it. The mock shows a neutral tile, and `IssueAncestorProject` carries neither colour nor icon — so following the mock costs nothing and needs no new data. If the tile should ever tint, that is a server-side field addition first.
+- **11px via `--text-micro`** for the meta row, matching the mock, rather than minting a token for the mock's literal values.
+
+The other consumer, `IssuesQuicklook` (project workspace linked issues), inherits the new card automatically — which is the point of standardising it.
+
+## Quicklook aligns to the trigger's text, not its box (design session, Jul 29 2026)
+
+Radix aligns box to box, so `align="start"` put the preview's *left edge* on the trigger's left edge — leaving the card's text pushed right by the card's own border and padding, and visibly out of line with the task key that opened it.
+
+`quicklookAlignOffset()` cancels that inset: **13px** — `p-3` (12px) plus the 1px border `PopoverContent` draws. Measured on the live card afterwards, the trigger's text sits at 353.61px and the card's glyph, title and description all sit at 353.50px — a 0.11px residual from the trigger's own sub-pixel position, i.e. aligned.
+
+The offset follows the align prop (`start` negative, `end` the mirror, `center` zero) rather than being hardcoded to one direction, and both surfaces that render the standard card — `IssueLinkQuicklook` and `IssuesQuicklook` — now share `QUICKLOOK_CONTENT_CLASS` and this helper, so the preview is positioned identically wherever it opens.
+
+The 13px is a derived constant with the border and padding written out as `12 + 1`, and a test asserts the shell still carries `p-3`, so the two cannot drift apart silently.
+
+## First motion tokens, and the inert animate-in finding (design session, Jul 29 2026)
+
+**Motion tokens minted.** Durations and easings were previously written inline at each call site in `index.css`. Four named values now exist, and both new animations consume them:
+
+- `--motion-duration-enter: 160ms` / `--motion-duration-exit: 110ms` — exit is deliberately shorter: a thing appearing wants to be followed, a thing leaving just needs to get out of the way.
+- `--motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1)` — the curve the dialog max-width transition already used, promoted to the system. It decelerates hard at the end, which is what reads as "snappy" rather than "slow start".
+- `--motion-ease-in: cubic-bezier(0.4, 0, 1, 1)` for exits.
+
+**Decision-card disclosure.** See more / See less now animates height through Radix `Collapsible`, which measures the panel and publishes `--radix-collapsible-content-height`, so the card grows and shrinks to a real number instead of snapping. Measured on the live card: 0 → 65 → 98 → 114 → 121 → 125 → 128px over ~136ms. The Root carries `contents` so a collapsed row pays no flex gap for an empty wrapper, and Radix keeps the panel an empty `hidden` shell when closed — verified all 17 closed panels hold zero children, so no row runs a resolver behind a collapsed card.
+
+**`animate-in` is dead CSS in this repo.** Chasing the quicklook's scale turned up that the shadcn `PopoverContent` class string (`animate-in`, `zoom-in-95`, `fade-in-0`, `slide-in-from-*`) resolves to nothing: those utilities ship with the `tailwindcss-animate` plugin, which is not a dependency and is not imported in `index.css`. A stylesheet scan found no `enter`/`exit` keyframes in the build. **This affects every shadcn surface in the app** — dialogs, dropdowns, tooltips, sheets all carry the same inert classes and have never animated.
+
+Rather than add the plugin for one surface — which would newly animate every one of those surfaces at once, an app-wide visual change nobody has reviewed — the quicklook defines its own `quicklook-open` / `quicklook-close` keyframes. Adopting the plugin properly is worth its own run.
+
+**Quicklook motion.** A shallow scale (0.96 → 1) plus opacity, anchored to `--radix-popover-content-transform-origin` so the card grows out of the task key that opened it rather than swelling in place. Verified live: `quicklook-open`, running, 160ms, ease-out, origin `0px 0px`.
+
+Both animations are disabled under `prefers-reduced-motion: reduce`.
+
+## Task eyebrow project reads as tile + name (design session, Jul 29 2026)
+
+The task detail eyebrow showed a bare `Hexagon` outline glyph next to the project name — a shape used nowhere else for projects. It now renders `ProjectTile` at `xs`, matching the sidebar and Projects list.
+
+Measured against the mock, every value matches and all of it resolves through tokens: 16×16 tile, 4.8px radius, `bg-muted` (`oklch(0.269 0 0)`, the mock's `#313131`), 10px folder icon, 4px gap, 2px/4px padding, 4px link radius, 12px `text-muted-foreground` (the mock's `#a1a1a1`).
+
+**The tile stays neutral rather than taking the project colour**, which `ProjectTile` would do if passed one. The eyebrow already carries the status glyph's colour, and a second tinted swatch beside it competes with the one mark that means something. Project colour still identifies the project on project-native surfaces. This matches the direction #9574 took for the Decisions feed.
+
+The seeded header (rendered from `headerSeed` while the issue loads) was updated in lockstep, so the eyebrow does not change shape when the real issue arrives.
+
+## Collapsed-only content crossfades against the panel (design session, Jul 29 2026)
+
+Adding the disclosure animation left a seam: the panel grew smoothly, but the content it *replaces* still popped out of existence in one frame. Two things never carry across the two states — the thumbnail strip, whose counterpart is the full gallery; and an inline row's footer, which the resolver takes over once expanded.
+
+Both now ride an **inverse disclosure** (`open={!expanded}`) using the same keyframes and tokens as the panel, so the collapsed cluster shrinks and fades out while the panel grows and fades in. Verified live during a toggle: `decision-disclosure-close` running at 110ms on the cluster and `decision-disclosure-open` running at 160ms on the panel, in the same frame.
+
+Exit being shorter than enter is what makes it read as a handoff rather than a blend — the outgoing content clears slightly ahead of the incoming.
+
+**Only genuine swaps crossfade.** A non-inline row keeps one standing footer: its Open or Restore button and its toggle are the same control in both states, so it stays put rather than crossfading with itself. The inverse cluster is skipped entirely when a row has neither images nor an inline resolver (`hasCollapsedOnlyContent`), because an always-open empty wrapper would otherwise charge the card a 16px flex gap for nothing — the closed panel avoids this for free, since Radix marks it `hidden` and it drops out of flex layout.
+
+`renderFooter({ compact })` renders the bar in either position. `compact` is false for the standing copy, so an expanded non-inline row does not show collapsed verbs beside the panel's own.

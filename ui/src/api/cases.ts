@@ -1,0 +1,393 @@
+import type { CaseHandoff, DocumentRevision, HandoffCaseInput, HandoffCaseResult, IssueDocument, IssueLabel } from "@paperclipai/shared";
+import { api } from "./client";
+
+// -----------------------------------------------------------------------------
+// Cases API (experimental — PAP-12947). Mirrors server/src/routes/cases.ts.
+// Board pages are read-only; agents and authorized REST callers author case data.
+// -----------------------------------------------------------------------------
+
+export const CASE_STATUSES = [
+  "draft",
+  "in_progress",
+  "in_review",
+  "approved",
+  "done",
+  "cancelled",
+] as const;
+export type CaseStatus = (typeof CASE_STATUSES)[number];
+
+/** Terminal statuses for callers that explicitly request active records. */
+export const TERMINAL_CASE_STATUSES: readonly CaseStatus[] = ["done", "cancelled"];
+
+export type CaseLinkRole = "origin" | "work" | "reference";
+
+/** A case row as returned by the list endpoint. */
+export interface CaseSummary {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  caseNumber: number;
+  identifier: string;
+  caseType: string;
+  key: string | null;
+  title: string;
+  summary: string | null;
+  status: CaseStatus;
+  fields: Record<string, unknown>;
+  workIssueId?: string | null;
+  workflowId?: string | null;
+  workflow?: { id: string; name: string } | null;
+  phase?: string | null;
+  handoffVersion?: number;
+  workIssue?: CaseWorkIssue | null;
+  pendingHandoff?: CaseHandoffView | null;
+  parentCaseId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Present only when `includeAncestors` is requested. Ancestor rows included for
+   * tree context are `false`; rows that matched the list query are `true`.
+   */
+  matchesListFilters?: boolean;
+}
+
+export interface CaseDocumentRef {
+  key: string;
+  document: CaseDocument;
+}
+
+/** A reference to the ordinary task document; content and revisions stay there. */
+export interface CaseTaskDocumentRef {
+  id: string;
+  sourceKind: "issue";
+  taskId: string;
+  taskIdentifier: string | null;
+  key: string;
+  scope: "primary" | "linked";
+  document: Omit<CaseDocument, "latestBody">;
+  readPath: string;
+}
+
+export interface CaseDocument {
+  id: string;
+  companyId: string;
+  title: string | null;
+  format: string;
+  latestBody: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  lockedAt: string | null;
+  lockedByAgentId: string | null;
+  lockedByUserId: string | null;
+  sourceTrust?: IssueDocument["sourceTrust"];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaseIssueLink {
+  id: string;
+  caseId: string;
+  issueId: string;
+  role: CaseLinkRole;
+  createdAt: string;
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    status: string;
+  };
+}
+
+export interface CaseAttachmentRef {
+  id: string;
+  asset: {
+    id: string;
+    contentType: string;
+    byteSize: number;
+    originalFilename: string | null;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A lightweight parent reference embedded in the detail payload. */
+export interface CaseParentRef {
+  id: string;
+  identifier: string;
+  title: string;
+  caseType: string;
+  status: CaseStatus;
+}
+
+/** Content URL for an attachment's asset (served by the assets route). */
+export function caseAttachmentUrl(attachment: CaseAttachmentRef): string {
+  return `/api/assets/${attachment.asset.id}/content`;
+}
+
+export function isImageAttachment(attachment: CaseAttachmentRef): boolean {
+  return attachment.asset.contentType.startsWith("image/");
+}
+
+/** Primary task summary shared by the list and detail payloads. */
+export interface CaseWorkIssue {
+  id: string; identifier: string | null; title: string; status: string; statusVersion: number;
+  assigneeAgentId: string | null; assigneeAgentName: string | null;
+}
+
+/** The full detail payload (loadCaseDetail on the server). */
+export interface CaseDetail extends CaseSummary {
+  parent: CaseParentRef | null;
+  labels: IssueLabel[];
+  issueLinks: CaseIssueLink[];
+  documents: CaseDocumentRef[];
+  taskDocuments?: CaseTaskDocumentRef[];
+  taskDocumentsOmitted?: boolean;
+  attachments: CaseAttachmentRef[];
+}
+
+export type CaseEventKind =
+  | "created"
+  | "updated"
+  | "fields_changed"
+  | "status_changed"
+  | "issue_linked"
+  | "issue_unlinked"
+  | "document_revised"
+  | "child_linked"
+  | "attachment_added"
+  | "label_added"
+  | "label_removed"
+  | "handoff_requested"
+  | "handoff_applied"
+  | "handoff_delivered"
+  | "handoff_completed"
+  | "handoff_cancelled";
+
+export type CaseHandoffView = CaseHandoff & { fromAgentName?: string | null; toAgentName?: string | null };
+export interface CaseHandoffPage {
+  items: CaseHandoffView[];
+  nextCursor: string | null;
+  canControl?: boolean;
+}
+
+/** Run→issue attribution shared by feed rows and revisions. */
+export interface CaseAttributionIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  status: string;
+}
+
+export interface CaseEvent {
+  id: string;
+  caseId: string;
+  kind: CaseEventKind;
+  actorType: "user" | "agent" | "system";
+  actorUserId: string | null;
+  actorAgentId: string | null;
+  runId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  /** Display name of the acting agent (P4 enrichment), null for user/system. */
+  actorAgentName: string | null;
+  /** Issue linked by this event, or the issue whose run produced it. */
+  issue: CaseAttributionIssue | null;
+}
+
+/** One revision of a case document, with author + via-issue attribution. */
+export interface CaseDocumentRevision {
+  id: string;
+  companyId?: string;
+  documentId?: string;
+  revisionNumber: number;
+  title: string;
+  format: string;
+  body: string | null;
+  changeSummary: string | null;
+  createdAt: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  actorAgentName: string | null;
+  issue: CaseAttributionIssue | null;
+}
+
+export interface CaseDocumentRevisions {
+  key: string;
+  document: {
+    id: string;
+    title: string;
+    format: string;
+    latestRevisionId: string | null;
+    latestRevisionNumber: number | null;
+  };
+  revisions: CaseDocumentRevision[];
+}
+
+/** A case linked to an issue, as returned by the issue-page rail endpoint. */
+export interface IssueCaseLink {
+  id: string;
+  role: CaseLinkRole;
+  createdAt: string;
+  case: {
+    id: string;
+    identifier: string;
+    title: string;
+    caseType: string;
+    status: CaseStatus;
+    workIssueId?: string | null;
+    phase?: string | null;
+  };
+}
+
+export type CaseSortField = "updated" | "created" | "title" | "status" | "type";
+export type CaseGroupBy = "none" | "status" | "type" | "project";
+
+export interface ListCasesParams {
+  type?: string;
+  types?: string[];
+  status?: string;
+  statuses?: string[];
+  projectId?: string;
+  projectIds?: string[];
+  includeNoProject?: boolean;
+  labelId?: string;
+  /** Filter to direct children of a parent case id (P4 children tree). */
+  parent?: string;
+  q?: string;
+  includeAncestors?: boolean;
+  sortField?: CaseSortField;
+  sortDir?: "asc" | "desc";
+  groupBy?: CaseGroupBy;
+  limit?: number;
+  offset?: number;
+}
+
+function appendAll(search: URLSearchParams, key: string, values: readonly string[] | undefined) {
+  for (const value of values ?? []) search.append(key, value);
+}
+
+function toQuery(params: ListCasesParams): string {
+  const search = new URLSearchParams();
+  if (params.type) search.set("type", params.type);
+  appendAll(search, "types", params.types);
+  if (params.status) search.set("status", params.status);
+  appendAll(search, "statuses", params.statuses);
+  if (params.projectId) search.set("projectId", params.projectId);
+  appendAll(search, "projectIds", params.projectIds);
+  if (params.includeNoProject) search.set("includeNoProject", "true");
+  if (params.labelId) search.set("labelId", params.labelId);
+  if (params.parent) search.set("parent", params.parent);
+  if (params.q) search.set("q", params.q);
+  if (params.includeAncestors) search.set("includeAncestors", "true");
+  if (params.sortField) search.set("sortField", params.sortField);
+  if (params.sortDir) search.set("sortDir", params.sortDir);
+  if (params.groupBy) search.set("groupBy", params.groupBy);
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export interface PatchCaseInput {
+  status?: CaseStatus;
+  labelIds?: string[];
+}
+
+export function caseDocumentToIssueDocument(caseId: string, key: string, document: CaseDocument): IssueDocument {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    issueId: caseId,
+    key,
+    title: document.title,
+    format: "markdown",
+    body: document.latestBody ?? "",
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber ?? 1,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    lockedAt: document.lockedAt ? new Date(document.lockedAt) : null,
+    lockedByAgentId: document.lockedByAgentId,
+    lockedByUserId: document.lockedByUserId,
+    sourceTrust: document.sourceTrust,
+    createdAt: new Date(document.createdAt),
+    updatedAt: new Date(document.updatedAt),
+  };
+}
+
+export function caseRevisionToDocumentRevision(caseId: string, key: string, revision: CaseDocumentRevision): DocumentRevision {
+  return {
+    id: revision.id,
+    companyId: revision.companyId ?? "",
+    documentId: revision.documentId ?? "",
+    issueId: caseId,
+    key,
+    revisionNumber: revision.revisionNumber,
+    title: revision.title,
+    format: "markdown",
+    body: revision.body ?? "",
+    changeSummary: revision.changeSummary,
+    createdByAgentId: revision.createdByAgentId,
+    createdByUserId: revision.createdByUserId,
+    createdAt: new Date(revision.createdAt),
+  };
+}
+
+export const casesApi = {
+  handoff: (companyId: string, input: HandoffCaseInput) =>
+    api.post<HandoffCaseResult>(`/companies/${companyId}/case-handoffs`, input),
+  listHandoffs: (caseId: string, cursor?: string | null) =>
+    api.get<CaseHandoffPage>(`/cases/${caseId}/handoffs?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  retryHandoff: (caseId: string, handoffId: string) =>
+    api.post(`/cases/${caseId}/handoffs/${handoffId}/retry`, {}),
+  cancelHandoff: (caseId: string, handoffId: string) =>
+    api.post(`/cases/${caseId}/handoffs/${handoffId}/cancel`, {}),
+  list: (companyId: string, params: ListCasesParams = {}) =>
+    api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery(params)}`),
+  listTypes: (companyId: string) => api.get<string[]>(`/companies/${companyId}/cases/types`),
+  get: (idOrIdentifier: string) => api.get<CaseDetail>(`/cases/${idOrIdentifier}`),
+  patch: (idOrIdentifier: string, input: PatchCaseInput) =>
+    api.patch<CaseDetail>(`/cases/${idOrIdentifier}`, input),
+  listEvents: (idOrIdentifier: string, limit = 100) =>
+    api.get<CaseEvent[]>(`/cases/${idOrIdentifier}/events?limit=${limit}`),
+  listChildren: (companyId: string, parentId: string) =>
+    api.get<CaseSummary[]>(`/companies/${companyId}/cases${toQuery({ parent: parentId, limit: 200 })}`),
+  getDocument: (idOrIdentifier: string, key: string) =>
+    api.get<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`),
+  upsertDocument: (
+    idOrIdentifier: string,
+    key: string,
+    data: { title?: string | null; format?: string; body: string; baseRevisionId?: string | null },
+  ) =>
+    api.put<{ document: CaseDocument & { key: string; body: string }; revision: CaseDocumentRevision }>(
+      `/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`,
+      data,
+    ),
+  lockDocument: (idOrIdentifier: string, key: string) =>
+    api.post<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/lock`, {}),
+  unlockDocument: (idOrIdentifier: string, key: string) =>
+    api.post<CaseDocument & { key: string; body: string }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/unlock`, {}),
+  restoreDocumentRevision: (idOrIdentifier: string, key: string, revisionId: string) =>
+    api.post<{
+      document: CaseDocument & { key: string; body: string };
+      revision: CaseDocumentRevision;
+      restoredFromRevisionId: string;
+      restoredFromRevisionNumber: number;
+    }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
+  deleteDocument: (idOrIdentifier: string, key: string) =>
+    api.delete<{ ok: true }>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}`),
+  listRevisions: (idOrIdentifier: string, key: string) =>
+    api.get<CaseDocumentRevisions>(`/cases/${idOrIdentifier}/documents/${encodeURIComponent(key)}/revisions`),
+  listForIssue: (issueIdOrIdentifier: string) =>
+    api.get<IssueCaseLink[]>(`/issues/${issueIdOrIdentifier}/cases`),
+};
