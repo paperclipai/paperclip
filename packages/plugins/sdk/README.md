@@ -1322,6 +1322,12 @@ await plugin.definition.setup(harness.ctx);
 await harness.emit("issue.created", { issueId: "iss_1" }, { entityId: "iss_1", entityType: "issue" });
 ```
 
+```ts
+ctx.runtime.runProactively(() => {
+  startBackgroundListener();
+});
+```
+
 ## Bundler presets
 
 ```ts
