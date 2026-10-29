@@ -1277,6 +1277,23 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
+      // Give any disk edit that bypassed this route its own version before the
+      // optimistic check reads "currentVersionId". This commits on its own, outside
+      // the write transaction below, so a conflict cannot roll it back, and it carries
+      // its own activity entry because the write below may never reach one.
+      const recovery: { publication: ActivityPublication | null } = { publication: null };
+      const recoveryActor = getActorInfo(req);
+      await svc.recordFileStateOutsideVersionHistory(companyId, skillId, {
+        afterRecord: async (version, database) => {
+          const { publication } = await persistActivity(database, {
+            ...recoveryActor, companyId,
+            action: "company.skill_version_created", entityType: "company_skill_version", entityId: version.id,
+            details: { skillId, revisionNumber: version.revisionNumber, label: version.label, editedOutsideVersionHistory: true },
+          });
+          recovery.publication = publication;
+        },
+      });
+      if (recovery.publication) publishActivity(recovery.publication);
       const { idempotencyKey, expectedVersionId, ...input } = req.body;
       if (idempotencyKey) {
         const actor = getActorInfo(req);
