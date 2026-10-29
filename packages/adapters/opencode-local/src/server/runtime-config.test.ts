@@ -57,14 +57,16 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     `], { encoding: "utf8" }));
     expect(hookEnv.parent).toBeNull();
     expect(hookEnv.child.BASH_ENV).toContain(relocated);
-    const command = spawnSync("bash", ["-c", 'printf "%s" "$1"; exit 7', "bash", "literal ' $() value"], {
+    // Isolate the generated BASH_ENV hook from ambient system rc files. The
+    // Linux CI image's bashrc can return before Bash reads BASH_ENV.
+    const command = spawnSync("bash", ["--norc", "-c", 'printf "%s" "$1"; exit 7', "bash", "literal ' $() value"], {
       env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
     });
     expect(command.stdout).toBe("literal ' $() value");
     expect(command.status).toBe(7);
     if (process.platform === "linux") {
       const parentScore = await fs.readFile("/proc/self/oom_score_adj", "utf8");
-      expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
+      expect(execFileSync("bash", ["--norc", "-c", "cat /proc/self/oom_score_adj"], {
         env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
       }).trim()).toBe("1000");
       expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
