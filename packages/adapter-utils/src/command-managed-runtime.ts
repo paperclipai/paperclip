@@ -415,6 +415,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
+        bypassSession: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -424,6 +425,9 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        // These helpers consume only exit status. They need neither a
+        // persistent shell nor its separate, streamed output observations.
+        bypassSession: true,
       });
       requireSuccessfulResult(result, command);
     },
