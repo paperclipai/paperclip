@@ -2836,6 +2836,20 @@
       "when": 1793235984352,
       "tag": "0406_zippy_war_machine",
       "breakpoints": true
+    },
+    {
+      "idx": 407,
+      "version": "7",
+      "when": 1793236707492,
+      "tag": "0407_greedy_star_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 408,
+      "version": "7",
+      "when": 1793240590542,
+      "tag": "0408_short_red_skull",
+      "breakpoints": true
     }
   ]
 }

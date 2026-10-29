@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
@@ -1066,6 +1067,7 @@ async function materializeDecisionEffect(input: {
           ),
         );
     }
+    await notifyInstructionCollection(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyDeliveryWork(input.tx, DELIVERY_QUEUES.accounting, input.companyId);
     const [run] = await input.tx
       .update(heartbeatRuns)

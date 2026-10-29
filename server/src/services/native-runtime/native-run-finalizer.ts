@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -410,6 +411,7 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus && input.failureScope === "workspace") {
       await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
     }
+    if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -667,6 +669,7 @@ async function projectCommittedRun(input: {
   const now = new Date();
   const [updatedRun] = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
@@ -1685,6 +1688,7 @@ export async function finalizeNativeRun(input: {
         .returning();
       const [updatedRun] = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
+        if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });

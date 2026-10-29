@@ -1,4 +1,5 @@
 import { authorizationService, type AuthorizationResource } from "../../../services/authorization.js";
+import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
@@ -697,6 +698,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: issueId ?? undefined });
     const [row] = await tx
@@ -740,6 +742,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     const [row] = await tx
@@ -947,6 +950,7 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
+      await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
       await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
       const [row] = await tx

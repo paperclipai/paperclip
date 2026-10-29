@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -9817,6 +9818,7 @@ async function executePaperclipNativeSessionWithinScope(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .for("update");
+        if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({

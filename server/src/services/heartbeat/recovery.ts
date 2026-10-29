@@ -1947,17 +1947,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean }) {
     await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
     if (!opts?.skipScheduledRetryCancellation) await scheduledRetryCancellation.sweep();
     // Recovery never launches a provider or infers stopped ownership from
     // terminal status. Uncaptured local copies require durable stop evidence.
-    await instructionCopies.recoverStopped().catch(error => {
+    if (!opts?.skipStoppedInstructionCollection) await instructionCopies.recoverStopped().catch(error => {
       logger.warn({ err: error }, "failed to recover stopped instruction copies");
     });
-    await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit }).catch(error => {
+    await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit, skipDirectoryCleanup: opts?.skipInstructionDirectoryCleanup }).catch(error => {
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
     });
 

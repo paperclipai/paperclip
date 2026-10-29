@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -1023,6 +1024,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       const tx = transaction as unknown as Db;
       if (previous && (previous.status === "scheduled_retry" || status === "scheduled_retry"))
         await notifyScheduledRetryCancellation(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous) await notifyInstructionCollection(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
       await notifyExecutionRunWork(tx);
       if (companyId) await notifyChatRunMilestones(tx, { companyId });

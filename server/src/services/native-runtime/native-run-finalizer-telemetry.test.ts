@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { verifyCommittedReplayPayloadReads } from "./__tests__/helpers/committed-replay.js";
@@ -71,7 +72,8 @@ import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZER_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -89,8 +91,8 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
   let agentId: string;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-finalizer-telemetry-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-finalizer-telemetry-");
+    db = createDb(external ?? tempDb!.connectionString);
     companyId = randomUUID();
     agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Telemetry", issuePrefix: "TLM" });
@@ -104,6 +106,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
   }, 30_000);
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -958,6 +961,26 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     );
     expect(alreadyEmittedByCommittedDecision).toBe(true);
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(1);
+  });
+
+  it.each([true, false])("signals instruction collection only when native failure projects terminal status (%s)", async projectRunStatus => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture);
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.instructionCollection, settled);
+    try {
+      await recordNativeFinalizationFailure({ db, runId: fixture.runId,
+        error: new Error("native_fixture_permanent_failure"), permanent: true, projectRunStatus });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)))[0].phase).toBe("terminal_failure");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      if (projectRunStatus) {
+        expect(run.status).not.toBe("running");
+        expect(settled).toHaveBeenCalled();
+      } else {
+        expect(run.status).toBe("running");
+        expect(settled).not.toHaveBeenCalled();
+      }
+    } finally { unsubscribe(); }
   });
 
   it("signals durable accounting when native commitment or permanent failure makes a receipt actionable", async () => {

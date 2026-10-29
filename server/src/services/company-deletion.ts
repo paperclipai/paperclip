@@ -1,3 +1,5 @@
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyChatCompanyConfiguration } from "./chat-channels/configuration-work-notifications.js";
@@ -100,6 +102,8 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
         await notifyScheduledRetryCancellation(tx, { companyId: id });
         await notifyInstructionCommit(tx, { companyId: id });
+        await notifyDirectoryCleanup(tx, { companyId: id });
+        await notifyInstructionCollection(tx, { companyId: id });
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));

@@ -1,3 +1,4 @@
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
@@ -515,6 +516,7 @@ export async function claimNativeSessionResumptions(input: {
           nextAttemptAt: null,
           updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, row.run.id));
+        await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
         const [updatedRun] = await tx.update(heartbeatRuns).set({
           status: "failed",
           finishedAt: now,

@@ -1,6 +1,7 @@
 import { settleNewReviewRunIdentity, settleReviewRunClaimIdentity } from "../run-identity.js";
 import type { IssueMonitorAdmission } from "./scheduling.js";
 import { issueExecutionGeneration, parseIssueExecutionState } from "../issue-execution-policy.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatResponseAvailability } from "../chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
@@ -856,6 +857,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ? "Automatic continuation stopped by the committed chat conversation close. Send a new request in chat or on the Board to start fresh work."
           : "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.";
         await notifyChatRunMilestones(tx, { companyId: current.companyId, issueId });
+        await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
         [terminal] = await tx
           .update(heartbeatRuns)
           .set({
@@ -977,6 +979,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             .for("update");
           if (!currentRun) return null;
           await notifyChatRunMilestones(tx, { companyId: run.companyId });
+          await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
           const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
             errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
             .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
@@ -1340,6 +1343,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   const error =
                     "Automatic continuation stopped by the committed chat conversation close. Send a fresh request in chat or on the Board.";
                   await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
+                  await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1461,6 +1465,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               if (liveIds.length === 0) {
                 const reason = "Queued messages were discarded before dispatch";
                 await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
+                await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -3503,6 +3508,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const reason = issueCancelled
               ? "Cancelled because the issue was cancelled before the scheduled retry became due"
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            await notifyInstructionCollection(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
             await notifyScheduledRetryCancellation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
             await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
             const cancelled = await tx
@@ -3641,6 +3647,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId
           ) {
+            await notifyInstructionCollection(tx, { companyId: activeExecutionRun.companyId, runId: activeExecutionRun.id });
             await notifyChatRunMilestones(tx, { companyId: activeExecutionRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
