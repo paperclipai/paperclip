@@ -326,6 +326,8 @@ function compactRecoveryPresentation(title: string): IssueCommentPresentation {
   };
 }
 
+export const WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE = "workspace_finalize_failed";
+
 function recoveryCauseTitle(cause: StrandedRecoveryCause) {
   switch (cause) {
     case "process_lost":
@@ -3517,6 +3519,11 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
+      // Settled by the dependency backstop once the blocker's sync-back succeeds.
+      if (action.cause === WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE) {
+        result.skipped += 1;
+        continue;
+      }
       if (await hasUnverifiedNativeWorkspaceFinalizationOwner(db, action)) {
         result.skipped += 1;
         continue;
@@ -5771,6 +5778,121 @@ export function recoveryService(
     return result;
   }
 
+  // A done blocker whose sync-back failed holds its dependents (their inputs may
+  // be stale or missing) until a later finalize succeeds. Make that hold an
+  // explicit board action on the blocker instead of an endless "pending".
+  async function ensureFailedFinalizeRecoveryActions(
+    companyId: string,
+    dependentIdsByBlocker: Map<string, string[]>,
+  ) {
+    if (dependentIdsByBlocker.size === 0) return;
+    const gates = await issuesSvc.listFinalizeGates(companyId, [...dependentIdsByBlocker.keys()]);
+    for (const [blockerIssueId, dependentIssueIds] of dependentIdsByBlocker) {
+      const gate = gates.get(blockerIssueId);
+      if (gate?.state !== "failed") continue;
+      const fingerprint = [WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE, companyId, blockerIssueId, gate.operationId].join(":");
+      const existing = await recoveryActionsSvc.getActiveForIssue(companyId, blockerIssueId);
+      if (existing?.fingerprint === fingerprint) continue;
+      // Another recovery already owns this blocker; its resolution re-runs this check.
+      if (existing && existing.cause !== WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE) continue;
+      if (existing) {
+        await recoveryActionsSvc.resolveActiveForIssue({
+          companyId, sourceIssueId: blockerIssueId, actionId: existing.id,
+          status: "cancelled", outcome: "cancelled", resolutionNote: "superseded_by_new_finalize_failure",
+        });
+      }
+      const blocker = await db
+        .select({ identifier: issues.identifier, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, blockerIssueId)))
+        .then((rows) => rows[0] ?? null);
+      const failedRun = gate.heartbeatRunId
+        ? await db
+            .select({ error: heartbeatRuns.error, errorCode: heartbeatRuns.errorCode })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, gate.heartbeatRunId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const action = await recoveryActionsSvc.insertSourceScopedIfAbsent({
+        companyId,
+        sourceIssueId: blockerIssueId,
+        kind: "issue_graph_liveness",
+        ownerType: "board",
+        previousOwnerAgentId: blocker?.assigneeAgentId ?? null,
+        returnOwnerAgentId: blocker?.assigneeAgentId ?? null,
+        cause: WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE,
+        fingerprint,
+        attemptCount: 0,
+        evidence: {
+          sourceIdentifier: blocker?.identifier ?? null,
+          failedOperationId: gate.operationId,
+          failedRunId: gate.heartbeatRunId,
+          failedAt: gate.failedAt.toISOString(),
+          executionWorkspaceId: gate.executionWorkspaceId,
+          failureSummary: failedRun?.error ?? null,
+          failureCode: failedRun?.errorCode ?? null,
+          dependentIssueIds,
+        },
+        nextAction:
+          "Board operator: the task is done but its workspace sync-back failed, so dependent tasks stay blocked. " +
+          "Repair the execution workspace and run the task again so its workspace finalizes; dependents resume automatically once a sync-back succeeds.",
+      });
+      if (!action) continue;
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "issue_graph_liveness_backstop",
+        agentId: null,
+        action: "issue.workspace_finalize_recovery_required",
+        entityType: "issue",
+        entityId: blockerIssueId,
+        details: {
+          recoveryActionId: action.id,
+          failedOperationId: gate.operationId,
+          failedRunId: gate.heartbeatRunId,
+          dependentIssueIds,
+        },
+      });
+    }
+  }
+
+  async function settleFailedFinalizeRecoveryActions(companyId?: string | null) {
+    const actions = await db
+      .select({
+        id: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+      })
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.cause, WORKSPACE_FINALIZE_FAILED_RECOVERY_CAUSE),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ...(companyId ? [eq(issueRecoveryActions.companyId, companyId)] : []),
+      ));
+    const actionsByCompany = new Map<string, typeof actions>();
+    for (const action of actions) {
+      actionsByCompany.set(action.companyId, [...(actionsByCompany.get(action.companyId) ?? []), action]);
+    }
+    for (const [actionCompanyId, companyActions] of actionsByCompany) {
+      const gates = await issuesSvc.listFinalizeGates(
+        actionCompanyId,
+        companyActions.map((action) => action.sourceIssueId),
+      );
+      for (const action of companyActions) {
+        // Still failed, or a retry is finalizing: keep the action until the gate clears.
+        if (gates.has(action.sourceIssueId)) continue;
+        await recoveryActionsSvc.resolveActiveForIssue({
+          companyId: actionCompanyId,
+          sourceIssueId: action.sourceIssueId,
+          actionId: action.id,
+          status: "resolved",
+          outcome: "restored",
+          resolutionNote: "workspace_finalize_gate_cleared",
+        });
+      }
+    }
+  }
+
   async function reconcileResolvedDependencyWakeBackstop(
     opts?: ResolvedDependencyWakeBackstopOptions,
   ) {
@@ -5799,6 +5921,7 @@ export function recoveryService(
         ? "workspace_finalize_reconciliation"
         : "issue_graph_liveness_reconciliation";
     const useCursor = !opts?.blockerIssueId;
+    await settleFailedFinalizeRecoveryActions(opts?.companyId);
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
@@ -5907,6 +6030,7 @@ export function recoveryService(
         companyId,
         companyCandidates.map((candidate) => candidate.id),
       );
+      const dependentIdsByFailedBlocker = new Map<string, string[]>();
 
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
@@ -5920,6 +6044,12 @@ export function recoveryService(
           readiness.blockerIssueIds.length === 0 ||
           !resolvedBlockerIssueId
         ) {
+          for (const blockerIssueId of readiness?.failedFinalizeBlockerIssueIds ?? []) {
+            dependentIdsByFailedBlocker.set(blockerIssueId, [
+              ...(dependentIdsByFailedBlocker.get(blockerIssueId) ?? []),
+              candidate.id,
+            ]);
+          }
           result.notReadySkipped += 1;
           continue;
         }
@@ -6039,6 +6169,8 @@ export function recoveryService(
           );
         }
       }
+      await ensureFailedFinalizeRecoveryActions(companyId, dependentIdsByFailedBlocker).catch((err) =>
+        logger.warn({ err, companyId }, "failed to record failed workspace finalize recovery actions"));
     }
 
     if (result.healed > 0) {
