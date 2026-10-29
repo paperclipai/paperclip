@@ -88,6 +88,7 @@ import {
   readAcpxRecoveryWorkspace,
   type AcpxRecoveryWorkspaceLease,
 } from "./runtime-sandbox.js";
+import { assertCodexBwrapSandboxReady } from "../codex/bwrap-sandbox-gate.js";
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
@@ -456,6 +457,18 @@ export class CodexAcpxDriver implements HarnessDriver {
     snapshot: PersistedHarnessSession | null,
     assertWorkspaceHeld?: () => void,
   ): Promise<HarnessSession> {
+    // PER-8: fail closed when the host bwrap sandbox is not operational, so
+    // Codex runs refuse to start instead of silently degrading to
+    // unsandboxed execution. The gate is Codex-specific: the other agents
+    // sharing this driver (Claude, Grok, Pi, Cursor) launch different
+    // runtimes that do not use Codex's bwrap sandbox. Skips, opt-outs, and
+    // the probe are handled in the shared gate (bwrap-sandbox-gate.ts).
+    if ((this.#options.agent ?? "codex") === "codex") {
+      await assertCodexBwrapSandboxReady({
+        environment: this.#options.environment,
+        signal: input.signal,
+      });
+    }
     let session: CodexAcpxSession | null = null;
     const host = await this.#openHostForAdmission(
       {

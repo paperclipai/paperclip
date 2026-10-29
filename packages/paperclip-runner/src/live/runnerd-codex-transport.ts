@@ -7428,6 +7428,12 @@ export async function probeNativeRunnerEnvironment(options: {
       completionContract: { revision: "environment-probe-v1", criteria: [] },
       constraints: [], expectedResultSchema: "paperclip.run_result.v1",
     },
+    // The probe only gates on this host's bwrap sandbox when it verifies a
+    // Codex runtime that runs on this host.
+    bwrapSandboxCheck:
+      options.provider === "codex" && !remoteFilesystemRoot
+        ? "codex"
+        : "not-applicable",
     ...(options.model ? { model: options.model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     conversationMode: "direct",

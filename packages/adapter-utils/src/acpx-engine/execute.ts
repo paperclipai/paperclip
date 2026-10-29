@@ -3,6 +3,7 @@ import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.j
 import { codexShellEnvironmentKeys } from "../codex-shell-environment.js";
 import { applyObservabilityEnvironment } from "../agent-observability.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import { verifyCodexBwrapSandbox } from "./bwrap-sandbox-check.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
 import fs from "node:fs/promises";
@@ -4194,6 +4195,61 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } },
       };
+      // PER-8: fail closed when the host bwrap sandbox is not operational.
+      // This engine is the live session-start path for Codex ACP runs (the
+      // paperclip-runner driver's gate covers only that driver's lane), so
+      // the check runs here per run and covers fresh and warm/reused
+      // sessions alike. It runs behind the cancellation-ready state with
+      // the run's signal passed to the probe: a stop during the probe window
+      // cancels the run instead of waiting out the probe deadline, and an
+      // aborted probe reports cancellation, not a sandbox error. The probe
+      // is a short-lived async spawn of the bundled bwrap (10 s deadline) so
+      // a stalled probe cannot block the server's event loop; host sandbox
+      // state can change at any time (for example AppArmor profile work), so
+      // it is probed per run instead of cached at startup. Vitest workers
+      // skip the gate: unit and integration tests must not depend on the
+      // host's AppArmor/bwrap state (the check itself is covered by
+      // bwrap-sandbox-check*.test.ts).
+      const sandboxAgent = normalizeAgent(ctx.config);
+      const sandboxExecutionTarget = readAdapterExecutionTarget({
+        executionTarget: ctx.executionTarget,
+        legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+      });
+      if (
+        process.platform === "linux" &&
+        process.env.VITEST !== "true" &&
+        sandboxAgent === "codex" &&
+        (sandboxExecutionTarget?.kind ?? "local") !== "remote" &&
+        process.env.PAPERCLIP_RUNNER_BWRAP_CHECK_DISABLED !== "1"
+      ) {
+        const configuredCodexCommand = asString(ctx.config.agentCommand, "").trim();
+        const builtInCodexCommand = await resolveBuiltInAgentCommand({
+          agent: "codex",
+          packageRootDir: engine.packageRootDir,
+          executionTargetIsRemote: false,
+        });
+        const bwrapCheck = await verifyCodexBwrapSandbox({
+          anchorPath: configuredCodexCommand || builtInCodexCommand?.command || null,
+          signal: ctx.signal,
+        });
+        if (ctx.signal?.aborted) return {
+          exitCode: null, signal: null, timedOut: false,
+          errorCode: "cancelled", errorMessage: "Stopped before provider startup",
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } },
+        };
+        if (!bwrapCheck.ok) {
+          if (process.env.PAPERCLIP_RUNNER_BWRAP_OPTOUT === "1") {
+            process.stderr.write(
+              `[paperclip] WARNING: bwrap sandbox is not operational (${bwrapCheck.reason}). Continuing without sandbox isolation because PAPERCLIP_RUNNER_BWRAP_OPTOUT=1 is set.\n`,
+            );
+          } else {
+            throw new Error(
+              `Sandbox unavailable: ${bwrapCheck.reason}. Refusing to start Codex without an operational bwrap sandbox. Fix the host sandbox prerequisites (AppArmor, user namespaces) or set PAPERCLIP_RUNNER_BWRAP_OPTOUT=1 to explicitly accept unsandboxed execution.`,
+            );
+          }
+        }
+      }
       await emitStartupReuse(onReuseEvent, "environment", environmentStartupReuse(startupExecutionTarget));
       // ACPX has no separate native Runner process. Its runtime object is not
       // evidence that a provider process or a staged workspace was reused.

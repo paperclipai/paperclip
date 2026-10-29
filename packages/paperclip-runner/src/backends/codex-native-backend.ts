@@ -165,6 +165,11 @@ function createTransportBackedNativeSessionBackend(
         input.provider.kind === "codex"
           ? (input.provider.approvalPolicy ?? "never")
           : "never",
+      // Only a Codex runtime uses this host's bwrap sandbox; the other
+      // provider facades over this driver (OpenCode, ACPX agents) must not
+      // be gated on it.
+      bwrapSandboxCheck:
+        input.provider.kind === "codex" ? "codex" : "not-applicable",
       baseInstructions,
       instructionWorkingCopyRoot: "runtimeContext" in input ? input.runtimeContext.instructions.workingCopy?.rootPath : undefined,
       includeSkillInstructions: isCodex && "runtimeContext" in input,

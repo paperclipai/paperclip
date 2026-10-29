@@ -48,6 +48,15 @@ export interface CodexAppServerDriverOptions {
       | "activeTurnId"
     >;
   }) => CodexAppServerTransport;
+  /**
+   * PER-8: whether the session this driver opens runs a Codex runtime on
+   * this host, under this host's bwrap sandbox. The driver's fail-closed
+   * bwrap gate applies only to those sessions; facades over other provider
+   * runtimes (OpenCode, ACPX agents) and remote runner bundles do not use
+   * this host's sandbox and set "not-applicable". Direct Codex usage
+   * (default) launches a local codex process.
+   */
+  bwrapSandboxCheck?: "codex" | "not-applicable";
   /** Additional control-plane tools exposed to the provider for this run. */
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   /** Executes an admitted additional tool call. Completion tools remain driver-owned. */

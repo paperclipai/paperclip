@@ -3,6 +3,7 @@ import { writeManagedCodexObservability, redactObservabilityDiagnostic } from ".
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
+import { assertCodexBwrapSandboxReady, resolveLaunchedCodexExecutable } from "./bwrap-sandbox-gate.js";
 
 import type {
   HarnessDriver,
@@ -270,6 +271,22 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   async openSession(input: OpenHarnessSessionInput): Promise<HarnessSession> {
     input.signal?.throwIfAborted();
+    // PER-8: fail closed when the host bwrap sandbox is not operational, so
+    // Codex runs refuse to start instead of silently degrading to
+    // unsandboxed execution. The gate applies only when this session runs a
+    // Codex runtime on this host: facades over other provider runtimes and
+    // remote runner bundles use a different host's sandbox
+    // (bwrapSandboxCheck: "not-applicable"). The probe anchors on the Codex
+    // executable this session launches, so the checked sandbox is the one
+    // that runs. Skips, opt-outs, and the probe are handled in the shared
+    // gate (see bwrap-sandbox-gate.ts).
+    if (this.#options.bwrapSandboxCheck !== "not-applicable") {
+      await assertCodexBwrapSandboxReady({
+        environment: this.#options.environment,
+        signal: input.signal,
+        anchorPath: resolveLaunchedCodexExecutable(this.#options.environment, input.workingDirectory),
+      });
+    }
     // A prepared launch resolves its directory on the runner filesystem. The
     // caller's directory is controller-local and never authorizes itself.
     const workingDirectory = this.#preparedLaunch()
