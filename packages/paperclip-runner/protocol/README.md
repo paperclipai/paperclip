@@ -134,8 +134,9 @@ production adapter.
 
 `runtime.activity.recorded` is a P1 Runner event in v1, v2 and v3 with exactly
 `{ namespace, activityKey }`. Both opaque identifiers contain 1–160 Unicode code
-points and exclude C0 controls and DEL. They identify reported runtime activity,
-not a plugin, UI slot or presentation command. The authenticated outer envelope
+points and exclude C0 controls and DEL. `namespace` groups a producer's activity
+types; `activityKey` names an activity within that group. Consumers use the pair
+to select a response to activity in the run. The authenticated outer envelope
 provides run and session identity, source sequence and emission time. Core resolves
 the run's company, task and agent through its existing authorized run binding;
 callers cannot supply those identities in the payload. Recording activity does
