@@ -18,6 +18,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "failed_run",
   "budget_alert",
   "agent_error_alert",
+  "mention",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -155,6 +156,13 @@ export type AttentionItemDetail =
       kind: "failed_run";
       agentName: string | null;
       failureReasonExcerpt: string | null;
+      images: AttentionDetailImage[];
+    }
+  | {
+      kind: "mention";
+      commentId: string;
+      commentExcerpt: string | null;
+      authorLabel: string | null;
       images: AttentionDetailImage[];
     }
   | {
