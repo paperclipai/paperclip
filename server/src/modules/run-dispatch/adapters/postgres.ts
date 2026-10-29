@@ -1219,7 +1219,7 @@ export function createPostgresRunDispatchAdapter(
           publications,
         );
         const decision =
-          !initialDecision.stale && issueId
+          !initialDecision.stale && issueId && input.enforceContinuationOwnership !== false
             ? await tx
                 .select({ executionRunId: issues.executionRunId })
                 .from(issues)
@@ -1333,7 +1333,7 @@ export function createPostgresRunDispatchAdapter(
             conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
             issueId, contextSnapshot, scheduledRetryReason: run.scheduledRetryReason }, input.now, tx);
           const semantic = decideQueuedRunStaleness(facts, input.now);
-          const decision = semantic.stale || facts.issueExecutionRunId === run.id ? semantic : {
+          const decision = semantic.stale || input.enforceContinuationOwnership === false || facts.issueExecutionRunId === run.id ? semantic : {
             stale: true as const, errorCode: "issue_execution_lock_changed" as const,
             reason: "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
             details: { issueId, expectedExecutionRunId: run.id, currentExecutionRunId: facts.issueExecutionRunId },

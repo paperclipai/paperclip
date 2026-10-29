@@ -320,13 +320,16 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await service.drainActiveRunExecutions(); }
   });
-  it("delivers a stamped reviewer retry after its provider quota monitor is consumed", async () => {
+  it.each(["bootstrap", "conversation"] as const)("delivers a cross-agent stamped %s quota retry after monitor consumption", async evidence => {
     const { f, busy, marker } = await monitored();
+    await db.update(issues).set({ assigneeAgentId: f.source.agentId }).where(eq(issues.id, f.issueId));
     const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
     const source = await service.wakeup(f.agentId, { source: "assignment", reason: "execution_review_requested",
       payload: { issueId: f.issueId }, requestedByActorType: "agent", requestedByActorId: f.source.agentId });
     expect(source?.contextSnapshot?.reviewerAssignmentGeneration).toEqual(expect.any(String));
-    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, finishedAt: new Date() }).where(eq(heartbeatRuns.id, source!.id));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", resultJson: evidence === "bootstrap"
+      ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+      : { conversationContinuation: "continue_conversation_v1" }, finishedAt: new Date() }).where(eq(heartbeatRuns.id, source!.id));
     const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     const next = new Date(Date.now() + 60_000);
     await issueService(db).update(f.issueId, { monitorNextCheckAt: next, monitorNotes: "Quota retry",

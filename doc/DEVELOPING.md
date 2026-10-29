@@ -1884,6 +1884,10 @@ matching claim and captures the complete post-consumption generation in that
 commit. A missing/foreign proof or any intervening generation change refuses
 admission and retains the monitor duty. Existing retries and immutable receipts
 keep their original generation; provider dispatch still follows outer commit.
+Source eligibility preserves both proven bootstrap failures and the existing legacy
+conversation-continuation contract. Cleanup and reconciliation checks apply to both.
+Stamped cross-agent reviewers recheck current authority at both provider gates;
+only continuations that require the assignee execution lock must own that lock.
 
 
 

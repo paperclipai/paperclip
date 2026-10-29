@@ -72,14 +72,16 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(invoke).not.toHaveBeenCalled();
     } finally { await service.drainActiveRunExecutions(); }
   });
-  it.each(["none", "question", "tree", "dependency", "authority", "project", "recovery", "agent chain"] as const)("rechecks a new %s hold between accounting and provider handoff", async kind => {
+  it.each((["none", "question", "tree", "dependency", "authority", "project", "recovery", "agent chain"] as const)
+    .flatMap(kind => [false, true].map(crossAgent => [kind, crossAgent] as const)))("rechecks a new %s hold before handoff (cross-agent: %s)", async (kind, crossAgent) => {
     const f = await seed();
+    if (crossAgent) await db.update(issues).set({ assigneeAgentId: f.source.agentId }).where(eq(issues.id, f.issueId));
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const run = await heartbeatService(db).wakeup(f.agentId, { source: "assignment", reason: "execution_review_requested",
       payload: { issueId: f.issueId }, requestedByActorType: "agent", requestedByActorId: f.source.agentId });
     expect(run).toBeTruthy();
     await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
-    await db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, f.issueId));
+    if (!crossAgent) await db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, f.issueId));
     const reservation = await reserveRunBudget(db, f.companyId, run!.id, null);
     let mutated = false;
     const observed = new Proxy(db, { get(target, key) {

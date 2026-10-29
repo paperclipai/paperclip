@@ -1,3 +1,4 @@
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { parseObject } from "../../adapters/utils.js";
 import { isDeepStrictEqual } from "node:util";
@@ -21,7 +22,8 @@ export class ReviewQuotaMonitorHeld extends HttpError {
 async function assertQuotaSourceEligibility(tx: Db, source: Run) {
   const recovery = parseObject(source.resultJson?.executionRecovery);
   if (source.runtimeMode === "native" || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status) ||
-      source.errorCode !== "provider_quota" || recovery.kind !== "bootstrap" || recovery.providerWorkStarted !== false ||
+      source.errorCode !== "provider_quota" ||
+      (!(recovery.kind === "bootstrap" && recovery.providerWorkStarted === false) && !hasConversationContinuationPolicy(source.resultJson)) ||
       await legacyExecutionNeedsReconciliationWithEvidence(tx, source))
     throw new ReviewQuotaMonitorHeld("The quota source is no longer eligible for automatic retry");
 }
