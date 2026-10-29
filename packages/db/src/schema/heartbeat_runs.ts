@@ -111,6 +111,12 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
+        AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+        AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE`),
     retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
       .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
         and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')

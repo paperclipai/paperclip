@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
@@ -624,6 +625,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           await notifyInstructionCommit(tx);
           await notifyDirectoryCleanup(tx);
           await notifyInstructionCollection(tx);
+          await notifyCancelledWorkspacePreservation(tx);
         }
         if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
         await notifyToolConnectionHealth(tx, "*");

@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { hasNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -921,6 +922,7 @@ export async function claimNativeRestartRecoveries(input: {
             ),
           );
         await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
+        await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
         const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({

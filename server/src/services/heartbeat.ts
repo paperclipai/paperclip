@@ -1,3 +1,4 @@
+import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
 import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -4055,6 +4056,14 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerCancelledWorkspacePreservationWork: (
+      coordinator: Parameters<typeof registerCancelledWorkspacePreservationWork>[1], canRun: () => boolean,
+    ) => registerCancelledWorkspacePreservationWork(db, coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
     registerStoppedInstructionCollectionWork: (
       coordinator: Parameters<typeof instructionCopies.registerStoppedCollectionWork>[0], canRun: () => boolean,
     ) => instructionCopies.registerStoppedCollectionWork(coordinator,

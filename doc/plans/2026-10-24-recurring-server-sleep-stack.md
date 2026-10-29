@@ -2601,3 +2601,19 @@ coverage passed 101 separately. Exact-head remote acceptance is still required.
 Other native recovery, dispatch, retention, integration and aggregate-tick duties
 remain in scope. The older CI/review gates recorded above are not discharged by
 this slice's local tests.
+
+## Slice 42 acceptance and slice 43 cancelled workspace preservation
+
+Stopped instruction collection PR #17674 at
+`6dc58115cdebb988a63bb45dce4521f5bb5013f6` has all 53 checks successful,
+Greptile 5/5 at that head and zero unresolved threads. It remains draft and open.
+
+Slice 43 moves cancelled native workspace preservation out of periodic reaping.
+Its owner and producer contract is recorded in
+[the preservation audit](2026-10-25-cancelled-workspace-preservation-sleep-audit.md).
+It preserves known file debt separately from coordinator/lease readiness and
+keeps teardown with the existing stop-only worker. Exact-head remote acceptance
+is still required. The full remaining stack and older unresolved gates remain
+in scope.
+
+Slice 43 final local acceptance: 120 owner/startup cases plus 209 affected consumer cases pass, without skips. Workspace typecheck/build, final server types, migration application/replay and index-plan checks passed. The negative fixture FK rejection and its correction remain in the owner audit. Remote CI and review are still required.

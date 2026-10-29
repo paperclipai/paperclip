@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
@@ -1068,6 +1069,7 @@ async function materializeDecisionEffect(input: {
         );
     }
     await notifyInstructionCollection(input.tx, { companyId: input.companyId, runId: input.runId });
+    await notifyCancelledWorkspacePreservation(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyDeliveryWork(input.tx, DELIVERY_QUEUES.accounting, input.companyId);
     const [run] = await input.tx
       .update(heartbeatRuns)

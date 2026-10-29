@@ -1824,6 +1824,8 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerInstructionDirectoryCleanupWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerCancelledWorkspacePreservationWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerStoppedInstructionCollectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
@@ -1954,7 +1956,7 @@ async function startServerWithDatabaseTeardown(
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
           runPeriodicRecovery(() => heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();

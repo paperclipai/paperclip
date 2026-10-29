@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
@@ -105,6 +106,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
 
     async cancelQueueRun({ queueRunId, reason, now }) {
       await notifyInstructionCollection(tx, { companyId, runId: queueRunId });
+      await notifyCancelledWorkspacePreservation(tx, { companyId, runId: queueRunId });
       await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .update(heartbeatRuns)

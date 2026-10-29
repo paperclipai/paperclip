@@ -1947,8 +1947,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean }) {
-    await preserveCancelledNativeWorkspaces(db);
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean }) {
+    if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
     if (!opts?.skipScheduledRetryCancellation) await scheduledRetryCancellation.sweep();

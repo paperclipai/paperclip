@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
@@ -104,6 +105,7 @@ export async function deleteCompany(db: Db, id: string) {
         await notifyInstructionCommit(tx, { companyId: id });
         await notifyDirectoryCleanup(tx, { companyId: id });
         await notifyInstructionCollection(tx, { companyId: id });
+        await notifyCancelledWorkspacePreservation(tx, { companyId: id });
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
