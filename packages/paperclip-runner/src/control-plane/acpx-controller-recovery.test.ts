@@ -180,7 +180,7 @@ it("keeps the original native ACPX process and active turn through controller re
   }finally{await run.cleanup();}
 },20000);
 
-it.runIf(!process.env.PAPERCLIP_ACPX_REPRO_BINARY)("adopts the live ACPX execution through the production native transport",async()=>{
+it("adopts the live ACPX execution through the production native transport",async()=>{
   const run=await fixture();
   let adopted:ReturnType<typeof createCapabilityRunnerdCodexTransport>|undefined;
   try{
@@ -255,7 +255,16 @@ it("distinguishes a provider-process crash from controller replacement",async()=
     },{timeout:3000});
     await run.replaceController();
     const result=await run.command("session.snapshot",{includePendingRuntimeRequests:true});
-    expect(result,JSON.stringify(result)).toMatchObject({status:"failed",result:{result:{message:expect.stringMatching(/ACPX (live request snapshot failed|request snapshot requires a live provider)/)}}});
+    expect(result,JSON.stringify(result)).toMatchObject({status:"failed",result:{result:{code:"command_execution_failed"}}});
+    const message = (result.result as {result:{message:string}}).result.message;
+    const lossReasons = [
+      "ACPX request snapshot requires a live provider",
+      "ACPX sidecar request transport failed at session.snapshot: command serialization failed: Broken pipe (os error 32)",
+      "ACPX sidecar request transport failed at session.snapshot: failed to write process command: Broken pipe (os error 32)",
+      "ACPX sidecar exited at session.snapshot: exitCode=Some(9) signal=None",
+      "ACPX sidecar closed stdout at session.snapshot",
+    ];
+    expect(lossReasons.map(reason => `ACPX live request snapshot failed: ${reason}`)).toContain(message);
     expect(run.launches()).toHaveLength(1);
   }finally{await run.cleanup();}
 },20000);
