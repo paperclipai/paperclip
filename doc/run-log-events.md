@@ -720,6 +720,18 @@ This pre-provider wait records `ai_connection_busy` on the cancelled run and doe
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
 
+## Plugin run configuration
+
+`plugin_run_configuration` is one informational `system` event. The heartbeat
+writes it when one or more `agent.runs.configure` plugins set a model or effort
+for the run before preparation. The payload contains `adapterConfig` (the merged
+allowlisted keys), `decisions` (the plugin key, its allowlisted keys and its
+optional reason, in install order) and `overriddenByIssue` (the keys that the
+operator's per-issue overrides keep). The payload contains no issue text and no
+credentials. The heartbeat writes no event when no plugin sets a value, and a
+recovered run that reuses the recorded result writes no second event. The event
+stays in the instance run log and creates no Telemetry or OpenTelemetry export.
+
 ## Managed Agent File Save Receipts
 
 The server writes `instruction_save` after managed file collection or a warm

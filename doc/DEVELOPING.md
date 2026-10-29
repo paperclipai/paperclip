@@ -2503,6 +2503,12 @@ preparation fails. The executor keeps release and environment-cleanup ordering;
 a separate release closure defers cleanup failures without replacing run results.
 See `tests/e2e/instruction-working-copy/README.md` for isolated browser acceptance.
 
+Plugin run configuration is in `server/src/services/heartbeat/plugin-run-configuration.ts`.
+It calls `agent.runs.configure` plugins before preparation, validates their allowlisted
+model and effort keys, records the result for recovery, and layers it below per-issue
+overrides. `heartbeat.ts` only calls it at the lifecycle point. See
+[PLUGIN_SPEC.md §13.11](./plugins/PLUGIN_SPEC.md#1311-prepareagentrun).
+
 Task assignment Markdown is rendered by `server/src/services/heartbeat/task-markdown.ts`.
 `heartbeat.ts` re-exports it for existing callers. Keep prompt
 formatting changes in the renderer and its tests, separate from run orchestration.

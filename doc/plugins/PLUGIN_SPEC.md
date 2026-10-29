@@ -575,6 +575,7 @@ Optional methods:
 - `getData(input)`
 - `performAction(input)`
 - `executeTool(input)`
+- `prepareAgentRun(input)`
 
 ### 13.1 `initialize`
 
@@ -684,6 +685,49 @@ The host provides:
 - run context: agent ID, run ID, company ID, project ID
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
+
+### 13.11 `prepareAgentRun`
+
+Proposes a model or reasoning effort for one agent run before the host prepares
+it. The plugin implements `onPrepareAgentRun` and declares `agent.runs.configure`.
+
+The host calls the hook synchronously in the run path. It calls the hook after it
+loads the issue and the agent configuration, and before it resolves the effective
+adapter configuration, the session and the workspace. The adapter therefore sees
+the result on the first turn. Plugin events stay asynchronous; they cannot do this.
+
+The host provides:
+
+- company ID, agent ID, run ID and adapter type
+- invocation source, wake reason and retry attempt
+- the issue ID when the run is for an issue
+- the issue identifier, title and description, only when the plugin also declares `issues.read`
+- the current values of the allowlisted keys in the agent configuration
+- the allowlisted keys that the operator set as per-issue overrides
+
+The worker returns `null` or `{ adapterConfig, reason }`. `adapterConfig` can
+contain only `model`, `effort`, `modelReasoningEffort`, `reasoningEffort` and
+`variant`, with string values. The host rejects the complete result if it
+contains any other key. A plugin cannot set credentials, environment variables,
+commands or workspace settings through this hook.
+
+Rules:
+
+- The host calls only `ready` plugins that are enabled for the company, run a
+  worker and implement the hook.
+- The host calls the plugins in parallel with a 1500 ms timeout each.
+- An error, a timeout or an invalid result has no effect. The run continues with
+  the configuration it would have had without the plugin.
+- If two plugins set the same key, the plugin with the lower install order wins.
+- Per-issue overrides that an operator sets on the issue win over the plugin.
+- The host does not call the hook for agents that use an AI connection router.
+  The router owns model and effort for those agents.
+- The host records the merged result in the run context snapshot and writes a
+  `plugin_run_configuration` run-log event. A recovered run reuses the recorded
+  result and does not call the plugin again. A retry is a new run and calls the
+  plugin again, with a higher retry attempt.
+- The adapter decides whether a key applies. An adapter ignores keys that it does
+  not read.
 
 ## 14. SDK Surface
 
@@ -904,6 +948,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `http.outbound`
 - `secrets.read-ref`
 - `environment.drivers.register`
+- `agent.runs.configure`
 
 ### Agent Tools
 
