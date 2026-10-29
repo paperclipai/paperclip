@@ -235,6 +235,7 @@ export function traceparentFromContextToken(contextToken: unknown): string | und
  */
 export function recordProviderPluginSpan(input: {
   name: string;
+  linked?: boolean;
   parent: ParsedTraceparent;
   attributes: Record<string, string | number | boolean>;
   status?: { code: number; message?: string };
@@ -253,6 +254,7 @@ export function recordProviderPluginSpan(input: {
         setSpanContext(context: unknown, spanContext: unknown): unknown;
       };
       context?: { active(): unknown };
+      ROOT_CONTEXT?: unknown;
     };
     const trace = api.trace;
     const context = api.context;
@@ -263,15 +265,17 @@ export function recordProviderPluginSpan(input: {
       traceFlags: input.parent.traceFlags,
       isRemote: true,
     };
-    const parentContext = trace.setSpanContext(context.active(), remoteSpanContext);
+    if (input.linked && (!api.ROOT_CONTEXT || (input.parent.traceFlags & 1) === 0)) return;
+    const parentContext = input.linked ? api.ROOT_CONTEXT : trace.setSpanContext(context.active(), remoteSpanContext);
     const tracer = trace.getTracer("paperclip.startup");
     // Pass the true start time as the OpenTelemetry `startTime` option, so the
     // span opens at its real wall-clock start. An epoch-millisecond number is a
     // valid OpenTelemetry `TimeInput`.
-    const startSpanOptions =
-      input.startTimeMs !== undefined
-        ? { attributes: input.attributes, startTime: input.startTimeMs }
-        : { attributes: input.attributes };
+    const startSpanOptions = {
+      attributes: input.attributes,
+      ...(input.startTimeMs !== undefined ? { startTime: input.startTimeMs } : {}),
+      ...(input.linked ? { links: [{ context: remoteSpanContext }] } : {}),
+    };
     const span = tracer.startSpan(input.name, startSpanOptions, parentContext);
     const childParent = (span as typeof span & { spanContext?(): ParsedTraceparent }).spanContext?.();
     if (input.status) span.setStatus(input.status);

@@ -1571,6 +1571,8 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  */
 export interface PluginSpanRecord {
   name: string;
+  /** A completed remote lifecycle is linked to its observer, never made its child. */
+  relationship?: "linked";
   attributes?: Record<string, string | number | boolean>;
   status?: { code: number; message?: string };
   startTimeMs?: number;

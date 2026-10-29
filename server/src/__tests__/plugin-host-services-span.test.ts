@@ -363,3 +363,19 @@ it("retains short children of a multi-hour worker invocation and shares its aggr
  expect(mockRecordSpan).toHaveBeenCalledTimes(3);
  expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"sandbox.daytona.pack",startTimeMs:now-7199990});
 });
+
+
+it("links bounded earlier remote lifecycles to their host-owned observer",()=>{
+ mockRecordSpan.mockReset();mockRecordSpan.mockReturnValue({traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1});
+ const now=Date.now();
+ recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-10,endTimeMs:now,children:[
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100,children:[
+   {name:"plugin.remote.operation",startTimeMs:now-900,endTimeMs:now-200}
+  ]},
+  {name:"plugin.remote.operation",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100},
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-700000,endTimeMs:now-100},
+ ]},{traceparent:VALID_TRACEPARENT});
+ expect(mockRecordSpan).toHaveBeenCalledTimes(3);
+ expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"plugin.remote.lifecycle",linked:true,startTimeMs:now-1000});
+ expect(mockRecordSpan.mock.calls[2][0].linked).toBeUndefined();
+});

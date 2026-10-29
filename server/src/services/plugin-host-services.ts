@@ -540,7 +540,7 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
   "plugin.workspace.prepare", "plugin.storage.queue", "plugin.storage.execute",
   "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
-  "plugin.remote.request", "plugin.remote.operation",
+  "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
@@ -596,7 +596,7 @@ export function clampProviderSpanAttributes(
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
     if (key === "plugin.operation") {
-      if (typeof value === "string" && ["request", "queue.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
+      if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
       continue;
     }
     if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
@@ -705,6 +705,7 @@ export function recordWorkerProviderSpan(
     startTimeMs?: unknown;
     endTimeMs?: unknown;
     children?: unknown;
+    relationship?: unknown;
   },
   context: WorkerHostCallContext | undefined,
 ): void {
@@ -713,16 +714,20 @@ export function recordWorkerProviderSpan(
   const budget = context?.providerSpanBudget ?? {remaining:256};
   const longInvocation = params.name === "plugin.worker";
   const invocationLimitMs = 24 * 60 * 60 * 1000;
-  const visit = (params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown }; startTimeMs?: unknown; endTimeMs?: unknown; children?: unknown }, parent: ParsedTraceparent, depth: number, enclosing?: { startTimeMs: number; endTimeMs: number }) => {
+  const visit = (params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown }; startTimeMs?: unknown; endTimeMs?: unknown; children?: unknown; relationship?: unknown }, parent: ParsedTraceparent, depth: number, enclosing?: { startTimeMs: number; endTimeMs: number }) => {
     if (depth > 12 || budget.remaining-- <= 0) return;
     const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs,
       depth === 0 && longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_DURATION_MS,
       longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_START_AGE_MS);
-    if (enclosing && (!times || times.startTimeMs < enclosing.startTimeMs || times.endTimeMs > enclosing.endTimeMs)) return;
+    const linked = params.relationship === "linked" && params.name === "plugin.remote.lifecycle";
+    if (params.relationship !== undefined && !linked) return;
+    if (linked && (!times || Date.now() - times.startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS)) return;
+    if (enclosing && (!times || (!linked && times.startTimeMs < enclosing.startTimeMs) || times.endTimeMs > enclosing.endTimeMs)) return;
     const status = clampSpanStatus(params.status);
     const childParent = recordProviderPluginSpan({
       name: clampProviderSpanName(params.name),
       parent,
+      ...(linked ? { linked: true } : {}),
       attributes: clampProviderSpanAttributes(params.attributes),
       ...(status ? { status } : {}),
       ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
