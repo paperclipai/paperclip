@@ -794,6 +794,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--omit-ambiguous-turn-started");
     let fail_after_thread_read = args.iter().any(|value| value == "--fail-after-thread-read");
     let fail_first_interrupt = args.iter().any(|value| value == "--fail-first-interrupt");
+    let interrupt_usage_count = argument(&args, "--interrupt-usage-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or_default();
+    if interrupt_usage_count > 2048 {
+        return Err("interrupt usage fixture count exceeds its bound".into());
+    }
     let ignore_repeated_interrupt = args
         .iter()
         .any(|value| value == "--ignore-repeated-interrupt");
@@ -1951,7 +1958,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "error": {"code": -32001, "message": "configured interrupt failure"}
                     }))?;
                 } else {
+                    for _ in 0..interrupt_usage_count.min(1000) {
+                        send(json!({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": state.thread_id, "turnId": state.active_turn_id,
+                            "tokenUsage": {"total": {"inputTokens": 12, "outputTokens": 3}}
+                        }}))?;
+                    }
                     send(json!({"id": id, "result": {"accepted": true}}))?;
+                    for _ in 1000..interrupt_usage_count {
+                        send(json!({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": state.thread_id, "turnId": state.active_turn_id,
+                            "tokenUsage": {"total": {"inputTokens": 12, "outputTokens": 3}}
+                        }}))?;
+                    }
                     if flood_runtime_requests_on_interrupt {
                         send_runtime_request_flood(
                             &state,
@@ -1988,6 +2007,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else {
                             finish_turn(&state_path, &mut state, "interrupted")?;
+                            log_call(call_log.as_deref(), "interrupt-receipts-written")?;
                         }
                     }
                 }

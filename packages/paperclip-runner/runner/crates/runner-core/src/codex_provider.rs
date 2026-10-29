@@ -3021,6 +3021,61 @@ impl CodexProvider {
         result
     }
 
+    pub(crate) fn drain_shutdown_receipts(
+        &mut self,
+    ) -> Result<Vec<(String, Value)>, LocalRunnerError> {
+        if !self.expected_shutdown || self.process.try_wait()?.is_none() {
+            return Err(LocalRunnerError::invalid(
+                "Codex shutdown receipts require a stopped provider",
+            ));
+        }
+        let deadline = std::time::Instant::now() + self.process.shutdown_grace();
+        let mut receipts = Vec::new();
+        let mut receipt_bytes = 0usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "Codex shutdown receipt drain exceeded its deadline",
+                ));
+            }
+            match self.poll()? {
+                Some(CodexProviderEvent::Notification { method, params })
+                    if method == "thread/tokenUsage/updated"
+                        || method == "paperclip/resumeUsageSnapshot"
+                        || normalized_codex_terminal_event_type(&method, &params).is_some() =>
+                {
+                    receipt_bytes =
+                        receipt_bytes.saturating_add(json_size(&params, "Codex shutdown receipt")?);
+                    if receipts.len() >= MAX_BUFFERED_MESSAGES
+                        || receipt_bytes > MAX_BUFFERED_MESSAGE_BYTES
+                    {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex shutdown receipt drain exceeded its receipt limit",
+                        ));
+                    }
+                    receipts.push((method, params));
+                }
+                Some(
+                    CodexProviderEvent::ProtocolFailure { .. }
+                    | CodexProviderEvent::ResourceLimit { .. },
+                ) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex shutdown receipts failed provider identity validation",
+                    ));
+                }
+                Some(CodexProviderEvent::Exited { .. }) => {
+                    if !self.process.stdout_drained() || self.process.stdout_failed() {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex shutdown receipt stream did not reach a valid EOF",
+                        ));
+                    }
+                    return Ok(receipts);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn cancel_pending_requests(&mut self) -> Result<(), LocalRunnerError> {
         let pending_runtime = std::mem::take(&mut self.pending_runtime_requests);
         let pending = std::mem::take(&mut self.pending_tool_requests);

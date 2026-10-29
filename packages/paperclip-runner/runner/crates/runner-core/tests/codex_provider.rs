@@ -424,7 +424,7 @@ fn recorded_tool_responses(directory: &Path) -> Vec<String> {
 }
 
 fn poll_and_ack(
-    executor: &mut CodexCommandExecutor,
+    executor: &mut impl CommandExecutor,
 ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
     let events = executor.poll_events()?;
     executor.acknowledge_events(events.len())?;
@@ -4475,9 +4475,7 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
     // the provider has aborted, but the runner has not polled its terminal.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let state: Value =
-            serde_json::from_slice(&fs::read(directory.join("fake-state.json")).unwrap()).unwrap();
-        if state["activeTurnId"].is_null() {
+        if call_count(&directory, "interrupt-receipts-written") == 1 {
             break;
         }
         assert!(
@@ -4515,7 +4513,35 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
         prepared["providerProcessGeneration"],
         before["providerProcessGeneration"]
     );
-    assert_eq!(prepared["pendingEvents"], before["pendingEvents"]);
+    let stopped_bytes = fs::read(&state_path).unwrap();
+    executor
+        .execute(&command("repeat-stop", 6, "turn.stop", json!({})))
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), stopped_bytes);
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut executor =
+        NativeProviderCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command("snapshot", 7, "session.snapshot", json!({})))
+        .unwrap();
+    let events = poll_and_ack(&mut executor).unwrap();
+    let usage = events
+        .iter()
+        .find(|event| event.event_type == "usage.reported")
+        .expect("stop must retain the real usage queued before provider exit");
+    assert_eq!(usage.payload["cumulative"]["inputTokens"], 12);
+    assert_eq!(usage.payload["cumulative"]["outputTokens"], 3);
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "turn.interrupted")
+        .expect("stop must retain the provider-authored interruption");
+    assert_eq!(terminal.payload["providerTurnId"], "provider-turn-1");
+    assert!(events.iter().all(|event| !matches!(
+        event.event_type.as_str(),
+        "item.completed" | "run.result.proposed" | "turn.completed"
+    )));
+    assert!(poll_and_ack(&mut executor).unwrap().is_empty());
     assert!(prepared["activeProviderTurnId"].is_null());
     assert_eq!(call_count(&directory, "thread/start"), 1);
     assert_eq!(call_count(&directory, "thread/resume"), 0);
@@ -4532,6 +4558,141 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
         interrupt_calls, 1,
         "stop must not ask an already interrupted provider again"
     );
+}
+
+#[test]
+fn durable_stop_receipt_limit_remains_fenced_across_retry_and_restart() {
+    let directory = temporary_directory("stop-receipt-overflow");
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor.execute(&command("prepare", 1, "run.prepare", json!({
+        "provider": provider_config(&directory, &["--hold-turn", "--interrupt-usage-count", "1025"]),
+    }))).unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Retain every usage receipt."}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("interrupt", 4, "turn.interrupt", json!({})))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while call_count(&directory, "interrupt-receipts-written") == 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(executor
+        .execute(&command("stop", 5, "turn.stop", json!({})))
+        .is_err());
+    assert!(
+        executor
+            .execute(&command("repeat-stop", 6, "turn.stop", json!({})))
+            .is_err(),
+        "a failed drain must not certify only the remaining suffix"
+    );
+    assert!(executor
+        .execute(&command(
+            "retry-turn",
+            7,
+            "turn.start",
+            json!({"text": "Do not replay."})
+        ))
+        .is_err());
+    let retained = fs::read(directory.join("codex-provider-state.json")).unwrap();
+    let state: Value = serde_json::from_slice(&retained).unwrap();
+    assert_eq!(state["lifecycle"], "reconciliation_required");
+    assert_eq!(state["stopReceiptDrainPending"], true);
+    assert_eq!(state["activeProviderTurnId"], "provider-turn-1");
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    assert!(recovered
+        .execute(&command("cold-stop", 8, "turn.stop", json!({})))
+        .is_err());
+    assert_eq!(
+        fs::read(directory.join("codex-provider-state.json")).unwrap(),
+        retained
+    );
+    assert_eq!(call_count(&directory, "thread/start"), 1);
+    assert_eq!(call_count(&directory, "thread/resume"), 0);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    recovered.shutdown().unwrap();
+    drop(recovered);
+    let mut interrupted_drain = state;
+    interrupted_drain["lifecycle"] = json!("turn_active");
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec(&interrupted_drain).unwrap(),
+    )
+    .unwrap();
+    let mut crashed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    assert_eq!(
+        crashed.reconcile_terminal_delivery().unwrap(),
+        TerminalDeliveryReconciliation::ProviderCleanupPending
+    );
+    let snapshot = crashed
+        .execute(&command("crash-snapshot", 9, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["warmAttachReady"], false);
+    assert!(crashed
+        .execute(&command("crash-stop", 10, "turn.stop", json!({})))
+        .is_err());
+    assert_eq!(call_count(&directory, "thread/resume"), 0);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    crashed.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_stop_without_a_provider_terminal_does_not_invent_receipts() {
+    let directory = temporary_directory("stop-without-receipts");
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": provider_config(&directory, &["--hold-turn"]),
+            }),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Wait for stop."}),
+        ))
+        .unwrap();
+    let stopped = executor
+        .execute(&command("stop", 4, "turn.stop", json!({})))
+        .unwrap();
+    assert_eq!(stopped.result["providerExitConfirmed"], true);
+    let events = poll_and_ack(&mut executor).unwrap();
+    assert!(events.iter().all(|event| !matches!(
+        event.event_type.as_str(),
+        "usage.reported"
+            | "turn.completed"
+            | "turn.interrupted"
+            | "turn.failed"
+            | "turn.cancelled"
+            | "run.result.proposed"
+    )));
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    assert_eq!(call_count(&directory, "turn/interrupt"), 0);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

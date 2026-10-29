@@ -9012,6 +9012,57 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
   }
 }, 30_000);
 
+it("retains provider interruption receipts through transport close and history recovery", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stop-receipts-"));
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--hold-turn", "--call-log", join(stateDirectory, "calls.log")),
+    stateDirectory,
+    prpIdentity: {
+      runnerInstanceId: "runner-stop-receipts", environmentLeaseId: "lease-stop-receipts",
+      runId: "run-stop-receipts", normalizedSessionId: "session-stop-receipts",
+      turnId: "turn-stop-receipts", itemId: "item-stop-receipts",
+    },
+  };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  let second: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  const handler = vi.fn(async () => ({ success: true, contentItems: [] }));
+  first.transport.setServerRequestHandler(handler);
+  try {
+    const opened = await first.transport.request("thread/start", { cwd: stateDirectory, dynamicTools: [] });
+    const started = await first.transport.request("turn/start", {
+      input: [{ type: "text", text: "Wait for interruption." }],
+    });
+    await expectTurnStarted(first.transport.notifications()[Symbol.asyncIterator]());
+    await first.transport.request("turn/interrupt", { turnId: started.turn.id });
+    await first.transport.close();
+    const control = JSON.parse(await readFile(join(stateDirectory, "control-plane/control-plane-state.json"), "utf8"));
+    for (const eventType of ["usage.reported", "turn.interrupted"]) {
+      expect(control.committedEvents.filter((event: { eventType: string }) => event.eventType === eventType)).toHaveLength(1);
+    }
+    expect(control.committedEvents.some((event: { eventType: string }) => event.eventType === "run.result.proposed")).toBe(false);
+    second = createCapabilityRunnerdCodexTransport({
+      ...options,
+      resumeWorkingDirectory: stateDirectory,
+      resumeActiveTurnId: started.turn.id,
+      resumeProviderSession: { driverSessionId: opened.thread.id, providerSessionId: opened.thread.sessionId },
+    });
+    second.transport.setServerRequestHandler(handler);
+    const recovered = await second.transport.request("thread/read", { threadId: opened.thread.id });
+    expect(recovered.thread.turns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: started.turn.id, status: "interrupted" }),
+    ]));
+    expect(handler).not.toHaveBeenCalled();
+    const calls = await readFile(join(stateDirectory, "calls.log"), "utf8");
+    expect(calls.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
+  } finally {
+    await second?.transport.close();
+    await first.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("persists an active provider as settled before bounded suspension", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-active-suspension-"),

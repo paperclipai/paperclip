@@ -84,6 +84,7 @@ it.each([
   { alreadyEnded: false, appendFailure: false },
   { alreadyEnded: true, appendFailure: false },
   { alreadyEnded: true, appendFailure: true },
+  { alreadyEnded: true, appendFailure: false, stopReceiptsPending: true },
   { alreadyEnded: true, appendFailure: false, bareCodex: true },
   { alreadyEnded: true, appendFailure: false, epochFailure: "launch_intent" },
   { alreadyEnded: true, appendFailure: false, epochFailure: "spawned" },
@@ -106,10 +107,11 @@ it.each([
     terminalReplay: true,
   },
 ])(
-  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation",
+  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation stop-receipts-pending=$stopReceiptsPending",
   async ({
     alreadyEnded,
     appendFailure,
+    stopReceiptsPending,
     bareCodex,
     epochFailure,
     terminalReplay,
@@ -335,6 +337,10 @@ it.each([
           },
         });
       }
+      if (stopReceiptsPending) {
+        providerBefore.lifecycle = "reconciliation_required";
+        providerBefore.stopReceiptDrainPending = true;
+      }
       await writeFile(providerFile, JSON.stringify(providerBefore));
       await cp(original, copy, { recursive: true });
       const originalProviderHome = homeScoped ? await readFile(fakeState) : null;
@@ -405,6 +411,14 @@ it.each([
         recordEpoch,
         signal: maintenanceAbort.signal,
       };
+      if (stopReceiptsPending) {
+        await expect(settleRetainedRunnerdSession(input)).rejects.toThrow("native_cleanup_maintenance_unproven");
+        expect(recordEpoch).not.toHaveBeenCalled();
+        expect(appendEvent).not.toHaveBeenCalled();
+        expect(await Promise.all(files.map(file => readFile(join(copy, file))))).toEqual(bytes);
+        expect((await readFile(calls, "utf8")).split("\n").filter(method => method === "thread/resume")).toHaveLength(0);
+        return;
+      }
       const close = vi.fn(async () => {
         throw new NativeSessionCloseUnrecoverableError();
       });
