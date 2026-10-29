@@ -15,6 +15,11 @@ import {
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
 import { aiConnectionService } from "./ai-connections.js";
+import {
+  resolveHostClaudeSettingsDir,
+  runReadsClaudeUserSettings,
+  seedManagedAiGateSettings,
+} from "./managed-ai-gate-settings.js";
 import { subscriptionService } from "./subscriptions.js";
 import { refreshSubscriptionConnection } from "./subscription-refresh.js";
 import { secretService } from "./secrets.js";
@@ -320,6 +325,17 @@ export async function prepareManagedAiRuntime(
     );
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
+    // The private config dir below replaces the host's Claude user settings
+    // source, which on a managed runner host is where the deny-side runner
+    // gates live. Carry those gates in, or fail the run rather than run it
+    // ungated. The gate source is read from the server process environment
+    // only; `configuredEnv` deliberately does not get a vote.
+    const gate = runReadsClaudeUserSettings(input.adapterType)
+      ? await seedManagedAiGateSettings({
+          providerHome,
+          hostSettingsDir: resolveHostClaudeSettingsDir(process.env),
+        })
+      : null;
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
@@ -413,6 +429,13 @@ export async function prepareManagedAiRuntime(
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,
       home,
+      /**
+       * What the host runner gate carried into this run's config dir, or null
+       * when this runner shape does not read it. The execution target is not
+       * known yet, so the caller re-asserts reachability once it is (see
+       * `assertManagedAiGateReachesRemoteTarget`).
+       */
+      gate,
       cleanup: async () => {
         if (subscriptionFile) {
           const refreshed = await readFile(authFile, "utf8");

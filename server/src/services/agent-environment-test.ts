@@ -16,6 +16,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { hostOnlyHookCommandPaths, managedAiGateNotPortableMessage } from "./managed-ai-gate-settings.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
@@ -532,6 +533,26 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
+    // A host runner gate hook named by server path cannot cross into a remote
+    // sandbox, so a probe there would run ungated. Report it as this test's own
+    // failing check instead of probing and passing: the run path refuses the
+    // same configuration, and the operator sees why before adopting it.
+    const hostOnlyHooks = context.executionTarget?.kind === "remote" && managed.gate
+      ? hostOnlyHookCommandPaths(managed.gate.hookCommands)
+      : [];
+    if (hostOnlyHooks.length > 0) {
+      const notPortable: Awaited<ReturnType<ReturnType<typeof requireServerAdapter>["testEnvironment"]>> = {
+        adapterType,
+        testedAt: new Date().toISOString(),
+        status: "fail",
+        checks: [{
+          code: "ai_connection_gate_not_portable",
+          level: "error",
+          message: managedAiGateNotPortableMessage(hostOnlyHooks, context.environmentName),
+        }],
+      };
+      return notPortable;
+    }
     const startedAt = new Date();
     const target = context.executionTarget;
     if (managed.credentialWriteback && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId) {

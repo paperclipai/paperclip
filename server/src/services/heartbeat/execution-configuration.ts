@@ -16,6 +16,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
 import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
+import { isManagedAiGateUnreachableError } from "../managed-ai-gate-settings.js";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -200,6 +201,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
         return { prepared: false as const };
       }
+      // An unreachable runner gate is not an AI-connection problem: the
+      // connection is fine, and no action on the agent's runtime page would
+      // fix it. Fail the run with the gate's own message rather than
+      // misreport it as a missing connection and request one.
+      if (isManagedAiGateUnreachableError(error)) throw error;
       if (responsibleUserId && issueId) {
         await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
           logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");

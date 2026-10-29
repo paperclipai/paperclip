@@ -2,7 +2,7 @@ import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -41,6 +41,13 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
+  // A managed AI run carries the host's deny-side Claude gate into its private
+  // config dir. Point the host settings source at an empty fixture dir so a
+  // real ~/.claude/settings.json on this machine cannot change what these
+  // suites observe.
+  const hostClaudeDir = path.join(home, "host-claude");
+  await mkdir(hostClaudeDir, { recursive: true });
+  vi.stubEnv("CLAUDE_CONFIG_DIR", hostClaudeDir);
   vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
   if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
   else {
