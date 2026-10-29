@@ -1055,6 +1055,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
+      workspaceGitIndexRefresh: nativeExecution?.provider.kind === "opencode",
       onCheckpoint: input.workspace.onCheckpoint,
       onPhase: input.workspace.onPhase,
       onEvent: onAdapterEvent,

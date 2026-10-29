@@ -95,6 +95,12 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+/** Refresh restored stat metadata without staging dirty working-tree content. */
+export function buildRefreshWorkspaceGitIndexCommand(directory: string): string {
+  return `if git -C ${shellQuote(directory)} -c core.fsmonitor=false update-index -q --refresh >/dev/null; then :; `
+    + 'else index_status=$?; if [ "$index_status" -ne 1 ]; then exit "$index_status"; fi; fi';
+}
+
 export async function runLocalGit(
   localDir: string,
   args: string[],

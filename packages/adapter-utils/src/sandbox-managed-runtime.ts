@@ -20,6 +20,7 @@ import {
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
   GIT_ARCHIVE_EXCLUDES,
+  buildRefreshWorkspaceGitIndexCommand,
   type GitWorkspaceSnapshot,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
@@ -1256,6 +1257,8 @@ export async function prepareSandboxManagedRuntime(input: {
   /** Selects authoritative host staging, exact durable-seed replay, or no-overwrite adoption. */
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  /** Fully await a restored Git index refresh inside the existing inbound barrier. */
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
@@ -1737,6 +1740,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 { ...seed, gitArchivePath }, {
                   companyDirectory: input.workspaceSeedCacheCompanyDirectory,
                   scope: input.workspaceSeedCacheScope,
+                  runtimeSpan: runStepSpan,
                   verify: () => runStepSpan("seed.verify", async () => {
                     const verifiedRoot = path.join(tempDir, "verify-seed");
                     try {
@@ -1775,6 +1779,13 @@ export async function prepareSandboxManagedRuntime(input: {
             progressLabel: "workspace",
             statusPhase: "config_sync",
             progressBytes: workspaceUploadBytes,
+          }).then(async () => {
+            if (input.workspaceGitIndexRefresh && gitSnapshot && workspaceInboundMode === "host_current") {
+              await runStepSpan("workspace.git_index_refresh", () => input.client.run(
+                buildRefreshWorkspaceGitIndexCommand(workspaceRemoteDir),
+                { timeoutMs: input.spec.timeoutMs },
+              ));
+            }
           });
           const [staged] = await Promise.allSettled([staging, publishSeed()]);
           if (staged.status === "rejected") throw staged.reason;

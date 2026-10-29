@@ -6,6 +6,7 @@ import { directorySnapshotSha256, withDirectoryMergeLock, type DirectorySnapshot
 import { assertWorkspaceManifestDiskSpace } from "./workspace-manifest.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import type { WorkspaceDurableSeedPaths } from "./sandbox-managed-runtime.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 
 export function workspaceSeedGeneration(baseline: DirectorySnapshot, git: GitWorkspaceSnapshot | null, repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [], scope: "workspace" | "company" = "workspace"): string {
   const identity = (snapshot: GitWorkspaceSnapshot | null): unknown => snapshot && ({
@@ -183,8 +184,11 @@ async function cacheUsage(root: string, limits: SeedCacheLimits): Promise<{ gene
 export async function publishWorkspaceSeedGeneration(
   root: string, generation: string, seed: WorkspaceDurableSeedPaths,
   options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits>; eviction?: Partial<SeedCacheEviction>;
-    scope?: "workspace" | "company"; now?: () => number; verify?: () => Promise<boolean> } = {},
+    scope?: "workspace" | "company"; now?: () => number; verify?: () => Promise<boolean>;
+    runtimeSpan?: RuntimeSpanRunner } = {},
 ): Promise<boolean> {
+  const measure = <T>(name: string, work: () => Promise<T>): Promise<T> =>
+    options.runtimeSpan ? options.runtimeSpan(name, work) : work();
   const configuredLimits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
   const limits = options.scope === "company" ? { ...configuredLimits,
     workspaceGenerations: configuredLimits.companyGenerations, workspaceBytes: configuredLimits.companyBytes,
@@ -254,10 +258,12 @@ export async function publishWorkspaceSeedGeneration(
       try {
         const copy = async (source: string, name: string) => {
           const target = path.join(temporary, name);
-          await fs.link(source, target).catch(() => fs.copyFile(source, target));
-          const file = await fs.open(target, "r");
-          try { await file.sync(); } finally { await file.close(); }
-          return digest(target);
+          await measure("workspace.seed_cache_copy", () => fs.link(source, target).catch(() => fs.copyFile(source, target)));
+          await measure("workspace.seed_cache_sync", async () => {
+            const file = await fs.open(target, "r");
+            try { await file.sync(); } finally { await file.close(); }
+          });
+          return measure("workspace.seed_cache_hash", () => digest(target));
         };
         const workspaceSha256 = await copy(seed.workspaceArchivePath, "workspace.tar");
         const gitSha256 = seed.gitArchivePath ? await copy(seed.gitArchivePath, "git.tar") : null;
