@@ -31,7 +31,7 @@ beforeAll(() => {
 
 function sidecarSource(root: string) {
   return [
-    "const fs = require('node:fs'); const net = require('node:net'); const rl = require('node:readline');",
+    "const fs = require('node:fs'); const net = require('node:net'); const rl = require('node:readline'); const {randomInt}=require('node:crypto');",
     "const root = " + JSON.stringify(root) + ";",
     "const profileDigest = " + JSON.stringify(profile.commandDigest) + ";",
     "const protocolVersion = " + GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION + ";",
@@ -39,7 +39,8 @@ function sidecarSource(root: string) {
     "let identity, runId, turnId = null, sequence = 0, lastAction = '';",
     "const event = (eventType, payload) => send({protocolVersion, sequence:++sequence, eventType, runId, turnId, payload});",
     "(async () => {",
-    " const fences = await Promise.all([0,0,0].map(() => new Promise(resolve => {const s=net.createServer();s.listen(0,'127.0.0.1',()=>resolve(s));})));",
+    " const lease = async () => {for(let attempt=0;attempt<64;attempt++){const s=net.createServer();try{await new Promise((resolve,reject)=>{s.once('error',reject);s.listen(randomInt(49152,65536),'127.0.0.1',resolve);});return s;}catch(error){if(error.code!=='EADDRINUSE')throw error;}}throw new Error('No lifetime fence port available');};",
+    " const fences = await Promise.all([0,0,0].map(lease));",
     " const ports = fences.map(s=>s.address().port); fences[2].close();",
     " fs.appendFileSync(root+'/launches.jsonl', JSON.stringify({pid:process.pid, ports})+'\\n');",
     " const reply = (r,result) => send({protocolVersion,id:r.id,ok:true,result});",
