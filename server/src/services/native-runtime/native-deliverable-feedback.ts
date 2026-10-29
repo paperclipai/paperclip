@@ -95,8 +95,19 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         }
         // Bind each object to its own verb. A denied write or "create no files"
         // cannot suppress a separate requested report in this same clause.
-        const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index);
+        const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index)
+          .split(/\b(?:and(?:\s+then)?|then)\s+(?:also\s+)?(?:update|edit|bump|read|review|modify|inspect|change)\b/iu, 1)[0];
+        // An explicit attachment/export request can refer to the file by
+        // pronoun. It still requires publication when its name is omitted.
+        const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
+          && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
+        const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
+        const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
+        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
+          && /\b(?:(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)|download link)\b/iu.test(output));
         const objects = [...output.matchAll(file)].filter(match => {
+          if (inline && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+            && !/\bas (?:an? )?attachment\b/iu.test(output)) return false;
           const prefix = output.slice(0, match.index);
           const suffix = output.slice(match.index + match[0].length);
           // "Create no files" is a prohibition, even though it contains a creation
@@ -109,14 +120,6 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
           return true;
         });
-        // An explicit attachment/export request can refer to the file by
-        // pronoun. It still requires publication when its name is omitted.
-        const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
-          && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
-        const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
-        const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
-        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
-          && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
         const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give|publish)\b/iu.test(create[0] + output);
         const deniedAttempt = create[0].toLowerCase() === "write" && objects.length === 1
           && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
