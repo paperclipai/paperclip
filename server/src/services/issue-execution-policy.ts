@@ -645,8 +645,15 @@ function clearExecutionStatePatch(input: {
   }
 }
 
-function boardPendingStatusOverride(patch: Record<string, unknown>, requestedStatus: string): TransitionResult {
-  if (requestedStatus === "blocked") return { patch };
+function boardPendingStatusOverride(
+  patch: Record<string, unknown>,
+  requestedStatus: string,
+  heldState: IssueExecutionState | null,
+): TransitionResult {
+  if (requestedStatus === "blocked") {
+    if (heldState) patch.executionState = heldState;
+    return { patch };
+  }
   if (requestedStatus === "done" || requestedStatus === "cancelled") {
     patch.executionState = null;
     return { patch };
@@ -752,6 +759,23 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
+    const replacementReviewer =
+      requestedAssigneePatchProvided &&
+      explicitAssignee &&
+      stageHasParticipant(activeStage, explicitAssignee) &&
+      !principalsEqual(explicitAssignee, currentParticipant)
+        ? explicitAssignee
+        : null;
+    const heldState = replacementReviewer
+      ? buildPendingState({
+          previous: existingState,
+          stage: activeStage,
+          stageIndex: input.policy.stages.findIndex((candidate) => candidate.id === activeStage.id),
+          participant: replacementReviewer,
+          returnAssignee: existingState?.returnAssignee ?? null,
+          reviewRequest: effectiveReviewRequest,
+        })
+      : null;
     const holdUntouched =
       input.issue.status === "blocked" &&
       (requestedStatus === undefined || requestedStatus === "blocked") &&
@@ -880,7 +904,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         requestedStatus !== "in_review" &&
         requestedStatus !== "in_progress"
       ) {
-        return boardPendingStatusOverride(patch, requestedStatus);
+        return boardPendingStatusOverride(patch, requestedStatus, heldState);
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
@@ -946,7 +970,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
-        return boardPendingStatusOverride(patch, requestedStatus);
+        return boardPendingStatusOverride(patch, requestedStatus, heldState);
       }
       // Assignee-only override: the issue stays in_review, so clearing the
       // execution state would strand it with no participant or return

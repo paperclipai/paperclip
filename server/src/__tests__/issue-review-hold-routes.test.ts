@@ -58,6 +58,7 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
     const companyId = randomUUID();
     const authorAgentId = randomUUID();
     const reviewerAgentId = randomUUID();
+    const replacementAgentId = randomUUID();
     const boardUserId = "hold-board";
     const prefix = `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -67,7 +68,7 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values(
-      [authorAgentId, reviewerAgentId].map((id, index) => ({
+      [authorAgentId, reviewerAgentId, replacementAgentId].map((id, index) => ({
         id,
         companyId,
         name: `${prefix} Agent ${index}`,
@@ -115,7 +116,10 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
           id: stageId,
           type: "review",
           approvalsNeeded: 1,
-          participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId }],
+          participants: [
+            { id: randomUUID(), type: "agent", agentId: reviewerAgentId },
+            { id: randomUUID(), type: "agent", agentId: replacementAgentId },
+          ],
         }],
       },
       executionState,
@@ -128,7 +132,7 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       memberships: [{ companyId, status: "active", membershipRole: "operator" }],
       isInstanceAdmin: false,
     });
-    return { issueId, reviewerAgentId, executionState, board };
+    return { issueId, reviewerAgentId, replacementAgentId, executionState, board };
   }
 
   async function readIssue(issueId: string) {
@@ -199,6 +203,51 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
         .from(issueExecutionDecisions)
         .where(eq(issueExecutionDecisions.issueId, seeded.issueId));
       expect(decisions).toHaveLength(0);
+    });
+
+    it("restores to the replacement reviewer the board assigned while blocking the review", async () => {
+      const seeded = await seedHeldReview(count, "in_review");
+
+      const hold = await request(seeded.board)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({
+          status: "blocked",
+          assigneeAgentId: seeded.replacementAgentId,
+          unblockDescriptor: { owner: "board", action: "Restore the reviewer" },
+        });
+      expect(hold.status, JSON.stringify(hold.body)).toBe(200);
+      let row = await readIssue(seeded.issueId);
+      expect(row.status).toBe("blocked");
+      expect(row.assigneeAgentId).toBe(seeded.replacementAgentId);
+      expect(row.executionState).toEqual({
+        ...seeded.executionState,
+        currentParticipant: { type: "agent", agentId: seeded.replacementAgentId, userId: null },
+        reviewRequest: null,
+        monitor: null,
+      });
+
+      const edit = await request(seeded.board)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({ priority: "high" });
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+
+      const restore = await request(seeded.board)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({ status: "in_review" });
+      expect(restore.status, JSON.stringify(restore.body)).toBe(200);
+      row = await readIssue(seeded.issueId);
+      expect(row.status).toBe("in_review");
+      expect(row.assigneeAgentId).toBe(seeded.replacementAgentId);
+      expect(row.executionState).toMatchObject({
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: seeded.replacementAgentId },
+        returnAssignee: seeded.executionState.returnAssignee,
+        changesRequestedCount: count,
+      });
+      await vi.waitFor(async () => {
+        expect(await reviewWakes(seeded.replacementAgentId)).toHaveLength(1);
+      });
+      expect(await reviewWakes(seeded.reviewerAgentId)).toHaveLength(0);
     });
 
     it.each(["todo", "in_progress"])("rejects a board PATCH to %s on the held review without writing", async (status) => {
