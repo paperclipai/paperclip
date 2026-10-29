@@ -180,9 +180,9 @@ it("accepts a company-allowed instance environment without inventing company own
   expect(() => selectAntigravityJourneyEnvironment([{ ...environment, id: agentId }], environmentId)).toThrow("configured_execution_environment_unavailable");
   expect(() => selectAntigravityJourneyEnvironment([{ ...environment, status: "disabled" }], environmentId)).toThrow("configured_execution_environment_unavailable");
 });
-it("retains an owned failed run when physical ownership was never captured", async () => {
+it.each(["failed", "interrupted", "timed_out"])("retains an owned %s run when physical ownership was never captured", async status => {
   const owned = resources(); owned.runIds = [runId];
-  const agent = { id: agentId, companyId, name: owned.agentName }, run = { id: runId, agentId, companyId, status: "failed" };
+  const agent = { id: agentId, companyId, name: owned.agentName }, run = { id: runId, agentId, companyId, status };
   const get = vi.fn(async (route: string) => route.includes("/agents") ? [agent] : route.includes("heartbeat-runs?") ? [run] : run);
   const remove = vi.fn(), patch = vi.fn();
   await expect(cleanupAntigravityJourney({ api: { get, patch, delete: remove } as unknown as ConnectionApi,
@@ -255,6 +255,34 @@ it("does not erase a failed native setup Test's unconfirmed cleanup with an empt
     config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: true, connectionPreserved: true }, persistResources: async () => {}, captureRun: async () => {} }))
     .rejects.toThrow("setup_probe_retirement_unconfirmed");
   expect(remove).not.toHaveBeenCalled();
+});
+it.each(["interrupted", "timed_out"].flatMap(status => [false, true].map(pending => ({ status, pending }))))("retires a $status run only after its accounting settles (pending: $pending)", async ({ status, pending }) => {
+  vi.useFakeTimers();
+  try {
+    const owned = resources(); owned.setupProbe = "retired"; owned.runIds = [runId];
+    owned.processes[runId] = { captured: true, identityChanged: false, journal: [
+      { pid: 9000001, parent: 1, start: "2020-01-01T00:00:00Z" }, { pid: 9000002, parent: 9000001, start: "2020-01-01T00:00:00Z" },
+    ] };
+    const agent = { id: agentId, companyId, name: owned.agentName }, run = { id: runId, agentId, companyId, status,
+      costAccountingPending: pending, contextSnapshot: { paperclipEnvironment: { leaseId: "lease" } } };
+    const get = vi.fn(async (route: string) => {
+      if (route.endsWith("/agents")) return [agent];
+      if (route.includes("heartbeat-runs?")) return [run];
+      if (route === `/api/heartbeat-runs/${runId}`) return run;
+      if (route === "/api/environment-leases/lease") return { companyId, heartbeatRunId: runId, environmentId, status: "released" };
+      if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+      throw new Error("Unexpected cleanup read");
+    });
+    const post = vi.fn(), remove = vi.fn(), cleanup = { agent: false, runs: false, connectionPreserved: false };
+    const started = Date.now(); let error: unknown, finishedAt: number | undefined;
+    const operation = cleanupAntigravityJourney({ api: { get, post, patch: vi.fn(), delete: remove } as unknown as ConnectionApi,
+      config: parseAntigravityJourneyConfig({ ...fixture(), retainAgent: true }), resources: owned, cleanup, captureRun: async () => {}, persistResources: async () => {} })
+      .then(() => { finishedAt = Date.now(); }, caught => { error = caught; finishedAt = Date.now(); });
+    await vi.advanceTimersByTimeAsync(60_500); await operation;
+    if (pending) { expect(String(error)).toContain("cleanup_run_retirement_unconfirmed"); expect(cleanup.runs).toBe(false); }
+    else { expect(error).toBeUndefined(); expect(finishedAt! - started).toBeLessThan(1_000); expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true }); expect(owned.retained).toBe(true); }
+    expect(post).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
 });
 
 it("stops on combined reported and estimated known cost while retaining unknown subscription prices", () => {

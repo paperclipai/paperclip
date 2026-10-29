@@ -5,7 +5,7 @@ import path from "node:path";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, loadAntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { gradeAntigravityJourney, type AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
-import { cleanupAntigravityJourney, observeAntigravityRun, parseAntigravityOwnedResources, prepareAntigravityJourney, type AntigravityJourneyResources, type AntigravityProcessObservers } from "./antigravity-journey-fixtures.js";
+import { cleanupAntigravityJourney, isAntigravityRunAccountingSettled, observeAntigravityRun, parseAntigravityOwnedResources, prepareAntigravityJourney, type AntigravityJourneyResources, type AntigravityProcessObservers } from "./antigravity-journey-fixtures.js";
 import { runAntigravityJourneyFlow } from "./antigravity-journey-flow.js";
 import { writeAntigravityJourneyReport } from "./antigravity-journey-report.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
@@ -221,7 +221,7 @@ export async function runAntigravityJourneyCampaign(input: {
         result.runIds = [...new Set([...resources.runIds, ...observed.keys()])];
         const runs = result.runIds.map(id => observed.get(id) ?? { id });
         result.usage = { runs: runs.map(run => ({ usage: !run.usageJson ? null
-          : !["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false
+          : !isAntigravityRunAccountingSettled(run)
             ? { ...run.usageJson, accountingReceiptReady: false } : run.usageJson })) };
         result.runtimeUsage = buildRuntimeUsage({ environmentId: execution.environment.id, runs, fallbackFinishedAt: result.finishedAt });
         result.billing = summarizeExecutionBilling(result);

@@ -88,13 +88,13 @@ it("rejects explicit private Antigravity selection from paid matrix generation",
   expect(executions()).toHaveLength(1);
   expect(() => buildMatrixJobs(executions())).toThrow("not admitted to paid CI matrix jobs");
 });
-it("packages final usage captured during cleanup before the agent's public run rows are purged", async () => {
+it.each(["cancelled", "interrupted", "timed_out"])("packages settled %s usage captured during cleanup before public run rows are purged", async terminalStatus => {
   scenario.authReads = 1;
   const first = "44444444-4444-4444-8444-444444444444", discovered = "55555555-5555-4555-8555-555555555555";
   const agentId = "66666666-6666-4666-8666-666666666666";
   const issueId = "88888888-8888-4888-8888-888888888888";
   const run = (id: string, cost: number) => ({ id, agentId, issueId, companyId: scenario.config.target.companyId,
-    status: "cancelled", costAccountingPending: false, usageJson: { inputTokens: 100, outputTokens: 20, costUsd: cost },
+    status: terminalStatus, costAccountingPending: false, usageJson: { inputTokens: 100, outputTokens: 20, costUsd: cost },
     startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" });
   scenario.flow.mockImplementationOnce(async ({ resources, observeRun }) => {
     resources.agentId = agentId;
@@ -115,6 +115,8 @@ it("packages final usage captured during cleanup before the agent's public run r
   expect(result.billing.llm.reportedCostUsd).toBe(1);
   expect(result.runtimeUsage.agentRunDurationMs).toBe(2000);
   expect(result.cleanup).toBe("passed");
+  expect(result.status).toBe("failed");
+  expect(result.usage.runs.every((row: any) => row.usage.accountingReceiptReady !== false)).toBe(true);
   expect(JSON.parse(await readFile(path.join(output, "run-usage-observations.json"), "utf8")).runs).toHaveLength(2);
 });
 it("retains cleanup-discovered run identities with unknown usage when their public rows are unavailable", async () => {

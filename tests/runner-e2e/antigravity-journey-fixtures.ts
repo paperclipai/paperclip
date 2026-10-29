@@ -11,6 +11,11 @@ import { antigravityPrimaryOwner, reacquireAntigravityNativeFences, validAntigra
 import { observeRunProcesses } from "./copilot-local-fixtures.js";
 
 type Row = Record<string, any>;
+/** Work failure and retirement are separate: every finished run status still
+ * needs authoritative accounting and the same physical cleanup proof. */
+export function isAntigravityRunAccountingSettled(run: Row) {
+  return ["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status) && run.costAccountingPending === false;
+}
 export interface AntigravityJourneyResources {
   version: 1; executionId: string; origin: string; companyId: string; environmentId: string; connectionId: string;
   agentName: string; agentId?: string; issueId?: string; issueIdentifier?: string; runIds: string[];
@@ -220,7 +225,7 @@ export async function cleanupAntigravityJourney(input: {
         const run = await api.get<Row>(`/api/heartbeat-runs/${runId}`);
         if (run.id !== runId || run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
         await input.captureRun(run);
-        if (!["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false) retired = false;
+        if (!isAntigravityRunAccountingSettled(run)) retired = false;
         const receipt = resources.processes[runId];
         if ((!receipt?.captured || receipt.journal.length < 2) && run.resultJson?.startupCancellation?.beforeNativeSelection === true) {
           const cancellation = run.resultJson.startupCancellation, settledAt = run.resultJson.startupPreparationSettledAt;

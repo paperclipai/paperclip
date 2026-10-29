@@ -5,12 +5,19 @@ import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import path from "node:path";
-import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
+import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, openAntigravityAgentFromRoster, openAntigravityCreatedTask, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
 
 const agent = "Antigravity QA synthetic", model = "gemini-3.8-flash-low";
-const artifactPath = "/api/attachments/synthetic-proof/content", artifactBytes = Buffer.from("Synthetic file viewer calibration\n");
+const artifactId = "11111111-1111-4111-8111-111111111111", followupId = "22222222-2222-4222-8222-222222222222";
+const artifactBytes = Buffer.from("A".repeat(60) + "\n");
+const followupBytes = Buffer.concat([artifactBytes, Buffer.from("B".repeat(57) + "\n")]);
 const fixtures: Record<string, string> = {
-  artifact: `<article><a href="${artifactPath}">Download</a><button aria-label="Open in tab: antigravity-proof.txt" onclick="document.getElementById('file-viewer').hidden=false">Open in tab</button></article><p><a href="/api/attachments/older-proof/content">Download antigravity-proof.txt</a></p><div id="file-viewer" hidden><pre aria-label="antigravity-proof.txt raw text">${artifactBytes.toString("utf8")}</pre><a download aria-label="Download antigravity-proof.txt" href="${artifactPath}?download=1">Download</a></div>`,
+  "task-uuid": `<aside><a href="/ANT/issues/synthetic-issue-id">Created task</a><a hidden href="/ANT/issues/ANT-42">Hidden duplicate</a><a href="/ANT/issues/other-id">Other task</a></aside>`,
+  "task-identifier": `<aside><a href="/ANT/issues/ANT-42">Created task</a><a href="/ANT/issues/ANT-41">Other task</a></aside>`,
+  "task-duplicate": `<aside><a href="/ANT/issues/synthetic-issue-id">Created task</a><a href="/ANT/issues/ANT-42">Duplicate task</a></aside>`,
+  "task-hidden": `<aside><a hidden href="/ANT/issues/ANT-42">Created task</a><a href="/ANT/issues/ANT-41">Other task</a></aside>`,
+  "ANT/issues/synthetic-issue-id": `<main>Created task UUID</main>`,
+  "ANT/issues/ANT-42": `<main>Created task identifier</main>`,
   dashboard: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">An older agent</a></aside><nav aria-label="breadcrumb"><a href="/roster">Agents</a></nav><main>Ready confirmation after closing composer</main>`,
   roster: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">${agent}</a></aside><main><div role="toolbar" aria-label="Agents controls"><input aria-label="Search agents"></div><a href="/wrong-agent"><span>${agent} older</span>Engineer idle</a><a href="/owned-agent"><span>${agent}</span>Engineer idle</a><a hidden href="/wrong-agent"><span>${agent}</span>Engineer idle</a></main>`,
   "owned-agent": `<main><h1>${agent}</h1></main>`,
@@ -64,10 +71,53 @@ const activityBundle = await build({ stdin: { loader: "tsx", resolveDir: path.re
     active: running, summary: '', items }} />);
 ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
   define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent" });
+// The artifact controls and text viewer are the shipped components. Their
+// friendly work-product title deliberately differs from the actual filename.
+const artifactBundle = await build({ stdin: { loader: "tsx", resolveDir: path.resolve(import.meta.dirname, "../../ui"), contents: `
+  import React, { useState } from 'react';
+  import { createRoot } from 'react-dom/client';
+  import { RichWorkProductCard } from './src/components/task-chat/RichWorkProductCard';
+  import { ArtifactRow } from './src/components/artifacts/v1/ArtifactRow';
+  import { TextAttachmentContext } from './src/context/TextAttachmentContext';
+  import { TextAttachmentPreview } from './src/components/task-side-panel/TaskAttachmentPanel';
+  const route = new URL(location.href).pathname.slice(1), currentId = ${JSON.stringify(artifactId)}, secondId = ${JSON.stringify(followupId)};
+  const wrongId = '33333333-3333-4333-8333-333333333333';
+  const first = ${JSON.stringify(artifactBytes.toString('utf8'))}, second = ${JSON.stringify(followupBytes.toString('utf8'))};
+  const bytes = id => id === secondId ? second : first;
+  const product = (id, size = bytes(id).length) => ({ id: 'product-' + id, companyId: 'synthetic-company', issueId: 'synthetic-issue',
+    type: 'artifact', provider: 'paperclip', externalId: id, title: 'Prepared proof file', status: 'active', reviewState: 'none',
+    healthStatus: 'unknown', createdAt: '2026-10-29T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z',
+    metadata: { attachmentId: id, originalFilename: 'antigravity-proof.txt', contentType: 'text/plain', byteSize: size,
+      contentPath: '/api/attachments/' + id + '/content', openPath: '/api/attachments/' + id + '/content', downloadPath: '/api/attachments/' + id + '/content?download=1' } });
+  function ArtifactCalibration() {
+    const [selected, setSelected] = useState(null);
+    const open = (id, title) => setSelected({ id: route === 'artifact-wrong-viewer-id' ? wrongId : id, title });
+    const render = (id, size) => <RichWorkProductCard workProduct={product(id, size)} href={'/api/attachments/' + id + '/content'} variant={route === 'artifact-compact' ? 'compact' : 'card'} />;
+    const row = <ArtifactRow subject={{ kind: 'file', title: 'Prepared proof file', filename: 'antigravity-proof.txt', sizeLabel: '61 B' }}
+      onClick={() => open(route === 'artifact-button-wrong-id' ? wrongId : currentId, 'antigravity-proof.txt')} />;
+    return <main><TextAttachmentContext.Provider value={open}>
+      {route.startsWith('artifact-button') ? <>{row}{route === 'artifact-button-duplicate' ? row : null}</> :
+       route === 'artifact-hidden' ? <><div hidden>{render(currentId)}</div>{render(wrongId)}</> :
+       route === 'artifact-followup' ? <>{render(currentId)}{render(secondId)}</> :
+       <>{render(currentId, route === 'artifact-wrong-size' ? 119 : 61)}{route === 'artifact-duplicate' ? render(currentId) : null}</>}
+      {selected ? <div hidden={route === 'artifact-hidden-viewer'}><TextAttachmentPreview title={selected.title}
+        text={route === 'artifact-wrong-preview' ? 'Wrong file bytes' : bytes(selected.id)} markdown={false}
+        downloadUrl={'/api/attachments/' + selected.id + '/content?download=1'} /></div> : null}
+    </TextAttachmentContext.Provider></main>;
+  }
+  createRoot(document.getElementById('artifact-root')).render(<ArtifactCalibration />);
+` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
+  loader: { ".svg": "dataurl" }, define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent" });
 const server = createServer((request, response) => {
   const name = new URL(request.url ?? "/", "http://localhost").pathname.slice(1);
-  if (name === artifactPath.slice(1)) {
-    response.writeHead(200, { "Content-Type": "text/plain", "Content-Disposition": 'attachment; filename="antigravity-proof.txt"' }).end(artifactBytes); return;
+  if (/^api\/attachments\/[^/]+\/content$/u.test(name)) {
+    const referer = String(request.headers.referer ?? "");
+    const bytes = referer.includes("artifact-bad-download") ? Buffer.from("C".repeat(artifactBytes.length)) : name.includes(followupId) ? followupBytes : artifactBytes;
+    response.writeHead(200, { "Content-Type": "text/plain", "Content-Disposition": 'attachment; filename="antigravity-proof.txt"' }).end(bytes); return;
+  }
+  if (name === "artifact-client.js") { response.writeHead(200, { "Content-Type": "text/javascript" }).end(artifactBundle.outputFiles[0]!.text); return; }
+  if (name.startsWith("artifact")) {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end('<!doctype html><html><body><div id="artifact-root"></div><script src="/artifact-client.js"></script></body></html>'); return;
   }
   if (name === "activity-client.js") { response.writeHead(200, { "Content-Type": "text/javascript" }).end(activityBundle.outputFiles[0]!.text); return; }
   if (name.endsWith("activity")) {
@@ -84,7 +134,22 @@ try {
   const visit = async (fixture: string) => page.goto(`${origin}/${fixture}`);
   await visit("dashboard"); await openAntigravityAgentFromRoster(page, agent, 300);
   assert.equal(new URL(page.url()).pathname, "/owned-agent");
-  await visit("artifact"); await inspectAntigravityArtifact(page, "synthetic-proof", artifactBytes, 1000);
+  for (const fixture of ["artifact", "artifact-compact", "artifact-button-row"]) {
+    await visit(fixture); try { await inspectAntigravityArtifact(page, artifactId, artifactBytes, 1000); } catch (error) { throw new Error(`${fixture}: ${await page.locator("body").innerText()}`, { cause: error }); }
+  }
+  await visit("artifact-followup"); await inspectAntigravityArtifact(page, followupId, followupBytes, 1000);
+  for (const fixture of ["artifact-hidden", "artifact-duplicate", "artifact-wrong-size", "artifact-wrong-viewer-id", "artifact-wrong-preview", "artifact-hidden-viewer", "artifact-button-wrong-id", "artifact-button-duplicate"]) {
+    await visit(fixture); await assert.rejects(inspectAntigravityArtifact(page, artifactId, artifactBytes, 300), fixture);
+  }
+  await visit("artifact-bad-download");
+  await assert.rejects(inspectAntigravityArtifact(page, artifactId, artifactBytes, 1000), /browser_download_bytes_mismatch/u);
+  for (const [fixture, target] of [["task-uuid", "synthetic-issue-id"], ["task-identifier", "ANT-42"]]) {
+    await visit(fixture); await openAntigravityCreatedTask(page, { id: "synthetic-issue-id", identifier: "ANT-42" }, 300);
+    assert.equal(new URL(page.url()).pathname, '/ANT/issues/' + target);
+  }
+  for (const fixture of ["task-duplicate", "task-hidden"]) {
+    await visit(fixture); await assert.rejects(openAntigravityCreatedTask(page, { id: "synthetic-issue-id", identifier: "ANT-42" }, 300), fixture);
+  }
   await visit("picker"); await selectAntigravityFromOrdinaryPicker(page, 300);
   assert.equal(await page.getByRole("radio", { name: "Google Antigravity Candidate", exact: true }).isChecked(), true);
   await visit("advanced-only"); await assert.rejects(selectAntigravityFromOrdinaryPicker(page, 300));
@@ -113,7 +178,7 @@ try {
     try { await assertAntigravityFileActivity(page, 300); } catch { rejected = true; }
     assert.ok(rejected, `${fixture}: ${await page.locator("body").innerText()}`);
   }
-  console.log("PASS Antigravity browser calibration: More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; completed read/edit/write, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
+  console.log("PASS Antigravity browser calibration: production rich/compact artifact cards and rows, exact attachment viewer/download identity+61/119B, hidden/duplicate/wrong-ID/size/bytes rejection, both task sidebar layouts; More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; completed read/edit/write, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
 } finally {
   await browser?.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

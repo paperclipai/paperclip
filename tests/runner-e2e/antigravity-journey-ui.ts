@@ -15,6 +15,16 @@ export async function openAntigravityAgentFromRoster(page: Page, agentName: stri
   await row.click({ timeout });
 }
 
+/** Both sidebar presentations use ordinary task links: the coordinator uses
+ * the identifier and the recent-task list can retain the immutable issue ID. */
+export async function openAntigravityCreatedTask(page: Page, issue: { id: string; identifier?: string | null }, timeout = 30_000) {
+  const paths = [issue.id, issue.identifier].filter((value): value is string => Boolean(value))
+    .map(value => `a[href$="/issues/${encodeURIComponent(value)}"]:visible`);
+  const task = page.locator("aside").locator(paths.join(", "));
+  await expect(task).toHaveCount(1, { timeout });
+  await task.click({ timeout });
+}
+
 /** The ordinary picker is measured before any direct setup-route navigation. */
 export async function selectAntigravityFromOrdinaryPicker(page: Page, timeout = 30_000) {
   const dialog = page.getByRole("dialog", { name: "Choose an adapter", exact: true });
@@ -116,24 +126,37 @@ export async function assertAntigravityFileActivity(page: Page, timeout = 30_000
 /** Open the card bound to the independently observed attachment, then download
  * through its real file viewer. A stale same-named first-turn card cannot pass. */
 export async function inspectAntigravityArtifact(page: Page, attachmentId: string, expected: Buffer, timeout = 30_000) {
+  if (!/^[a-zA-Z0-9-]+$/u.test(attachmentId)) throw new ConnectionFailure("browser_attachment_identity_invalid");
   const contentPath = `/api/attachments/${attachmentId}/content`;
-  const card = page.locator("article:visible").filter({ has: page.locator(`a[href*="${contentPath}"]`) })
-    .filter({ has: page.getByRole("button", { name: "Open in tab: antigravity-proof.txt", exact: true }) });
-  const opening = card.getByRole("button", { name: "Open in tab: antigravity-proof.txt", exact: true });
-  // Multiple nested articles can match; the actual matching button is unique.
-  const buttons = page.getByRole("button", { name: "Open in tab: antigravity-proof.txt", exact: true }).and(opening);
-  if (await buttons.count() !== 1) {
-    const chip = page.getByTestId("task-chat-bubble-attachments").locator(`a[href*="${contentPath}"]:visible`);
-    await expect(chip).toHaveCount(1, { timeout });
-    await chip.click();
-  } else await buttons.click();
+  const boundLink = page.locator(`a[href="${contentPath}"], a[href="${contentPath}?download=1"]`);
+  const cards = page.locator('article[data-testid="task-chat-rich-work-product-artifact"]:visible').filter({ has: boundLink });
+  // Work-product titles are human labels, for example "Antigravity Proof File".
+  // Their exact attachment link, not that title, binds the ordinary open action.
+  const opening = page.getByRole("button", { name: /^Open in tab: /u }).and(cards.getByRole("button", { name: /^Open in tab: /u }));
+  const rows = page.locator('[data-artifact-row]:visible, [data-slot="attachment"]:visible')
+    .filter({ has: page.getByRole("button", { name: "Open antigravity-proof.txt", exact: true }).or(page.getByRole("link", { name: "Open antigravity-proof.txt", exact: true })) })
+    .filter({ has: page.getByText(new RegExp(`(?:^|\\s)${expected.length} B$`, "u")) });
+  const boundRows = rows.filter({ has: boundLink });
+  const rowOpening = boundRows.getByRole("link", { name: "Open antigravity-proof.txt", exact: true });
+  const buttonOnly = rows.filter({ hasNot: page.locator("a[href]") }).getByRole("button", { name: "Open antigravity-proof.txt", exact: true });
+  await expect.poll(async () => await opening.count() + await rowOpening.count() + await buttonOnly.count(), { timeout }).toBeGreaterThan(0);
+  if (await opening.count()) {
+    await expect(opening).toHaveCount(1, { timeout });
+    const card = opening.locator('xpath=ancestor::*[self::article or @data-slot="card"][1]');
+    await expect(card.getByText(new RegExp(`(?:^|\\s)${expected.length} B$`, "u"))).toBeVisible({ timeout });
+    await opening.click({ timeout });
+  } else {
+    const control = await rowOpening.count() ? rowOpening : buttonOnly;
+    await expect(control).toHaveCount(1, { timeout });
+    await control.click({ timeout });
+  }
   const raw = page.locator('pre[aria-label="antigravity-proof.txt raw text"]:visible');
   await expect(raw).toHaveCount(1, { timeout });
-  await expect(raw).toHaveText(expected.toString("utf8"), { useInnerText: false });
+  await expect(raw).toHaveText(expected.toString("utf8"), { useInnerText: false, timeout });
   const download = page.getByRole("link", { name: "Download antigravity-proof.txt", exact: true })
     .and(page.locator(`a[download][href="${contentPath}?download=1"]`));
-  await expect(download).toHaveAttribute("href", `${contentPath}?download=1`);
-  const [file] = await Promise.all([page.waitForEvent("download"), download.click()]);
+  await expect(download).toHaveAttribute("href", `${contentPath}?download=1`, { timeout });
+  const [file] = await Promise.all([page.waitForEvent("download", { timeout }), download.click({ timeout })]);
   const downloaded = await file.path();
   if (!downloaded || !(await readFile(downloaded)).equals(expected)) throw new ConnectionFailure("browser_download_bytes_mismatch");
 }

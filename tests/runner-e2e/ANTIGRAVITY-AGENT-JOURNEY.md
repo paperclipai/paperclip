@@ -122,7 +122,7 @@ setup and retains a blocked report.
     "maxRuns": 2,
     "budgetCents": 200
   },
-  "retainAgent": false
+  "retainAgent": true
 }
 ```
 
@@ -249,6 +249,9 @@ settlement and native retirement, then pauses/removes the owned agent according
 to `retainAgent`. Supplied company/environment/browser identity and saved Google
 connection/default grant remain intact and are reverified. It never revokes a
 shared credential or resets the target. Retained task history remains inspectable.
+Use `retainAgent: true` for accounted work: cleanup leaves the owned agent paused
+and preserves its task and cost history. Purge remains subject to the product's
+ledger constraints; the fixture never removes accounting rows to force deletion.
 For cancellation before native selection, cleanup instead persists a closed
 no-launch receipt from the server's settled preparation and explicit null native
 ownership fields, settled accounting, and exact company/run/environment lease.

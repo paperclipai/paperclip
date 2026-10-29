@@ -5,7 +5,7 @@ import { ConnectionApi } from "./connection-target.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { verifyAntigravityJourneyTurn, type AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
 import type { AntigravityJourneyResources, prepareAntigravityJourney } from "./antigravity-journey-fixtures.js";
-import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
+import { openAntigravityCreatedTask, assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
 import { submitTaskReply } from "./user-actions.js";
 
 type Row = Record<string, any>;
@@ -154,9 +154,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   await input.persistResources();
   await expect(dialog).toBeHidden();
   // Follow the persistent created-task link, as the walkthrough does.
-  const taskLink = page.locator("aside").locator(`a[href$="/issues/${issue.id}"]:visible`);
-  await expect(taskLink).toHaveCount(1);
-  await taskLink.click();
+  await openAntigravityCreatedTask(page, issue);
   const verifyTurn = async (expectedBytes: Buffer, afterRunIds: readonly string[]) => verifyAntigravityJourneyTurn({ api, companyId: company.id,
     agentId: draft.id, issueId: issue.id, connectionId: connection.id, environmentId: environment.id, model: ANTIGRAVITY_JOURNEY_MODEL,
     expectedProfileDigest: config.candidate.profileDigest, expectedBytes, afterRunIds, deadlineAt: Date.now() + config.limits.turnTimeoutMs, observeRun: input.observeRun, assertActive: input.assertActive });
