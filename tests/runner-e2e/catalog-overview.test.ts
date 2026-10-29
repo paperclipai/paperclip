@@ -62,6 +62,30 @@ describe("display-only catalog overview", () => {
     expect(doc.querySelector('[data-execution-scope]')!.textContent).toContain('25 cases measured outside main · 49 never run · 1');
     expect(() => parseCatalogOverview({...data,rows:data.rows.map((r,i)=>i===218?{...r,executionRecord:'never-run'}:r)})).toThrow('Inconsistent recorded');
   });
+  it("preserves a valid main outcome when its allowance is unknown", () => {
+    const data=fixture(); data.rows[0]!.allowance="unknown";
+    expect(parseCatalogOverview(data).accounting.exhaustedFinals).toBe(102);
+    const doc=new JSDOM(page(data)).window.document,row=doc.getElementById('catalog-'+data.rows[0]!.scenarioId)!;
+    expect(row.textContent).toContain('Recorded pass');
+    expect(row.textContent).toContain('Main measurement recorded');
+    expect(row.textContent).toContain('Allowance unknown');
+    expect(row.textContent).toContain('Recover ordinal evidence');
+    expect(doc.querySelector('.summary')!.textContent).toContain('25Recorded feature-work passes');
+    expect(() => parseCatalogOverview({...data,accounting:{...data.accounting,exhaustedFinals:104}})).toThrow('Inconsistent catalog accounting');
+  });
+  it("shows a later candidate pass without promoting the recorded main failure", () => {
+    const data=fixture(); data.rows[25]!.latestCandidateOutcome="passed";
+    const doc=new JSDOM(page(data)).window.document,row=doc.getElementById('catalog-'+data.rows[25]!.scenarioId)!;
+    expect(row.getAttribute('data-outcome')).toBe('failed');
+    expect(row.textContent).toContain('Recorded fail');
+    expect(row.textContent).toContain('Main measurement recorded · Latest candidate run: PASS');
+    expect(doc.querySelector('.summary')!.textContent).toContain('25Recorded feature-work passes144Latest main failures75Without a main measurement');
+    expect(doc.querySelector('[data-execution-scope]')!.textContent).toContain('26 cases measured outside main');
+    expect(doc.querySelectorAll('[data-report-case]')).toHaveLength(0);
+    expect(parseCatalogOverview(data).rows[25]!.mainOutcome).toBe('failed');
+    expect(() => parseCatalogOverview({...data,rows:data.rows.map((r,i)=>i===25?{...r,latestCandidateOutcome:'made-up'}:r)})).toThrow('Invalid catalog overview state');
+    expect(() => parseCatalogOverview({...fixture(),rows:fixture().rows.map((r,i)=>i===169?{...r,latestCandidateOutcome:'passed'}:r)})).toThrow('Inconsistent recorded');
+  });
   it.each([[152,"below"],[196,"equal to"],[200,"above"]] as const)("compares a ceiling of %i accurately", (ceiling, comparison) => {
     const data=fixture(); data.accounting.theoreticalMainCeiling=ceiling;
     expect(new JSDOM(page(data)).window.document.querySelector('main')!.textContent).toContain(`${ceiling}/244, ${comparison} the 196-case target`);

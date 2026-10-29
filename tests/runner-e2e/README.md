@@ -3077,6 +3077,13 @@ and source-readiness enums. Extra fields are rejected. Build this projection
 from authenticated accounting metadata, preserving unknown allowances and the
 original qualification scope. Source review never supplies a result grade. The execution-record column distinguishes
 candidate measurements from never-run cases without changing main qualification.
+Allowance certainty is independent of a recorded measurement: a main pass or fail
+can retain `allowance: "unknown"`. Known exhausted rows bound the accounting total;
+unknown allowances can account for its remaining uncertainty. The optional
+`latestCandidateOutcome` enum (`passed`, `failed`, or `not-projected`) can record a
+later candidate measurement alongside a main outcome. It never changes
+`mainOutcome`, main counters, or the qualification scope. Omit it when no such
+additional outcome is projected; existing projections render unchanged.
 Expandable human requests and expected outcomes come only from the static YAML catalog,
 not from retained conversations or private artifacts.
 The renderer requires a new output directory and makes it private; it does not
