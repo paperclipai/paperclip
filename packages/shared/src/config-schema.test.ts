@@ -3,6 +3,13 @@ import {
   findPaperclipConfigKeyWarnings,
   mergePaperclipConfig,
   paperclipConfigSchema,
+  validatePaperclipConfig,
+  migrateLegacyConfig,
+  CONFIG_SECTIONS,
+  CONFIG_SECTION_NAMES,
+  getConfigSection,
+  formatSectionOptions,
+  formatAllConfigOptions,
 } from "./config-schema.js";
 
 describe("paperclip config schema", () => {
@@ -133,5 +140,113 @@ describe("paperclip config schema", () => {
       { path: "servr", suggestion: "server" },
       { path: "server.ports", suggestion: "server.port" },
     ]);
+  });
+
+  it("suggests known field aliases for common naming guesses", () => {
+    expect(findPaperclipConfigKeyWarnings({
+      database: {
+        url: "postgresql://localhost:5432/db",
+      },
+      auth: {
+        publicUrl: "https://example.com",
+      },
+    })).toEqual([
+      { path: "database.url", suggestion: "database.connectionString" },
+      { path: "auth.publicUrl", suggestion: "auth.publicBaseUrl" },
+    ]);
+  });
+
+  it("validates a valid configuration using validatePaperclipConfig", () => {
+    const validConfig = {
+      $meta: {
+        version: 1,
+        updatedAt: "2026-05-10T00:00:00.000Z",
+        source: "configure",
+      },
+      database: {
+        mode: "embedded-postgres",
+      },
+      logging: {
+        mode: "file",
+      },
+      server: {
+        port: 3100,
+      },
+    };
+
+    const result = validatePaperclipConfig(validConfig);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.issues).toEqual([]);
+    expect(result.data?.database.mode).toBe("embedded-postgres");
+  });
+
+  it("detects invalid enum values and formats clear expected options", () => {
+    const invalidConfig = {
+      $meta: {
+        version: 1,
+        updatedAt: "2026-05-10T00:00:00.000Z",
+        source: "configure",
+      },
+      database: {
+        mode: "external",
+      },
+      logging: {
+        mode: "file",
+      },
+      server: {
+        port: 3100,
+      },
+    };
+
+    const result = validatePaperclipConfig(invalidConfig);
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes("database.mode") && e.includes("'embedded-postgres' | 'postgres'"))).toBe(true);
+  });
+
+  it("migrates legacy pglite configuration during validation", () => {
+    const legacyConfig = {
+      $meta: {
+        version: 1,
+        updatedAt: "2026-05-10T00:00:00.000Z",
+        source: "configure",
+      },
+      database: {
+        mode: "pglite",
+        pgliteDataDir: "/custom/data/dir",
+        pglitePort: 54399,
+      },
+      logging: {
+        mode: "file",
+      },
+      server: {
+        port: 3100,
+      },
+    };
+
+    const result = validatePaperclipConfig(legacyConfig);
+    expect(result.valid).toBe(true);
+    expect(result.data?.database.mode).toBe("embedded-postgres");
+    expect(result.data?.database.embeddedPostgresDataDir).toBe("/custom/data/dir");
+    expect(result.data?.database.embeddedPostgresPort).toBe(54399);
+  });
+
+  it("exports configuration sections and discovers options", () => {
+    expect(CONFIG_SECTIONS.length).toBeGreaterThanOrEqual(9);
+    expect(CONFIG_SECTION_NAMES).toContain("database");
+    expect(CONFIG_SECTION_NAMES).toContain("server");
+    expect(CONFIG_SECTION_NAMES).toContain("auth");
+
+    const dbSection = getConfigSection("database");
+    expect(dbSection).toBeDefined();
+    expect(dbSection?.options.some((opt) => opt.key === "database.mode")).toBe(true);
+
+    const formatted = formatSectionOptions(dbSection!);
+    expect(formatted).toContain("database.mode: 'embedded-postgres' | 'postgres'");
+
+    const allFormatted = formatAllConfigOptions();
+    expect(allFormatted).toContain("Section: database");
+    expect(allFormatted).toContain("Section: server");
   });
 });

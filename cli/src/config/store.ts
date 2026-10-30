@@ -4,7 +4,11 @@ import { isDeepStrictEqual } from "node:util";
 import {
   mergePaperclipConfig,
   paperclipConfigSchema,
+  migrateLegacyConfig,
+  validatePaperclipConfig,
   type PaperclipConfig,
+  type ConfigValidationResult,
+  type ConfigValidationIssue,
 } from "./schema.js";
 import {
   resolveDefaultConfigPath,
@@ -45,59 +49,54 @@ function parseJson(filePath: string): unknown {
   }
 }
 
-function migrateLegacyConfig(raw: unknown): unknown {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
-  const config = { ...(raw as Record<string, unknown>) };
-  const databaseRaw = config.database;
-  if (typeof databaseRaw !== "object" || databaseRaw === null || Array.isArray(databaseRaw)) {
-    return config;
+export function validateConfigFile(configPath?: string): ConfigValidationResult & {
+  filePath: string;
+  exists: boolean;
+} {
+  const filePath = resolveConfigPath(configPath);
+  if (!fs.existsSync(filePath)) {
+    return {
+      filePath,
+      exists: false,
+      valid: false,
+      errors: [`Config file not found at ${filePath}`],
+      issues: [{ path: "config", message: `Config file not found at ${filePath}` }],
+      warnings: [],
+    };
   }
 
-  const database = { ...(databaseRaw as Record<string, unknown>) };
-  if (database.mode === "pglite") {
-    database.mode = "embedded-postgres";
-
-    if (typeof database.embeddedPostgresDataDir !== "string" && typeof database.pgliteDataDir === "string") {
-      database.embeddedPostgresDataDir = database.pgliteDataDir;
-    }
-    if (
-      typeof database.embeddedPostgresPort !== "number" &&
-      typeof database.pglitePort === "number" &&
-      Number.isFinite(database.pglitePort)
-    ) {
-      database.embeddedPostgresPort = database.pglitePort;
-    }
+  let raw: unknown;
+  try {
+    raw = parseJson(filePath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      filePath,
+      exists: true,
+      valid: false,
+      errors: [message],
+      issues: [{ path: "config", message }],
+      warnings: [],
+    };
   }
 
-  config.database = database;
-  return config;
-}
-
-function formatValidationError(err: unknown): string {
-  const issues = (err as { issues?: Array<{ path?: unknown; message?: unknown }> })?.issues;
-  if (Array.isArray(issues) && issues.length > 0) {
-    return issues
-      .map((issue) => {
-        const pathParts = Array.isArray(issue.path) ? issue.path.map(String) : [];
-        const issuePath = pathParts.length > 0 ? pathParts.join(".") : "config";
-        const message = typeof issue.message === "string" ? issue.message : "Invalid value";
-        return `${issuePath}: ${message}`;
-      })
-      .join("; ");
-  }
-  return err instanceof Error ? err.message : String(err);
+  const result = validatePaperclipConfig(raw, { migrateLegacy: true });
+  return {
+    filePath,
+    exists: true,
+    ...result,
+  };
 }
 
 export function readConfig(configPath?: string): PaperclipConfig | null {
   const filePath = resolveConfigPath(configPath);
   if (!fs.existsSync(filePath)) return null;
   const raw = parseJson(filePath);
-  const migrated = migrateLegacyConfig(raw);
-  const parsed = paperclipConfigSchema.safeParse(migrated);
-  if (!parsed.success) {
-    throw new Error(`Invalid config at ${filePath}: ${formatValidationError(parsed.error)}`);
+  const result = validatePaperclipConfig(raw, { migrateLegacy: true });
+  if (!result.valid) {
+    throw new Error(`Invalid config at ${filePath}: ${result.errors.join("; ")}`);
   }
-  return parsed.data;
+  return result.data!;
 }
 
 function effectiveConfig(config: PaperclipConfig): Record<string, unknown> {
@@ -129,11 +128,17 @@ function durableCopyFile(sourcePath: string, destinationPath: string, flags = 0)
   fs.copyFileSync(sourcePath, destinationPath, flags);
   fs.chmodSync(destinationPath, 0o600);
 
-  const backupDescriptor = fs.openSync(destinationPath, "r");
+  let backupDescriptor: number | null = null;
   try {
+    backupDescriptor = fs.openSync(destinationPath, "r");
     fs.fsyncSync(backupDescriptor);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : null;
+    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(String(code))) {
+      throw error;
+    }
   } finally {
-    fs.closeSync(backupDescriptor);
+    if (backupDescriptor !== null) fs.closeSync(backupDescriptor);
   }
   syncDirectory(path.dirname(destinationPath));
 }
