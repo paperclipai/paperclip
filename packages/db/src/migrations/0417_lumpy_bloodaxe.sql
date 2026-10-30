@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_secret_redactions_idx" ON "heartbeat_runs" USING btree ("company_id") WHERE "heartbeat_runs"."context_snapshot" ? 'paperclipSecretRedactions';
