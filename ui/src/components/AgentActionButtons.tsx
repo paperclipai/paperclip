@@ -201,7 +201,7 @@ export function AgentActionButtons({
   pauseConfirm?: { title: string; description: ReactNode };
   /** Hide the Terminate action (e.g. built-in agents are undeletable). */
   hideTerminate?: boolean;
-  /** Put Run now, Pause/Resume and Clear error in the overflow menu, leaving Assign task as the one button. */
+  /** Put Run now, Pause/Resume and Clear error in the overflow menu, leaving Assign task (or Finish setup, while setup is pending) as the one button. */
   workActionsInMenu?: boolean;
   /** Extra overflow items shown after the work actions when `workActionsInMenu` is on. */
   menuItems?: ReadonlyArray<{ label: string; icon: typeof Plus; onSelect: () => void; disabled?: boolean }>;
@@ -425,9 +425,15 @@ export function AgentActionButtons({
           </PopoverTrigger>
           <PopoverContent className="w-52 p-1" align="end">
             {needsSetup ? (
-              <button type="button" className={item} disabled={disabled} onClick={select(finishSetup)}>
-                <Play className={icon} />
-                Finish setup
+              <button
+                type="button"
+                className={item}
+                disabled={assignAndRunDisabled}
+                title={workActionsDisabled ? workActionsDisabledReason : undefined}
+                onClick={select(() => openNewIssue({ assigneeAgentId: agent.id }))}
+              >
+                <Plus className={icon} />
+                {assignLabel}
               </button>
             ) : showRun ? (
               <button
@@ -516,15 +522,22 @@ export function AgentActionButtons({
             )}
           </PopoverContent>
         </Popover>
-        <Button
-          size={size}
-          onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
-          disabled={assignAndRunDisabled}
-          title={workActionsDisabled ? workActionsDisabledReason : undefined}
-        >
-          <Plus className="size-4" />
-          {assignLabel}
-        </Button>
+        {needsSetup ? (
+          <Button size={size} disabled={disabled} onClick={finishSetup}>
+            <Play className="size-4" />
+            Finish setup
+          </Button>
+        ) : (
+          <Button
+            size={size}
+            onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
+            disabled={assignAndRunDisabled}
+            title={workActionsDisabled ? workActionsDisabledReason : undefined}
+          >
+            <Plus className="size-4" />
+            {assignLabel}
+          </Button>
+        )}
         {pauseDialog}
       </div>
     );

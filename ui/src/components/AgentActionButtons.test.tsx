@@ -312,6 +312,23 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
   });
 
+  it("keeps Finish setup as the one button while setup is pending in menu mode", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }), {
+      assignLabel: "Assign task",
+      workActionsInMenu: true,
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean)).toEqual(["Finish setup"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
+    expect(items).toEqual(["Assign task", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
+  });
+
   it("calls clearError and refreshes agent-related queries", async () => {
     render(makeAgent({ status: "error" }));
     await flushReact();
