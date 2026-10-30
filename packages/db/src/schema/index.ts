@@ -193,6 +193,7 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
+  companySkillMutationReceipts,
   companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
   companySkillStars,
   companySkillComments,
