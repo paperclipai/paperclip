@@ -48,7 +48,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, forbidden, HttpError } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
@@ -295,7 +295,16 @@ export function adapterRoutes(options: {
     if (typeof companyId === "string") {
       assertCompanyAccess(_req, companyId);
       if (!options.resolveRunnerTarget) throw badRequest("Scoped adapter discovery is unavailable.");
-      target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+      try {
+        target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+      } catch (error) {
+        // API controllers do not need a Computer. Keep their catalog visible
+        // when only the implicit managed Computer is unavailable. This target
+        // grants no local execution support to any workspace harness.
+        if (environmentId !== undefined || !(error instanceof HttpError) || error.status !== 422
+          || (error.details as { code?: unknown } | undefined)?.code !== "managed_sandbox_unavailable") throw error;
+        target = { driver: "unavailable" };
+      }
     }
     await waitForExternalAdapters();
 

@@ -128,7 +128,7 @@ export interface HeartbeatRuntimeExecutionInput {
     executionTarget: Selection["workspace"]["executionTarget"];
     workspaceOperationRecorder: ReturnType<ReturnType<typeof workspaceOperationService>["createRecorder"]>;
     nativeWorkspaceSync: Selected["nativeWorkspaceSync"];
-    workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3];
+    workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3] | null;
     remoteExecution: unknown;
   };
   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
@@ -903,6 +903,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       input.effects.onWorkspaceRestoreFailure(requiredWorkspaceRestoreEvidence);
       // Retention is the fallback even if recording this receipt fails.
       input.effects.onProviderResourceDisposition("stop_and_retain");
+      if (!workspaceRestoreSource) throw new Error("legacy_workspace_restore_source_unavailable");
       await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence, workspaceRestoreSource);
     }
     for (const stream of ["stdout", "stderr"] as const) {

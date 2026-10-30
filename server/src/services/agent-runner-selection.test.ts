@@ -37,14 +37,25 @@ describe("server-owned Codex runner selection", () => {
     expect(converted).toEqual({ adapterType: "paperclip_runner", adapterConfig: { model: config.model, repoUrl: config.repoUrl, repoRef: "feature", cloudEnvType: "cloud", env: config.env, instructionsFilePath: config.instructionsFilePath, autoCreatePR: false, provider: "cursor_cloud", lifecycleMode: "per_turn" } });
     expect(resolveNewAgentRunner({ ...converted, runner: "legacy", target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
   });
-  it("rejects unsupported Cursor Cloud conversions and remote controllers without changing the original", () => {
+  it("rejects unsupported Cursor Cloud settings and keeps API placement independent of the selected Computer", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo" };
     for (const patch of [{ promptTemplate: "custom instructions" }, { runtimeEnvType: "pool" }, { model: "" }]) {
       expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: { ...config, ...patch }, runner: "paperclip", target })).toThrow();
     }
     expect(config).toEqual({ model: "caller-model", repoUrl: "https://github.com/acme/repo" });
-    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
-    expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toThrow("unavailable");
+    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "cursor_cloud" } });
+  });
+  it("saves native Cursor Cloud without probing or binding a managed Computer", async () => {
+    state.settings = { defaultEnvironmentId: "managed", experimental: { enableManagedSandboxOnly: true } };
+    const saved = await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "paperclip", defaultEnvironmentId: "managed",
+      adapterConfig: { model: "caller-model", repoUrl: "https://github.com/acme/repo" },
+    });
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null, adapterConfig: { provider: "cursor_cloud" } });
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+    expect(state.ssh).not.toHaveBeenCalled();
+    expect(state.sandboxQualification).not.toHaveBeenCalled();
   });
   it("keeps legacy Cursor Cloud environment bindings and rejects their unsupported native conversion", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo",

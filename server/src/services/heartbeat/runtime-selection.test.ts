@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, completionContracts, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
 import { buildNativeRuntimeContext } from "../native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
@@ -26,7 +27,8 @@ vi.mock("../native-runtime/native-workspace-sync.js", async (original) => ({
   prepareNativeWorkspaceSync: vi.fn(async () => null),
 }));
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUNTIME_SELECTION_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
@@ -34,7 +36,9 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   beforeAll(async () => {
     instructionRoot = await mkdtemp(join(tmpdir(), "paperclip-selection-instructions-"));
     await writeFile(join(instructionRoot, "AGENTS.md"), "Complete the assigned task.\n");
-    database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-selection");
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl, cleanup: async () => {} }
+      : await startEmbeddedPostgresTestDatabase("paperclip-runtime-selection");
     db = createDb(database.connectionString);
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -74,6 +78,27 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("persists the Cursor provider API placement and completion authority without a Computer lease", async () => {
+    const { input, run, issue } = await fixture();
+    input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
+    await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.workspace.activeEnvironmentLease = null;
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig: input.agent.adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null });
+    const result = await selectHeartbeatRuntime(db, input);
+    expect(result.selected).toBe(true);
+    if (!result.selected) throw new Error("Expected native Cursor selection");
+    expect(result.nativeExecution?.provider).toMatchObject({ kind: "cursor_cloud", model: "caller-model" });
+    expect(await read(run.id)).toMatchObject({ runtimeMode: "native", driverKind: "cursor_cloud_api", runnerProfileJson: {
+      backend: "cursor_cloud_api", executionPlacement: { kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" },
+      nativeExecutionInput: result.nativeExecution,
+    } });
+    expect(await db.select().from(completionContracts)).toHaveLength(1);
+    expect(await coordinators(run.id)).toHaveLength(1);
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    expect(input.stopControllerLease).toHaveBeenCalledOnce();
+  });
 
   it("keeps recovery out of live preparation before the workspace descriptor exists", async () => {
     const { input, run, issue } = await fixture();

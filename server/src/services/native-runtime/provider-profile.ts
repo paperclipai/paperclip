@@ -181,7 +181,7 @@ export function resolvePaperclipRunnerCursorCloudConfig(config: Record<string, u
       throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid", `Choose one matching value for ${current} and ${legacy}.`);
     }
   }
-  const unsupported = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "command", "extraArgs", "promptTemplate", "bootstrapPromptTemplate", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams"]
+  const unsupported = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "command", "extraArgs", "promptTemplate", "bootstrapPromptTemplate", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams", "executionPlacement", "providerApiPlacement", "controllerPlacement", "apiOnly", "cwd", "workspaceRuntime", "workspaceStrategy"]
     .filter(key => config[key] !== undefined && config[key] !== "" && !(Array.isArray(config[key]) && config[key].length === 0));
   if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") unsupported.push("lifecycleMode");
   if (config.homeMode === "preconfigured") unsupported.push("homeMode");

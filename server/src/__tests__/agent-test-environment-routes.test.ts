@@ -288,6 +288,34 @@ describe("agent test-environment route", () => {
     await unregisterTestAdapter("external_test");
   });
 
+  it("tests the saved Cursor API controller without allocating a Computer under managed-only policy", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("paperclip_runner");
+    const probe = vi.fn(async () => ({ adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "cursor_cloud_account_ready", level: "info" as const, message: "Synthetic account probe; no prompt." }] }));
+    registerServerAdapter({ ...externalAdapter, type: "paperclip_runner", testEnvironment: probe });
+    try {
+      const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const adapterConfig = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification", env: { CURSOR_API_KEY: "synthetic" } };
+      mockAgentService.getById.mockResolvedValue({ id, companyId: "company-1", adapterType: "paperclip_runner", adapterConfig, defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+      mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+      const app = await createApp();
+      const response = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({ agentId: id, adapterConfig });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ status: "warn", checks: [{ code: "cursor_cloud_account_ready" }] });
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: null, environmentName: null, config: adapterConfig }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.realizeWorkspace).not.toHaveBeenCalled();
+      expect(mockEnvironmentService.findManagedSandboxEnvironment).not.toHaveBeenCalled();
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false, executionMode: "kubernetes" });
+      const denied = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({ agentId: id, adapterConfig });
+      expect(denied.status).toBe(422);
+      expect(denied.body.details?.code ?? denied.body.code).toBe("provider_api_kubernetes_execution_unsupported");
+      expect(probe).toHaveBeenCalledOnce();
+    } finally { unregisterServerAdapter("paperclip_runner"); if (previous) registerServerAdapter(previous); }
+  });
+
   it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     mockInstanceSettingsService.getExperimental.mockResolvedValue({

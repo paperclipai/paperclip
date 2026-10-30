@@ -15,6 +15,25 @@ and dependent [product PR #18069](https://github.com/paperclipai/paperclip/pull/
 Neither PR is merged. Product PR #18069's Verification section owns the latest
 candidate, check status and final acceptance decision.
 
+## Hosted placement correction — 2026-10-30
+
+Native Cursor Cloud uses a provider API controller. Cursor hosts the model and
+commands; Paperclip runs only its qualified API client and bounded private artifact
+stager. This placement has no Paperclip Computer, lease, task checkout or host
+provisioning command. It is derived from the validated native Cursor profile and
+persisted with the admitted run; recovery retains that backend and placement.
+The generic managed-sandbox-only policy and local Computer denial stay intact.
+Kubernetes-only execution remains unsupported. Legacy direct agents retain their
+existing selection and execution behavior.
+
+Ordinary native setup clears the Computer binding and explains Cursor's hosted
+environment. Save/reopen and Test use the same account/configuration contract as
+run admission. The Cloud front door must pass the exact authenticated native-run
+callback to the tenant; Core still enforces live run authority and per-turn scope.
+
+This correction requires fresh hosted acceptance on its final image. Local and
+synthetic checks do not qualify that deployed journey or erase prior failures.
+
 ## Review correction checkpoint — 2026-10-29 20:25 UTC
 
 All six original acceptance gates have passed on their recorded candidates;

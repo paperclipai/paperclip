@@ -1,3 +1,4 @@
+import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import type { Db } from "@paperclipai/db";
 import { agentHarnessType, paperclipRunnerProfileForHarness, isEnvironmentDriverSupportedForAdapter, paperclipRunnerSupportsPlatform, type AgentRunnerChoice, type AgentRunnerAvailability } from "@paperclipai/shared";
 import { normalizeLegacyRunnerProvider, PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils";
@@ -43,8 +44,9 @@ function runnerAdaptersAvailable(harness: string, driver: string): boolean {
 
 export function agentRunnerAvailability(harness: string, target: RunnerTarget = localAgentRunnerTarget()): AgentRunnerAvailability {
   if (harness === "cursor_cloud") {
-    const supported = target.driver === "local" && runnerAdaptersAvailable(harness, target.driver)
-      && (!target.platform || paperclipRunnerSupportsPlatform(harness, target.platform, target.architecture ?? "", target.libc, target.glibcVersion));
+    const controller = localAgentRunnerTarget();
+    const supported = runnerAdaptersAvailable(harness, "local")
+      && paperclipRunnerSupportsPlatform(harness, controller.platform, controller.architecture, controller.libc, controller.glibcVersion);
     return { supportedRunners: supported ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: "legacy" };
   }
   if (target.runnerTasks || target.managedCloudImage) {
@@ -353,6 +355,13 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
 }
 
 export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
+  const nativeCursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud"
+    && input.runner !== "legacy" && (input.adapterType === "paperclip_runner" || input.runner === "paperclip");
+  if (nativeCursor) {
+    const selected = resolveNewAgentRunner({ ...input, target: localAgentRunnerTarget() });
+    if (!input.setupOnly) resolveProviderApiPlacement({ agent: selected });
+    return { ...selected, defaultEnvironmentId: null };
+  }
   if (!paperclipRunnerProfileForHarness(agentHarnessType(input.adapterType ?? "process", input.adapterConfig))
     || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) return resolveNewAgentRunner(input);
   const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId);

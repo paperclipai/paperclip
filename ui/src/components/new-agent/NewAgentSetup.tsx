@@ -314,7 +314,7 @@ function Setup({
   let environmentId: string | null = null;
   let environmentError: string | null = null;
   try {
-    environmentId = forced.forced
+    environmentId = nativeCursorCloud ? null : forced.forced
       ? (forced.kubernetesEnvironment?.id ?? null)
       : resolveAdapterTestEnvironmentId({
           agentDefaultEnvironmentId: environmentOverride || null,
@@ -445,12 +445,13 @@ function Setup({
     !general.error &&
     !agents.error &&
     !caps.error &&
-    (!(managedOnly || forced.forced) || environmentId),
+    (nativeCursorCloud || !(managedOnly || forced.forced) || environmentId),
   );
   const needsCurrentSetup = ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType);
   const preparingComputer = created?.pauseReason === "setup" && ["preparing", "pausing"].includes(created.lifecycleState ?? "");
-  const environmentSelectionSaved = (!environmentOverride && created?.defaultEnvironmentId == null)
-    || (created?.defaultEnvironmentId ?? null) === (environmentOverride || (forced.forced || managedOnly ? environmentId : null));
+  const environmentSelectionSaved = nativeCursorCloud
+    || (!environmentOverride && created?.defaultEnvironmentId == null)
+      || (created?.defaultEnvironmentId ?? null) === (environmentOverride || (forced.forced || managedOnly ? environmentId : null));
   const ready = (pendingAntigravity || Boolean(created) && environmentSelectionSaved) && !environmentSaving && !preparingComputer && connectionSettingsReady && (!needsCurrentSetup || (
     envs.isSuccess && !envs.isFetching
     && settings.isSuccess && !settings.isFetching
@@ -610,7 +611,7 @@ function Setup({
         provider: ["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? "acpx" : runnerProvider,
         ...(["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
         ...(antigravityCandidate ? { model: antigravityCandidate.model } : {}),
-      } : {}, defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
+      } : {}, defaultEnvironmentId: nativeCursorCloud ? null : environmentOverride || (forced.forced || managedOnly ? environmentId : null),
       runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
     }).then(async agent => {
       await cache.cancelQueries({ queryKey: queryKeys.agents.detail(agent.id) });
@@ -673,7 +674,7 @@ function Setup({
       submitted = true;
       const agent = await agentsApi.update(created.id, {
         adapterType: requestAdapterType, runner, adapterConfig: config,
-        defaultEnvironmentId: selectedEnvironment || (forced.forced || managedOnly ? environmentId : null),
+        defaultEnvironmentId: nativeCursorCloud ? null : selectedEnvironment || (forced.forced || managedOnly ? environmentId : null),
         runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
         ...(antigravityCandidate ? { metadata: { ...created.metadata, setupAdapterPending: false, setupAdapterChoice: undefined } } : {}),
         ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
@@ -801,7 +802,7 @@ function Setup({
         adapterType: requestAdapterType,
         ...(["codex_local", "claude_local", "opencode_local", "pi_local", "cursor_cloud"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
-        defaultEnvironmentId:
+        defaultEnvironmentId: nativeCursorCloud ? null :
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
         runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
@@ -991,7 +992,7 @@ function Setup({
             This adapter is unavailable. Choose an enabled adapter.
           </p>
         )}
-        {(managedOnly || forced.forced) &&
+        {!nativeCursorCloud && (managedOnly || forced.forced) &&
           !envs.isPending &&
           !environmentId && (
             <p role="alert" className="text-sm text-destructive">
@@ -1439,7 +1440,7 @@ function Setup({
                         )}
                         {adapterType === "cursor_cloud" && (
                           <>
-                          {nativeCursorCloud && <p className="text-sm text-muted-foreground">Experimental. Requires a local Paperclip computer. Cursor manages cloud command permissions; the effective model is not acknowledged.</p>}
+                          {nativeCursorCloud && <p className="text-sm text-muted-foreground">Experimental. Cursor hosts this agent’s execution environment. A Paperclip computer is not required. Cursor manages cloud command permissions; the effective model is not acknowledged.</p>}
                           <div className="grid gap-5 sm:grid-cols-2">
                             <Field label="GitHub repository">
                               <Input
@@ -1475,7 +1476,7 @@ function Setup({
                             onChange={value => { setRunner(value); resetTest(); }} />
                         </details>}
                       </section>
-                      {adapterType !== "hermes_gateway" && (adapterType !== "cursor_cloud" || nativeCursorCloud) && (
+                      {adapterType !== "hermes_gateway" && adapterType !== "cursor_cloud" && (
                         <section className="space-y-5">
                           <h3 className="text-sm font-semibold">Environment</h3>
                           <select
@@ -1488,10 +1489,10 @@ function Setup({
                             }}
                           >
                             <option value="">
-                              Default: {nativeCursorCloud ? environment ? environmentDisplayLabel(environment) : "Local machine" : environmentLabel}
+                              Default: {environmentLabel}
                             </option>
                             {(envs.data ?? [])
-                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local") && (!nativeCursorCloud || env.driver === "local"))
+                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
                               .map((env) => (
                                 <option key={env.id} value={env.id}>
                                   {environmentDisplayLabel(env)}
