@@ -2124,6 +2124,10 @@ destination. Recheck execution ownership, membership, task/destination access
 and canonical source privacy at commit. Reject missing recipients, restricted
 source tasks, Ask/planning/review/watchdog runs and stopped runs. The shared
 comment-write boundary enforces the fixed conversation agent.
+Skill-test and task-bridge credentials cannot publish into standing chats.
+Persisted skill-test run boundaries remain in force after a task-mode change.
+Preserve the credential and external-user access intersection and recheck key
+revocation, scope and responsible-person identity before commit.
 
 The chat messaging service atomically creates a waiting conversation if needed
 and commits an attributed issue comment and audit record. Agent request IDs are

@@ -45,10 +45,13 @@ Proactive publication: native `send_chat_message` and
 The server derives company, sender and responsible human from the authenticated
 run and atomically resolves the same per-agent/human conversation. This operation
 is available independently of generic API tools, only to active standard task
-runs. Ask/planning/review/watchdog, stale/stopped runs, revoked recipients and
+runs with standard credentials. Skill-test and task-bridge credentials, persisted
+skill-test runs, Ask/planning/review/watchdog, stale/stopped runs, revoked recipients and
 restricted source tasks are denied. The shared comment boundary rejects other
 agents and execution-task writes that bypass this path. Comment/audit persistence
 retains real agent/run attribution and server-owned source provenance.
+Credential scope, responsible human and external authorizer remain part of access
+checks. API keys are rechecked under a row lock before the delivery commits.
 
 `GET /api/companies/{companyId}/chats` and its detail endpoint include the current
 human's unread state. `POST /api/issues/{id}/read` accepts an optional

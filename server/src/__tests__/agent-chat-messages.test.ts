@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
+import { agentApiKeys, agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
+import type { AgentApiKeyScope } from "@paperclipai/shared";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
@@ -31,10 +32,92 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
   type Fixture = Awaited<ReturnType<typeof fixture>>;
   const input = { body: "## Morning review\n\nThree PRs need your review.", idempotencyKey: "morning-pr-digest" };
   const send = (f: Fixture, value: unknown = input) => sendAgentChatMessage(server.db, f, value);
-  const httpSend = (f: Fixture, value: unknown = input) => fetch(`${server.apiUrl}/api/agents/me/chat/messages`, {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)}` },
+  const httpSend = (f: Fixture, value: unknown = input, keyScope: AgentApiKeyScope = { kind: "standard" }, authorizingUserId?: string) => fetch(`${server.apiUrl}/api/agents/me/chat/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId, keyScope, authorizingUserId)}` },
     body: JSON.stringify(value),
   });
+  const apiKey = async (f: Fixture, scopeConfig: AgentApiKeyScope = { kind: "standard" }) => {
+    const token = `pcp_${randomUUID()}`;
+    const [key] = await server.db.insert(agentApiKeys).values({ companyId: f.companyId, agentId: f.agentId, name: "Chat delivery test",
+      responsibleUserId: f.responsibleUserId, scopeConfig, keyHash: createHash("sha256").update(token).digest("hex") }).returning();
+    return { ...key, token };
+  };
+  const keySend = (f: Fixture, token: string, value: unknown = input) => fetch(`${server.apiUrl}/api/agents/me/chat/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "x-paperclip-run-id": f.runId },
+    body: JSON.stringify(value),
+  });
+
+  it("supports standard task API keys without changing agent and run attribution", async () => {
+    const f = await fixture(), key = await apiKey(f);
+    const response = await keySend(f, key.token);
+    expect(response.status, await response.clone().text()).toBe(201);
+    expect((await f.snapshot()).activity).toContainEqual(expect.objectContaining({ action: "issue.comment_added",
+      actorId: f.agentId, agentId: f.agentId, runId: f.runId, responsibleUserId: f.responsibleUserId }));
+  });
+
+  it("preserves an external authorizer's current access intersection", async () => {
+    const f = await fixture();
+    expect((await httpSend(f, input, { kind: "standard" }, randomUUID())).status).toBe(403);
+    await expect(sendAgentChatMessage(server.db, { ...f, authorizingUserId: randomUUID() }, input)).rejects.toMatchObject({ status: 403 });
+    expect((await f.snapshot()).issues.filter(issue => issue.conversationAgentId)).toEqual([]);
+    expect((await f.snapshot()).comments).toEqual([]);
+  });
+
+  it("keeps skill-test JWT and API-key scopes confined to their own task", async () => {
+    const f = await fixture(), scope = { kind: "skill_test", issueId: f.issueId } as const;
+    const key = await apiKey(f, scope);
+    expect((await httpSend(f, input, scope)).status).toBe(403);
+    expect((await keySend(f, key.token)).status).toBe(403);
+    expect((await f.snapshot()).issues.filter(issue => issue.conversationAgentId)).toEqual([]);
+    expect((await f.snapshot()).comments).toEqual([]);
+  });
+
+  it.each(["admitted", "legacy", "saved-task"])("retains a persisted %s skill-test run boundary after task mode changes", async kind => {
+    const f = await fixture();
+    const contextSnapshot = kind === "admitted" ? { paperclipAgentJwtScope: { kind: "skill_test", issueId: f.issueId } }
+      : kind === "legacy" ? { paperclipSkillTest: { id: randomUUID() } }
+      : { paperclipIssue: { id: f.issueId, workMode: "skill_test" } };
+    await server.db.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, f.runId));
+    await server.db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, f.issueId));
+    await server.db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, f.issueId));
+    expect((await httpSend(f)).status).toBe(403);
+    await expect(sendAgentChatMessage(server.db, f, input, { receiptOnly: true })).rejects.toThrow(/skill.test/i);
+    expect((await f.snapshot()).issues.filter(issue => issue.conversationAgentId)).toEqual([]);
+    expect((await f.snapshot()).comments).toEqual([]);
+  });
+
+  it("does not let task-bridge credentials publish outside their admitted task", async () => {
+    const f = await fixture(), key = await apiKey(f, { kind: "task_bridge", parentIssueId: f.issueId });
+    expect((await keySend(f, key.token)).status).toBe(403);
+    expect((await f.snapshot()).issues.filter(issue => issue.conversationAgentId)).toEqual([]);
+  });
+
+  it.each(["revoked", "narrowed", "responsible-human"])("rechecks a %s API key after waiting for the destination", async kind => {
+    const f = await fixture(), receipt = (await send(f))!, key = await apiKey(f);
+    let unlock!: () => void, ready!: (pid: number) => void;
+    const locked = new Promise<number>(resolve => { ready = resolve; });
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const gate = server.db.transaction(async tx => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, receipt.conversationId)).for("update");
+      ready(pid); await release;
+    });
+    const pid = await locked;
+    const delivery = keySend(f, key.token, { ...input, idempotencyKey: "key-after-wait" });
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await server.db.execute(sql<{ blocked: boolean }>`select exists(select 1 from pg_stat_activity
+          where datname=current_database() and ${pid}=any(pg_blocking_pids(pid))) as blocked`);
+        expect(row.blocked).toBe(true);
+      }, { timeout: 5_000, interval: 10 });
+      await server.db.update(agentApiKeys).set(kind === "revoked" ? { revokedAt: new Date() }
+        : kind === "narrowed" ? { scopeConfig: { kind: "skill_test", issueId: f.issueId } }
+        : { responsibleUserId: randomUUID() }).where(eq(agentApiKeys.id, key.id));
+      unlock(); await gate;
+      expect((await delivery).status).toBe(403);
+      expect((await f.snapshot()).comments).toHaveLength(1);
+    } finally { unlock(); await gate; await delivery; }
+  }, 30_000);
 
   it("publishes through the native tool without generic API tools, without starting a turn or changing the source", async () => {
     const f = await fixture();

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { agents, companies, companyMemberships, heartbeatRuns, issueComments, issues, nativeRunResults, type Db } from "@paperclipai/db";
-import { isUuidLike, sendChatMessageSchema } from "@paperclipai/shared";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { agentApiKeys, agents, companies, companyMemberships, heartbeatRuns, issueComments, issues, nativeRunResults, type Db } from "@paperclipai/db";
+import { agentApiKeyScopeSchema, isUuidLike, sendChatMessageSchema, type AgentApiKeyScope } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor } from "./authorization.js";
@@ -12,8 +12,11 @@ import { issueTreeControlService } from "./issue-tree-control.js";
 import { resolveActorSourceTrustForIssue } from "./source-trust.js";
 import { resolveTaskWatchdogMutationScope } from "./task-watchdog-scope.js";
 import { readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+import { nativeRunKeyScope } from "./native-runtime/native-skill-test-scope.js";
 
-type Actor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null };
+type Actor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null;
+  keyScope?: AgentApiKeyScope | null; onBehalfOfUserId?: string | null;
+  authorizingUserId?: string | null; source?: AuthorizationActor["source"] };
 export interface ChatMessageReceipt {
   commentId: string;
   conversationId: string;
@@ -35,6 +38,9 @@ export async function sendAgentChatMessage(
   const parsed = sendChatMessageSchema.safeParse(value);
   if (!parsed.success) throw badRequest("Chat messages require body and idempotencyKey only", parsed.error.issues);
   if (![actor.companyId, actor.agentId, actor.runId].every(isUuidLike)) throw forbidden("An authenticated task run is required");
+  const credentialScope = agentApiKeyScopeSchema.safeParse(actor.keyScope ?? { kind: "standard" });
+  if (!credentialScope.success) throw forbidden("The agent credential scope is invalid");
+  if (credentialScope.data.kind !== "standard") throw forbidden("Scoped test and task bridge credentials cannot publish agent chat messages");
   const input = parsed.data;
   const contentHash = createHash("sha256").update(input.body).digest("hex");
   const publications: ActivityPublication[] = [];
@@ -60,6 +66,9 @@ export async function sendAgentChatMessage(
         throw forbidden("This run no longer owns the source task");
       }
       if (source.conversationAgentId) throw forbidden("Reply normally in this conversation; send_chat_message is for execution tasks");
+      if (nativeRunKeyScope({ contextSnapshot: context.run.contextSnapshot, issueId: source.id, workMode: source.workMode }).kind === "skill_test") {
+        throw forbidden("Skill-test runs cannot publish agent chat messages");
+      }
       if (source.workMode !== "standard" || ["done", "cancelled"].includes(source.status)
         || readNativeReviewAssignmentContext(context.run.contextSnapshot)) {
         throw forbidden("Chat delivery requires an ordinary task in standard execution mode");
@@ -71,12 +80,26 @@ export async function sendAgentChatMessage(
     if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const userId = context.run.responsibleUserId;
     if (!userId) throw forbidden("This task has no responsible human to receive the message");
+    if (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== userId) throw forbidden("The authenticated responsible human no longer matches this run");
+    const assertCurrentKey = async (lock: boolean) => {
+      if (!actor.agentApiKeyId) return;
+      const query = tx.select().from(agentApiKeys).where(and(eq(agentApiKeys.id, actor.agentApiKeyId),
+        eq(agentApiKeys.companyId, actor.companyId), eq(agentApiKeys.agentId, actor.agentId), isNull(agentApiKeys.revokedAt)));
+      const [key] = lock ? await query.for("share") : await query;
+      const currentScope = key && agentApiKeyScopeSchema.safeParse(key.scopeConfig ?? { kind: "standard" });
+      if (!key || !currentScope?.success || JSON.stringify(currentScope.data) !== JSON.stringify(credentialScope.data)
+        || (key.responsibleUserId?.trim() || null) !== (actor.onBehalfOfUserId ?? userId)) {
+        throw forbidden("The agent key was revoked or its authority changed");
+      }
+    };
+    await assertCurrentKey(false);
     const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
       eq(companyMemberships.companyId, actor.companyId), eq(companyMemberships.principalType, "user"),
       eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active"),
     )).for("share");
     if (!membership) throw forbidden("The responsible human is no longer an active company member");
-    const authActor: AuthorizationActor = { type: "agent", ...actor, source: "agent_jwt", onBehalfOfUserId: userId };
+    const authActor: AuthorizationActor = { type: "agent", ...actor, keyId: actor.agentApiKeyId, keyScope: credentialScope.data,
+      source: actor.source ?? "agent_jwt", onBehalfOfUserId: actor.onBehalfOfUserId ?? userId };
     const authorize = async (issueId: string, action: "issue:read" | "issue:comment") => {
       const decision = await authorizationService(tx).decide({ actor: authActor, action,
         resource: { type: "issue", companyId: actor.companyId, issueId } });
@@ -110,6 +133,7 @@ export async function sendAgentChatMessage(
     const [lockedContext] = await contextQuery().for("update");
     const current = validateContext(lockedContext);
     if (current.run.responsibleUserId !== userId) throw forbidden("The responsible human changed before this message was saved");
+    await assertCurrentKey(true);
     if ((await resolveTaskWatchdogMutationScope(tx, { ...actor, type: "agent" })).kind !== "none") {
       throw forbidden("Chat delivery requires an ordinary task in standard execution mode");
     }

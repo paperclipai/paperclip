@@ -13,6 +13,8 @@ export function agentChatMessageRoutes(db: Db) {
     assertCompanyAccess(req, req.actor.companyId);
     const receipt = await sendAgentChatMessage(db, {
       companyId: req.actor.companyId, agentId: req.actor.agentId, runId: req.actor.runId, agentApiKeyId: req.actor.keyId,
+      keyScope: req.actor.keyScope, onBehalfOfUserId: req.actor.onBehalfOfUserId,
+      authorizingUserId: req.actor.authorizingUserId, source: req.actor.source,
     }, req.body);
     res.status(receipt!.replayed ? 200 : 201).json(receipt);
   });

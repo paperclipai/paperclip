@@ -434,7 +434,7 @@ export class PaperclipRunnerToolAuthority {
     // retry, without ever falling through to an uncertain mutation.
     let recovered: unknown;
     if (call.tool === "set_task_title") recovered = await this.#setTaskTitle(input, true);
-    else if (call.tool === "send_chat_message") recovered = await this.#sendChatMessage(input, true);
+    else if (call.tool === "send_chat_message") recovered = await this.#sendChatMessage(input, this.#privacyActor(run), true);
     else if (call.tool === "submit_complaint" || call.tool === "submit_suggestion") recovered = await this.#submitCommentary(call.tool, input, true);
     else if (call.tool === "create_task") recovered = await this.#createTask(input, null, true);
     else if (call.tool === "request_human_input") recovered = await this.#requestHumanInput(input, null, true);
@@ -960,7 +960,7 @@ export class PaperclipRunnerToolAuthority {
         return { approval, tasks: tasks.filter(row => !readable || readable.has(row.issue.id)).map(row => row.issue) };
       }
       case "report_progress": return this.#reportProgress(input);
-      case "send_chat_message": return this.#sendChatMessage(input);
+      case "send_chat_message": return this.#sendChatMessage(input, this.#privacyActor(context.run));
       case "request_human_input": return this.#requestHumanInput(input,
         (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
       case "create_task": return this.#createTask(input,
@@ -1488,8 +1488,9 @@ export class PaperclipRunnerToolAuthority {
     return { interactionId: review.interaction.id, status: expectedStatus };
   }
 
-  async #sendChatMessage(input: Record<string, unknown>, receiptOnly = false) {
-    const result = await sendAgentChatMessage(this.db, this.binding, input, {
+  async #sendChatMessage(input: Record<string, unknown>, actor: AuthorizationActor, receiptOnly = false) {
+    const result = await sendAgentChatMessage(this.db, { ...this.binding, keyScope: actor.keyScope,
+      onBehalfOfUserId: actor.onBehalfOfUserId, authorizingUserId: actor.authorizingUserId, source: actor.source }, input, {
       authorizeNative: tx => this.#lockAuthorizedMutationContext(tx), receiptOnly,
     });
     return result ?? undefined;
