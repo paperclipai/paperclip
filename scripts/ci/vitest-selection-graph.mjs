@@ -62,6 +62,8 @@ export function sourceDependencies(file, source) {
     if (node.type === "Identifier" && /^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)) {
       reasons.add("external input or dynamic code");
     }
+    if ((node.type === "Identifier" && node.name === "getBuiltinModule")
+      || (literal(node) && node.value === "getBuiltinModule")) reasons.add("dynamic builtin loader");
     if ((node.type === "Identifier" && /^(importActual|unmock|doUnmock|doMock|arguments)$/.test(node.name))
       || (literal(node) && /^(importActual|unmock|doUnmock|doMock)$/.test(node.value))) reasons.add("mock bypass");
     if (node.type === "Identifier" && mockBindings.has(node.name) && parent

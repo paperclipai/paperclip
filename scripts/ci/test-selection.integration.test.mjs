@@ -32,6 +32,7 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   write("ui/src/process.test.ts", 'import {execFileSync} from "node:child_process"; execFileSync("must-not-execute");');
   write("ui/src/dynamic.test.ts", 'const load = (file: string) => import(file);');
   write("ui/src/cjs.test.ts", 'const load = require;');
+  write("ui/src/builtin-loader.test.ts", 'process.getBuiltinModule("fs").readFileSync("input");');
   write("ui/src/opaque.test.ts", 'import {parse} from "yaml"; console.log(parse("value: true"));');
   write("ui/src/independent.test.ts", 'export const independent = true;');
   write("ui/src/mocked.test.ts", 'import {vi} from "vitest"; vi.mock("./helper",()=>({read:()=>"mock"})); import {read} from "./helper"; read("input");');
@@ -49,7 +50,7 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   const select = (changed) => selectProjectTests({ root: directory, project: "fixture", changed });
   const result = await select(["ui/src/leaf.ts"]);
   assert.deepEqual(result.related, ["ui/src/import.test.ts"]);
-  for (const file of ["reader", "indirect", "process", "dynamic", "cjs", "opaque", "partial", "automock", "bypass", "spy", "remock", "arguments"]) {
+  for (const file of ["reader", "indirect", "process", "dynamic", "cjs", "builtin-loader", "opaque", "partial", "automock", "bypass", "spy", "remock", "arguments"]) {
     assert.ok(result.alwaysRun.includes(`ui/src/${file}.test.ts`), `${file} must never be dropped`);
   }
   assert.ok(!result.selected.includes("ui/src/independent.test.ts"));
