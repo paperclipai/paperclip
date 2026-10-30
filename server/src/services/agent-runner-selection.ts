@@ -188,7 +188,13 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   const useNative = choice === "paperclip" || (choice === "auto" && harness !== "cursor_cloud" && availability.defaultRunner === "paperclip");
   if (!useNative) {
     if (harness === "cursor_cloud") {
-      if (!native) return { adapterType, adapterConfig: config };
+      if (!native) {
+        if (choice !== "legacy" && !availability.supportedRunners.includes("legacy")) throw unprocessable(
+          "Automatic Cursor selection is unavailable for this environment. Choose a supported runner in Advanced.",
+          { code: "agent_runner_unavailable" },
+        );
+        return { adapterType, adapterConfig: config };
+      }
       if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") incompatible(["lifecycleMode"]);
       for (const [current, legacy] of [["cloudEnvType", "runtimeEnvType"], ["cloudEnvName", "runtimeEnvName"], ["repoRef", "repoStartingRef"], ["prUrl", "repoPullRequestUrl"]]) {
         if (config[current] !== undefined) config[legacy] = config[current];

@@ -238,6 +238,24 @@ it("opens native Cursor Cloud from the ordinary hosted adapter picker", async ()
   expect(query.get("runner")).toBe("paperclip");
 });
 
+it("hides explicitly unsupported harnesses while keeping the qualified Cursor API card", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [
+      { type: "codex_local", loaded: true, supportedRunners: [] },
+      { type: "opencode_local", loaded: true, supportedRunners: [] },
+      { type: "paperclip_runner", loaded: true, supportedRunners: [] },
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" },
+    ]);
+  });
+  await name();
+  expect(document.querySelector('input[value="codex_local"]')).toBeNull();
+  expect(document.querySelector('input[value="opencode_local"]')).toBeNull();
+  expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="cursor_cloud"]')).not.toBeNull();
+});
+
 it.each(["gate off", "native unavailable"])("keeps hosted Cursor Cloud hidden when %s", async reason => {
   await act(async () => {
     cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });

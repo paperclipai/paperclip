@@ -34,9 +34,13 @@ describe("server-owned Codex runner selection", () => {
     expect(agentRunnerAvailability("cursor_cloud", target)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
     expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
     for (const runner of [undefined, "auto"] as const) {
-      expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner, target: { driver: "unavailable" } }))
-        .toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+      for (const driver of ["unavailable", "sandbox", "ssh"]) {
+        expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner, target: { driver } }))
+          .toThrow(expect.objectContaining({ status: 422, details: { code: "agent_runner_unavailable" } }));
+      }
     }
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "legacy", target: { driver: "sandbox" } }))
+      .toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
     const converted = resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target });
     expect(converted).toEqual({ adapterType: "paperclip_runner", adapterConfig: { model: config.model, repoUrl: config.repoUrl, repoRef: "feature", cloudEnvType: "cloud", env: config.env, instructionsFilePath: config.instructionsFilePath, autoCreatePR: false, provider: "cursor_cloud", lifecycleMode: "per_turn" } });
     expect(resolveNewAgentRunner({ ...converted, runner: "legacy", target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
