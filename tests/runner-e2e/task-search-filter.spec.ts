@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { taskSearchBacklogCheckbox, taskSearchResultIds } from "./product-journeys/task-search-filter.js";
+import { expectResults, taskSearchBacklogCheckbox, taskSearchResultIds } from "./product-journeys/task-search-filter.js";
 import type { SearchTask } from "./product-journeys/task-search-evidence.js";
 
 // Reproduce the observed Radix checkbox + StatusIcon + visible text label.
@@ -43,12 +43,15 @@ test("task search readback survives a search rerender that removes an observed r
   page.setDefaultTimeout(150); // Bound only the reproduced stale-index wait.
   await page.setContent(`<main id="main-content">${searchTasks.map(taskLink).join("")}</main>`);
   let transitions = 0;
+  let batches = 0;
+  let detachedReads = 0;
+  let invalidReads = 0;
   const transition = async () => {
     if (transitions++) return;
     await page.locator("main#main-content").evaluate((main, html) => { main.innerHTML = html; }, searchTasks.slice(0, 2).map(taskLink).join(""));
   };
-  // Keep all browser operations real. Place the render between the old
-  // visibility/attribute reads, or immediately before the batch read.
+  // Keep browser operations and the journey's poll real. Hold actual DOM nodes
+  // across the first render so the reader must recover from a detached batch.
   const withTransition = (source: Locator): Locator => new Proxy(source, {
     get(object, property, receiver) {
       if (property === "all") return async () => (await object.all()).map((row, index) => index !== 2 ? row : new Proxy(row, {
@@ -64,8 +67,27 @@ test("task search readback survives a search rerender that removes an observed r
       }));
       if (property === "filter") return (...args: Parameters<Locator["filter"]>) => withTransition(object.filter(...args));
       if (property === "evaluateAll") return async (...args: Parameters<Locator["evaluateAll"]>) => {
-        await transition();
-        return object.evaluateAll(...args);
+        batches++;
+        if (batches === 1) {
+          const held = await page.evaluateHandle(() => Array.from(document.querySelectorAll<HTMLAnchorElement>("main#main-content a[data-inbox-issue-link]")));
+          try {
+            await transition();
+            const detached = await held.evaluate(...args);
+            expect(detached).toBeNull();
+            detachedReads++;
+            // A later connected snapshot can still be wrong. The same poll
+            // must reject its extra control before accepting the final pair.
+            await page.locator("main#main-content").evaluate((main, html) => { main.innerHTML = html; }, searchTasks.map(taskLink).join(""));
+            return detached;
+          } finally { await held.dispose(); }
+        }
+        const result = await object.evaluateAll(...args);
+        if (batches === 2) {
+          expect(result).toHaveLength(3);
+          invalidReads++;
+          await page.locator("main#main-content").evaluate((main, html) => { main.innerHTML = html; }, searchTasks.slice(0, 2).map(taskLink).join(""));
+        }
+        return result;
       };
       const value = Reflect.get(object, property, receiver);
       return typeof value === "function" ? value.bind(object) : value;
@@ -78,8 +100,12 @@ test("task search readback survives a search rerender that removes an observed r
       return typeof value === "function" ? value.bind(object) : value;
     },
   });
-  await expect(taskSearchResultIds(observedPage, searchTasks)).resolves.toEqual(["status-control", "target"]);
+  await expect(expectResults(observedPage, searchTasks, ["target", "status-control"]))
+    .resolves.toEqual(["status-control", "target"]);
   expect(transitions).toBe(1);
+  expect(detachedReads).toBe(1);
+  expect(invalidReads).toBe(1);
+  expect(batches).toBe(3);
   await expect(page.locator("a[data-inbox-issue-link]")).toHaveCount(2);
 });
 

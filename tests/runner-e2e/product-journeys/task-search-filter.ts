@@ -24,7 +24,7 @@ export async function taskSearchResultIds(page: Page, tasks: readonly SearchTask
   }).sort();
 }
 
-async function expectResults(page: Page, tasks: readonly SearchTask[], expectedIds: readonly string[]) {
+export async function expectResults(page: Page, tasks: readonly SearchTask[], expectedIds: readonly string[]) {
   let observed: string[] = [];
   await expect.poll(async () => { observed = await taskSearchResultIds(page, tasks); return observed; }, { timeout: 30_000 })
     .toEqual([...expectedIds].sort());
