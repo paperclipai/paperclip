@@ -72,7 +72,17 @@ const meta = {
   id: "private-tasks-02-sharing",
   title: "Getting started and access/Login, invitations, and access/Private tasks/02 Sharing",
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, docs: { description: { component: "Task menu → Share → Add someone. Inspect avatars in search and selected values, inherited grants, reader access, confirmations, empty/loading/error states and mobile. The sticky-access paragraph is removed." } } },
+  parameters: { ...privacyParameters, docs: { description: { component: "Task menu → Share → Add someone. Inspect avatars in search and selected values, inherited grants, reader access, confirmations, empty/loading/error states and mobile. The sticky-access paragraph is removed." } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <Sharing />,
 } satisfies Meta;
 export default meta;

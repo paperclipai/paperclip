@@ -267,7 +267,17 @@ function Overview() {
 export default {
   id: "private-tasks-00-review-guide",
   title: "Getting started and access/Login, invitations, and access/Private tasks/00 Review guide",
-  parameters: { layout: "fullscreen", docs: { story: { inline: false } } },
+  parameters: { layout: "fullscreen", docs: { story: { inline: false } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties"
+      ],
+      "implementation": "guide",
+      "boundary": "static",
+      "notes": "Review guide retained; explanatory content does not establish runtime or production coverage. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <Overview />,
 } satisfies Meta;
 export const CoverageAndUserStories: StoryObj = {};

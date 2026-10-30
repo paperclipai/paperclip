@@ -69,7 +69,15 @@ const meta: Meta<typeof Harness> = {
   id: "product-skill-studio-·-frontmatterpanel",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Product/Skill Studio · FrontmatterPanel",
   component: Harness,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "skills/authoring"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 
 export default meta;

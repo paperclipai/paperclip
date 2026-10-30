@@ -1,205 +1,797 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
+import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
-import { NewAgent } from "./NewAgent";
 import { ApiError } from "@/api/client";
+import {
+  api, envApi, settings, secrets, state, managedApi, adapterApi,
+  root, container, cache, settle, click, fill, render, connect, pass,
+  renderCurrentParams,
+} from "./NewAgent.test-support";
 
-const api = vi.hoisted(() => ({
-  get: vi.fn(),
-  adapterModels: vi.fn(),
-  list: vi.fn(),
-  hire: vi.fn(),
-  testEnvironment: vi.fn(),
-  getAdapterAuthSignal: vi.fn(),
-  getClaudeOAuthTokenStatus: vi.fn(),
-}));
-const envApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
-const settings = vi.hoisted(() => ({
-  get: vi.fn(),
-  getExperimental: vi.fn(),
-  getGeneral: vi.fn(),
-}));
-const secrets = vi.hoisted(() => ({
-  create: vi.fn(),
-  remove: vi.fn(),
-  list: vi.fn(),
-  listMyUserSecrets: vi.fn(),
-  createUserSecretDefinition: vi.fn(),
-  createMyUserSecret: vi.fn(),
-  rotateMyUserSecret: vi.fn(),
-  removeUserSecretDefinition: vi.fn(),
-}));
-const state = vi.hoisted(() => ({
-  params: new URLSearchParams(),
-  adapters: [] as object[],
-  navigate: vi.fn(),
-  openNewIssue: vi.fn(),
-}));
-const managedApi = vi.hoisted(() => ({
-  list: vi.fn(async () => ({ currentUserId: "user-1", canManageConnections: true, connections: [] })),
-  create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
-  setDefault: vi.fn(async () => ({})),
-}));
-vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
-vi.mock("@/api/agents", () => ({ agentsApi: api }));
-vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: settings }));
-vi.mock("@/api/secrets", () => ({ secretsApi: secrets }));
-vi.mock("@/api/adapters", () => ({
-  adaptersApi: { list: async () => state.adapters },
-}));
-vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1" }),
-}));
-vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
-}));
-vi.mock("@/context/DialogContext", () => ({
-  useDialogActions: () => ({ openNewIssue: state.openNewIssue }),
-}));
-vi.mock("@/lib/router", () => ({
-  useNavigate: () => state.navigate,
-  useSearchParams: () => [state.params],
-}));
-// Exercise API/persistence contracts with deterministic presentation primitives.
-// The actual searchable dropdown and login panel are covered by their tests and browser verification.
-vi.mock("@/components/AgentConfigForm", () => ({
-  ModelDropdown: ({
-    value,
-    onChange,
-  }: {
-    value: string;
-    onChange: (value: string) => void;
-  }) => (
-    <input
-      aria-label="Model"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-  AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
-    <button onClick={() => onConnected("login-session")}>
-      Complete subscription login
-    </button>
-  ),
-}));
-vi.mock("@/components/onboarding/PillGuy", () => ({ PillGuy: () => null }));
-vi.mock("motion/react", () => ({
-  AnimatePresence: ({ children }: any) => children,
-  MotionConfig: ({ children }: any) => children,
-  motion: {
-    span: ({ children }: any) => <span>{children}</span>,
-    div: ({ children, initial, animate, exit, transition, ...rest }: any) => (
-      <div {...rest}>{children}</div>
-    ),
-  },
-}));
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root;
-let container: HTMLDivElement;
-let cache: QueryClient;
-async function settle() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-}
-async function click(text: string) {
-  const button = [...container.querySelectorAll("button")].find(
-    (b) => b.textContent?.trim() === text,
-  );
-  expect(button, `Missing button ${text}`).toBeTruthy();
-  await act(async () => button!.click());
-  await settle();
-}
-async function fill(label: string, value: string) {
-  const input = container.querySelector(
-    `[aria-label="${label}"]`,
-  ) as HTMLInputElement;
-  expect(input).toBeTruthy();
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value",
-    )!.set!.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-async function render(adapter = "pi_local", runnerProvider = "codex") {
-  state.params = new URLSearchParams({
-    name: "Atlas",
-    adapterType: adapter,
-    runnerProvider,
-  });
-  await act(async () =>
-    root.render(
-      <QueryClientProvider client={cache}>
-        <TooltipProvider><NewAgent /></TooltipProvider>
-      </QueryClientProvider>,
-    ),
-  );
-  await settle();
-}
-async function connect(provider: string) {
-  await click(provider + "Subscription");
-  await click("Connect");
-}
-const pass = {
-  adapterType: "pi_local",
-  status: "pass",
-  checks: [
-    { code: "hello_probe_passed", level: "info", message: "Model replied" },
-  ],
-  testedAt: "2026-09-07T00:00:00Z",
-};
-beforeEach(() => {
-  vi.clearAllMocks();
-  managedApi.list.mockResolvedValue({ currentUserId: "user-1", canManageConnections: true, connections: [] });
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  cache = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  state.adapters = [
-    "claude_local",
-    "codex_local",
-    "opencode_local",
-    "pi_local",
-    "paperclip_runner", "cursor_cloud", "cursor", "gemini_local", "kimi_local", "grok_local", "hermes_local", "hermes_gateway",
-  ].map((type) => ({ type, loaded: true, disabled: false }));
-  api.adapterModels.mockResolvedValue([]);
-  api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
-  api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
-  api.getClaudeOAuthTokenStatus.mockRejectedValue(new ApiError("Not found", 404, null));
-  api.testEnvironment.mockResolvedValue(pass);
-  api.hire.mockImplementation(async (_company, input) => ({
-    agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
-  }));
-  envApi.list.mockResolvedValue([
-    { id: "local-1", name: "Local", driver: "local", config: {} },
-  ]);
-  envApi.capabilities.mockResolvedValue({ sandboxProviders: {} });
-  settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
-  settings.getExperimental.mockResolvedValue({ enableNativeRunner: true });
-  settings.getGeneral.mockResolvedValue({ executionMode: "any" });
-  secrets.list.mockResolvedValue([]);
-  secrets.create.mockResolvedValue({ id: "org-secret-1" });
-  secrets.remove.mockResolvedValue({ ok: true });
-  secrets.listMyUserSecrets.mockResolvedValue([]);
-  secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
-  secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
-  secrets.removeUserSecretDefinition.mockResolvedValue({ ok: true });
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  cache.clear();
-  container.remove();
-});
 describe("New agent setup", () => {
+  it.each([
+    ["claude_local", "Claude", "plugin"], ["codex_local", "OpenAI", "plugin"],
+    ["claude_local", "Claude", "sandbox"], ["codex_local", "OpenAI", "sandbox"],
+    ["claude_local", "Claude", "kubernetes"], ["codex_local", "OpenAI", "kubernetes"],
+  ] as const)("connects an inherited %s draft through the saved %s account under %s policy", async (adapter, provider, policy) => {
+    const id = "00000000-0000-4000-8000-000000000093";
+    const draft = { id, companyId: "company-1", name: "Atlas", role: "general", adapterType: "paperclip_runner",
+      adapterConfig: adapter === "claude_local" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" },
+      runtimeConfig: {}, lifecycleState: "paused", pauseReason: "setup", defaultEnvironmentId: null, status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: adapter, runner: "auto", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "remote" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: policy !== "kubernetes" });
+    settings.getGeneral.mockResolvedValue({ executionMode: policy === "kubernetes" ? "kubernetes" : "any" });
+    envApi.list.mockResolvedValue([{ id: "remote", name: "Remote", status: "active",
+      driver: policy === "plugin" ? "plugin" : "sandbox", config: policy === "plugin" ? {} : { provider: policy === "sandbox" ? "daytona" : "kubernetes" } }]);
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022",
+      companyId: "company-1", provider: adapter === "claude_local" ? "anthropic" : "openai", method: "subscription",
+      name: "Saved subscription", ownership: "shared", isDefault: false, status: "connected",
+    }] } as any);
+    await renderCurrentParams();
+    await click("AdvancedCustom Gateway");
+    expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).toBeTruthy();
+    await click(`${provider}API key`);
+    expect(container.querySelector('[aria-label="API key"]')).toBeTruthy();
+    await click(`${provider}Subscription`);
+    await click("Use saved subscription");
+    expect(container.textContent).toContain("Configure your agent");
+    expect(api.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", adapter, expect.objectContaining({ agentId: id, environmentId: "remote" }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledExactlyOnceWith("company-1", expect.objectContaining({ setupAgentId: id, defaultEnvironmentId: "remote" }));
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it("retains the selected account while a company requires approval before preparing the computer", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
+    envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
+    api.testEnvironment.mockResolvedValue({ ...pass, status: "warn", checks: [{
+      code: "environment_agent_approval_required", level: "warn", message: "Verification follows hire approval",
+    }] });
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      setupAgentId: api.create.mock.calls[0][1].setupId,
+      runtimeConfig: expect.objectContaining({ aiConnection: expect.objectContaining({ provider: "openai" }) }),
+    }));
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(envApi.probe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the account on an environment save failure and blocks probes until the selection is saved", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} },
+    ]);
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    const originalBinding = api.testEnvironment.mock.calls[0][2].aiConnection;
+    const probes = api.testEnvironment.mock.calls.length;
+    let finishDiscovery!: (adapters: typeof state.adapters) => void;
+    adapterApi.list.mockImplementationOnce(() => new Promise(resolve => { finishDiscovery = resolve; }));
+    api.update.mockRejectedValueOnce(new Error("Environment save unavailable"));
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
+    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).toContain("Environment save unavailable");
+    await act(async () => finishDiscovery(state.adapters.map((adapter: any) => adapter.type === "codex_local"
+      ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter)));
+    await settle();
+    expect(container.textContent).toContain("Environment save unavailable");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(probes);
+    await click("Retry saving environment");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", expect.any(String), expect.objectContaining({
+      environmentId: "computer", aiConnection: originalBinding,
+    }));
+  });
+
+  it("ignores a detail read that completes after a newer environment save", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} },
+    ]);
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    const id = api.create.mock.calls[0][1].setupId;
+    state.params.set("setupAgentId", id);
+    await renderCurrentParams();
+    const key = queryKeys.agents.detail(id);
+    const oldDraft = cache.getQueryData(key);
+    let finishRead!: (agent: unknown) => void;
+    api.get.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    await act(async () => { void cache.refetchQueries({ queryKey: key }); });
+    expect(finishRead).toBeTypeOf("function");
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
+    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    await act(async () => finishRead(oldDraft));
+    await settle();
+    expect(cache.getQueryData(key)).toMatchObject({ defaultEnvironmentId: "computer" });
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", expect.any(String), expect.objectContaining({ agentId: id, environmentId: "computer" }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ setupAgentId: id, defaultEnvironmentId: "computer" }));
+  });
+
+  it.each([null, "computer"])("waits for background preparation and tests the same saved computer (environment=%s)", async (defaultEnvironmentId) => {
+    const id = "00000000-0000-4000-8000-000000000092";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      runtimeConfig: {}, lifecycleState: "preparing", pauseReason: "setup", defaultEnvironmentId, status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+    envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
+    await renderCurrentParams();
+    expect(container.textContent).toContain("Preparing your agent computer");
+    await click("OpenAIAPI key");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    api.get.mockResolvedValue({ ...draft, lifecycleState: "verifying" });
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.agents.detail(id) }); });
+    await settle();
+    expect(container.textContent).not.toContain("Preparing your agent computer");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", expect.any(String), expect.objectContaining({ agentId: id, environmentId: "computer" }));
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an inactive record before connecting and finishes that same agent", async () => {
+    await render("codex_local");
+    expect(api.create).toHaveBeenCalledTimes(1);
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.create.mock.calls[0][1]).toMatchObject({ name: "Atlas", runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(state.navigate).toHaveBeenCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].agentId).toBe(setupId);
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a name-only draft at adapter selection without creating another record", async () => {
+    const setupId = "00000000-0000-4000-8000-000000000091";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
+    api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    await settle();
+    expect(document.body.textContent).toContain("Choose an adapter");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await act(async () => document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="codex_local"]')!.click());
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+    await settle();
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+    expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it("retries early creation with the same identity before offering authentication", async () => {
+    api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
+    await render("codex_local");
+    expect(container.textContent).toContain("Creation unavailable");
+    expect(container.textContent).not.toContain("Complete subscription login");
+    await click("Retry");
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
+    expect(container.textContent).toContain("Connect a model");
+  });
+
+  it("resumes a saved setup record and its configuration after navigation", async () => {
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    await fill("Model", "gpt-5.4");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).not.toContain("Your agent is ready");
+    expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("gpt-5.4");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ setupAgentId: setupId, adapterConfig: { model: "gpt-5.4" } });
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the first agent's role when finishing its setup", async () => {
+    api.list.mockResolvedValue([]);
+    await render("codex_local");
+    await connect("OpenAI");
+    api.list.mockResolvedValue([{ id: api.create.mock.calls[0][1].setupId, role: "ceo", status: "paused" }]);
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.agents.list("company-1") }); });
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].role).toBe("ceo");
+  });
+
+  it("keeps the setup identity when finalization fails and is retried", async () => {
+    await render("codex_local");
+    await connect("OpenAI");
+    api.hire.mockRejectedValueOnce(new Error("Hire unavailable"));
+    await click("Finish setup");
+    expect(container.textContent).toContain("Hire unavailable");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(2);
+    expect(api.hire.mock.calls[1][1].setupAgentId).toBe(api.hire.mock.calls[0][1].setupAgentId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the existing Claude stored-login authorization into a saved setup", async () => {
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "stored-oauth", latestVersion: 1 });
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(api.update.mock.calls[0][1].applyStoredClaudeLogin).toBe(true);
+  });
+
+  it("saves a typed gateway key as a secret and restores it without re-entry", async () => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "saved-gateway-key");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(JSON.stringify(api.update.mock.calls)).not.toContain("saved-gateway-key");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "hermes_gateway", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains an unfinished legacy harness when the current target defaults to Paperclip Runner", async () => {
+    await render("codex_local");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    await act(async () => root.render(null));
+    cache.clear();
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "codex_local" ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter);
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
+  });
+
+  it.each([
+    ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
+    ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
+    ["paperclip", "Connect", "snapshot"], ["paperclip", "Finish setup", "snapshot"],
+  ] as const)("qualifies new managed Claude and saves measured %s defaults through %s from %s", async (measured, step, source) => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: { provider: "daytona", ...(source === "snapshot" ? { snapshot: "managed-snapshot" } : { image }) } }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: false });
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    let qualified = false;
+    const calls: string[] = [];
+    adapterApi.list.mockImplementation(async context => {
+      if (context?.companyId) calls.push(qualified ? "discovery-after" : "discovery-before");
+      return state.adapters;
+    });
+    envApi.probe.mockImplementation(async () => {
+      calls.push("platform"); qualified = true;
+      state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+        ? { ...adapter, defaultRunner: measured, supportedRunners: [measured] } : adapter);
+      return { ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "owned-platform-lease" } };
+    });
+    api.testEnvironment.mockImplementation(async () => { calls.push("adapter"); return pass; });
+    await render("claude_local");
+    expect(envApi.probe).not.toHaveBeenCalled();
+    if (step === "Connect") {
+      await click("ClaudeSubscription");
+      calls.length = 0;
+      await click("Use saved subscription");
+    } else {
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+        id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", companyId: "company-1",
+        provider: "openrouter", method: "api_key", name: "Company OpenRouter", ownership: "shared", isDefault: false, status: "connected",
+        routing: { kind: "openrouter", protocol: "messages", auth: "bearer", models: [] },
+      }] } as any);
+      await click("AdvancedCustom Gateway");
+      const picker = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+      await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await settle();
+      const option = [...document.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Company OpenRouter")) as HTMLElement;
+      await act(async () => option.click());
+      await settle();
+      await click("Use connection");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      calls.length = 0;
+    }
+    await click("Finish setup");
+    expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter"]);
+    expect(envApi.probe).toHaveBeenCalledExactlyOnceWith("sandbox-1", "company-1");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({ agentId: api.create.mock.calls[0][1].setupId, runner: measured });
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    const tested = api.testEnvironment.mock.calls[0][2].adapterConfig;
+    const saved = api.hire.mock.calls[0][1];
+    expect(saved).not.toHaveProperty("runner");
+    expect(saved.adapterConfig).toEqual(tested);
+    if (measured === "paperclip") expect(tested).not.toHaveProperty("maxTurnsPerRun");
+    else expect(tested.maxTurnsPerRun).toBe(1000);
+  });
+
+  it("drops a held managed Claude probe when the same environment changes configuration", async () => {
+    const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    let finish!: (value: object) => void;
+    envApi.probe.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    await act(async () => cache.setQueryData(queryKeys.environments.list("company-1"), [{ id: "sandbox-1", driver: "sandbox", config: {
+      ...config, image: `registry.example.test/runtime@sha256:${"b".repeat(64)}`,
+    } }]));
+    await settle();
+    await act(async () => finish({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "owned-lease" } }));
+    await settle();
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("retains the existing managed Claude platform-probe permission gate", async () => {
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: {
+      provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}`,
+    } }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    envApi.probe.mockRejectedValue(new Error("Instance admin access required"));
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(container.textContent).toContain("Instance admin access required");
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("waits for the current instance default instead of testing cached SSH discovery", async () => {
+    let finish!: (value: object) => void;
+    settings.get.mockReturnValue(new Promise<object>(resolve => { finish = resolve; }));
+    const environments = [
+      { id: "local-1", name: "Local", driver: "local", config: {} },
+      { id: "linux-ssh", name: "SSH", driver: "ssh", config: {} },
+    ];
+    envApi.list.mockResolvedValue(environments);
+    cache.setQueryData(queryKeys.environments.list("company-1"), environments);
+    cache.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "linux-ssh" });
+    adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: context?.environmentId === "local-1" ? "paperclip" : "legacy" } : adapter));
+    await render("claude_local");
+    await connect("Claude");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    await act(async () => finish({ defaultEnvironmentId: "local-1" }));
+    await settle();
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("local-1");
+    expect(api.hire.mock.calls[0][1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+  });
+
+  it("keeps the API key draft while waiting for refreshed discovery", async () => {
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter);
+    await render("claude_local");
+    await click("ClaudeAPI key");
+    await fill("API key", "example-test-secret");
+    const draft = container.querySelector('[aria-label="API key"]') as HTMLInputElement;
+    let finish!: (value: object[]) => void;
+    adapterApi.list.mockReturnValue(new Promise<object[]>(resolve => { finish = resolve; }));
+    let refresh!: Promise<void>;
+    await act(async () => {
+      refresh = cache.invalidateQueries({ queryKey: queryKeys.adapters.availability("company-1", "local-1") });
+    });
+    await settle();
+    expect(container.querySelector('[aria-label="API key"]')).toBe(draft);
+    expect(draft.value).toBe("example-test-secret");
+    await click("Connect");
+    expect(managedApi.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await act(async () => { finish(state.adapters); await refresh; });
+    await settle();
+    expect(container.querySelector('[aria-label="API key"]')).toBe(draft);
+    expect(draft.value).toBe("example-test-secret");
+    await click("Connect");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+  });
+
+  it.each(["paperclip", "legacy", undefined] as const)("uses Claude's discovered %s default for Auto setup and hire", async (defaultRunner) => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner } : adapter);
+    await render("claude_local");
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    for (const config of [api.testEnvironment.mock.calls[0][2].adapterConfig, api.hire.mock.calls[0][1].adapterConfig]) {
+      if (defaultRunner === "paperclip") expect(config).not.toHaveProperty("maxTurnsPerRun");
+      else expect(config.maxTurnsPerRun).toBe(1000);
+      expect(config).not.toHaveProperty("resolvedRunner");
+    }
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("finishes ordinary native Claude API setup when the key is verified without a CLI hello", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    api.testEnvironment.mockResolvedValue({ ...pass, adapterType: "paperclip_runner", checks: [
+      { code: "acpx_runtime_ready", level: "info", message: "Runtime verified" },
+      { code: "ai_connection_api_key_reverified", level: "info", message: "Key verified" },
+    ] });
+    await render("claude_local");
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("records an explicit legacy choice when it matches the Windows default, then preserves it on Linux", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) =>
+      adapter.type === "codex_local" ? { ...adapter, supportedRunners: context?.environmentId === "linux-ssh" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const runner = container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!;
+    expect(runner.textContent).toBe("Legacy runner (default)");
+    await act(async () => runner.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="legacy"]')!.click());
+    await connect("OpenAI");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "legacy" }));
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "linux-ssh", runner: "legacy" }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
+  });
+
+  it("preserves an old native Codex setup link on an unqualified target with the experiment off", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    adapterApi.list.mockImplementation(async () => state.adapters.map((adapter: any) => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["legacy"], defaultRunner: "legacy" } : adapter));
+    api.testEnvironment.mockImplementation(async (_company, adapterType, payload) => {
+      if (adapterType === "codex_local" && payload.runner === "paperclip") throw new Error("This target is not qualified for a new native default.");
+      return { ...pass, adapterType, checks: [{ code: "paperclip_runner_codex_hello_probe_passed", level: "info", message: "Native runtime replied" }] };
+    });
+    await render("paperclip_runner", "codex");
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ runner: "paperclip", adapterConfig: expect.objectContaining({ provider: "codex" }) }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "codex" } });
+  });
+
+  it("discovers the runner for the selected target and rechecks after changing environments", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "linux-ssh" });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    adapterApi.list.mockImplementation(async (context?: { companyId: string; environmentId?: string | null }) => state.adapters.map((adapter: any) =>
+      adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "linux-ssh" });
+    await connect("OpenAI");
+    expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("linux-ssh");
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => {
+      environment.value = "local-1";
+      environment.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Legacy runner (default)");
+    expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "local-1" });
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(2);
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "local-1" }));
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+  it("surfaces failed target discovery without guessing a default and permits explicit legacy recovery", async () => {
+    adapterApi.list.mockImplementation(async (context?: object) => {
+      if (context) throw new Error("SSH target is unavailable. Check its connection.");
+      return state.adapters;
+    });
+    await render("codex_local");
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Automatic selection unavailable");
+    expect(container.textContent).toContain("SSH target is unavailable. Check its connection.");
+    expect(container.textContent).not.toContain("Legacy runner (default)");
+    expect(container.textContent).toContain("Retry runner discovery");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({ runner: "legacy" });
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ runner: "legacy" });
+  });
+  it.each(["Linux x64", "Mac arm64", "Mac x64"])("uses automatic Codex resolution through setup and hire without the experimental gate (%s)", async name => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    envApi.list.mockResolvedValue([{ id: "local-1", name, driver: "local", status: "active", config: {} }]);
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterType).toBe("codex_local");
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+    expect(api.testEnvironment.mock.calls[0][1]).toBe("codex_local");
+    expect(api.testEnvironment.mock.calls[0][2]).not.toHaveProperty("runner");
+    expect(api.hire.mock.calls[0][1].adapterConfig.dangerouslyBypassApprovalsAndSandbox).not.toBe(true);
+  });
+
+  it("allows the explicit legacy override before authentication and rechecks it after a runner change", async () => {
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
+    await connect("OpenAI");
+    expect(api.testEnvironment.mock.calls[0][2].runner).toBe("legacy");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Paperclip Runner (default)")!.click());
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "paperclip" }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "paperclip" });
+  });
+  it("opens pending Antigravity configuration without creating or admitting a native agent", async () => {
+    await render("paperclip_runner", "antigravity");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.adapterModels).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Google Antigravity is not available yet");
+    expect(container.textContent).toContain("Connect a model");
+    expect(container.textContent).not.toContain("This adapter is unavailable");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("connects, saves and finishes the exact company-authorized Antigravity candidate with cached setup %s while release qualification stays pending", async cached => {
+    const id = "00000000-0000-4000-8000-000000000091", model = "exact-antigravity-model";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "antigravity", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "paperclip_runner"
+      ? { ...adapter, candidateHarnesses: [{ agent: "antigravity", model }] } : adapter);
+    if (cached) {
+      cache.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "local-1" });
+      cache.setQueryData(queryKeys.environments.list("company-1"), await envApi.list("company-1"));
+      cache.setQueryData(queryKeys.adapters.availability("company-1", "local-1"), state.adapters);
+      cache.setQueryData(queryKeys.agents.detail(id), draft);
+    }
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222", companyId: "company-1",
+      provider: "google", method: "subscription", name: "Saved Google", ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected",
+    }] } as any);
+    cache.setQueryDefaults(queryKeys.health, { staleTime: Infinity });
+    cache.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted", localAiLoginSupported: true });
+    api.testEnvironment.mockResolvedValue({ ...pass, checks: [{ code: "antigravity_metadata_verified", level: "info", message: "Exact model admitted without a prompt" }] });
+    await renderCurrentParams();
+    expect(container.textContent).toContain("Google Antigravity candidate is enabled");
+    await click("Use saved subscription");
+    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({
+      adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "antigravity", model }),
+      metadata: expect.objectContaining({ setupAdapterPending: false }),
+    }), "company-1");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ adapterConfig: expect.objectContaining({ model, acpxAgent: "antigravity" }) }));
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ setupAgentId: id, adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "antigravity", model }) }));
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "antigravity")?.qualified).toBe(false);
+  });
+  it("restores the saved Antigravity choice from a reopened physical Process draft", async () => {
+    const id = "00000000-0000-4000-8000-000000000091";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", runnerProvider: "codex", setupAgentId: id });
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    const params = new URL(state.navigate.mock.calls.at(-1)![0], "http://local").searchParams;
+    expect(Object.fromEntries(params)).toMatchObject({ adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto", setupAgentId: id });
+    state.params = params;
+    await renderCurrentParams();
+    expect(container.textContent).toContain("Google Antigravity is not available yet");
+    expect(container.textContent).toContain("Connect a model");
+    expect(container.textContent).not.toContain("Choose an adapter");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.update).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    await click("Change adapter");
+    expect(document.querySelector<HTMLInputElement>('input[value="antigravity_runtime"]')?.checked).toBe(true);
+    await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+    await settle();
+    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+  });
+  it.each(["api_key", "subscription"] as const)("reviews pending Antigravity %s settings from the held Add agent draft without execution", async method => {
+    const id = "00000000-0000-4000-8000-000000000091";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "antigravity", setupAgentId: id });
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {},
+      runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222", companyId: "company-1",
+      provider: "google", method, name: "Saved Google", ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected",
+    }] } as any);
+    api.adapterModels.mockResolvedValue([{ id: "google-exact-model", label: "My Google model" }]);
+    cache.setQueryDefaults(queryKeys.health, { staleTime: Infinity });
+    cache.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted", localAiLoginSupported: true });
+    await renderCurrentParams();
+    await click(method === "subscription" ? "Use saved subscription" : "Use saved API key");
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).toContain("Google Antigravity is not available yet");
+    await fill("Model", "manual-exact-google-model");
+    const test = container.querySelector<HTMLButtonElement>('[aria-label="Runtime test"] button');
+    expect(test?.disabled).toBe(true);
+    await act(async () => test!.click());
+    const finish = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Finish setup");
+    expect(finish?.disabled).toBe(true);
+    await act(async () => finish!.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.update).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity" && !call[2]?.agentId)).toBe(true);
+    if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
+    else expect(api.adapterModels).toHaveBeenCalled();
+    await click("Back to agents");
+    expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
+  });
+  it.each(["api_key", "subscription"] as const)("wires a future qualified Antigravity %s account to metadata discovery and the exact model", async method => {
+    // Simulate a future release declaration only inside this mocked UI fixture.
+    // The production declaration remains pending and API execution stays gated.
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(item => item.value === "antigravity")! as unknown as { qualified: boolean };
+    const qualified = profile.qualified;
+    profile.qualified = true;
+    try {
+      const binding = { provider: "google", method, mode: "delegated", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" };
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+        id: binding.connectionId, grantId: binding.grantId, companyId: "company-1", provider: "google", method,
+        name: "Verified Google", ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected",
+      }] } as any);
+      api.adapterModels.mockResolvedValue([{ id: "google-exact-model", label: "My Google model" }]);
+      cache.setQueryDefaults(queryKeys.health, { staleTime: Infinity });
+      cache.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted", localAiLoginSupported: true });
+      await render("paperclip_runner", "antigravity");
+      await click(method === "subscription" ? "Use saved subscription" : "Use saved API key");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Configure your agent");
+      if (method === "api_key") expect(api.adapterModels).not.toHaveBeenCalled();
+      else await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        provider: "acpx", acpxAgent: "antigravity", aiConnection: expect.objectContaining({ provider: "google", method }), environmentId: "local-1",
+      })));
+      await click("Finish setup");
+      expect(api.hire).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("exact Google Antigravity model ID");
+      await fill("Model", "manual-exact-google-model");
+      await click("Finish setup");
+      expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "paperclip_runner",
+        adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model" }),
+        runtimeConfig: expect.objectContaining({ aiConnection: expect.objectContaining({ provider: "google", method }) }),
+      }));
+      expect(api.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity")).toBe(true);
+    } finally { profile.qualified = qualified; }
+  });
+
+  it("keeps saved-token Copilot discovery passive while new-agent setup is idle", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "Copilot Luna" }]);
+    await render("paperclip_runner", "copilot");
+    await vi.waitFor(() => expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: "local-1", acpxAgent: "copilot" })));
+    await settle();
+    const initialDiscoveries = api.adapterModels.mock.calls.length;
+    await act(async () => { await cache.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
+    await settle();
+    expect(api.adapterModels).toHaveBeenCalledTimes(initialDiscoveries);
+  });
+  it("refuses an undiscovered Copilot model before hiring with a saved connection", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT" }]);
+    await render("paperclip_runner", "copilot");
+    await fill("Model", "unavailable-copilot-model");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("select an available model");
+  });
+  it("preserves the authenticated Copilot model when hiring with a saved connection", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT" }]);
+    await render("paperclip_runner", "copilot");
+    await fill("Model", "gpt-5.6-luna");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }),
+      runtimeConfig: expect.objectContaining({ aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } }),
+    }));
+  });
+  it("discovers models after the first Copilot token becomes the responsible user's default", async () => {
+    let defaultSaved = false;
+    managedApi.setDefault.mockImplementation(async () => { defaultSaved = true; return {}; });
+    api.adapterModels.mockImplementation(async () => {
+      if (!defaultSaved) throw new ApiError("Connect Copilot first", 422, null);
+      return [{ id: "gpt-5.6-luna", label: "GPT" }];
+    });
+    await render("paperclip_runner", "copilot");
+    const beforeConnection = api.adapterModels.mock.calls.length;
+    expect(beforeConnection).toBeGreaterThan(0);
+    const trigger = document.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.includes("Connect an account"));
+    expect(option).toBeDefined();
+    await act(async () => option!.click());
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="API key"]')!;
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "github_pat_fixture_first");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent?.trim() === "Connect")!;
+    expect(save).toBeTruthy();
+    await act(async () => save.click());
+    await settle();
+    expect(managedApi.setDefault).toHaveBeenCalledWith("company-1", "managed-grant");
+    expect(api.adapterModels).toHaveBeenCalledTimes(beforeConnection + 1);
+    expect(api.adapterModels.mock.invocationCallOrder[beforeConnection]).toBeGreaterThan(managedApi.setDefault.mock.invocationCallOrder[0]);
+    expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      provider: "acpx", acpxAgent: "copilot", aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" },
+    }));
+  });
+
   it("creates Dot through its independent choice without CLI or model setup, then routes to pairing", async () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true, enablePublicMcp: true });
     await render("paperclip_runner", "openai_dot");
@@ -246,7 +838,8 @@ describe("New agent setup", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Environment"]')).not.toBeNull();
+    await click("Connect model");
     await click("Complete subscription login");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1]).toMatchObject({ defaultEnvironmentId: "login-env", runtimeConfig: { aiConnection: { method: "subscription" } } });
@@ -286,19 +879,27 @@ describe("New agent setup", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
-    if (container.querySelector('[role="radiogroup"][aria-label="Connection type"]')) {
-      await click("GrokAPI key");
-      await click("Use saved API key");
-    }
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Run test");
     expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: "grok-sandbox" }));
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
   });
-  it.each([false, true])("blocks direct runner setup links when the experiment is disabled (cloud=%s)", async (cloud) => {
+  it.each([false, true])("keeps other native setup links gated when the experiment is disabled (cloud=%s)", async (cloud) => {
     cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
-    await render("paperclip_runner");
+    await render("paperclip_runner", "grok");
     expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("restores native Claude setup intent and its connection flow with experiment=false (cloud=%s)", async cloud => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    await render("paperclip_runner", "claude");
+    expect(container.textContent).not.toContain("This adapter is unavailable");
+    expect(container.textContent).toContain("Claude Code");
+    expect(container.textContent).toContain("Paperclip Runner");
+    expect(container.textContent).toContain("Connect a model");
     expect(api.hire).not.toHaveBeenCalled();
   });
   it("blocks direct setup links for unsupported Cloud adapters", async () => {
@@ -421,15 +1022,62 @@ describe("New agent setup", () => {
     expect(container.textContent).toContain("Enter the Kimi API model name");
     await fill("Kimi API model name", "kimi-for-coding");
     await fill("Kimi API base URL", "https://api.kimi.com/coding/v1");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      const saved = await persist(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
     await click("Finish setup");
     const config = api.hire.mock.calls[0][1].adapterConfig;
     expect(config).not.toHaveProperty("model");
     expect(config.env).toMatchObject({
       KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "kimi" },
       KIMI_MODEL_BASE_URL: { type: "plain", value: "https://api.kimi.com/coding/v1" },
       KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
     });
   });
+  it("restores saved Kimi API settings even when the API redacts plain environment values", async () => {
+    await render("kimi_local");
+    await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
+    await fill("Kimi API model name", "kimi-for-coding");
+    await act(async () => {
+      const protocol = container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement;
+      protocol.value = "openai";
+      protocol.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await fill("Kimi API base URL", "https://kimi.example.test/v1");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    const get = api.get.getMockImplementation()!;
+    api.get.mockImplementation(async (...args) => {
+      const saved = await get(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "kimi_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect((container.querySelector('[aria-label="Kimi API model name"]') as HTMLInputElement).value).toBe("kimi-for-coding");
+    expect((container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement).value).toBe("openai");
+    await click("Save & exit");
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env).toMatchObject({
+      KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "openai" },
+      KIMI_MODEL_BASE_URL: { type: "plain", value: "https://kimi.example.test/v1" },
+    });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env).toMatchObject({ KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" } });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
   it("configures Hermes Gateway URL and its top-level secret reference", async () => {
     await render("hermes_gateway");
     expect(container.querySelector('[aria-label="Model"]')).toBeNull();
@@ -464,14 +1112,7 @@ describe("New agent setup", () => {
       adapterType: "pi_local",
       createdAgentId: "saved-agent",
     });
-    await act(async () =>
-      root.render(
-        <QueryClientProvider client={cache}>
-          <TooltipProvider><NewAgent /></TooltipProvider>
-        </QueryClientProvider>,
-      ),
-    );
-    await settle();
+    await renderCurrentParams();
     expect(container.textContent).toContain("Your agent is ready");
     expect(container.textContent).not.toContain("Finish setup");
     expect(api.hire).not.toHaveBeenCalled();
@@ -480,6 +1121,50 @@ describe("New agent setup", () => {
       assigneeAgentId: "saved-agent",
       status: "todo",
     });
+  });
+  it.each(["preparing", "verifying"] as const)("waits for actual %s completion and hands the current agent to the task composer", async phase => {
+    const id = "00000000-0000-4000-8000-000000000094";
+    const draft = { id, companyId: "company-1", name: "Atlas", role: "general", adapterType: "pi_local",
+      adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6" }, runtimeConfig: {},
+      lifecycleState: "paused", lifecycleVersion: 1, pauseReason: "setup" as string | null, status: "paused" };
+    let serverAgent = draft;
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "pi_local", setupAgentId: id });
+    api.get.mockImplementation(async () => serverAgent);
+    // Keep the roster stale to reproduce the composer warning after activation.
+    api.list.mockResolvedValue([draft]);
+    api.hire.mockImplementation(async () => {
+      serverAgent = { ...draft, lifecycleState: phase, lifecycleVersion: 2, pauseReason: null, status: "paused" };
+      return { agent: serverAgent };
+    });
+    await renderCurrentParams();
+    await click("Finish setup");
+    expect(container.textContent).toContain("Finishing agent setup");
+    expect(container.textContent).not.toContain("Your agent is ready");
+    expect([...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Assign Atlas a Task")?.disabled).toBe(true);
+    serverAgent = { ...draft, lifecycleState: "ready", lifecycleVersion: 3, pauseReason: null, status: "idle" };
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1_100)); });
+    await settle();
+    expect(container.textContent).toContain("Your agent is ready");
+    state.openNewIssue.mockImplementationOnce(() => {
+      expect(cache.getQueryData(queryKeys.agents.list("company-1"))).toEqual([
+        expect.objectContaining({ id, status: "idle", pauseReason: null, lifecycleState: "ready", lifecycleVersion: 3 }),
+      ]);
+    });
+    await click("Assign Atlas a Task");
+    expect(state.openNewIssue).toHaveBeenCalledWith({ assigneeAgentId: id, status: "todo" });
+    expect(api.hire).toHaveBeenCalledOnce();
+  });
+  it.each(["manual", "import"])("keeps a genuinely %s-paused agent unavailable for first-task assignment", async pauseReason => {
+    const id = "00000000-0000-4000-8000-000000000095";
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "Atlas", adapterType: "pi_local", adapterConfig: {}, runtimeConfig: {},
+      lifecycleState: "paused", lifecycleVersion: 3, pauseReason, status: "paused" });
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "pi_local", createdAgentId: id });
+    await renderCurrentParams();
+    expect(container.textContent).toContain("Your agent is paused");
+    expect(container.textContent).not.toContain("Your agent is ready");
+    await click("Assign Atlas a Task");
+    expect(state.openNewIssue).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
   });
   it("does not advance connection after a timed-out provider probe", async () => {
     api.testEnvironment.mockResolvedValue({
@@ -521,7 +1206,7 @@ describe("New agent setup", () => {
       expect(container.textContent).toContain("Your agent is ready");
       await click("Assign Atlas a Task");
       expect(state.openNewIssue).toHaveBeenCalledWith({
-        assigneeAgentId: "new-agent",
+        assigneeAgentId: api.create.mock.calls[0][1].setupId,
         status: "todo",
       });
     },
@@ -661,6 +1346,78 @@ describe("New agent setup", () => {
       expect(secrets.create).toHaveBeenCalledTimes(1);
     },
   );
+  it("resumes an empty native Pi draft with account selection and exact thinking controls", async () => {
+    const id = "00000000-0000-4000-8000-000000000093";
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.params = new URLSearchParams({ name: "Pi", adapterType: "pi_local", setupAgentId: id });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "pi_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "Pi", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "", piThinkingLevel: "max" }, runtimeConfig: {}, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    await settle();
+    expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).not.toBeNull();
+    expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("");
+    const thinking = container.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
+    expect(thinking.value).toBe("max");
+    expect([...thinking.options].map(option => option.value)).toEqual(["", "off", "low", "high", "max"]);
+    expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).toBeNull();
+  });
+
+  it.each(["auto", "legacy"] as const)("keeps OpenCode %s selection consistent between testing and hiring", async runner => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "opencode_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    await render("opencode_local");
+    const model = "openrouter/anthropic/claude-sonnet-4.6";
+    await fill("Model", model);
+    const select = container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!;
+    expect(select.textContent).toContain("Paperclip Runner");
+    if (runner === "legacy") {
+      await act(async () => select.click());
+      await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="legacy"]')!.click());
+    }
+    await click("Run test");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "opencode_local", expect.objectContaining({ adapterConfig: expect.objectContaining({ model }), ...(runner === "legacy" ? { runner } : {}) }));
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterType: "opencode_local", adapterConfig: expect.objectContaining({ model }), ...(runner === "legacy" ? { runner } : {}) }));
+    if (runner === "auto") expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("retains automatic OpenCode selection while the first draft request is in flight", async () => {
+    let release!: () => void;
+    const originalCreate = api.create.getMockImplementation()!;
+    api.create.mockImplementation(async (...args) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return originalCreate(...args);
+    });
+    await render("opencode_local");
+    const url = state.navigate.mock.calls[0][0] as string;
+    state.params = new URLSearchParams(url.split("?")[1]);
+    expect(state.params.get("runner")).toBe("auto");
+    await renderCurrentParams();
+    expect(api.create).toHaveBeenCalledOnce();
+    await act(async () => release());
+    await settle();
+    expect(api.create.mock.calls[0][1].runner).toBe("auto");
+    expect(api.create).toHaveBeenCalledOnce();
+  });
+
+  it.each(["opencode_local", "paperclip_runner"])("resumes OpenCode's saved %s setup after a default change", async adapterType => {
+    const id = "00000000-0000-4000-8000-000000000092";
+    state.params = new URLSearchParams({ name: "OpenCode", adapterType: "opencode_local", setupAgentId: id });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "opencode_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    const savedPolicy = adapterType === "paperclip_runner"
+      ? { provider: "opencode", opencodePermissionMode: "ask", lifecycleMode: "persistent", idleTimeoutMs: 30000 }
+      : { command: "custom-opencode", dangerouslySkipPermissions: false };
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "OpenCode", adapterType, adapterConfig: { ...savedPolicy, model: "openrouter/anthropic/claude-sonnet-4.6" }, runtimeConfig: {}, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runner).toBe(adapterType === "paperclip_runner" ? "paperclip" : "legacy");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType, adapterConfig: savedPolicy });
+  });
+
   it("connects OpenRouter before testing and hiring OpenCode without copying credentials into the agent", async () => {
     await render("opencode_local");
     const model = "openrouter/anthropic/claude-sonnet-4.6";
@@ -725,7 +1482,10 @@ describe("New agent setup", () => {
       else await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
       await click("Finish setup");
       const config = api.hire.mock.calls[0][1].adapterConfig;
-      expect(config.provider).toBe(runner === "claude" ? "acpx" : runner);
+      if (runner === "codex") {
+        expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "paperclip_runner", runner: "paperclip" });
+        expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ runner: "paperclip" }));
+      } else expect(config.provider).toBe(runner === "claude" ? "acpx" : runner);
       if (runner === "claude") {
         expect(config.acpxAgent).toBe("claude");
         expect(config.model).toMatch(/^claude-/);
@@ -766,11 +1526,11 @@ describe("New agent setup", () => {
     await act(async () => root.render(null));
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
   });
-  it("removes the staged credential when hiring fails", async () => {
+  it("removes the staged credential when saving setup fails", async () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
+    api.update.mockRejectedValueOnce(new ApiError("Creation rejected", 422, null));
     await click("Finish setup");
     expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
     expect(container.textContent).toContain("Creation rejected");
@@ -779,11 +1539,41 @@ describe("New agent setup", () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    api.update.mockRejectedValueOnce(new ApiError("Agent quota exceeded", 422, null));
     secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
     await click("Finish setup");
     expect(container.textContent).toContain("Agent quota exceeded");
     expect(container.textContent).toContain("Could not remove an unused setup credential");
+  });
+  it("retains the credential on the setup record when the hire response is lost", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Response lost"));
+    await click("Finish setup");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env.OPENROUTER_API_KEY).toMatchObject({ type: "secret_ref" });
+    await click("Finish setup");
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(2);
+  });
+  it.each(["Save & exit", "Finish setup"])("retains a saved key when the %s PATCH response is lost", async action => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "uncertain-save-key");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      await persist(...args);
+      throw new Error("Save response lost");
+    });
+    await click(action);
+    expect(container.textContent).toContain("Save response lost");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect((await api.get(setupId)).adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();
@@ -793,6 +1583,7 @@ describe("New agent setup", () => {
   });
   it("blocks a disabled runner even when opened through a URL", async () => {
     state.adapters = [
+      { type: "codex_local", loaded: true, disabled: false },
       { type: "paperclip_runner", loaded: true, disabled: true },
     ];
     await render("paperclip_runner");

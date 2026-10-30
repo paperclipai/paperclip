@@ -22,6 +22,13 @@ const meta = {
           "The former in-app UX test routes are represented here as Storybook stories so fixture-backed review surfaces stay out of production routing.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "developer-labs/interaction-labs"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta;
 

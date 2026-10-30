@@ -16,6 +16,17 @@ const receipt: FastResponseHistoryEntry = {
   costStatus: "reported",
 };
 const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "companies/identity",
+        "budgets-costs/cost-reporting",
+        "companies/fast-responses"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Shared production DecisionHistoryTable receives fastResponse=true, matching FastResponseHistory presentation; API loading/error and feature-gate wrapper are outside this story. Related fast-response examples show configuration/test receipts or invocation history with shipped subjects and simulated data. A receipt is an acknowledgement, not task completion; no paid provider or authorization proof."
+    } },
   id: "fast-responses-02-history",
   title: "Getting started and access/Companies and portability/Fast responses/02 History",
   component: DecisionHistoryTable,

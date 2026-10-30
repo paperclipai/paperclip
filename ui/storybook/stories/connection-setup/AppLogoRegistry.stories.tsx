@@ -32,7 +32,15 @@ function Registry() {
 }
 
 const meta = { id: "apps-canonical-icon-registry",
-  title: "Apps, channels, and extensions/Connection setup/Apps/Canonical icon registry", component: Registry, parameters: { layout: "fullscreen" } } satisfies Meta<typeof Registry>;
+  title: "Apps, channels, and extensions/Connection setup/Apps/Canonical icon registry", component: Registry, parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/catalog"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  } } satisfies Meta<typeof Registry>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Light: Story = { globals: { theme: "light" } };

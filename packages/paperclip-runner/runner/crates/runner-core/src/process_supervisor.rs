@@ -454,6 +454,22 @@ impl VerifiedProcessLaunch {
         }
     }
 
+    pub(crate) fn spawn_stdio(
+        &self,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Child, LocalRunnerError> {
+        let inherited = self.inherited_command()?;
+        Command::new(&inherited.program)
+            .args(&inherited.args)
+            .env_clear()
+            .envs(environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|_| LocalRunnerError::invalid("failed to spawn verified stdio MCP server"))
+    }
+
     pub fn with_inherited_runtime_executable(mut self) -> Self {
         self.inherit_runtime_executable = true;
         self
@@ -1018,6 +1034,8 @@ impl SupervisedProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for key in [
+            "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+            "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
             "PATH",
             "PATHEXT",
             "SystemRoot",

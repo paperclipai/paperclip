@@ -1,5 +1,43 @@
 # Everyday Paperclip workflow evals
 
+## Main-server outage qualification
+
+The remote native Codex and Claude `recover-controller` cells default to SIGKILL,
+an observed 125-second offline interval and retirement of the old controller cache. They use
+natural ownership timing. The wrapper emits `controller-outage.json`; the grader
+requires distinct server processes, confirmed HTTP loss, cache retirement and the
+requested interval, in addition to same-run/provider-turn and finalization proof.
+Partial fault receipts remain in the attempt's private `control/` directory on
+failure. A successful task without the fault receipt cannot qualify.
+
+Use `PAPERCLIP_RUNNER_E2E_CONTROLLER_STOP_SIGNAL=SIGTERM` for graceful shutdown,
+`PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=1000` for an explicit one-second
+experiment, or `PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=300000` for the
+five-minute contract. These settings are recorded; compare only matching configurations. The configured
+duration is a minimum hold after confirmed HTTP loss. Shutdown and startup add
+to total recovery time; they do not extend the runner's seven-minute grace or the
+workflow's attempt deadline. `recover-controller` permits no automatic retries.
+
+```sh
+PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS=300000 pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+The credential-free wrapper smoke starts the actual main server and a separate
+disposable Postgres, kills/replaces the server, checks that Postgres never
+restarted, reads existing data, accepts a new HTTP mutation, and confirms cleanup:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/controller-replacement-smoke.ts
+```
+
+It prints a private JSON evidence path. It uses no model and **does not qualify
+active-agent continuity, queued launches, or an A-to-B version upgrade**. See the
+[qualification plan](../../doc/plans/2026-10-22-hot-upgrade-qualification.md) for the
+separate gates and outstanding work. Hosted qualification still requires a valid
+pinned Daytona image and the existing credential/budget admission.
+
+## Workflow suite
+
 This manual suite tests useful work through the production browser, public API,
 native runner, and normal agent instructions. It complements the tightly
 scripted runner contract fixtures. It does not add a scheduled or default paid
@@ -16,7 +54,7 @@ exact execution ID explicitly.
 | Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
 | Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
 | Request an email address | `agentmail-setup` | Enable Chat connectors, ask for an email address, and require a durable AgentMail card for the requesting agent and user. Reload and verify one password field, the direct API-key link, and no access selectors or modal. Decline and verify no connection or repeated request. |
-| Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. |
+| Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. Native Daytona cases keep the controller offline for 125 seconds before restarting. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 | Create and edit a company skill | `create-skill-studio` | Create one skill through the runner, verify its persisted library entry and activity-feed card, open Skill Studio, save an edit, and verify the edit after returning. Local Codex, local ACPX Claude, and warm Daytona cells are explicit. |
 
@@ -46,6 +84,42 @@ for 52 cells total. Hiring/reuse and delegation have one attempt and a
 restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.
+
+The native Codex and ACPX Daytona restart cells require a completed native tool
+receipt while that revision is still running. They keep the controller offline
+for 125 seconds after its health listener stops, then start its replacement.
+Before and after restart each pins
+the same run, normalized session, Runner identity, PID/start time, and active
+sandbox lease. The original receipt prefix must remain unchanged. A run that
+uses this native Codex remote cell also loses the old controller runtime cache
+between stopping and starting the server. The harness moves it into private
+evidence outside product lookup paths and requires an acknowledgement of that
+fault. Postgres and the instance encryption key survive. This checks deployment
+recovery without relying on the old controller journal or local warm-session cache.
+A run that
+ends before either active observation leaves the fault boundary unexercised;
+it cannot pass from the final ZIP alone. The cell no longer exempts an original
+Codex remote run that fails with `process_lost` and is replaced.
+
+Completion requires one original provider turn and control-plane terminal,
+the same native receipt prefix, no failed native tool receipts, and consistent
+results for every stable completed tool identity. Reattached activity can
+redeliver an identical start or tool receipt; changed content or a second
+submission fails. It also requires
+a committed run and successful `workspace_finalize` receipt, and no pending
+workspace operation or recovery. Existing independent ZIP and preserved-download
+checks still apply. These receipt checks do not prove that arbitrary external
+effects with different tool IDs cannot repeat.
+
+`remote-restart-before.json`, `remote-restart-after.json` and
+`remote-restart-final.json` retain receipt identities and hashes. They exclude
+provider text, tool arguments, command output, and raw provider sandbox IDs.
+The suite definition version and harness digest change with this oracle.
+Its deterministic calibration is not a claim that a live Daytona run passed.
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
 
 ```sh
 pnpm test:e2e:runner -- --list --suite everyday-workflows
@@ -260,3 +334,24 @@ consumed response cannot extend that wait.
 `declineGradeEvidence` retain the exact cloned assertion input and original
 checks. Later final-state or cleanup observations cannot overwrite that input.
 Earlier campaign grades remain unchanged when the evaluator is corrected.
+# Upgrade qualification receipts
+
+`PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS` selects frozen installed A/B artifacts
+and an alternating A/B/A sequence. The remote controller-recovery workflow
+executes every requested replacement on the original active run. If that run
+ends before a later fault can be injected, that boundary is unexercised; starting
+a replacement task does not qualify it.
+
+The supervisor reads existing Postgres ownership and Runner-owned checkpoint
+evidence. It records HTTP readiness, natural lease takeover, a new authenticated
+connection, and ingestion past the stopped controller's saved event cursor.
+Final native and workspace receipts establish backlog settlement. No lease
+timestamps are edited. Authentication and processing must be observed within
+the original 420-second grace, including artifact verification and startup.
+
+For a credential-free startup/migration experiment, run
+`controller-replacement-smoke.ts` with the manifest and an explicit disposable
+`PAPERCLIP_TEST_DATABASE_URL`. The driver creates and drops a unique empty
+database; it does not change the supplied database. This smoke qualifies zero
+agent turns. The [qualification record](../../doc/plans/2026-10-22-hot-upgrade-qualification.md)
+is the acceptance ledger for exact artifacts, attempts, and remaining gates.

@@ -1,7 +1,13 @@
-import { assertIsolatedWorkspaceSourceReadAccess, retainIsolatedWorkspaceSourceAccess } from "../execution-workspace-repositories.js";
+import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
+import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
+import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
+import { selectRestoredProjectRepositories, type GitWorkspaceContents } from "../git-workspace-contents.js";
+import { GitCacheRestorationFailure } from "../git-workspace-restoration.js";
+import { deriveRepoNameFromRepoUrl, managedProjectCheckoutName, projectRepositoryIdentity } from "../managed-project-checkout-name.js";
 import { forbidden } from "../../errors.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../managed-repository-checkout.js";
+import { addNestedRepositoryWorktree, isVerifiedNestedRepositoryBase, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree } from "../nested-repository-worktrees.js";
 export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
 import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
@@ -59,6 +65,7 @@ import {
   type RealizedExecutionWorkspace,
 } from "../workspace-runtime.js";
 import { resolvePersistedGitWorkspaceSource } from "../persisted-workspace-source.js";
+import { verifiedRecordedIsolatedRemoteSource } from "../isolated-remote-workspace-source.js";
 import { issueService } from "../issues.js";
 import { projectService } from "../projects.js";
 import {
@@ -422,24 +429,6 @@ export async function resolveWorkspaceAfterLowTrustPreflight<
   };
 }
 
-function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
-  const trimmed = repoUrl?.trim() ?? "";
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
-    const repoName =
-      cleanedPath
-        .split("/")
-        .filter(Boolean)
-        .pop()
-        ?.replace(/\.git$/i, "") ?? "";
-    return repoName || null;
-  } catch {
-    return null;
-  }
-}
-
 type PrepareManagedLocalSource = (sourceCwd: string, targetCwd: string) => Promise<(targetCwd: string) => Promise<void>>;
 
 /**
@@ -513,15 +502,18 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   workspaces: Array<Pick<typeof projectWorkspaces.$inferSelect, "id" | "repoUrl" | "repoRef"> & { cwd?: string | null }>;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   beforePublish?: () => Promise<void>;
-  prepareLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
+  prepareLocalSource?: (sourceCwd: string, projectWorkspaceId: string) => Promise<() => Promise<void>>;
+  restoredContents?: GitWorkspaceContents;
+  sharedBase?: { companyId: string; projectId: string };
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
-  const identity = (url: string) => url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
+  const identity = projectRepositoryIdentity;
   const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
-  const selected = input.workspaces.filter((workspace) => {
+  const selected = selectRestoredProjectRepositories(input.workspaces, input.restoredContents).filter((workspace) => {
     if (!workspace.repoUrl || seen.has(identity(workspace.repoUrl))) return false;
     seen.add(identity(workspace.repoUrl));
     return true;
   });
+  if (input.restoredContents?.checkouts.some(checkout => !selected.some(source => source.id === checkout.source.id))) throw new GitCacheRestorationFailure();
   const root = path.join(input.cwd, PROJECT_REPOSITORIES_DIR);
   if (selected.length === 0 && !(await fs.lstat(root).catch(() => null))) return [];
   await fs.mkdir(root, { recursive: true });
@@ -532,11 +524,16 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   const results = [];
   for (const workspace of selected) {
     const repoUrl = workspace.repoUrl!;
-    const name = (deriveRepoNameFromRepoUrl(repoUrl) ?? "repo").replace(/[^a-zA-Z0-9_-]/g, "-");
-    const key = `${name}-${createHash("sha256").update(JSON.stringify([workspace.id, identity(repoUrl), workspace.repoRef, workspace.cwd ?? null])).digest("hex").slice(0, 12)}`;
+    const key = managedProjectCheckoutName({ id: workspace.id, repoUrl, repoRef: workspace.repoRef, cwd: workspace.cwd });
     const cwd = path.join(root, key);
     const existing = await fs.lstat(cwd).catch(() => null);
+    if (!existing && input.restoredContents?.checkouts.some(checkout => checkout.name === key)) throw new GitCacheRestorationFailure();
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) throw new Error("Invalid project repository checkout path");
+    const baseCandidates = input.sharedBase ? nestedRepositoryBaseCandidates({ ...input.sharedBase, repoUrl }) : null;
+    const linked = existing ? await readLinkedNestedCheckout(cwd, baseCandidates ?? []).catch(() => {
+      throw new Error("Invalid project repository checkout path");
+    }) : null;
+    if (linked && !await isVerifiedNestedRepositoryBase(linked.base, baseCandidates!, repoUrl)) throw new Error("Invalid project repository checkout path");
     const configuredLocalSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? workspace.cwd : null;
     const localSource = configuredLocalSource
       && await fs.stat(configuredLocalSource).then((entry) => entry.isDirectory()).catch(() => false)
@@ -544,13 +541,22 @@ export async function prepareProjectRepositoryWorkspaces(input: {
     const urlLocalSource = localRepositoryPath(repoUrl);
     const sourceToAuthorize = localSource ?? urlLocalSource;
     const recheckLocalSource = sourceToAuthorize
-      ? await input.prepareLocalSource?.(sourceToAuthorize) : undefined;
+      ? await input.prepareLocalSource?.(sourceToAuthorize, workspace.id) : undefined;
     const beforePublish = async () => {
       await recheckLocalSource?.();
       await input.beforePublish?.();
     };
-    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth, beforePublish });
-    if (result.warning) throw new Error(result.warning);
+    if (!linked) {
+      const shared = input.sharedBase && !existing && !localSource
+        ? await ensureManagedProjectWorkspace({ ...input.sharedBase, repoUrl, resolveGitAuth: input.resolveGitAuth }) : null;
+      if (shared && !shared.warning && await isVerifiedNestedRepositoryBase(shared.cwd, baseCandidates!, repoUrl)) {
+        await addNestedRepositoryWorktree({ base: shared.cwd, cwd, repoUrl, repoRef: workspace.repoRef,
+          resolveGitAuth: input.resolveGitAuth, beforeAdd: beforePublish });
+      } else {
+        const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth, beforePublish });
+        if (result.warning) throw new Error(result.warning);
+      }
+    }
     await beforePublish();
     results.push({ workspaceId: workspace.id, cwd, repoUrl, repoRef: workspace.repoRef });
   }
@@ -559,8 +565,10 @@ export async function prepareProjectRepositoryWorkspaces(input: {
   for (const entry of await fs.readdir(root)) {
     if (active.has(entry) || entry.startsWith("task-repo-") || entry.includes(".clone-")) continue;
     const retained = path.join(input.cwd, ".paperclip-runtime", "detached-repositories", randomUUID());
+    const linked = await readLinkedNestedCheckout(path.join(root, entry)).catch(() => null);
     await fs.mkdir(path.dirname(retained), { recursive: true });
     await fs.rename(path.join(root, entry), retained);
+    if (linked) await repairMovedNestedRepositoryWorktree(linked.base, retained);
   }
   return results;
 }
@@ -1354,6 +1362,8 @@ export type ResolvedWorkspaceForRun = {
    * workspace only, exactly as before.
    */
   additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  /** Authorized project IDs for plugin-owned storage; no Core filesystem staging. */
+  runnerTaskProjectIds?: string[];
   /**
    * Structured record of every referenced project that the run dropped or failed, paired with the
    * layer that dropped it. Run preparation reads this to emit the requested-vs-synced observability
@@ -1365,7 +1375,7 @@ export type ResolvedWorkspaceForRun = {
 /** The anchor workspace shape, before the additional referenced workspaces are attached. */
 type ResolvedAnchorWorkspaceForRun = Omit<
   ResolvedWorkspaceForRun,
-  "additionalWorkspaces" | "referencedProjectFailures"
+  "additionalWorkspaces" | "referencedProjectFailures" | "runnerTaskProjectIds"
 >;
 
 /**
@@ -2790,6 +2800,7 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  delete workspaceConfig.projectConfigRevisionAt;
   // This row is runtime state, not requested configuration. It is absent
   // before the first reusable run is realized and present on the next turn;
   // fingerprinting that transition would rotate the native session exactly
@@ -3268,7 +3279,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     issueId: string | null,
     runId: string | null,
   ): PrepareManagedLocalSource {
-    return async (sourceCwd) => {
+    return async (sourceCwd, targetCwd) => {
       const [run] = runId
         ? await db.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, runId),
@@ -3289,21 +3300,38 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         runId: run.id,
         onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId,
       };
-      const captured = await assertIsolatedWorkspaceSourceReadAccess(db, {
-        companyId: agent.companyId,
-        sourceCwd,
-        actor,
-        copyKind: "repository",
-      });
-      return targetCwd => retainIsolatedWorkspaceSourceAccess(db, {
-        companyId: agent.companyId,
-        sourceCwd,
-        targetCwd,
-        actor,
-        captured,
-        issueId: issueId ?? undefined,
-        copyKind: "repository",
-      });
+      if (!issueId) throw forbidden("Local repository source requires a current task");
+      const sourceIdentity = await fs.realpath(sourceCwd);
+      const targetIdentity = await canonicalRepositoryRoot(targetCwd);
+      const selected = await assertTaskWorkspaceExecutionAccess(db, actor, agent.companyId, { issueId });
+      const [sourceConfiguration] = selected.task.projectWorkspaceId
+        ? await db.select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd,
+            repoUrl: projectWorkspaces.repoUrl, repoRef: projectWorkspaces.repoRef })
+          .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, selected.task.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, agent.companyId)))
+        : [];
+      const validate = async () => {
+        if (await fs.realpath(sourceCwd) !== sourceIdentity
+          || await canonicalRepositoryRoot(targetCwd) !== targetIdentity) {
+          throw forbidden("Local repository copy identity changed during preparation");
+        }
+        const current = await assertTaskWorkspaceExecutionAccess(db, actor, agent.companyId, { issueId });
+        if (current.task.projectWorkspaceId !== selected.task.projectWorkspaceId
+          || current.task.projectId !== selected.task.projectId) {
+          throw forbidden("Local repository source configuration changed during preparation");
+        }
+        if (sourceConfiguration) {
+          const [source] = await db.select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd,
+            repoUrl: projectWorkspaces.repoUrl, repoRef: projectWorkspaces.repoRef }).from(projectWorkspaces)
+            .where(and(eq(projectWorkspaces.id, sourceConfiguration.id), eq(projectWorkspaces.companyId, agent.companyId)));
+          if (!source || source.cwd !== sourceConfiguration.cwd || source.repoUrl !== sourceConfiguration.repoUrl
+            || source.repoRef !== sourceConfiguration.repoRef) {
+            throw forbidden("Local repository source configuration changed during preparation");
+          }
+        }
+      };
+      await validate();
+      return validate;
     };
   }
 
@@ -3318,6 +3346,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     immutableNativeBinding: boolean;
   }): Promise<ResolvedAnchorWorkspaceForRun> {
     const { workspace, agent } = input;
+    if (workspace.providerType === "plugin") {
+      return { cwd: `/workspaces/${workspace.id}`, source: "task_session" as const,
+        projectId: workspace.projectId, workspaceId: workspace.projectWorkspaceId,
+        repoUrl: workspace.repoUrl, repoRef: workspace.baseRef, workspaceHints: [], warnings: [],
+        baseCwdFallback: false, materializationFailures: [] };
+    }
     // Configuration preparation may have awaited credentials and skills since
     // issueRef was read. Match the ordinary anchor resolver's fresh selection
     // check; only an already-admitted native input owns immutable source scope.
@@ -3339,6 +3373,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoName: deriveRepoNameFromRepoUrl(workspace.repoUrl),
     }) : null;
     const candidateBaseCwds = [
+      await verifiedRecordedIsolatedRemoteSource(workspace),
       managedBase,
       managedBase && workspace.repoUrl
         ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
@@ -3391,7 +3426,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null; executionEnvironmentDriver?: string | null; storageProviderPluginId?: string | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3460,6 +3495,24 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
+    if (opts?.executionEnvironmentDriver === "plugin" && agent.adapterType === "paperclip_runner") {
+      if (workspaceProjectId) {
+        const project = await db.select({ id: projects.id }).from(projects).where(and(
+          eq(projects.companyId, agent.companyId), eq(projects.id, workspaceProjectId),
+        )).then(rows => rows[0] ?? null);
+        if (!project) throw new WorkspaceValidationFailure("The selected plugin project is unavailable.", { reason: "plugin_project_unavailable" });
+      }
+      if (configuredSourceId && projectWorkspaceRows.length === 0) {
+        throw new WorkspaceValidationFailure("The selected project workspace is unavailable.", { reason: "configured_workspace_unavailable" });
+      }
+      const selected = projectWorkspaceRows[0];
+      // This is a logical scope. Preparation resolves the execution-host path.
+      return { cwd: `/workspaces/${selected?.id ?? issueId ?? agent.id}`, source: workspaceProjectId ? "project_primary" : issueId ? "task_session" : "agent_home",
+        projectId: workspaceProjectId ?? null, workspaceId: selected?.id ?? null,
+        repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
+        workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [] };
+    }
+
     if (projectWorkspaceRows.length > 0 || configuredSourceId) {
       const preferredWorkspace = preferredProjectWorkspaceId
         ? (projectWorkspaceRows.find(
@@ -3473,7 +3526,17 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
+      const [sourceProject] = projectWorkspaceRows.length ? await db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
+        .where(and(eq(projects.id, workspaceProjectId!), eq(projects.companyId, agent.companyId))) : [];
+      const storageProviderPluginId = opts?.storageProviderPluginId !== undefined ? opts.storageProviderPluginId : sourceProject?.policy?.storageProviderPluginId ??
+        (sourceProject ? (await effectiveProjectWorkspacePolicy(db, agent.companyId, sourceProject.policy,
+          projectWorkspaceRows.some(workspace => Boolean(workspace.repoUrl))))?.storageProviderPluginId : null);
       for (const workspace of projectWorkspaceRows) {
+        if (storageProviderPluginId) {
+          return { cwd: `/workspaces/${workspace.id}`, source: "project_primary" as const,
+            projectId: workspace.projectId, workspaceId: workspace.id, repoUrl: workspace.repoUrl,
+            repoRef: workspace.repoRef, workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [] };
+        }
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
         try {
@@ -3636,6 +3699,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       useProjectWorkspace?: boolean | null;
       configuredCwd?: string | null;
       executionEnvironmentDriver?: string | null;
+      storageProviderPluginId?: string | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },
   ): Promise<ResolvedWorkspaceForRun> {
@@ -3662,6 +3726,21 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const responsibleUserId = readNonEmptyString(context.responsibleUserId)
       ?? readNonEmptyString(context.responsible_user_id);
+    const referencedOptions: ResolveRunReferencedProjectsOptions = {
+      companyId: agent.companyId,
+      actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_key",
+        runId: readNonEmptyString(context.executionIdentityRunId),
+        onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
+      issues: issueService(db), projects: projectService(db), access: authorizationService(db),
+    };
+    if (executionEnvironmentDriver === "plugin" && agent.adapterType === "paperclip_runner" &&
+        issueId && isMultiProjectWorkspaceSyncRemoteEnabled()) {
+      const referenced = await resolveRunReferencedProjects(issueId, anchor.projectId, referencedOptions);
+      return { ...anchor, additionalWorkspaces: [],
+        runnerTaskProjectIds: [anchor.projectId, ...referenced.additional.map(project => project.projectId)]
+          .filter((id): id is string => id !== null),
+        referencedProjectFailures: referenced.failures, warnings: [...anchor.warnings, ...referenced.warnings] };
+    }
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
       heartbeatRunId: readNonEmptyString(context.executionIdentityRunId),
@@ -3678,18 +3757,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           executionEnvironmentDriver,
         ),
         remoteReferencedSyncEnabled: isMultiProjectWorkspaceSyncRemoteEnabled(),
-        companyId: agent.companyId,
-        actor: {
-          type: "agent",
-          agentId: agent.id,
-          companyId: agent.companyId,
-          source: "agent_key",
-          runId: readNonEmptyString(context.executionIdentityRunId),
-          onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId,
-        },
-        issues: issueService(db),
-        projects: projectService(db),
-        access: authorizationService(db),
+        ...referencedOptions,
         resolveProjectWorkspace: (project) =>
           resolveAdditionalProjectWorkspace(
             { companyId: agent.companyId, project },

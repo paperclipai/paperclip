@@ -1,7 +1,11 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
+import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
-import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { fenceActiveCompanyAgentStopsInTransaction } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -26,7 +30,6 @@ import {
   rekeyCompanyIssueIdentifiers,
 } from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
-import { heartbeatService } from "./heartbeat.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
@@ -46,25 +49,24 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
   const environmentsSvc = environmentService(db);
-  const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
   async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
-    const pausedAgentRows = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, id), notInArray(agents.status, ["paused", "terminated", "pending_approval"])));
+    const [agentCount] = await tx.select({ value: count() }).from(agents).where(and(eq(agents.companyId, id), notInArray(agents.status, ["paused", "terminated", "pending_approval"])));
 
-    const activeRunIds = await tx
-      .select({ id: heartbeatRuns.id })
+    const [runCount] = await tx
+      .select({ value: count() })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, id),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
-      ))
-      .then((rows) => rows.map((row) => row.id));
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      ));
 
+    await notifyChatInboundWakeNotices(tx, { companyId: id });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -79,18 +81,16 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         isNull(agentWakeupRequests.runId),
       ));
 
-    return { agentsPaused: pausedAgentRows.length, activeRunIds };
+    return { agentsPauseRequested: agentCount.value, runsCancellationRequested: runCount.value };
   }
 
   async function finalizeArchive(
     id: string,
     actor: CompanyActivityActor,
-    cascade: { agentsPaused: number; activeRunIds: string[] },
+    cascade: { agentsPauseRequested: number; runsCancellationRequested: number },
   ) {
-    for (const runId of cascade.activeRunIds) {
-      await heartbeat.cancelRun(runId, "Cancelled because the company was archived");
-    }
-
+    // The committed company status blocks dispatch immediately. Lifecycle
+    // projection owns provider termination, including paused agents with work.
     await logActivity(db, {
       companyId: id,
       actorType: actor.actorType,
@@ -101,8 +101,8 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       entityType: "company",
       entityId: id,
       details: {
-        agentsPaused: cascade.agentsPaused,
-        runsCancelled: cascade.activeRunIds.length,
+        agentsPauseRequested: cascade.agentsPauseRequested,
+        runsCancellationRequested: cascade.runsCancellationRequested,
       },
     });
   }
@@ -302,25 +302,28 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
+        if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        if (data.budgetMonthlyCents !== undefined) {
-          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
-        }
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx
-            .select({ id: assets.id, companyId: assets.companyId })
+            .select()
             .from(assets)
             .where(eq(assets.id, logoAssetId))
             .then((rows) => rows[0] ?? null);
           if (!nextLogoAsset) throw notFound("Logo asset not found");
+          if (await isRunnerApiResponseAsset(tx, nextLogoAsset)) {
+            throw unprocessable("API response snapshots cannot be company logos; upload a logo asset");
+          }
           if (nextLogoAsset.companyId !== existing.id) {
             throw unprocessable("Logo asset must belong to the same company");
           }
@@ -328,6 +331,15 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
+        if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
+        }
         const updated = await tx
           .update(companies)
           .set({
@@ -367,6 +379,9 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         }
 
         const archiveCascade = willArchive ? await applyArchiveCascadeInTx(tx, id) : null;
+        if (companyPatch.status !== existing.status && (companyPatch.status === "paused" || companyPatch.status === "archived")) {
+          await fenceActiveCompanyAgentStopsInTransaction(tx as unknown as Db, id, companyPatch.status);
+        }
 
         if (logoAssetId === null) {
           await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
@@ -414,9 +429,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         };
       });
       if (!result) return null;
-      await createAgentLifecycle(db).reconcilePolicyHolds(id);
       publishAccountingActivities(id, budgetPublications);
-      if (data.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, id);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
       // could throw: a Cloud-pinned primary company that crossed the
       // archived boundary (either direction) rings the harness so the
@@ -468,12 +481,20 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .select({ status: companies.status })
           .from(companies)
           .where(eq(companies.id, id))
+          .for("no key update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)
             .set({ status: "archived", updatedAt: new Date() })
@@ -481,6 +502,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         }
 
         const cascade = wasAlreadyArchived ? null : await applyArchiveCascadeInTx(tx, id);
+        if (!wasAlreadyArchived) await fenceActiveCompanyAgentStopsInTransaction(tx as unknown as Db, id, "archived");
 
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
@@ -493,7 +515,6 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         };
       });
       if (!result) return null;
-      await createAgentLifecycle(db).reconcilePolicyHolds(id);
 
       // Same doorbell rule as update(): the archive is committed, so ring
       // before finalization, which can throw without undoing it.

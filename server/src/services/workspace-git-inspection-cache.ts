@@ -19,7 +19,7 @@ export function createWorkspaceGitInspectionCache<T>(inspect: (workspace: Execut
     const entry = { expiresAt: Number.POSITIVE_INFINITY, promise: Promise.resolve().then(() => inspect(workspace)) };
     entries.set(key, entry);
     entry.promise = entry.promise.then((result) => {
-      entry.expiresAt = Date.now() + 5_000;
+      entry.expiresAt = Date.now() + 30_000;
       return result;
     }, (error) => {
       if (entries.get(key) === entry) entries.delete(key);

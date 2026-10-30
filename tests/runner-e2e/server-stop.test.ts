@@ -341,3 +341,35 @@ it.skipIf(process.platform === 'win32')('does not re-signal a server after its g
     try { process.kill(-pid, 'SIGKILL'); } catch { /* already stopped */ }
   }
 });
+
+it.skipIf(process.platform === "win32")("crashes the owned controller and detached descendant without graceful drain or touching a neighboring process", async () => {
+  const { root } = await fixture();
+  const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
+  await writeFile(descendantEntry, `
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'descendant drained'));
+    process.send('ready'); setInterval(() => {}, 1000);
+  `);
+  const { entry } = await fixture(`
+    const child = require('node:child_process').fork(${JSON.stringify(descendantEntry)}, [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'controller drained'));
+    child.once('message', () => process.send({ ready: true, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = start(entry), controllerReady = once(controller, "message");
+  const { stop } = stopper();
+  await stop.watch(controller);
+  try {
+    const neighborFixture = await fixture(), neighbor = start(neighborFixture.entry);
+    await once(neighbor, "message");
+    const [ready] = await controllerReady;
+    await stop.crashForRestart(controller);
+    expect(controller.signalCode).toBe("SIGKILL");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const table = await readProcessTable();
+    expect(table).not.toBeNull();
+    expect(table!.some(row => row.pid === ready.descendantPid && !row.state?.startsWith("Z"))).toBe(false);
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+    await stop.stopAll();
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+  } finally { await stop.stopAll(); }
+});

@@ -5,6 +5,11 @@ import { idleWorkSnapshot } from "./task-admission.js";
 
 export type IdleLocalWork = "none" | "present" | "unknown";
 const spoolDirectories = new Set<string>();
+const localWorkProbes = new Set<() => IdleLocalWork>();
+export function registerIdleLocalWorkProbe(probe: () => IdleLocalWork): () => void {
+  localWorkProbes.add(probe);
+  return () => { localWorkProbes.delete(probe); };
+}
 export function registerIdleSpoolDirectory(directory: string): void { spoolDirectories.add(path.resolve(directory)); }
 export const idleAccountingSpoolPath = () => path.join(resolvePaperclipInstanceRoot(), "accounting-receipts");
 export const idleOrphanSpoolPath = () => process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR ??
@@ -61,6 +66,11 @@ export async function readIdleLocalWork(options: { backupCheckpoint?: boolean } 
   // This exemption belongs only to a scan which will finish a new backup
   // under the same admission hold before it can return an empty report.
   if ((scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
+  try {
+    const local = [...localWorkProbes].map(probe => probe());
+    if (local.includes("unknown")) return "unknown";
+    if (local.includes("present")) return "present";
+  } catch { return "unknown"; }
   const directories = new Set([...spoolDirectories, idleAccountingSpoolPath(), idleOrphanSpoolPath()]);
   const results = await Promise.all([
     ...[...directories].map(inspectIdleSpool),

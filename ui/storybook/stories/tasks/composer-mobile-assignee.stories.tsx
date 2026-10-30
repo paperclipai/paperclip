@@ -9,6 +9,15 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "The same assignee, model, and effort picker shown on desktop, in its responsive mobile dialog. Agent capsule avatars use the shared persona palettes." } },
+    paperclip: {
+      "capabilities": [
+        "tasks/create",
+        "runs-adapters/availability"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   args: { agentId: "codex", mobile: true, compact: true, initialPanel: "agents" },
 } satisfies Meta<typeof ComposerRunSettingsLiveStory>;

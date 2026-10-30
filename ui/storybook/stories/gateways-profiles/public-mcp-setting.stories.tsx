@@ -5,7 +5,17 @@ import { installPublicMcpFixture } from "../../fixtures/publicMcp";
 const meta = {
   id: "assistant-connections-experimental-setting",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Assistant connections/Experimental setting", component: InstanceExperimentalSettings,
-  parameters: { layout: "padded", initialEntries: ["/PAP/company/settings/instance/experimental"], docs: { description: { component: "The production Experimental page, including surrounding settings. Changes are local to this story." } } },
+  parameters: { layout: "padded", initialEntries: ["/PAP/company/settings/instance/experimental"], docs: { description: { component: "The production Experimental page, including surrounding settings. Changes are local to this story." } },
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/client-connect",
+        "instance-operations/configuration"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "ToggleOnAndOff, ManagedByCloud and SaveFailedRollsBack mount production experimental settings with simulated saves. Only the assistant-connection flag is represented, not every instance setting. The recipe distinguishes process liveness from authenticated database readiness; these examples do not exercise that operator API boundary."
+    },
+  },
   beforeEach: ({ parameters }) => installPublicMcpFixture(parameters.fixture),
 } satisfies Meta<typeof InstanceExperimentalSettings>;
 export default meta;

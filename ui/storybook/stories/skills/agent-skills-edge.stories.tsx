@@ -194,7 +194,15 @@ function EdgeState({ agent, snapshot }: { agent: Agent; snapshot: AgentSkillSnap
 const meta: Meta = {
   id: "qa-agent-skills-edge-states",
   title: "Agents and reusable capabilities/Skills and Skill Studio/QA / Agent skills edge states",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "skills/policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

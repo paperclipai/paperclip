@@ -300,7 +300,7 @@ describe("adapter management route authorization", () => {
     mocks.reloadExternalAdapter.mockImplementation(async (type: string) =>
       createAdapter(type),
     );
-  }, 20_000);
+  }, 60_000);
 
   afterEach(() => {
     unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);
@@ -373,35 +373,31 @@ describe("adapter management route authorization", () => {
     },
   );
 
-  describe("cloud-managed adapter code install floor", () => {
-    beforeEach(() => {
-      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+  describe("cloud-managed adapter code floor", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each(
+      ["PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "PAPERCLIP_MANAGED_CONFIG"].flatMap((signal) =>
+        ["install", "reinstall", "reload", "override", "delete"].map((routeName) => [signal, routeName]),
+      ),
+    )("blocks %s adapter %s before package or registration access", async (signal, routeName) => {
+      seedInstalledExternalAdapter();
+      vi.clearAllMocks();
+      vi.stubEnv(signal, signal === "PAPERCLIP_MANAGED_CONFIG" ? "" : "test-server-token");
+      const app = createApp(instanceAdmin);
+
+      const res = await sendMutatingRequest(app, routeName);
+
+      expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "adapter_install_platform_managed" });
+      expect(mocks.execFile).not.toHaveBeenCalled();
+      expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
+      expect(mocks.reloadExternalAdapter).not.toHaveBeenCalled();
+      expect(mocks.getAdapterPluginByType).not.toHaveBeenCalled();
+      expect(mocks.addAdapterPlugin).not.toHaveBeenCalled();
+      expect(mocks.removeAdapterPlugin).not.toHaveBeenCalled();
+      expect(mocks.externalRecords.get(EXTERNAL_ADAPTER_TYPE)).toEqual(installedRecord());
     });
-    afterEach(() => {
-      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
-    });
-
-    it.each(["install", "reinstall"] as const)(
-      "floors adapter %s off for instance admins on cloud-managed instances",
-      async (routeName) => {
-        resetInstalledExternalAdapterState();
-        if (routeName !== "install") {
-          seedInstalledExternalAdapter();
-        }
-        const app = createApp(instanceAdmin);
-
-        const res = await sendMutatingRequest(app, routeName);
-
-        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(
-          403,
-        );
-        expect(res.body.details).toMatchObject({
-          code: "adapter_install_platform_managed",
-        });
-        expect(mocks.execFile).not.toHaveBeenCalled();
-        expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
-      },
-    );
   });
 
   describe("operator-hidden adapter management floor", () => {

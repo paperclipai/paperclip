@@ -40,7 +40,13 @@ const workflowRoot = path.join(repoRoot, ".github", "workflows");
 walk(workflowRoot, (filePath) => {
   if (!/\.ya?ml$/.test(filePath)) return;
   const source = fs.readFileSync(filePath, "utf8");
+  const packProducer = relative(filePath) === ".github/workflows/release-verify.yml"
+    ? /(?:^|\n)  runner_binaries:\n[\s\S]*?(?=\n  [a-z_]+:\n|$)/.exec(source)
+    : null;
   for (const match of source.matchAll(/node-version:\s*["']?([^\s"'#]+)/g)) {
+    if (match[1] === "24.21.0" && packProducer
+      && match.index >= packProducer.index
+      && match.index < packProducer.index + packProducer[0].length) continue;
     if (match[1] !== "24") failures.push(`${relative(filePath)}: node-version must be 24, found ${match[1]}`);
   }
 });

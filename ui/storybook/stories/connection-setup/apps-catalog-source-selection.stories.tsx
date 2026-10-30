@@ -9,6 +9,15 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Focused chip navigation: Paperclip, Composio, Arcade, Installed, and All. Connected accounts remain above the paginated catalog. Uses shipped connection cards, public catalogs with native duplicates omitted, and sample saved accounts. No account authorization or mutations." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/catalog"
+      ],
+      "status": "proposed",
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Local catalog composition uses shipped cards and filters; retains design exploration purpose, not acceptance of the Apps route."
+    },
   },
   argTypes: {
     initialSource: { control: "select", options: ["paperclip", "composio", "arcade", "installed", "all"] },

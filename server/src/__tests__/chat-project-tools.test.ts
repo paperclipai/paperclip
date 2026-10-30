@@ -1,8 +1,9 @@
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { projectService } from "../services/projects.js";
 import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
@@ -94,6 +95,46 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await documentService(server.db).getIssueDocumentByKey(task.id, "plan"))?.body).toBe(input.initialPlan);
     expect((await documentService(server.db).getIssueDocumentByKey(f.issueId, "plan"))?.body).toBe("Full discussion plan");
     await expect(call(f, "create_task", { ...input, title: "Different" })).rejects.toThrow(/idempotency/);
+  });
+
+  it.each([true, false])("defaults raw API creation only for a chat-bound run: %s", async (conversation) => {
+    const f = await server.fixture({ conversation, disableWakeOnDemand: true });
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    for (const assignment of [{}, { assigneeAgentId: null }]) {
+      const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/issues`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Requested task ${randomUUID()}`, projectId: f.projectId, status: "todo", ...assignment }),
+      });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(201);
+      expect(result).toMatchObject({ assigneeAgentId: conversation ? f.agentId : null, assigneeUserId: null });
+    }
+  });
+
+  it.each(["native", "mcp"])("preserves an explicit alternate agent or person through %s creation", async (transport) => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [otherAgent] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Requested editor", status: "idle", adapterType: "process" }).returning();
+    for (const assignment of [{ assigneeActorId: otherAgent.id }, { assigneeUserId: f.responsibleUserId }]) {
+      const args = { title: `Explicitly assigned task ${randomUUID()}`, projectId: f.projectId, idempotencyKey: randomUUID(), ...assignment };
+      const result = transport === "native" ? await call(f, "create_task", args) as any : await callProjectTool({
+        name: "create_task", arguments: args, apiUrl: server.apiUrl,
+        token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!,
+        companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true,
+      });
+      const taskId = transport === "native" ? result.task.id : result.id;
+      const [task] = await server.db.select().from(issues).where(eq(issues.id, taskId));
+      expect(task).toMatchObject({ assigneeAgentId: assignment.assigneeActorId ?? null, assigneeUserId: assignment.assigneeUserId ?? null });
+    }
+  });
+
+  it("persists required output review supplied through MCP creation", async () => {
+    const f = await server.fixture({ conversation: true });
+    const requirement = { version: 1, deliverables: [{ key: "copy", label: "Launch copy" }] };
+    const result = await callProjectTool({ name: "create_task", arguments: {
+      title: "MCP review gate", projectId: f.projectId, idempotencyKey: "mcp-quality-gate", requiredQualityReview: requirement,
+    }, apiUrl: server.apiUrl, token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true }) as any;
+    const [task] = await server.db.select().from(issues).where(eq(issues.id, result.id));
+    expect(task.executionPolicy).toMatchObject({ requiredQualityReview: requirement });
   });
 
   it("rejects creation, child helpers, and reparenting under a chat, while retaining legacy children", async () => {
@@ -357,6 +398,57 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(feed.filter(event => event.action === "project.created")).toHaveLength(1);
     expect(feed.find(event => event.action === "project.created")).toMatchObject({ entityId: project.id, runId: f.runId, details: { sourceIssueId: f.issueId } });
     await expect(call(f, "create_project", { ...input, name: "Changed" })).rejects.toThrow(/different inputs/);
+  });
+
+  it("recovers a committed project after losing its HTTP response without repeating the effect", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const request = { tool: "create_project", arguments: { name: "Surviving project", idempotencyKey: "lost-response" }, callId: randomUUID() };
+    const realFetch = globalThis.fetch;
+    const lostResponse = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const response = await realFetch(url, options);
+      if (response.status === 201 && String(url).endsWith(`/companies/${f.companyId}/projects`)) {
+        await response.arrayBuffer();
+        throw new Error("Controller lost the committed response");
+      }
+      return response;
+    });
+    try {
+      await expect(f.authority.execute(request)).rejects.toThrow(/lost the committed response/);
+    } finally { lostResponse.mockRestore(); }
+    const committed = await f.snapshot();
+    const created = committed.projects.find(project => project.name === request.arguments.name)!;
+    expect(created).toBeDefined();
+    const recovered = await Promise.all(Array.from({ length: 4 }, () => new PaperclipRunnerToolAuthority(server.db, f).recover(request)));
+    expect(recovered).toEqual(Array.from({ length: 4 }, () => ({ result: expect.objectContaining({ id: created.id }) })));
+    await expect(new PaperclipRunnerToolAuthority(server.db, f).recover({ ...request, arguments: { ...request.arguments, name: "Changed" } })).rejects.toThrow(/different inputs/);
+    const after = await f.snapshot();
+    expect(after.projects.map(project => project.id).sort()).toEqual(committed.projects.map(project => project.id).sort());
+    expect(after.activity.filter(event => event.action === "project.created")).toHaveLength(1);
+    const foreign = await server.fixture({ disableWakeOnDemand: true });
+    expect(await foreign.authority.recover(request)).toBeNull();
+    await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(new PaperclipRunnerToolAuthority(server.db, f).recover(request)).rejects.toThrow();
+  });
+
+  it("holds an unknown project mutation without creating a project or audit event", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const before = await f.snapshot();
+    const request = { tool: "create_project", arguments: { name: "Uncertain project", idempotencyKey: "unknown" }, callId: randomUUID() };
+    expect(await f.authority.recover(request)).toBeNull();
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/projects`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Receipt-Only": "true" },
+      body: JSON.stringify(request.arguments),
+    });
+    expect(response.status).toBe(204);
+    const missingKey = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/projects`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Receipt-Only": "true" },
+      body: JSON.stringify({ name: "Missing receipt key" }),
+    });
+    expect(missingKey.status).toBe(422);
+    const after = await f.snapshot();
+    expect(after.projects.map(project => project.id).sort()).toEqual(before.projects.map(project => project.id).sort());
+    expect(after.activity.filter(event => event.action === "project.created")).toEqual([]);
   });
 
   it("includes an explicit workspace repository in the committed project card", async () => {

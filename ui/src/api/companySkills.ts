@@ -38,6 +38,7 @@ import type {
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
+  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -66,7 +67,7 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
     ),
   versions: (companyId: string, skillId: string) =>
-    api.get<CompanySkillVersion[]>(
+    api.get<CompanySkillVersionSummary[]>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions`,
     ),
   version: (companyId: string, skillId: string, versionId: string) =>

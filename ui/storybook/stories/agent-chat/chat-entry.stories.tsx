@@ -8,7 +8,19 @@ const meta = {
   component: AgentChatPrototype,
   parameters: { layout: "fullscreen", docs: { description: { component:
     "Historical chat-entry exploration: the local sidebar and landing composition keeps a first-created-agent default. The current product uses the personal primary-agent preference and recent-conversation rules. Shared layout, picker and conversation components remain useful here, but these entry/default rules are retained design history. Selecting and sending use in-memory fixtures; no real agents run. Use Primary Agent journeys for current default-selection examples."
-  } } },
+  } },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history"
+      ],
+      "status": "historical",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Retained first-created-agent sidebar/landing design predates personal primary-agent selection. Shared production conversation components remain useful.",
+      "replacement": "ui/storybook/stories/agents/primary-agent/05-chat.stories.tsx"
+    },
+  },
   args: { entryScenario: "returning", scenario: "returning", contextInitiallyOpen: false },
   render: (args) => <AgentChatPrototype key={JSON.stringify(args)} {...args} />,
 } satisfies Meta<typeof AgentChatPrototype>;

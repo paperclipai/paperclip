@@ -36,7 +36,12 @@ const COMMAND_JWT_RE =
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
 export function looksLikeCredentialJwt(value: string): boolean {
   const segments = value.split(".");
-  if (![3, 5].includes(segments.length) || segments.some((part) => !/^[A-Za-z0-9_-]{8,}$/.test(part))) return false;
+  if (![3, 5].includes(segments.length)) return false;
+  if (segments.some((part, index) => {
+    // Compact JWE direct encryption has no encrypted-key value.
+    if (segments.length === 5 && index === 1 && part === "") return false;
+    return !/^[A-Za-z0-9_-]+$/.test(part);
+  })) return false;
   if (segments[0].startsWith("eyJ")) return true;
   try {
     const header = JSON.parse(atob(segments[0].replace(/-/g, "+").replace(/_/g, "/")));

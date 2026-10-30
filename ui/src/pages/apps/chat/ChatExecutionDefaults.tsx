@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ChatExecutionDefaults as Defaults, TaskWorkspaceSelection } from "@paperclipai/shared";
 import { projectsApi } from "@/api/projects";
@@ -25,13 +25,19 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const [draft, setDraft] = useState<Defaults | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [savedFrom, setSavedFrom] = useState<string | null>(null);
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
   const workspaces = useQuery({
     queryKey: ["channel-workspace-choices", companyId],
     queryFn: () => executionWorkspacesApi.listSummaries(companyId, { selectableForTask: true }),
   });
   const current = draft ?? value ?? {};
+  const valueKey = JSON.stringify(value ?? {});
+  const saved = savedFrom !== null;
+  // Keep the accepted selections until the parent publishes refreshed defaults.
+  useEffect(() => {
+    if (savedFrom !== null && savedFrom !== valueKey) setDraft(null);
+  }, [savedFrom, valueKey]);
   const projectValue = current.projectId === undefined ? "inherit" : current.projectId ?? "none";
   const workspaceValue = selectionKey(current.workspace);
   const choices = new Map<string, TaskWorkspaceSelection>();
@@ -46,13 +52,13 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   for (const workspace of workspaces.data ?? []) {
     choices.set(`existing:${workspace.id}`, { kind: "existing", workspaceId: workspace.id });
   }
-  const dirty = JSON.stringify(current) !== JSON.stringify(value ?? {});
-  const change = (next: Defaults) => { setDraft(next); setSaved(false); setError(null); };
+  const dirty = !saved && JSON.stringify(current) !== valueKey;
+  const change = (next: Defaults) => { setDraft(next); setSavedFrom(null); setError(null); };
   return <form className="space-y-3" aria-labelledby={`${id}-title`} onSubmit={async (event) => {
     event.preventDefault();
     if (pending || !dirty) return;
-    setPending(true); setError(null); setSaved(false);
-    try { await onSave(Object.keys(current).length ? current : null); setDraft(null); setSaved(true); }
+    setPending(true); setError(null); setSavedFrom(null);
+    try { await onSave(Object.keys(current).length ? current : null); setSavedFrom(valueKey); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Couldn’t save task defaults. Try again."); }
     finally { setPending(false); }
   }}>

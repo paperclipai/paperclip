@@ -14,7 +14,13 @@ const meta = {
   title: "Tasks and conversations/Documents, attachments, and work products/Explorations/Artifact cards/Image",
   component: ImageCard,
   decorators,
-  parameters,
+  parameters: { ...parameters, paperclip: {
+      "capabilities": [
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   argTypes: {
     ...identityControls,
     filename: textData("Original image filename."),

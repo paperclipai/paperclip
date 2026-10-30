@@ -15,7 +15,7 @@ export class FixtureRegistry {
     return this;
   }
 
-  async setupAll() {
+  async setupAll(requested: readonly string[] = [...this.#definitions.keys()]) {
     const resolved = new Map<string, unknown>();
     const completed: FixtureDefinition[] = [];
     const visiting = new Set<string>();
@@ -36,7 +36,7 @@ export class FixtureRegistry {
     };
 
     try {
-      for (const id of this.#definitions.keys()) await setup(id);
+      for (const id of requested) await setup(id);
     } catch (setupError) {
       try {
         await this.#teardown(completed, resolved);

@@ -152,7 +152,9 @@ pub(crate) fn next_authority_config(
         .ok_or_else(|| {
             DurableRunnerError::invalid("run.attach authority connection is required")
         })?;
+    let external = connection.get("mode").and_then(Value::as_str) == Some("external");
     let connect_url = match connection.get("mode").and_then(Value::as_str) {
+        Some("external") => current.connect_url.clone(),
         Some("connect") => connection
             .get("connectUrl")
             .and_then(Value::as_str)
@@ -184,11 +186,13 @@ pub(crate) fn next_authority_config(
     };
     let mut next = current.clone();
     next.connect_url = connect_url;
-    next.ca_bundle_path = connection
-        .get("caBundlePath")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(Into::into);
+    if !external {
+        next.ca_bundle_path = connection
+            .get("caBundlePath")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(Into::into);
+    }
     next.runner_instance_id = read_identity("runnerInstanceId")?;
     next.environment_lease_id = read_identity("environmentLeaseId")?;
     next.run_id = read_identity("runId")?;
@@ -225,6 +229,14 @@ fn apply_authority_rotation(
             "warm authority rotation requires native v2 session state acknowledgement",
         ));
     }
+    let preserve_endpoint = state.warm_transition.as_ref().is_some_and(|transition| {
+        transition
+            .receipt
+            .connection
+            .get("mode")
+            .and_then(Value::as_str)
+            == Some("external")
+    });
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = state.diagnostics.clone();
     let mut rotated = DurableState::new(&next);
@@ -239,7 +251,12 @@ fn apply_authority_rotation(
     store.save(&rotated)?;
     *state = rotated;
     *config = next;
-    endpoint.rotate(&config.connect_url, &config.run_id)
+    if preserve_endpoint {
+        // The process owner keeps its original ingress while PRP rotates run authority.
+        Ok(())
+    } else {
+        endpoint.rotate(&config.connect_url, &config.run_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,6 +281,10 @@ pub trait CommandExecutor {
     fn rotate_authority(&mut self, _config: &DurableRunnerConfig) {}
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        Ok(Vec::new())
+    }
+
+    fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         Ok(Vec::new())
     }
 
@@ -373,7 +394,25 @@ pub fn run_durable_runner<E: CommandExecutor>(
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
 ) -> Result<(), DurableRunnerError> {
+    let started = Instant::now();
     config.validate()?;
+    if let Some(admission) = config
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        let remaining =
+            Duration::from_millis(admission.expires_at.saturating_sub(current_unix_ms()?));
+        // Candidate authority is absolute. Include startup/state work in this
+        // process deadline, and never let a caller's unlimited runtime widen it.
+        config.max_runtime = if config.max_runtime.is_zero() {
+            remaining.max(Duration::from_nanos(1))
+        } else {
+            config
+                .max_runtime
+                .min(remaining.max(Duration::from_nanos(1)))
+        };
+    }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
     if state.lifecycle == "revoked"
@@ -394,11 +433,13 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
+    #[cfg(unix)]
+    let mut notifications =
+        crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
     let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
-    let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
     let mut authenticated_once = false;
@@ -628,6 +669,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
         store.save(&state)?;
+        #[cfg(unix)]
+        if let Some(notifications) = notifications.as_mut() {
+            notifications.poll(&config, &mut state, &store);
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 
@@ -745,7 +790,21 @@ pub fn run_durable_runner<E: CommandExecutor>(
             .filter(|_| !disconnected)
         {
             debug_assert_eq!(state.lifecycle, durable_lifecycle);
-            return finish_terminal_transition_after_ack(&mut state, &store, &mut executor);
+            return finish_terminal_transition_after_ack(
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                |state| {
+                    wait_for_old_authority_outbox_ack(
+                        &mut transport,
+                        state,
+                        &store,
+                        &connection,
+                        &mut sent_source_seq,
+                    )
+                },
+            );
         }
         if disconnected {
             disconnected_since.get_or_insert_with(Instant::now);
@@ -783,6 +842,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 return Err(DurableRunnerError::invalid(
                     "active connection lease expired; durable state is preserved",
                 ));
+            }
+            #[cfg(unix)]
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
@@ -989,7 +1052,17 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         return finish_terminal_transition_after_ack(
                             &mut state,
                             &store,
+                            &config,
                             &mut executor,
+                            |state| {
+                                wait_for_old_authority_outbox_ack(
+                                    &mut transport,
+                                    state,
+                                    &store,
+                                    &connection,
+                                    &mut sent_source_seq,
+                                )
+                            },
                         );
                     }
                 }
@@ -1135,22 +1208,26 @@ fn complete_terminal_delivery_after_cleanup(
 fn finish_terminal_transition_after_ack<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
+    config: &DurableRunnerConfig,
     executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
 ) -> Result<(), DurableRunnerError> {
     // Keep the durable fence through provider cleanup. If cleanup fails, a
     // replacement may authenticate only to retry terminal reconciliation and
     // cannot restore the suspended runner to ready.
     if state.pending_provider_cleanup.is_some() {
-        return finish_terminal_reconciliation(state, store, executor);
+        return finish_terminal_reconciliation(state, store, config, executor, deliver);
     }
     executor.shutdown()?;
-    complete_terminal_delivery_after_cleanup(state, store)
+    finish_terminal_observations(state, store, config, executor, deliver)
 }
 
 fn finish_terminal_reconciliation<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
+    config: &DurableRunnerConfig,
     executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
 ) -> Result<(), DurableRunnerError> {
     let outcome = executor.reconcile_terminal_delivery()?;
     if outcome == TerminalDeliveryReconciliation::ProviderCleanupPending
@@ -1165,6 +1242,24 @@ fn finish_terminal_reconciliation<E: CommandExecutor>(
     }
     // Clearing delivery never clears a pre-existing physical cleanup fence.
     // Only a new successful turn.stop may do that.
+    finish_terminal_observations(state, store, config, executor, deliver)
+}
+
+fn finish_terminal_observations<E: CommandExecutor>(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
+) -> Result<(), DurableRunnerError> {
+    let events = executor.retained_runner_events()?;
+    commit_executor_events(state, store, config, executor, events)?;
+    deliver(state)?;
+    if !state.outbox.is_empty() {
+        return Err(DurableRunnerError::invalid(
+            "terminal observations remain unacknowledged",
+        ));
+    }
     complete_terminal_delivery_after_cleanup(state, store)
 }
 
@@ -1545,7 +1640,9 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
         let _ = shutdown_preserving_cleanup(state, executor);
         return Err(error);
     }
-    finish_terminal_reconciliation(state, store, executor)
+    finish_terminal_reconciliation(state, store, config, executor, |state| {
+        wait_for_old_authority_outbox_ack(transport, state, store, connection, &mut sent_source_seq)
+    })
 }
 
 fn stop_after_terminal_result_delivery_failure<E: CommandExecutor>(
@@ -1793,6 +1890,13 @@ fn process_command<E: CommandExecutor>(
             return Ok((result, CommandLifecycle::for_terminal(command)));
         }
     };
+    if matches!(
+        command.command_type.as_str(),
+        "runner.suspend" | "runner.shutdown"
+    ) {
+        let events = executor.retained_runner_events()?;
+        commit_executor_events(state, store, config, executor, events)?;
+    }
     if command.command_type == "runner.drain" {
         // An explicit drain must make progress even while control traffic
         // prevents idle polling. Only move one already-retained prefix under
@@ -2013,6 +2117,65 @@ mod tests {
                 return Ok(());
             }
             self.retained.acknowledge_events(count)
+        }
+    }
+
+    #[test]
+    fn terminal_commands_commit_runner_events_without_draining_the_provider() {
+        struct ObserverExecutor {
+            pending: Vec<PolledEvent>,
+            calls: usize,
+        }
+        impl CommandExecutor for ObserverExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                self.calls += 1;
+                Ok(CommandExecution::result(json!({"status":"completed"})))
+            }
+            fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                Ok(self.pending.clone())
+            }
+            fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("terminal command must preserve the provider backlog")
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("terminal command must not poll or launch a provider")
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                assert_eq!(count, 1);
+                self.pending.clear();
+                Ok(())
+            }
+        }
+        for kind in ["runner.suspend", "runner.shutdown"] {
+            let directory = std::env::temp_dir()
+                .join(format!("runner-observer-terminal-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = ObserverExecutor {
+                pending: vec![PolledEvent {
+                    executor_event_id: "credential_update_0000000000000001".to_owned(),
+                    event_type: "auth.credentials.updated".to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({"schema":"paperclip.auth.credentials.updated.v1", "provider":"codex",
+                    "bindingId":"harness-auth", "revision":1, "detection":"credential_store"}),
+                }],
+                calls: 0,
+            };
+            let command = command(kind);
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+            assert!(executor.pending.is_empty());
+            let (mut recovered, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(recovered.outbox.len(), 1);
+            assert_eq!(recovered.outbox[0].event_type, "auth.credentials.updated");
+            assert_eq!(
+                recovered.processed_commands[&command.command_id].status,
+                "completed"
+            );
+            process_command(&mut recovered, &store, &config, &mut executor, &command).unwrap();
+            assert_eq!(executor.calls, 1);
+            assert_eq!(recovered.outbox.len(), 1);
+            fs::remove_dir_all(directory).unwrap();
         }
     }
 
@@ -2627,7 +2790,8 @@ mod tests {
         // Failed/expired terminal delivery cleanup must also remain cold.
         shutdown_preserving_cleanup(&state, &mut executor).unwrap();
         assert!(state.pending_terminal_delivery.is_some());
-        finish_terminal_reconciliation(&mut state, &store, &mut executor).unwrap();
+        finish_terminal_reconciliation(&mut state, &store, &config, &mut executor, |_| Ok(()))
+            .unwrap();
         let (mut state, _) = store.load_or_create(&config).unwrap();
         assert!(state.pending_terminal_delivery.is_none());
         assert_eq!(
@@ -3388,6 +3552,80 @@ mod tests {
     }
 
     #[test]
+    fn warm_external_attachment_preserves_the_original_ingress() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-warm-external-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let mut current = config(directory.clone());
+        current.connect_url = format!("listen://0.0.0.0:{port}{path}");
+        current.ca_bundle_path = Some(PathBuf::from("/fixture/trusted-ca.pem"));
+        current.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let original_url = current.connect_url.clone();
+        let mut endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        for run in 2..=3 {
+            let mut attach = command("run.attach");
+            attach.payload = json!({"paperclipNextAuthority":{
+                "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                    "runId":format!("run_{run}"),"normalizedSessionId":current.normalized_session_id,
+                    "turnId":format!("turn_{run}"),"itemId":format!("item_{run}")},
+                "connection":{"mode":"external"}
+            }});
+            let next = next_authority_config(&attach, &current).unwrap().unwrap();
+            assert_eq!(next.connect_url, original_url);
+            assert_eq!(next.ca_bundle_path, current.ca_bundle_path);
+            let result = StoredCommandResult {
+                command_id: attach.command_id.clone(),
+                controller_seq: attach.controller_seq,
+                command_type: "run.attach".to_owned(),
+                status: "completed".to_owned(),
+                result: json!({"status":"resumed"}),
+            };
+            let receipt = WarmRunTransition::new(
+                &current,
+                &next,
+                &attach,
+                &result,
+                0,
+                "lease".to_owned(),
+                u64::MAX,
+                0,
+            )
+            .unwrap();
+            state.schema = TRANSITION_STATE_SCHEMA.to_owned();
+            state.warm_transition = Some(PendingWarmRunTransition {
+                receipt,
+                phase: "prepared".to_owned(),
+                command: attach,
+                result,
+            });
+            apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next)
+                .unwrap();
+            assert_eq!(current.run_id, format!("run_{run}"));
+            match &endpoint {
+                RunnerTransportEndpoint::Listen {
+                    listener,
+                    path: retained_path,
+                } => {
+                    assert_eq!(listener.local_addr().unwrap().port(), port);
+                    assert_eq!(retained_path, &path);
+                }
+                _ => panic!("external attachment must preserve the listener"),
+            }
+            state.warm_transition = None;
+            state.schema = "paperclip.runner.durable.state.v1".to_owned();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn warm_run_attachment_reuses_the_provider_ingress_listener() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-warm-listener-authority-{}",
@@ -3525,6 +3763,109 @@ mod tests {
     }
 
     #[test]
+    fn final_shutdown_observations_keep_recovery_fenced_until_host_ack() {
+        struct LateObserver {
+            pending: Vec<PolledEvent>,
+            observed: bool,
+        }
+        impl CommandExecutor for LateObserver {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                Ok(CommandExecution::result(json!({"status":"completed"})))
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                if !self.observed {
+                    self.observed = true;
+                    self.pending.push(PolledEvent {
+                        executor_event_id: "final-credential-update".to_owned(),
+                        event_type: "auth.credentials.updated".to_owned(), priority: EventPriority::P0,
+                        payload: json!({"schema":"paperclip.auth.credentials.updated.v1", "provider":"codex",
+                            "bindingId":"harness-auth", "revision":1, "detection":"credential_store"}),
+                    });
+                }
+                Ok(())
+            }
+            fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                Ok(self.pending.clone())
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                assert_eq!(count, 1);
+                self.pending.clear();
+                Ok(())
+            }
+        }
+        for fail_delivery in [false, true] {
+            let directory = std::env::temp_dir()
+                .join(format!("runner-final-observation-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = LateObserver {
+                pending: vec![],
+                observed: false,
+            };
+            let terminal = command("runner.shutdown");
+            let (result, lifecycle) =
+                process_command(&mut state, &store, &config, &mut executor, &terminal).unwrap();
+            persist_lifecycle_before_command_delivery(
+                &mut state,
+                &store,
+                lifecycle.durable_state().unwrap(),
+                &result,
+            )
+            .unwrap();
+            let outcome = finish_terminal_transition_after_ack(
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                |state| {
+                    let (saved, _) = store.load_or_create(&config).unwrap();
+                    assert!(saved.pending_terminal_delivery.is_some());
+                    assert_eq!(saved.outbox.len(), 1);
+                    assert_eq!(saved.outbox[0].event_type, "auth.credentials.updated");
+                    if fail_delivery {
+                        return Err(DurableRunnerError::invalid("final host ACK lost"));
+                    }
+                    state.apply_ack(state.highest_source_seq(), 1)?;
+                    store.save(state)
+                },
+            );
+            assert_eq!(outcome.is_err(), fail_delivery);
+            assert!(executor.pending.is_empty());
+            let (mut recovered, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(recovered.pending_terminal_delivery.is_some(), fail_delivery);
+            if fail_delivery {
+                let event_id = recovered.outbox[0].envelope["payload"]["sourceEventId"].clone();
+                let mut replacement = LateObserver {
+                    pending: vec![],
+                    observed: true,
+                };
+                finish_terminal_reconciliation(
+                    &mut recovered,
+                    &store,
+                    &config,
+                    &mut replacement,
+                    |state| {
+                        assert_eq!(state.outbox.len(), 1);
+                        assert_eq!(
+                            state.outbox[0].envelope["payload"]["sourceEventId"],
+                            event_id
+                        );
+                        state.apply_ack(state.highest_source_seq(), 1)?;
+                        store.save(state)
+                    },
+                )
+                .unwrap();
+                let (saved, _) = store.load_or_create(&config).unwrap();
+                assert!(saved.pending_terminal_delivery.is_none());
+                assert!(saved.outbox.is_empty());
+                assert_eq!(saved.lifecycle, "stopped");
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
     fn failed_terminal_cleanup_keeps_the_recovery_fence() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-terminal-cleanup-failed-{}",
@@ -3546,8 +3887,14 @@ mod tests {
         )
         .unwrap();
 
-        let error = finish_terminal_transition_after_ack(&mut state, &store, &mut executor)
-            .expect_err("cleanup failure remains fenced");
+        let error = finish_terminal_transition_after_ack(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            |_| Ok(()),
+        )
+        .expect_err("cleanup failure remains fenced");
         let (recovered, existed) = store.load_or_create(&config).unwrap();
 
         assert!(error.to_string().contains("terminal cleanup failure"));

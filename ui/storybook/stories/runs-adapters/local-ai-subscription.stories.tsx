@@ -6,7 +6,15 @@ const meta = {
   id: "ai-connections-provider-routing-07-subscription-sign-in",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Provider routing/07 Subscription sign-in",
   component: LocalProviderLoginInstructions,
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof LocalProviderLoginInstructions>;
 export default meta;
 type Story = StoryObj<typeof meta>;

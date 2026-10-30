@@ -321,7 +321,16 @@ const meta = {
   id: "composer-execution-controls",
   title: "Tasks and conversations/Steering and queued messages/Composer/Execution controls",
   component: TaskExecutionExample,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "steering/stop-and-pause"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof TaskExecutionExample>;
 export default meta;
 type Story = StoryObj<typeof meta>;

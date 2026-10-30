@@ -1,0 +1,14 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index dc06e80..c55bccc 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -68,6 +68,9 @@ importers:
+       esbuild:
+         specifier: ^0.28.2
+         version: 0.28.2
++      oxc-parser:
++        specifier: 0.127.0
++        version: 0.127.0
+       turbo:
+         specifier: 2.11.10
+         version: 2.11.10

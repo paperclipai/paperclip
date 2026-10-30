@@ -154,7 +154,15 @@ function Seed({
 const meta: Meta = {
   id: "skill-studio-editacopy",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Skill Studio/EditACopy",
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "skills/authoring"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

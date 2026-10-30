@@ -1,19 +1,135 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { apiErrorMessage, parseRetryAfter } from "./errors";
 import { readApiJson } from "./response";
 
 const BASE = "/api";
 
+export interface ApiErrorOptions {
+  /** Raw server error code; defaults to `body.error` when that is a string. */
+  code?: string | null;
+  /** Server-requested delay from the `Retry-After` header, in milliseconds. */
+  retryAfterMs?: number | null;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
+  /**
+   * The raw `body.error` string (for example `tenant_app_unavailable`). Match
+   * on this, never on `message`: `message` is readable copy for people and may
+   * differ from the code (see `apiErrorMessage` in `api/errors.ts`).
+   */
+  code: string | null;
+  retryAfterMs: number | null;
 
-  constructor(message: string, status: number, body: unknown) {
+  constructor(message: string, status: number, body: unknown, options: ApiErrorOptions = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    const rawError = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
+    this.code = options.code !== undefined ? options.code : typeof rawError === "string" ? rawError : null;
+    this.retryAfterMs = options.retryAfterMs ?? null;
   }
+}
+
+/** Build the `ApiError` for a non-OK response whose body has been read. */
+export function apiErrorFromResponse(res: Response, body: unknown): ApiError {
+  return new ApiError(apiErrorMessage(res.status, body), res.status, body, {
+    retryAfterMs: parseRetryAfter(res.headers?.get("Retry-After") ?? null),
+  });
+}
+
+// --- Dev/QA outage simulator ----------------------------------------------------
+//
+// Reproduces a deploy blip without a deploy. Dev and QA builds only:
+//
+//   localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable"     // until removed
+//   localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable@20"  // for 20 seconds
+//   localStorage.paperclipSimulateOutage = "502"       // non-JSON proxy page
+//   localStorage.paperclipSimulateOutage = "network"   // fetch rejects (connection drop)
+//
+// Every same-origin API request made through `apiFetch` (the client, health,
+// session) fails with the chosen shape. Remove the key to end the outage.
+
+export const OUTAGE_SIMULATOR_STORAGE_KEY = "paperclipSimulateOutage";
+
+export type SimulatedOutage =
+  | { kind: "network"; durationMs: number | null }
+  | { kind: "status"; status: number; code: string | null; durationMs: number | null };
+
+export function parseSimulatedOutage(raw: string | null | undefined): SimulatedOutage | null {
+  const match = /^\s*(network|(\d{3})(?::([A-Za-z0-9_.-]+))?)(?:@(\d+(?:\.\d+)?))?\s*$/.exec(raw ?? "");
+  if (!match) return null;
+  const durationMs = match[4] ? Math.round(Number(match[4]) * 1000) : null;
+  if (match[1] === "network") return { kind: "network", durationMs };
+  const status = Number(match[2]);
+  if (status < 400 || status > 599) return null;
+  return { kind: "status", status, code: match[3] ?? null, durationMs };
+}
+
+function outageSimulatorEnabled(): boolean {
+  return import.meta.env.DEV || import.meta.env.MODE === "qa";
+}
+
+let simulatedOutageWindow: { raw: string; endsAt: number | null } | null = null;
+
+/** The outage to simulate for the next request, or null. Never throws. */
+export function activeSimulatedOutage(now = Date.now()): SimulatedOutage | null {
+  if (!outageSimulatorEnabled() || typeof window === "undefined") return null;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage?.getItem(OUTAGE_SIMULATOR_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+  const outage = parseSimulatedOutage(raw);
+  if (!raw || !outage) {
+    simulatedOutageWindow = null;
+    return null;
+  }
+  if (simulatedOutageWindow?.raw !== raw) {
+    simulatedOutageWindow = { raw, endsAt: outage.durationMs === null ? null : now + outage.durationMs };
+  }
+  if (simulatedOutageWindow.endsAt !== null && now >= simulatedOutageWindow.endsAt) {
+    simulatedOutageWindow = null;
+    try {
+      window.localStorage.removeItem(OUTAGE_SIMULATOR_STORAGE_KEY);
+    } catch {
+      // Storage can be unavailable; the outage still ends for this tab.
+    }
+    return null;
+  }
+  return outage;
+}
+
+function simulatedOutageResponse(outage: Extract<SimulatedOutage, { kind: "status" }>): Response {
+  if (!outage.code) {
+    // What a proxy serves while the app is down: an HTML page, not JSON.
+    return new Response("<!doctype html><title>Unavailable</title>", {
+      status: outage.status,
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+  return new Response(JSON.stringify({ error: outage.code }), {
+    status: outage.status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * `fetch` for same-origin API calls. Identical to `fetch` except that the
+ * dev/QA outage simulator can intercept it.
+ */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  const outage = activeSimulatedOutage();
+  if (outage) {
+    if (init?.signal?.aborted) throw abortError();
+    if (outage.kind === "network") throw new TypeError("Failed to fetch");
+    return simulatedOutageResponse(outage);
+  }
+  return fetch(input, init);
 }
 
 export interface RequestOptions {
@@ -51,7 +167,7 @@ export async function requestResponse(path: string, init?: RequestInit): Promise
   }
   applyObservabilityHeaders(headers);
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await apiFetch(`${BASE}${path}`, {
     credentials: "include",
     ...init,
     headers,
@@ -60,11 +176,7 @@ export async function requestResponse(path: string, init?: RequestInit): Promise
     const errorBody = await readApiJson(res);
     const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, errorBody);
     if (recovery) return recovery;
-    throw new ApiError(
-      (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
-      res.status,
-      errorBody,
-    );
+    throw apiErrorFromResponse(res, errorBody);
   }
   return res;
 }

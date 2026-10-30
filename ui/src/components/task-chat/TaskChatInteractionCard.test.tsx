@@ -18,6 +18,10 @@ import {
   pendingRequestItemVerdictsInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
+vi.mock("@/lib/router", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/router")>(),
+  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+}));
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import type { TaskChatInteractionItem } from "./task-chat-model";
 
@@ -836,6 +840,31 @@ describe("TaskChatInteractionCard", () => {
     expect(submit).toHaveBeenCalledExactlyOnceWith(interaction, [{
       questionId: "draft", optionIds: [], otherText: mode === "canonical_text" ? edited : edited.trim(),
     }]);
+  });
+
+  it("opens a compact attachment item through the authenticated file endpoint", () => {
+    const interaction = { ...pendingRequestItemVerdictsInteraction, payload: { ...pendingRequestItemVerdictsInteraction.payload,
+      items: [{ id: "file", label: "Reviewed file", target: { type: "issue_attachment" as const, attachmentId: "immutable-file", assetId: "asset", sha256: "hash" } }],
+    } };
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionVerdicts={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it.each([undefined, "/stale-display-link"])("opens a compact confirmation's bound attachment when href is %s", href => {
+    const interaction = createRequestConfirmation({ payload: { version: 1, prompt: "Review the attached copy", target: {
+      type: "issue_attachment", attachmentId: "immutable-file", assetId: "asset", sha256: "hash", href,
+    } } });
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onAcceptInteraction={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href="/api/attachments/immutable-file/content"]')?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("opens the bound output revision from a compact review item", () => {
+    const interaction = { ...pendingRequestItemVerdictsInteraction, payload: { ...pendingRequestItemVerdictsInteraction.payload,
+      items: [{ id: "copy", label: "Reviewed copy", target: { type: "issue_document" as const, issueId: "owner", key: "copy", revisionId: "reviewed-v1" } }],
+    } };
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionVerdicts={() => undefined} /></ThemeProvider></TooltipProvider>));
+    expect(container.querySelector('a[href*="document-copy&revision=reviewed-v1"]')?.getAttribute("href"))
+      .toBe(`/issues/owner#document-copy&revision=reviewed-v1&interaction=${interaction.id}`);
   });
 
   it("paginates item verdicts instead of expanding the whole review set", async () => {

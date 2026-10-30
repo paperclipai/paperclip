@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CODEX_CHATGPT_MODEL_REJECTION_RE,
+  codexChatGptRetirementForModel,
   codexCliVersionAtLeast,
   codexLocalReasoningEffortsForModel,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -24,6 +25,20 @@ describe("codex model CLI floors", () => {
       expect(minimumCodexCliVersionForModel(model)).toBeNull();
     },
   );
+
+  it("records models retired from Codex with ChatGPT sign-in and keeps them selectable for API keys", () => {
+    expect(codexChatGptRetirementForModel("gpt-5.5")).toEqual({
+      retiredOn: "2026-10-14",
+      replacement: "gpt-6.1-sol (gpt-6-luna on Free and Go plans)",
+    });
+    expect(codexChatGptRetirementForModel(" gpt-5.4 ")).toEqual({ retiredOn: "2026-08-31", replacement: "gpt-6-sol" });
+    expect(codexChatGptRetirementForModel("gpt-5.4-mini")).toEqual({ retiredOn: "2026-08-31", replacement: "gpt-6-luna" });
+    for (const model of [DEFAULT_CODEX_LOCAL_MODEL, "gpt-6.1-sol", "custom-model", "", null, undefined]) {
+      expect(codexChatGptRetirementForModel(model)).toBeNull();
+    }
+    const modelIds = models.map((model) => model.id);
+    expect(modelIds).toEqual(expect.arrayContaining(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]));
+  });
 
   it("compares stable versions numerically and rejects prerelease or ambiguous input", () => {
     expect(codexCliVersionAtLeast("0.159.0", "0.159.0")).toBe(true);

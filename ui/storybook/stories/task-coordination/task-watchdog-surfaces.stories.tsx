@@ -112,6 +112,13 @@ const meta = {
           "Surfaces the IssueProperties Watchdog row in empty / configured / triggered-and-linked variants for UX review of the task-watchdog configuration UI (PAP-11294).",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "task-coordination/tree-control"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof WatchdogSurfaceStories>;
 

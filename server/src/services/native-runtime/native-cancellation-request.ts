@@ -1,3 +1,4 @@
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
@@ -111,6 +112,7 @@ export async function claimCancellationRequest(db: Db, runId: string, companyId:
       return run;
     }
     if (!pendingRetry && !["queued", "running", "scheduled_retry"].includes(run.status)) throw conflict("Correlated Stop run is already terminal");
+    await notifyScheduledRetryCancellation(tx, { companyId, runId });
     const [claimed] = await tx.update(heartbeatRuns).set({ resultJson: { ...result,
       startupCancellation: { requestedAt: new Date().toISOString(), beforeNativeSelection: false, cancellationRequestId: requestId, requestedBy: { type: "board", userId }, ...(run.status === "failed" ? { retryCancellation: true } : {}) },
     } }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).returning();

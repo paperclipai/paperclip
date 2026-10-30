@@ -1,3 +1,5 @@
+import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
+import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -90,8 +92,8 @@ import {
   claudeCommandLooksLike,
   claudeCommandSupportsEffortFlag,
   minimumClaudeCliVersionForModel,
-  readClaudeCommandVersion,
 } from "./cli-capabilities.js";
+import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -307,6 +309,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env[key] = value;
   }
 
+  if (isOpenRouterUrl(env.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL)) {
+    env.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS);
+  }
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -469,7 +474,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     authToken,
     onLog,
   });
-  const {
+  let {
     command,
     resolvedCommand,
     cwd,
@@ -483,7 +488,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
-  let loggedEnv = initialLoggedEnv;
+  if (ctx.observability) applyObservabilityEnvironment(env, ctx.observability);
+  let loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv: initialLoggedEnv,
+    includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+    resolvedCommand,
+  });
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,
@@ -748,24 +758,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   let effectiveEffort = effort;
-  if (executionTargetIsSandbox && effort) {
-    const supportsEffort = await claudeCommandSupportsEffortFlag({
-      runId,
-      command,
-      target: runtimeExecutionTarget,
-      cwd,
-      env,
-      timeoutSec,
-      graceSec,
-    });
-    if (supportsEffort === false) {
-      effectiveEffort = "";
-      await onLog(
-        "stderr",
-        `[paperclip] Claude CLI in the environment does not advertise --effort; omitting configured effort "${effort}". Upgrade the environment CLI/image to restore reasoning-effort control.\n`,
-      );
-    }
-  }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -1224,7 +1216,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? proc.errorCode
       : loginMeta.requiresLogin
       ? "claude_auth_required"
-      : failed && isClaudeModelNotFoundError({
+      // Structured CLI signals outrank the model-not-found detector, which
+      // scans the run's full stdout for a literal "model not found" phrase.
+      // An agent's own tool output (grepping runtime source, tailing logs,
+      // echoing an issue body) lands in that stdout, so a genuine
+      // error_max_turns run that merely *mentions* the phrase would otherwise
+      // be sealed as model_not_found. Same guard the providerQuota and
+      // transientUpstream branches above already apply.
+      : failed && !clearSessionForMaxTurns && !poisonedPreviousMessageId && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
@@ -1299,7 +1298,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? minimumClaudeCliVersionForModel(model)
       : null;
     if (minimumCliVersion) {
-      const detectedCliVersion = await readClaudeCommandVersion({
+      const prepared = await prepareCompatibleClaudeCommand({
         runId,
         command,
         target: runtimeExecutionTarget,
@@ -1307,7 +1306,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env,
         timeoutSec,
         graceSec,
+        minimumVersion: minimumCliVersion,
       });
+      if (prepared.check) {
+        await onLog("stderr", `[paperclip] ${prepared.check.message} ${prepared.check.detail ?? ""}\n`);
+      }
+      command = prepared.command;
+      resolvedCommand = prepared.command === "claude" ? resolvedCommand : prepared.command;
+      loggedEnv = buildInvocationEnvForLogs(env, {
+        runtimeEnv: loggedEnv,
+        includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+        resolvedCommand,
+      });
+      const detectedCliVersion = prepared.version;
       if (
         !detectedCliVersion ||
         !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
@@ -1335,6 +1346,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             detectedClaudeCodeVersion: detectedCliVersion,
           },
         };
+      }
+    }
+
+    if (executionTargetIsSandbox && effort) {
+      const supportsEffort = await claudeCommandSupportsEffortFlag({
+        runId,
+        command,
+        target: runtimeExecutionTarget,
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+      });
+      if (supportsEffort === false) {
+        effectiveEffort = "";
+        await onLog(
+          "stderr",
+          `[paperclip] Claude CLI in the environment does not advertise --effort; omitting configured effort "${effort}". Upgrade the environment CLI/image to restore reasoning-effort control.\n`,
+        );
       }
     }
 

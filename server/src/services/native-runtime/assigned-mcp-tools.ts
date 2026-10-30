@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
 type WorkMode = "standard" | "planning" | "ask";
 type ToolDefinition = Record<string, unknown>;
@@ -14,13 +14,13 @@ const SCHEMA_CHUNK_CHARACTERS = 64 * 1024;
 const ON_DEMAND_TOOLS: ToolDefinition[] = [
   {
     name: SEARCH_TOOL,
-    description: "Search your assigned app tools by name or description and read their input schemas. Use an empty query to browse. Pass nextOffset to fetch the next page. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass nextSchemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
+    description: "Search your assigned app tools by name or description and read their input schemas. Pass {\"query\":\"search terms\"}, or an empty query to browse. Use limit from 1 to 20 (default 5). Omit unused optional fields instead of sending null. To fetch the next page, pass the returned nextOffset as offset. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass the returned nextSchemaOffset as schemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
         query: { type: "string", maxLength: 200 },
         offset: { type: "integer", minimum: 0 },
-        limit: { type: "integer", minimum: 1, maximum: 20 },
+        limit: { type: "integer", minimum: 1, maximum: 20, default: 5, description: "Maximum results per page (1 to 20; default 5)." },
         schemaTool: { type: "string", description: "Exact inputSchemaRef from a search result." },
         schemaOffset: { type: "integer", minimum: 0 },
       },
@@ -86,18 +86,30 @@ export async function createAssignedMcpTools(input: {
   gatewayPublicId: string;
   bearerToken: string;
   workMode?: WorkMode;
+  /** Bound provider grammar complexity independently of protocol byte capacity. */
+  delivery?: "on_demand";
 }) {
   const listed = await input.gateway.listToolsForNamedGateway({
     gatewayPublicId: input.gatewayPublicId,
     bearerToken: input.bearerToken,
   });
   const tools = new Map<string, ToolGatewayDescriptor>();
-  for (const descriptor of listed) {
+  for (const descriptor of deduplicateToolDescriptors(listed)) {
     const name = assignedToolName(descriptor.name);
-    if (tools.has(name)) throw new Error("assigned_mcp_tool_name_collision");
+    const previous = tools.get(name);
+    if (previous) {
+      throw new ToolGatewayHttpError(409,
+        `Assigned MCP tool name collision for ${JSON.stringify([previous.name, descriptor.name])}.`,
+        "assigned_mcp_tool_name_collision");
+    }
     tools.set(name, descriptor);
   }
   const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
+  // OpenCode's HTTP bridge returns at most 64K JSON characters. Leave room
+  // for the envelope and for JSON escaping when returning a schema chunk.
+  // Other harnesses retain the larger PRP page and chunk budgets.
+  const searchPageBytes = input.delivery === "on_demand" ? 32 * 1024 : SEARCH_PAGE_BYTES;
+  const schemaChunkCharacters = input.delivery === "on_demand" ? 16 * 1024 : SCHEMA_CHUNK_CHARACTERS;
 
   async function search(argumentsValue: unknown, currentWorkMode?: WorkMode) {
     const args = object(argumentsValue);
@@ -114,7 +126,7 @@ export async function createAssignedMcpTools(input: {
     }
     // Intersect fresh grants with this session's pinned catalog. Revocations
     // take effect immediately; newly assigned tools require a new session.
-    const current = new Map((await input.gateway.listToolsForNamedGateway({
+    const current = new Map(deduplicateToolDescriptors(await input.gateway.listToolsForNamedGateway({
       gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
     })).map(tool => [tool.name, tool]));
     const terms = args.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -127,38 +139,48 @@ export async function createAssignedMcpTools(input: {
       const selected = authorized.find(([name]) => name === args.schemaTool);
       if (!selected) throw new Error("assigned_mcp_tool_unknown");
       const schema = JSON.stringify(selected[1].parametersSchema);
-      const end = schemaOffset + SCHEMA_CHUNK_CHARACTERS;
+      const end = schemaOffset + schemaChunkCharacters;
       return {
         name: selected[0], schemaJson: schema.slice(schemaOffset, end),
         nextSchemaOffset: end < schema.length ? end : null,
       };
     }
-    const matches = authorized.filter(([name, tool]) =>
+    // Keep offsets anchored to the pinned catalog while fresh grants only
+    // decide which entries are returned from that stable sequence.
+    const authorizedNames = new Set(authorized.map(([name]) => name));
+    const matches = [...tools].filter(([, tool]) => permits(tool)).filter(([name, tool]) =>
       terms.every(term => `${name} ${tool.displayName} ${tool.description}`.toLowerCase().includes(term)))
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const page: ToolDefinition[] = [];
-    for (const [name, tool] of matches.slice(offset, offset + limit)) {
+    let nextOffset = offset;
+    while (nextOffset < matches.length && page.length < limit) {
+      const [name, tool] = matches[nextOffset]!;
+      if (!authorizedNames.has(name)) {
+        nextOffset += 1;
+        continue;
+      }
       let next = definition(name, tool);
-      if (Buffer.byteLength(JSON.stringify([next]), "utf8") > SEARCH_PAGE_BYTES) {
+      if (Buffer.byteLength(JSON.stringify([next]), "utf8") > searchPageBytes) {
         // One large schema must not block browsing the tools after it. Expose
         // a reference whose schema can be fetched in bounded, reauthorized
         // chunks, without weakening the gateway's argument validation.
         next = { name, description: String(next.description).slice(0, 2000), inputSchemaRef: name };
       }
-      if (Buffer.byteLength(JSON.stringify([...page, next]), "utf8") > SEARCH_PAGE_BYTES) {
+      if (Buffer.byteLength(JSON.stringify([...page, next]), "utf8") > searchPageBytes) {
         break;
       }
       page.push(next);
+      nextOffset += 1;
     }
-    return { tools: page, nextOffset: offset + page.length < matches.length ? offset + page.length : null };
+    return { tools: page, nextOffset: nextOffset < matches.length ? nextOffset : null };
   }
 
   return {
     definitions(fits?: (definitions: ToolDefinition[]) => boolean): ToolDefinition[] {
       const direct = [...tools].filter(([, tool]) => permits(tool)).map(([name, tool]) => definition(name, tool));
-      if (!fits || fits(direct)) return direct;
+      if (input.delivery !== "on_demand" && (!fits || fits(direct))) return direct;
       const compact = structuredClone(ON_DEMAND_TOOLS);
-      if (!fits(compact)) throw new Error("assigned_mcp_tool_catalog_capacity_exceeded");
+      if (fits && !fits(compact)) throw new Error("assigned_mcp_tool_catalog_capacity_exceeded");
       return compact;
     },
     has(name: string): boolean {

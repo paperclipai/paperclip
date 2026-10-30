@@ -7,7 +7,21 @@ const meta = {
   title: "Apps, channels, and extensions/Connection setup/Apps/Connections/Arcade",
   component: RemoteMcpConnectionReview,
   args: { provider: "arcade", scenario: "journey" },
-  parameters: { layout: "fullscreen", docs: { description: { component: "Interactive design review using application views with in-memory provider responses. No real authentication, tool calls, or credential persistence. Representative catalogs are examples; production discovery supplies the actual tools." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Interactive design review using application views with in-memory provider responses. No real authentication, tool calls, or credential persistence. Representative catalogs are examples; production discovery supplies the actual tools." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "connection-setup/failure",
+        "connection-setup/draft-recovery",
+        "connection-setup/identity-and-access",
+        "app-permissions/action-policy",
+        "app-permissions/test-action"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "SavedDraftResume, Reconnect, SelectedAgents and ManageToolPermissions demonstrate production setup/permissions/test surfaces with an in-memory wrapper. Reload loses the draft; these examples do not verify persisted recovery. NewToolsAllowed does not demonstrate quarantined-action review."
+    },
+  },
   argTypes: { provider: { control: false } },
 } satisfies Meta<typeof RemoteMcpConnectionReview>;
 export default meta;

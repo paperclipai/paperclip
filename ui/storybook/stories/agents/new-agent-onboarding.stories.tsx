@@ -9,6 +9,16 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Interactive design prototype: name → adapter → simulated creation → connection → configuration → confirmation. Each screen is directly inspectable below. All state is local to the story; subscription and API-key connections are simulated, and actual hiring is deferred. Use Start over to replay. The adapter and runner are fixed after creation." } },
+    paperclip: {
+      "capabilities": [
+        "agents/hire"
+      ],
+      "status": "historical",
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Retained local wizard predates production ui/src/components/new-agent flow; shared fields do not make the wizard current.",
+      "replacement": "ui/storybook/stories/agents/agent-persona-pages.stories.tsx"
+    },
   },
   argTypes: {
     testOutcome: { control: "select", options: ["pass", "fail"] },

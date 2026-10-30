@@ -2,6 +2,13 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { IssueScheduledRetryCard } from "@/components/IssueScheduledRetryCard";
 
 const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "recovery/bounded-continuation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "tasks-model-capacity-retry",
   title: "Projects and execution/Recovery/Tasks/Model capacity retry",
   component: IssueScheduledRetryCard,
