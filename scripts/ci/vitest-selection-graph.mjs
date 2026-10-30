@@ -1,4 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { isBuiltin } from "node:module";
 import { parseSync } from "oxc-parser";
@@ -13,6 +14,7 @@ const purePackages = new Set([
   "zod", "lodash", "lodash-es", "date-fns", "clsx", "tailwind-merge", "class-variance-authority",
   "lucide-react", "immer", "nanoid", "uuid", "semver",
   "radix-ui", "motion", "@dnd-kit/core", "@dnd-kit/sortable", "@dnd-kit/utilities",
+  "i18next", "react-i18next",
 ]);
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
   "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto"]);
@@ -60,8 +62,8 @@ export function sourceDependencies(file, source) {
     if (node.type === "Identifier" && /^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)) {
       reasons.add("external input or dynamic code");
     }
-    if ((node.type === "Identifier" && /^(importActual|unmock|doUnmock)$/.test(node.name))
-      || (literal(node) && /^(importActual|unmock|doUnmock)$/.test(node.value))) reasons.add("mock bypass");
+    if ((node.type === "Identifier" && /^(importActual|unmock|doUnmock|doMock|arguments)$/.test(node.name))
+      || (literal(node) && /^(importActual|unmock|doUnmock|doMock)$/.test(node.value))) reasons.add("mock bypass");
     if (node.type === "Identifier" && mockBindings.has(node.name) && parent
       && parent.type !== "ImportSpecifier"
       && !(parent.type === "MemberExpression" && parent.object === node && !parent.computed)) {
@@ -76,7 +78,11 @@ export function sourceDependencies(file, source) {
         reasons.add("CommonJS loader");
         importSource(node.arguments[0]);
       }
-      if (/\b(?:fetch|eval|Function|glob|globSync)\b/.test(name)) reasons.add("external input or dynamic code");
+      const viteGlob = name === "import.meta.glob" && (literal(node.arguments[0])
+        || (node.arguments[0]?.type === "ArrayExpression" && node.arguments[0].elements.every(literal)));
+      // Vite expands literal globs into dependency edges. New files appear in
+      // that expansion; deleted/renamed and non-source inputs force full lanes.
+      if (!viteGlob && /\b(?:fetch|eval|Function|glob|globSync)\b/.test(name)) reasons.add("external input or dynamic code");
     }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach((child) => visit(child, node));
@@ -107,6 +113,9 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       return { project, inventory: files, selected: files, related: [], alwaysRun: files, coveredChanges: [],
         opaqueModules: {}, retainedReason: "Unchanged project retains complete lane coverage", seconds: (performance.now() - started) / 1000 };
     }
+    const tracked = new Set(execFileSync("git", ["ls-files", "--cached", "-z"], {
+      cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+    }).split("\0").filter(Boolean));
     const raw = await ctx.getRelevantTestSpecifications();
     const modules = environment.moduleGraph.idToModuleMap;
     const audit = new Map();
@@ -129,12 +138,16 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (setup.has(file)) return;
       setup.add(file);
       const source = parse(file);
-      if (source.reasons.includes("dynamic module name")) throw new Error(`Dynamic setup dependency: ${file}`);
+      if (source.reasons.length) throw new Error(`Opaque setup dependency: ${file}`);
       for (const specifier of source.imports) {
-        if (isBuiltin(specifier)) continue;
+        if (isBuiltin(specifier)) {
+          if (!pureBuiltins.has(specifier.replace(/^node:/, ""))) throw new Error(`Opaque setup builtin: ${specifier}`);
+          continue;
+        }
         const dependency = await resolve(specifier, file);
         if (dependency && inside(root, dependency)) await setupClosure(dependency);
         else if (!dependency) throw new Error(`Unresolved setup dependency: ${specifier}`);
+        else if (!purePackages.has(packageName(specifier))) throw new Error(`Opaque setup package: ${specifier}`);
       }
     }
     for (const file of [...(owner.config.setupFiles ?? []), ...(owner.config.globalSetup ?? []),
@@ -160,6 +173,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (!inside(root, id) || !/\.[cm]?[jt]sx?$/.test(id)) continue;
       const source = parse(id);
       const reasons = [...source.reasons];
+      if (!tracked.has(path.relative(root, id).split(path.sep).join("/"))) reasons.push("generated or untracked source");
       const local = [];
       localImports.set(id, local);
       // Use the same resolved runtime edges as Vitest, including literal dynamic

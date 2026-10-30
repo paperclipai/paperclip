@@ -209,6 +209,9 @@ For conservative retention, explicit complete local mock factories cut the
 mocked implementation's I/O edges. Partial mocks, spies, automocks, mock bypasses,
 and dynamic or escaped mocking APIs do not. Edits to a mocked module still use
 Vitest's unmodified related-file graph. Non-isolated projects run in full.
+Literal Vite globs use Vite's expanded dependency edges, including newly added
+members. Consumers of generated or untracked modules remain in the conservative
+set because the import graph does not describe their build inputs.
 
 Selected files are repartitioned within their existing owners using the current
 per-runner budgets and server timing weights. Small selections allocate fewer
@@ -220,7 +223,8 @@ dependency audit.
 
 Missing/deleted/renamed files, non-source inputs, unrecognized graph inputs,
 setup/config changes, failed dependency installs, graph errors and timeouts use
-the complete original task plan. A published manifest must match the checked-out
+the complete original task plan. Source mutations during dependency setup also
+disable narrowing. A published manifest must match the checked-out
 merge SHA, its plan hash and the expected shard/project ownership. Missing or
 invalid manifests fail selected jobs and the required aggregate; they cannot
 turn reduced matrices green. Turbo hashes the selected file assignment through

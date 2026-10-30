@@ -91,6 +91,7 @@ async function main() {
     const changed = execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", process.env.BASE_SHA, head, "--"],
       { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).split("\0").filter(Boolean).sort();
     assert.deepEqual(changed, [...new Set(plan.changed)].sort(), "Local diff disagrees with the trusted routing diff");
+    assert.equal(git("status", "--porcelain", "--untracked-files=normal"), "", "Source inputs changed during dependency setup");
     process.env.NODE_ENV = "test";
     process.env.VITEST = "true";
     result = await createTestSelection(plan, head);

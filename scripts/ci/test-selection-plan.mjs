@@ -7,7 +7,8 @@ import { selectionHash, validateSelection } from "./test-selection-manifest.mjs"
 export function partitionSelection(inventory, selected, maxShards, durations = {}) {
   const totalWeight = partitionGeneralServerSuites(inventory, 1, durations)[0].totalWeight;
   const selectedWeight = partitionGeneralServerSuites(selected, 1, durations)[0].totalWeight;
-  const count = Math.min(maxShards, selected.length, Math.max(1, Math.ceil(selectedWeight / (totalWeight / maxShards))));
+  const budget = totalWeight / maxShards || 1;
+  const count = Math.min(maxShards, selected.length, Math.max(1, Math.ceil(selectedWeight / budget)));
   return selected.length ? partitionGeneralServerSuites(selected, count, durations).map((shard) => shard.files) : [];
 }
 

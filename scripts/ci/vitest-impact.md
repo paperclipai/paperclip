@@ -1,5 +1,8 @@
 # Vitest dependency selection experiment
 
+The production selector is documented in `doc/DEVELOPING.md`. This probe remains
+a diagnostic for the raw import graph, without the production retention rules.
+
 This probe measures Vitest's real import graph against the current checkout.
 It does not change the CI matrix or authorize skipping tests. It loads Vitest
 configurations and Vite plugins, so run it in a normal test environment, never
