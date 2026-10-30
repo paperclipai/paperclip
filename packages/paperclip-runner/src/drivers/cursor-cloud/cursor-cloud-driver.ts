@@ -172,6 +172,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   #launch: Promise<void> | null = null;
   #work: Promise<void> | null = null;
   #stop: Promise<void> | null = null;
+  #stopCheckpoint: Promise<void> | null = null;
+  #rejectionSettlement: Promise<void> | null = null;
   #turnDeadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: CursorCloudDriverOptions, input: OpenHarnessSessionInput, instructions: string, checkpoint: CursorCloudCheckpoint, store: CursorCloudCheckpointStore) {
@@ -234,7 +236,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     this.#cp.deadlineAt = Date.now() + (this.#options.config.timeoutMs ?? CURSOR_CLOUD_DEFAULT_TIMEOUT_MS);
     this.#generation += 1;
     const authority = this.#pending(this.#authority());
-    this.#stopping = false; this.#stop = null;
+    this.#stopping = false; this.#stop = null; this.#stopCheckpoint = null;
     const streamAbort = new AbortController(); this.#streamAbort = streamAbort;
     const persisted = this.#store.write(this.#cp).catch(async error => {
       if (this.#current(authority)) {
@@ -252,9 +254,19 @@ class CursorCloudSession implements CursorCloudSessionHandle {
       if (!this.#currentPending(authority)) return;
       const options = { signal: streamAbort.signal, idempotencyKey: authority.idempotencyKey! };
       const { schema: _schema, timeoutMs: _timeoutMs, ...cloudConfiguration } = this.#options.config;
-      const response = first
-        ? await this.#client.createAgent({ ...cloudConfiguration, ...request, agentId: authority.requestedAgentId! }, options)
-        : await this.#client.createRun(authority.agentId!, request, options);
+      let response;
+      try {
+        response = first
+          ? await this.#client.createAgent({ ...cloudConfiguration, ...request, agentId: authority.requestedAgentId! }, options)
+          : await this.#client.createRun(authority.agentId!, request, options);
+      } catch (error) {
+        if (!this.#currentPending(authority) || !(error instanceof CursorCloudClientError)
+          || error.status === undefined || ![400, 401, 403, 404, 422].includes(error.status)) throw error;
+        const settlement = this.#rejectCreate(error, authority);
+        this.#rejectionSettlement = settlement;
+        try { await settlement; return; }
+        finally { if (this.#rejectionSettlement === settlement) this.#rejectionSettlement = null; }
+      }
       if (!this.#currentPending(authority)) return;
       if (response.run.agentId !== (first ? authority.requestedAgentId : authority.agentId)) throw new HarnessReconciliationError("Cursor Cloud create response changed the requested Agent identity");
       this.#cp.agentId = response.run.agentId; this.#cp.runId = response.run.id; this.#cp.pendingOperation = null; this.#cp.instructionsRevisionPending = false;
@@ -263,7 +275,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
       if (this.#current(authority)) this.#publishRemoteIdentity();
     })();
     this.#launch = launch;
-    this.#work = launch.then(async () => { const remote = this.#remote(authority); if (remote && !this.#stopping && active(this.#cp)) await this.#observe(remote); }, error => this.#unresolved(error, authority, authority)).catch(error => this.#unresolved(error, authority));
+    this.#work = launch.then(async () => { const remote = this.#remote(authority); if (remote && !this.#stopping && active(this.#cp)) await this.#observe(remote); }).catch(error => this.#unresolved(error, authority));
     await persisted;
     if (this.#current(authority) && active(this.#cp)) {
       this.#emit("turn.started", { provider: "cursor_cloud", submittedModel: this.#options.model, effectiveModelAcknowledged: false, instructionsAcknowledged: false });
@@ -283,7 +295,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   async #interrupt(authority: TurnAuthority, signal?: AbortSignal): Promise<void> {
     const launch = this.#launch, streamAbort = this.#streamAbort;
     this.#stopping = true; this.#cp.phase = "stopping";
-    await this.#store.write(this.#cp);
+    await (this.#stopCheckpoint = this.#store.write(this.#cp));
     if (!this.#current(authority) || !active(this.#cp)) return;
     streamAbort?.abort();
     const abort = new AbortController();
@@ -476,15 +488,27 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     if (!agentId) return;
     this.#emit("harness.diagnostic", { code: "cursor_cloud_remote_identity", message: JSON.stringify({ schema: "paperclip.cursor-cloud.remote-identity.v1", provider: "cursor_cloud", agentId, runId: this.#cp.runId, ownerRunId: this.#cp.ownerRunId, normalizedSessionId: this.#cp.normalizedSessionId, phase: this.#cp.phase }) });
   }
-  async #unresolved(error: unknown, authority: TurnAuthority, rejectedCreate?: PendingAuthority): Promise<void> {
-    if (!this.#current(authority) || !active(this.#cp)) return;
-    if (rejectedCreate && this.#currentPending(rejectedCreate) && !this.#stopping && this.#cp.phase === "creating" && error instanceof CursorCloudClientError
-      && error.status !== undefined && [400, 401, 403, 404, 422].includes(error.status)) {
-      this.#cp.phase = "idle"; this.#cp.pendingOperation = null; this.#cp.requestedAgentId = null; this.#cp.terminalStatus = "REJECTED"; this.#clearDeadline();
-      await this.#store.write(this.#cp);
-      if (this.#current(authority)) this.#emit("turn.failed", { error: { code: error.providerCode ?? "cursor_cloud_launch_rejected", message: "Cursor Cloud rejected the run before accepting provider work. Check the configured account, repository access and explicit model." }, remoteWorkAccepted: false });
+  async #rejectCreate(error: CursorCloudClientError, authority: PendingAuthority): Promise<void> {
+    const rejected = { phase: "idle", pendingOperation: null, requestedAgentId: null, terminalStatus: "REJECTED", deadlineAt: null } as const;
+    // Keep admission fenced until the definite rejection is durable. Stop awaits
+    // this launch promise, and its checkpoint must not overwrite the settlement.
+    let stopCheckpoint = this.#stopCheckpoint;
+    for (;;) {
+      if (stopCheckpoint) await stopCheckpoint;
+      if (!this.#currentPending(authority)) return;
+      await this.#store.write({ ...this.#cp, ...rejected });
+      if (!this.#currentPending(authority)) return;
+      if (this.#stopCheckpoint !== stopCheckpoint) {
+        stopCheckpoint = this.#stopCheckpoint;
+        continue;
+      }
+      Object.assign(this.#cp, rejected); this.#clearDeadline();
+      this.#emit("turn.failed", { error: { code: error.providerCode ?? "cursor_cloud_launch_rejected", message: "Cursor Cloud rejected the run before accepting provider work. Check the configured account, repository access and explicit model." }, remoteWorkAccepted: false });
       return;
     }
+  }
+  async #unresolved(_error: unknown, authority: TurnAuthority): Promise<void> {
+    if (!this.#current(authority) || !active(this.#cp)) return;
     this.#emit("harness.diagnostic", { code: "cursor_cloud_remote_state_unknown", message: "Cursor Cloud work could not be reconciled. Saved identity is retained; no replacement work was created. Stop or reconnect to reconcile it." });
   }
   #redact(text: string): string {
@@ -517,6 +541,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   }
   async read(): Promise<Record<string, unknown>> { return { provider: "cursor_cloud", agentId: this.#cp.agentId, runId: this.#cp.runId, turnId: this.#cp.turnId, phase: this.#cp.phase, providerStatus: this.#cp.terminalStatus, submittedModel: this.#options.model, effectiveModelAcknowledged: false, instructionsDigest: this.#cp.instructionsDigest, instructionsAcknowledged: false, semanticCompletionReceipt: this.#cp.acceptedCompletion, pendingTerminalDelivery: structuredClone(this.#cp.pendingTerminalDelivery) }; }
   async reconcile(): Promise<Record<string, unknown>> {
+    if (this.#rejectionSettlement) await this.#rejectionSettlement;
     const authority = this.#authority();
     await this.#resolvePending(authority);
     const remote = this.#remote(authority);
@@ -525,8 +550,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   }
   async usage(): Promise<Record<string, unknown> | null> { return this.#cp.agentId ? { ...(await this.#client.getUsage(this.#cp.agentId, this.#cp.runId ? { runId: this.#cp.runId } : {})), cost: null, costUnavailable: true } : null; }
   async transcript() { return { schema: "paperclip-runner/harness-transcript/v1" as const, complete: this.#transcript.length < 1_024, eventCount: this.#transcript.length, events: structuredClone(this.#transcript), omissionReason: this.#transcript.length >= 1_024 ? "bounded_history" : null }; }
-  async snapshot(): Promise<PersistedHarnessSession> { await this.#store.write(this.#cp); return { driverKind: CURSOR_CLOUD_DRIVER_KIND, driverSessionId: this.#cp.driverSessionId, providerSessionId: this.#cp.agentId, workingDirectory: this.#input.workingDirectory, runId: this.#cp.ownerRunId, normalizedSessionId: this.#cp.normalizedSessionId, activeTurnId: active(this.#cp) ? this.#cp.turnId : null, lastSourceSequence: this.#cp.sourceSequence }; }
-  async detachControllerForRestart(): Promise<void> { this.#closed = true; this.#streamAbort?.abort(); this.#clearDeadline(); await this.#bridge?.close(); this.#events.close(); await this.#store.write(this.#cp); await this.#store.release(); }
+  async snapshot(): Promise<PersistedHarnessSession> { if (this.#rejectionSettlement) await this.#rejectionSettlement; await this.#store.write(this.#cp); return { driverKind: CURSOR_CLOUD_DRIVER_KIND, driverSessionId: this.#cp.driverSessionId, providerSessionId: this.#cp.agentId, workingDirectory: this.#input.workingDirectory, runId: this.#cp.ownerRunId, normalizedSessionId: this.#cp.normalizedSessionId, activeTurnId: active(this.#cp) ? this.#cp.turnId : null, lastSourceSequence: this.#cp.sourceSequence }; }
+  async detachControllerForRestart(): Promise<void> { if (this.#rejectionSettlement) await this.#rejectionSettlement; this.#closed = true; this.#streamAbort?.abort(); this.#clearDeadline(); await this.#bridge?.close(); this.#events.close(); await this.#store.write(this.#cp); await this.#store.release(); }
   async close(_input: { reason: string; force?: boolean }): Promise<void> {
     if (this.#closed) return;
     let failure: unknown;
