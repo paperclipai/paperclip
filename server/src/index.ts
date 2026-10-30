@@ -1,6 +1,7 @@
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
 import { routineExecutionStatusService } from "./services/routine-run-status.js";
+import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
@@ -1597,19 +1598,8 @@ async function startServerWithDatabaseTeardown(
         : config.workspaceCompactionDelayHours * 60 * 60 * 1000,
       terminalWorkspaceInspectionBackoffMs: TERMINAL_WORKSPACE_RETRY_MS,
     });
-    const scheduleMergedPullRequestConfirmationSweep = () => {
-      if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
-        .sweepMergedPullRequestConfirmations()
-        .then((result) => {
-          if (result.accepted > 0) {
-            logger.info(result, "accepted merge confirmations for merged pull requests");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "merged pull-request confirmation sweep failed");
-        }));
-    };
+    registerMergeConfirmationWork(deliveryWork, mergedPullRequestConfirmations,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
     const gitRestorePointWorker = registerGitRestorePointWork(deliveryWork, gitRestorePointRetentionService(db as any, {
       storage: storageService,
       retentionDays: config.gitRestorePointRetentionDays,
@@ -1984,7 +1974,6 @@ async function startServerWithDatabaseTeardown(
         scheduleExternalObjectRefreshSweep(new Date());
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        scheduleMergedPullRequestConfirmationSweep();
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
 
