@@ -3814,3 +3814,12 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## S3-backed run evidence
+
+`RUN_LOG_STORE=s3_segments` and `PROVIDER_TRACE_STORE=s3_segments` select optional
+object-backed logs and encrypted raw trace payloads. Local mode remains the
+default. See [run evidence storage](run-evidence-storage.md) for required provider
+capabilities, stable keys, operating limits, migration commands and qualification.
+Do not remove a web volume until its complete retained evidence inventory and
+the independent disposable-server requirements are satisfied.

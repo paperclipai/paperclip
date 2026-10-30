@@ -1490,3 +1490,12 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+## Object-backed run evidence
+
+Optional segmented run logs and raw provider traces store their payloads and
+range indexes directly in S3-compatible storage. Existing `heartbeat_runs` and
+`provider_trace_records` contain backend/reference and lifecycle metadata;
+there is no new payload table or per-segment SQL publication. Object manifests
+use conditional writes to fence publication. Existing structured events retain
+their database append contract. See [run evidence storage](run-evidence-storage.md).

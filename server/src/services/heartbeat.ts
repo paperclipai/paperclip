@@ -25,6 +25,7 @@ import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
+import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
@@ -370,7 +371,7 @@ import {
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
 
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import {
   providerTraceStore,
 } from "./provider-trace-store.js";
@@ -2075,6 +2076,7 @@ export function heartbeatService(
         }
         try {
           providerTraceCapture = await traceStore.prepare({
+            assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
             runId: run.id,
             companyId: run.companyId,
             provider:
@@ -3116,6 +3118,7 @@ export function heartbeatService(
       const runOutput = createHeartbeatRunOutput(db, {
         run, runId, issueId, runLogStore, identityRedactor, secretKeys,
         appendRunEvent, getCurrentUserRedactionOptions,
+        assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
       });
       const goalCheckpointSession: {
         current: {
@@ -4067,9 +4070,10 @@ export function heartbeatService(
       if (!run) throw notFound("Heartbeat run not found");
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 
+      if (!isRunLogStoreType(run.logStore)) throw notFound("Run log backend not supported");
       const result = await runLogStore.read(
         {
-          store: run.logStore as "local_file",
+          store: run.logStore,
           logRef: run.logRef,
         },
         opts,

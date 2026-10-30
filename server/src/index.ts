@@ -1,3 +1,4 @@
+import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
 import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
@@ -1948,6 +1949,12 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("provider_trace_retention", async () => {
+        const worker = registerProviderTraceRetentionWork(db, deliveryWork,
+          () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+        server.on("close", worker.stop);
+        await worker.ready;
+      });
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("retention_sweep", runRetentionSweep);

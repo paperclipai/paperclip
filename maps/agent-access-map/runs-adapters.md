@@ -231,6 +231,12 @@ settings. See [creation access](./agents.md#hire).
 
 Capability ID: `runs-adapters/runs`.
 
+The optional object-backed payload store adds no agent storage API or object
+credentials. Existing run-log REST/CLI/native reads retain current company/task
+visibility and redaction. Raw trace reveal/download/delete retain their instance
+administration boundary. Migration is a pre-start/operator command, outside
+agent runtime authority. [Storage contract](../../doc/run-evidence-storage.md).
+
 Review: `baseline`.
 
 Scoped source-only timing evidence: workspace preparation spans carry only the

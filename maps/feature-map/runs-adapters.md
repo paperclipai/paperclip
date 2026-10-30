@@ -333,13 +333,25 @@ preserves the existing validated Done-parent handoff; process-death and ownershi
 checks remain active. Its PostgreSQL controls are separate from the required
 revised-source live onboarding and follow-up proof.
 
+### Object-backed evidence
+
+With the segmented backend configured, open a run through its normal task/agent
+history and inspect its output. Replace the web process using a separate empty
+log/trace cache, then reopen and page through the same committed output. Compare
+byte offsets and the completed digest. Administrators should also check raw trace
+inspection/download and deletion after replacement, with the existing expiry.
+Migrate retained local history before removing its source volume.
+[Storage qualification](../../doc/run-evidence-storage.md#qualification) covers
+payload and metadata boundaries; a synthetic storage fixture does not establish
+live provider continuity, agent authority, or Railway deployment handoff.
+
 ## Gotchas
 
 - Model accounts are managed in Apps and inline agent account controls.
   `/company/settings/connections` configures decision/fast-response models,
   not the general model-account library.
 
-- The run log is instance database data; it is not the opt-out first-party Telemetry system or operator-configured OpenTelemetry tracing.
+- Structured run events stay in the instance database. Optional stdout/stderr and raw trace payload storage can use S3; see [run evidence storage](../../doc/run-evidence-storage.md). Both are separate from first-party Telemetry and operator OpenTelemetry export.
 - Authentication/model discovery does not establish tool, image, steering, or resumption capability parity.
 - Use [recovery](./recovery.md) for interrupted runs and [execution environments](./execution-environments.md) for local/SSH/sandbox differences.
 

@@ -5,7 +5,7 @@ import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../l
 import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { publishLiveEvent } from "../live-events.js";
-import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
+import { isRunLogStoreType, type RunLogHandle, type RunLogStore } from "../run-log-store.js";
 import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
 import { isHeartbeatRunRuntimeStatusActive, publishHeartbeatRunRuntimeProgress, type createHeartbeatLifecycle } from "./run-lifecycle.js";
 
@@ -24,6 +24,7 @@ export interface HeartbeatRunOutputInput {
   secretKeys: Set<string>;
   appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
+  assertWriterAuthority?: () => Promise<void>;
 }
 
 /**
@@ -59,7 +60,14 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     } | null;
   } = { pending: null };
   let persistedLogBytes = Number(run.logBytes ?? 0);
+  let progressWrite: Promise<void> | null = null;
+  let recordingFailureReported = false;
   const flushOutputProgress = async (opts?: { force?: boolean }) => {
+    if (progressWrite) {
+      await progressWrite;
+      if (opts?.force) return flushOutputProgress(opts);
+      return;
+    }
     const pendingOutputProgress = outputProgressState.pending;
     if (!pendingOutputProgress) return;
     const shouldFlush =
@@ -68,7 +76,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >=
         ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
     if (!shouldFlush) return;
-    await db
+    progressWrite = db
       .update(heartbeatRuns)
       .set({
         lastOutputAt: pendingOutputProgress.at,
@@ -77,21 +85,28 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         lastOutputBytes: pendingOutputProgress.bytes,
         updatedAt: new Date(),
       })
-      .where(eq(heartbeatRuns.id, run.id));
-    lastOutputFlushAt = pendingOutputProgress.at;
-    outputProgressState.pending = null;
+      .where(eq(heartbeatRuns.id, run.id)).then(() => {
+        lastOutputFlushAt = pendingOutputProgress.at;
+        if (outputProgressState.pending === pendingOutputProgress) outputProgressState.pending = null;
+      }).finally(() => { progressWrite = null; });
+    await progressWrite;
   };
   // Bind handlers to the run row persisted at execution start. Progress writes
   // above use only the immutable run ID from the initial row.
   async function begin(currentRun: Run) {
     const run = currentRun;
+    if (run.logStore != null && !isRunLogStoreType(run.logStore)) throw new Error("Run log backend is not supported");
     handle = await runLogStore.begin({
       companyId: run.companyId,
       agentId: run.agentId,
       runId,
       newRun: isNewRunLog(run),
+      assertWriterAuthority: input.assertWriterAuthority,
+      previousStore: run.logStore ?? undefined,
     });
 
+    outputSeq = handle.initialSequence ?? outputSeq;
+    persistedLogBytes = handle.initialBytes ?? persistedLogBytes;
     await db
       .update(heartbeatRuns)
       .set({
@@ -180,8 +195,18 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         },
       });
     };
-    const onLog = (stream: "stdout" | "stderr", chunk: string) =>
-      appendIdentityRedactedLog(stream, identityRedactor.chunk(stream, chunk));
+    const onLog = (stream: "stdout" | "stderr", chunk: string) => {
+      const recorded = appendIdentityRedactedLog(stream, identityRedactor.chunk(stream, chunk));
+      if (handle?.store !== "s3_segments") return recorded;
+
+      void recorded.catch(async () => {
+        if (recordingFailureReported) return;
+        recordingFailureReported = true;
+        await appendRunEvent(currentRun, { eventType: "lifecycle", stream: "system", level: "warn",
+          message: "Run log persistence is incomplete", payload: { reason: "object_log_persistence_failed" } }).catch(() => undefined);
+      });
+      return Promise.resolve();
+    };
     const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
       meta = identityRedactor.redact(meta);
       if (meta.env && secretKeys.size > 0) {

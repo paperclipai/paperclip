@@ -121,3 +121,33 @@ describe("heartbeat run output log recovery", () => {
     expect(lines.map((line) => line.seq)).toEqual([1, 2]);
   });
 });
+
+describe("object-backed diagnostic recording", () => {
+  it("admits a burst without serial network waits, publishes after receipts, and coalesces progress", async () => {
+    const { publishLiveEvent } = await import("../live-events.js");
+    vi.mocked(publishLiveEvent).mockClear();
+    const row = { ...newRunRow };
+    const writes: Array<Partial<Run>> = [];
+    const db = { update: () => ({ set: (values: Partial<Run>) => ({ where: async () => { writes.push(values); Object.assign(row, values); } }) }) } as unknown as Db;
+    const commit: Array<() => void> = [];
+    const recorder = createHeartbeatRunOutput(db, {
+      run: row as Run, runId: row.id!, issueId: null,
+      runLogStore: {
+        begin: async () => ({ store: "s3_segments", logRef: "company/agent/run", initialBytes: 0, initialSequence: 10 }),
+        append: () => new Promise<number>(resolve => commit.push(() => resolve(100))),
+      },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: vi.fn(), getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    const { onLog } = await recorder.begin(row as Run);
+    for (let i = 0; i < 100; i++) await onLog("stdout", `line ${i}\n`);
+    expect(commit).toHaveLength(100);
+    expect(publishLiveEvent).not.toHaveBeenCalled();
+    for (const resolve of commit) resolve();
+    await vi.waitFor(() => expect(vi.mocked(publishLiveEvent).mock.calls.filter(([event]) => event.type === "heartbeat.run.log")).toHaveLength(100));
+    await recorder.flushOutputProgress({ force: true });
+    expect(row.lastOutputSeq).toBe(110);
+    expect(row.lastOutputBytes).toBe(10000);
+    expect(writes.filter(write => write.lastOutputSeq !== undefined)).toHaveLength(2);
+  });
+});

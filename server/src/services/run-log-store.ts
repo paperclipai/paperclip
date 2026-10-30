@@ -7,13 +7,19 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import { createObjectRunLogStore } from "./object-run-log-store.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "s3_segments";
+export function isRunLogStoreType(value: unknown): value is RunLogStoreType {
+  return value === "local_file" || value === "s3_segments";
+}
 
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
   attemptId?: string;
+  initialBytes?: number;
+  initialSequence?: number;
 }
 
 export interface RunLogReadOptions {
@@ -50,6 +56,9 @@ export interface RunLogBeginInput {
   // began this log, so no durable prefix can exist to restore. Omitted means
   // the run may be a retry or recovery and the durable mirror is checked.
   newRun?: boolean;
+
+  assertWriterAuthority?: () => Promise<void>;
+  previousStore?: RunLogStoreType;
 }
 
 export interface RunLogStore {
@@ -509,7 +518,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
-function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
+export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
@@ -538,7 +547,40 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const s3 = resolveRunLogS3();
+  const local = createDurableRunLogStore({ basePath, s3 });
+  const selected = process.env.RUN_LOG_STORE?.trim() || "local_file";
+  if (!isRunLogStoreType(selected)) throw new Error("Invalid RUN_LOG_STORE");
+  if (selected === "s3_segments" && !s3) throw new Error("RUN_LOG_STORE=s3_segments requires RUN_LOG_S3_BUCKET");
+  const external = s3 ? createObjectRunLogStore({
+    provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
+    flushMs: Number(process.env.RUN_LOG_S3_FLUSH_MS || 1000),
+    assertWriterAuthority: async input => {
+      if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
+      await input.assertWriterAuthority();
+    },
+  }) : null;
+  const writer = selected === "s3_segments" ? external! : local;
+  cachedStore = {
+    begin: input => {
+      if (input.previousStore === "local_file") return local.begin(input);
+      if (input.previousStore === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.begin(input);
+      }
+      return writer.begin(input);
+    },
+    append: (handle, event) => handle.store === "s3_segments" ? external!.append(handle, event) : local.append(handle, event),
+    finalize: handle => handle.store === "s3_segments" ? external!.finalize(handle) : local.finalize(handle),
+    read: (handle, opts) => {
+      if (handle.store === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.read(handle, opts);
+      }
+      return local.read(handle, opts);
+    },
+    flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
+  };
   return cachedStore;
 }
 
@@ -548,4 +590,22 @@ export function getRunLogStore() {
 // created or in-flight mirroring is off.
 export async function flushInFlightRunLogMirrors(): Promise<void> {
   await cachedStore?.flushInflightMirrors?.();
+}
+
+
+export async function openLegacyRunLogForMigration(logRef: string) {
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const file = resolveWithin(basePath, logRef);
+  try {
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) throw new Error("Legacy run log is not a regular file");
+    return { stream: createReadStream(file), bytes: stat.size, source: "local" as const };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const config = resolveRunLogS3();
+  if (!config) throw notFound("Legacy run log not found");
+  const key = `${config.keyPrefix?.replace(/\/+$/, "") || "run-logs"}/${logRef}`;
+  const object = await config.provider.getObject({ objectKey: key, signal: AbortSignal.timeout(30_000) });
+  return { stream: object.stream, bytes: object.contentLength, source: "mirror" as const };
 }

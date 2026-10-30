@@ -189,7 +189,7 @@ import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
 } from "./issue-goal-fallback.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
@@ -6713,12 +6713,13 @@ export async function readIssueCommentRunLogText(run: {
   logRef: string | null;
   logBytes: number | null;
 }) {
-  if (run.logStore !== "local_file" || !run.logRef) return "";
+  if (!isRunLogStoreType(run.logStore) || !run.logRef) return "";
   // A timed-out finalization leaves size unknown even when earlier entries
   // exist. Read those logs within the same byte budget as a known-size log.
   if (run.logBytes !== null && (!Number.isFinite(run.logBytes) || run.logBytes <= 0)) return "";
 
   const logRef = run.logRef;
+  const storeType = run.logStore;
   const store = getRunLogStore();
   let offset = 0;
   let content = "";
@@ -6734,7 +6735,7 @@ export async function readIssueCommentRunLogText(run: {
         Buffer.byteLength(content, "utf8");
       if (remainingBytes <= 0) break;
       const chunk = await store.read(
-        { store: "local_file", logRef },
+        { store: storeType, logRef },
         {
           offset,
           limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
