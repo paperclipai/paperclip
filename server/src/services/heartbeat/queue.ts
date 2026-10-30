@@ -1182,6 +1182,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.outcome === "cancelled") {
+          // The stale gate clears `issues.execution_run_id` in its own transaction,
+          // but never drains wakes parked in `deferred_issue_execution` behind the
+          // cancelled run. `releaseIssueExecutionAndPromote` is the path that drains
+          // them (every other cancel path already calls it); without it those wakes
+          // stay parked indefinitely while still looking live. A "deferred" outcome
+          // keeps the run and its queue, so it must not drain.
+          // claimQueuedRun can run under the agent start lock, so defer the
+          // promoted dispatch until the caller releases that lock.
+          await releaseIssueExecutionAndPromote(run, {
+            suppressImmediateRecovery: true,
+            deferredPostCommitEffects,
+          });
+        }
         logger.info(
           {
             runId: run.id,
