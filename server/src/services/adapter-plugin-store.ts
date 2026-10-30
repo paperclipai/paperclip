@@ -45,8 +45,8 @@ interface AdapterSettings {
 // Paths
 // ---------------------------------------------------------------------------
 
-function adapterPluginPaths() {
-  const paperclipDir = resolvePaperclipHomeDir();
+function adapterPluginPaths(homeOverride?: string) {
+  const paperclipDir = resolvePaperclipHomeDir(homeOverride);
   return {
     adapterPluginsDir: path.join(paperclipDir, "adapter-plugins"),
     adapterPluginsStorePath: path.join(paperclipDir, "adapter-plugins.json"),
@@ -133,8 +133,8 @@ function writeSettings(settings: AdapterSettings): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function getAdapterPluginStorePath(): string {
-  return adapterPluginPaths().adapterPluginsStorePath;
+export function getAdapterPluginStorePath(homeOverride?: string): string {
+  return adapterPluginPaths(homeOverride).adapterPluginsStorePath;
 }
 
 export function listAdapterPlugins(): AdapterPluginRecord[] {

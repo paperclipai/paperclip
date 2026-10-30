@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { instanceSettings } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { open } from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { listServerAdapters } from "../adapters/registry.js";
@@ -118,23 +119,31 @@ export async function initializeAdapterSettings(db: AdapterSettingsDb, options: 
   const service = adapterSettingsService(db, options);
   const current = await service.inspectStored();
   if (current) return { seeded: false, current };
+  return service.seedIfAbsent(await readLegacyAdapterSettings(env) ?? { disabledTypes: [] });
+}
+
+export async function readLegacyAdapterSettings(env: Record<string, string | undefined> = process.env): Promise<{ disabledTypes: string[] } | null> {
   const filePath = path.join(resolvePaperclipHomeDir(env.PAPERCLIP_HOME), "adapter-settings.json");
-  let disabledTypes: string[] = [];
   try {
-    const file = await open(filePath, "r");
+    const file = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > 65_536) throw new Error("Legacy adapter settings exceed the size limit or are not a regular file");
       const buffer = Buffer.alloc(65_537);
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > 65_536) throw new Error("Legacy adapter settings exceed the size limit");
-      const value = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
-      disabledTypes = parseStored({ version: 1, revision: 0, disabledTypes: value?.disabledTypes }).disabledTypes;
+      let total = 0;
+      while (total < buffer.length) {
+        const { bytesRead } = await file.read(buffer, total, buffer.length - total, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      if (total > 65_536) throw new Error("Legacy adapter settings exceed the size limit");
+      const value = JSON.parse(buffer.subarray(0, total).toString("utf8"));
+      return { disabledTypes: parseStored({ version: 1, revision: 0, disabledTypes: value?.disabledTypes }).disabledTypes };
     } finally {
       await file.close();
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return null;
   }
-  return service.seedIfAbsent({ disabledTypes });
 }

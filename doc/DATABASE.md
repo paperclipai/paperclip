@@ -755,6 +755,27 @@ The focused PostgreSQL suite can use an owned disposable PostgreSQL database via
 unavailable. It applies migrations and inserts test data, so never point this
 variable at an existing application database.
 
+## Cloud configuration migration receipt
+
+The private `instance_settings` singleton `cloud-configuration-migration:v1`
+records atomic import completion, semantic source digests, imported revisions,
+and metadata-only external adapter blockers. It composes the adapter and
+startup-config owners without replacing an existing authoritative row. Receipt
+locking and the import transaction handle concurrent attempts and retries; no
+local completion marker participates in conflict resolution.
+
+Qualification records current configuration revisions and selected image package
+evidence before normal plugin reconciliation. Image inspection does not hold
+admin write locks; configuration and registration snapshots are rechecked in a
+short transaction before the report is saved. A historical successful report
+never grants current eligibility. External metadata blockers survive loss of the
+legacy home and require a deliberate revision-checked recheck of a present valid
+original source file. Package mismatches remain recorded after maintenance
+reconciliation. See the [bounded migration and qualification procedure](cloud-configuration-migration.md)
+for the stopped-writer prerequisite, commands, retry semantics, integrity limits,
+and the explicit exclusion of secret bytes, whole-server zero downtime, and
+volume removal.
+
 ## Cloud runtime identity singleton
 
 The private `instance_settings` row whose singleton key is

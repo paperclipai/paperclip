@@ -31,6 +31,9 @@ vi.mock("../services/adapter-settings.js", async () => ({
   initializeAdapterSettings: vi.fn(async () => null),
 }));
 vi.mock("../services/cloud-runtime-config.js", () => ({ initializeCloudRuntimeConfig: cloudRuntimeStartupMocks.initialize }));
+const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null), qualify: vi.fn(async () => null) }));
+vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
+vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
 vi.mock("../telemetry.js", () => ({ initTelemetry: cloudRuntimeStartupMocks.telemetry, getTelemetryClient: vi.fn(() => null) }));
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
@@ -627,6 +630,7 @@ describe("startServer feedback export wiring", () => {
       const starting = startServer();
       for (let index = 0; index < 30 && !release; index += 1) await new Promise<void>(resolve => setImmediate(resolve));
       expect(release).toBeTypeOf("function");
+      expect(cloudMigrationMocks.migrate.mock.invocationCallOrder[0]).toBeLessThan(cloudRuntimeStartupMocks.initialize.mock.invocationCallOrder[0]!);
       expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
       expect(createBetterAuthInstanceMock).not.toHaveBeenCalled();
       expect(createAppMock).not.toHaveBeenCalled();
@@ -654,6 +658,14 @@ describe("startServer feedback export wiring", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("stops before configuration consumers when the atomic Cloud migration fails", async () => {
+    cloudMigrationMocks.migrate.mockRejectedValueOnce(new Error("migration did not commit"));
+    await expect(startServer()).rejects.toThrow("migration did not commit");
+    expect(cloudRuntimeStartupMocks.initialize).not.toHaveBeenCalled();
+    expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {

@@ -188,6 +188,8 @@ import {
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { initializeAdapterSettings } from "./services/adapter-settings.js";
+import { migrateCloudConfiguration } from "./services/cloud-configuration-migration.js";
+import { qualifyCloudConfigurationForCurrentImage } from "./services/cloud-configuration-qualification.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -719,6 +721,7 @@ async function startServerWithDatabaseTeardown(
   };
   startupDatabase.close = closeDatabaseClients;
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
+  await migrateCloudConfiguration(db as any);
   await initializeAdapterSettings(db as any);
   
   await initializeCloudRuntimeConfig(db as any);
@@ -977,6 +980,10 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  const cloudQualification = await qualifyCloudConfigurationForCurrentImage(db as any);
+  if (cloudQualification && !cloudQualification.configurationPackagesEligible) {
+    logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
+  }
   const app = await createApp(db as any, {
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null

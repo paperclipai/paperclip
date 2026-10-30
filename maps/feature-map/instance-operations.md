@@ -75,6 +75,16 @@ These controls do not qualify a deployed Cloud rollout or durable file storage.
 
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
 
+Cloud migration: in one maintenance window, stop legacy file writers and run the
+[configuration/package qualification command](../../doc/cloud-configuration-migration.md).
+Inspect its database receipt, update a saved preference, then repeat against a
+second owned application/image root with the first home unavailable. Use an
+explicit package evidence digest for same-package comparison. Confirm stale
+qualification and missing legacy files cannot clear blockers. This recipe covers
+configuration/packages and does not qualify whole-server zero downtime, secret
+bytes, or volume removal. [Local PostgreSQL evidence path](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
+includes a real fixture worker; it does not establish a hosted replacement.
+
 Managed adapters: change a visible adapter preference as an instance admin,
 then use a second application process against the same disposable database to
 confirm catalog and new-agent selection reflect it. Verify saved agents remain

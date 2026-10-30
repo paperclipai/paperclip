@@ -112,6 +112,17 @@ exercises persistence, concurrent writers, admission freshness, activity audit,
 and failed writes; [authorization tests](../../server/src/__tests__/adapter-routes-authz.test.ts)
 cover admin and hidden-setting gates. These are local tests, not deployed proof.
 
+Cloud configuration migration and package qualification are operator commands,
+not agent-accessible REST capabilities. They require the managed environment and
+database operator access. The [command](../../server/src/qualify-cloud-configuration.ts)
+composes transaction-safe owner seeds and writes a private receipt. Every
+qualification rereads current revisions and image package evidence; a completed
+historical receipt grants no deployment or execution authority. [PostgreSQL coverage](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
+uses independent clients, lost-home reconstruction, a real replacement fixture
+worker, rollback/retry, and durable blockers. [Reader coverage](../../server/src/__tests__/cloud-configuration-readers.test.ts)
+checks bounded sources and pnpm-style link integrity. These are local fixtures;
+see the [scope and operator procedure](../../doc/cloud-configuration-migration.md).
+
 Cloud stack Admins may update experimental settings through the trusted Cloud
 actor without receiving other instance-admin powers. This uses the current
 stack role on each request; company membership alone does not grant it.
