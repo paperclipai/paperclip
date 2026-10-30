@@ -12,6 +12,7 @@ import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChe
 import { editCreatedSkillThroughStudio } from "../skill-studio-flow.js";
 import { downloadStoryArtifact, runArtifactOracle } from "../story-artifact.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readBoundTaskFinalReply } from "../native-task-reply.js";
 import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -92,6 +93,17 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
     state.currentIssue.status === "done" && state.taskRuns.length === count && state.taskRuns.every(run => !active(run))
     && state.interactions.every(row => row.status !== "pending"), "agent_task_not_completed");
+  const finalReply = async (issue: Row, state: TaskState, marker: string) => {
+    const runs = state.taskRuns.filter(run => run.status === "succeeded");
+    if (!runs.length || runs.some(run => !Number.isFinite(Date.parse(run.finishedAt)))) throw new JourneyError("failed", "final_run_time_missing");
+    const run = [...runs].sort((a, b) => Date.parse(a.finishedAt) - Date.parse(b.finishedAt)).at(-1)!;
+    await open(issue);
+    const receipt = await readBoundTaskFinalReply({ page: context.page, runId: run.id, agentId: agent.id,
+      load: async () => { const latest = await read(issue); return { run: latest.taskRuns.find(row => row.id === run.id)!, comments: latest.comments }; },
+      expectedText: marker, deadlineAt: options.deadlineAt });
+    await retain(`${issue.id}-final-reply.json`, receipt);
+    return receipt;
+  };
   const reply = async (issue: Row, message: string) => {
     const before = (await read(issue)).comments;
     await open(issue);
@@ -124,9 +136,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const final = await settled(issue, 3);
     const marker = fixture.buildVisibleMarker(nonce);
     check("plan-revision-and-approval", receipt.draftInteraction.id !== receipt.revisedInteraction.id);
-    check("plan-final-answer", final.comments.some(row => row.authorAgentId === agent.id && row.body?.trim() === marker));
-    await open(issue); await context.page.reload();
-    await expect(context.page.getByText(marker, { exact: true }).last()).toBeVisible();
+    await finalReply(issue, final, marker);
+    check("plan-final-answer");
   } else if (id === "build-revise") {
     await runArtifactOracle(null, "base", options.deadlineAt);
     const issue = await create("", SLUGIFY_REQUIREMENTS);
@@ -240,8 +251,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const marker = redirected.marker;
     const userReply = redirected.reply as Row;
     const final = await settled(issue, 3);
-    check("new-direction-completed", final.comments.some(row => row.authorAgentId === agent.id && row.body?.trim() === marker
-      && row.createdByRunId !== original.id));
+    const completion = await finalReply(issue, final, marker);
+    check("new-direction-completed", completion.runId !== original.id);
     check("stopped-run-remained-terminal", final.taskRuns.find(run => run.id === original.id)?.status === "cancelled");
     const afterEvents = await runActivity();
     check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents)
