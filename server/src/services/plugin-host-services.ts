@@ -34,6 +34,7 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -2655,7 +2656,7 @@ export function buildHostServices(
           details: {
             identifier: issue.identifier,
             commentId: comment.id,
-            bodySnippet: comment.body.slice(0, 120),
+            bodySnippet: toWellFormedSnippet(comment.body),
           },
         });
 

@@ -2517,6 +2517,7 @@ export {
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
+export { toWellFormedSnippet } from "./comment-snippet.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
 export {
   AGENT_MENTION_SCHEME,

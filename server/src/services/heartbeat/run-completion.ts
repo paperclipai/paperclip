@@ -1,3 +1,4 @@
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
@@ -884,7 +885,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             entityId: issueId,
             details: {
               commentId: comment.id,
-              bodySnippet: comment.body.slice(0, 120),
+              bodySnippet: toWellFormedSnippet(comment.body),
               identifier: issueRef?.identifier ?? null,
               issueTitle: issueRef?.title ?? null,
               authorizationReason: presentationAuthorizationReason,

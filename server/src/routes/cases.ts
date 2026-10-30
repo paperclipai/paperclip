@@ -47,6 +47,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   isUuidLike,
 } from "@paperclipai/shared";
+import { toWellFormedSnippet } from "@paperclipai/shared";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -953,7 +954,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
           documentKey: key,
           threadId: comment.threadId,
           commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          bodySnippet: toWellFormedSnippet(comment.body),
         },
       });
       res.status(201).json(comment);
