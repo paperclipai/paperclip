@@ -403,10 +403,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
-      const rows = await tx
+      // Skip malformed ids up front, the same way getQueuedCommentLiveness
+      // does: they can never match a comment row, but Postgres rejects the
+      // whole `inArray` statement on the first invalid uuid.
+      const queryableCommentIds = commentIds
+        .map((commentId) => commentId.trim())
+        .filter((commentId) => isUuidLike(commentId));
+      const rows = queryableCommentIds.length === 0 ? [] : await tx
         .select({ createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queryableCommentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
     },
 
@@ -422,11 +428,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .then((rows) => rows[0]);
       if (parent?.status !== "done" || parent.assigneeAgentId !== run.agentId) return false;
 
-      const comments = await tx.select({ body: issueComments.body, createdByRunId: issueComments.createdByRunId,
+      // Query only uuid-like ids: a malformed id can never match a comment
+      // row, but Postgres rejects the whole `inArray` statement on it. The
+      // length comparison below still counts it, so it keeps failing the
+      // check exactly like a missing comment does, just without throwing.
+      const queryableCommentIds = uniqueCommentIds
+        .map((commentId) => commentId.trim())
+        .filter((commentId) => isUuidLike(commentId));
+      const comments = queryableCommentIds.length === 0 ? [] : await tx.select({ body: issueComments.body, createdByRunId: issueComments.createdByRunId,
         authorAgentId: issueComments.authorAgentId })
         .from(issueComments).where(and(
           eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
+          inArray(issueComments.id, queryableCommentIds), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
         ));
       if (comments.length !== uniqueCommentIds.length || comments.some((comment) =>
         comment.createdByRunId !== run.id || (comment.authorAgentId !== null && comment.authorAgentId !== run.agentId)

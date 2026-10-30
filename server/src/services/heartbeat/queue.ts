@@ -1458,20 +1458,33 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   ? { kind: "claimed" as const, run: claimedRun }
                   : { kind: "stale" as const, run: null };
               }
-              const commentRows = await tx
-                .select({
-                  id: issueComments.id,
-                  deletedAt: issueComments.deletedAt,
-                })
-                .from(issueComments)
-                .where(
-                  and(
-                    eq(issueComments.companyId, run.companyId),
-                    eq(issueComments.issueId, issueId),
-                    inArray(issueComments.id, authoritativeIds),
-                  ),
-                );
-              const liveIds = authoritativeIds.filter((commentId) => {
+              // Malformed ids in the envelope (for example an 8-char short
+              // form) can never match a comment row, but Postgres rejects
+              // the whole `inArray` statement on the first invalid uuid and
+              // the queued run is never claimed. Query only uuid-like ids,
+              // the same way getQueuedCommentLiveness does; a malformed id
+              // is simply never live, so the discard gate below still sees
+              // it. The raw list above keeps deciding envelope presence.
+              const queryableIds = authoritativeIds
+                .map((commentId) => commentId.trim())
+                .filter((commentId) => isUuidLike(commentId));
+              const commentRows =
+                queryableIds.length === 0
+                  ? []
+                  : await tx
+                      .select({
+                        id: issueComments.id,
+                        deletedAt: issueComments.deletedAt,
+                      })
+                      .from(issueComments)
+                      .where(
+                        and(
+                          eq(issueComments.companyId, run.companyId),
+                          eq(issueComments.issueId, issueId),
+                          inArray(issueComments.id, queryableIds),
+                        ),
+                      );
+              const liveIds = queryableIds.filter((commentId) => {
                 const comment = commentRows.find((row) => row.id === commentId);
                 return Boolean(comment && !comment.deletedAt);
               });

@@ -8,7 +8,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
-import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { isUuidLike, type IssueComment, type IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
@@ -132,7 +132,15 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
-      const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      // Malformed ids (for example an 8-char short form written into a wake
+      // payload) can never match a comment row, but Postgres rejects the
+      // whole `inArray` statement on the first invalid uuid. Drop them up
+      // front, the same way getQueuedCommentLiveness does, so one bad id
+      // cannot fail the snapshot; the row lookup below already treats a
+      // missing id as no such comment.
+      const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null)
+        .map((commentId) => commentId.trim())
+        .filter((commentId) => isUuidLike(commentId));
       const rows =
         commentIds.length > 0
           ? await tx

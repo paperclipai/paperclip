@@ -476,7 +476,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     "mixed_human_comments", "mixed_other_run_comments", "mixed_unrelated_comments",
     "no_reference", "code_reference", "ambiguous_children", "child_open", "child_cancelled",
     "foreign_child", "unrelated_child", "other_child_assignee", "parent_open",
-    "source_other_task", "source_other_agent", "wrong_company", "wrong_run",
+    "source_other_task", "source_other_agent", "wrong_company", "wrong_run", "malformed_comment",
   ])("proves completed delegation from transactional comment and child rows (%s)", async (scenario) => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();
@@ -517,6 +517,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }).returning();
     const commentIds = scenario === "no_comments" ? [] : [comment.id];
     if (scenario === "missing_comment") commentIds.push(randomUUID());
+    // An 8-char short form, like the id observed in a live wake payload: it
+    // can never match the comment, so the proof must fail — but the lookup
+    // must not throw on Postgres uuid parsing to reach that answer.
+    if (scenario === "malformed_comment") commentIds.push("0422d095");
     if (["multiple_comments", "mixed_human_comments", "mixed_other_run_comments", "mixed_unrelated_comments"].includes(scenario)) {
       const [second] = await db.insert(issueComments).values({ companyId, issueId,
         authorAgentId: scenario === "mixed_human_comments" ? null : leadId,
@@ -565,6 +569,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(result).not.toBeNull();
     expect(result!.liveNonSelfCommentIds).toEqual([comment.id]);
     expect(result!.containedSelfAuthoredComment).toBe(false);
+  });
+
+  it("skips malformed ids when checking deferred comment self-authorship", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorAgentId: agentId, createdByRunId: runId, body: "Closing note",
+    }).returning();
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let mixed: { allSelfAuthored: boolean } | null = null;
+    let onlyMalformed: { allSelfAuthored: boolean } | null = null;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      mixed = await ports.transaction.getCommentSelfAuthorship({
+        companyId, issueId, finishingRunId: runId, commentIds: [comment.id, "0422d095"],
+      });
+      onlyMalformed = await ports.transaction.getCommentSelfAuthorship({
+        companyId, issueId, finishingRunId: runId, commentIds: ["0422d095"],
+      });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(mixed).not.toBeNull();
+    expect(mixed!.allSelfAuthored).toBe(true);
+    expect(onlyMalformed).not.toBeNull();
+    expect(onlyMalformed!.allSelfAuthored).toBe(false);
   });
 
   it("treats an all-malformed queued comment id list as nothing live", async () => {
