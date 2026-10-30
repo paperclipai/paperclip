@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
@@ -125,7 +125,7 @@ export function documentService(db: Db) {
           .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, "plan")))
           .then((rows) => rows[0] ?? null),
         db
-          .select(issueDocumentSelect)
+          .select({ ...issueDocumentSelect, latestBody: sql<string>`''` })
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(eq(issueDocuments.issueId, issue.id))

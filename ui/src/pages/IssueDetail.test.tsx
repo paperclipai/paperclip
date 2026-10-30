@@ -60,6 +60,7 @@ vi.mock("../api/grokBot", () => ({ grokBotApi: mockGrokBotApi }));
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   getCore: vi.fn(),
+  getComment: vi.fn(),
   recentComments: vi.fn(),
   list: vi.fn(),
   listAll: vi.fn(),
@@ -1575,6 +1576,26 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
   });
 
+  it("keeps a cold Coordinator task compact when Classic settings arrive before the workspace preference", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    coordinatorPreference.loaded = false;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false, enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
+    await flushReact();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+
+    Object.assign(coordinatorPreference, { enabled: true, loaded: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({ compactHistory: true }));
+    expect(mockIssuesApi.recentComments).toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(false);
+  });
+
   it("does not post after the account changes while comment queries cancel", async () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "account-a" } });
     mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Account A retained text" }));
@@ -1924,6 +1945,78 @@ describe("IssueDetail", () => {
       expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].compactHistory).toBe(false);
     });
     expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(true);
+  });
+
+  it.each(["empty", "saved"])("reveals core work products while the stored request is stalled (%s)", async (projection) => {
+    const workProducts = projection === "empty" ? [] : [createArtifactWorkProduct({
+      id: "saved-output", attachmentId: "00000000-0000-4000-8000-000000000001", contentType: "text/plain", originalFilename: "evidence.txt",
+    })];
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ workProducts }));
+    mockIssuesApi.get.mockReturnValue(createDeferred<Issue>().promise);
+    mockIssuesApi.listWorkProducts.mockReturnValue(createDeferred<[]>().promise);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      initialHistoryPending: false, workProducts,
+    }));
+    expect(mockIssuesApi.listWorkProducts).toHaveBeenCalled();
+  });
+
+  it.each(["..", "../../../../health", "invalid"])("ignores a malformed comment anchor %s", async (target) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockLocation.hash = `#comment-${target}`;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      compactHistory: true, initialHistoryPending: false,
+    }));
+    expect(mockIssuesApi.getComment).not.toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+  });
+
+  it.each(["#document-qa-evidence", "#document-plan", "#document-continuation-summary", "#work-product-one", "#attachment-one", "#unknown", "#comment-6e391846-d4aa-410f-9d9a-6a60d74bce37"])("keeps the recent conversation for anchor %s", async (hash) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockLocation.hash = hash;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const recent = createIssueComment({ id: "recent-comment", body: "Latest reply" });
+    const older = createIssueComment({ id: "6e391846-d4aa-410f-9d9a-6a60d74bce37", body: "Linked older reply" });
+    mockIssuesApi.getComment.mockResolvedValue(older);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [recent], latestCommentId: recent.id, hasMore: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({ compactHistory: true });
+      expect(mockIssuesApi.recentComments).toHaveBeenCalled();
+    });
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    if (hash.startsWith("#comment-")) {
+      await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].comments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: older.id }), expect.objectContaining({ id: recent.id }),
+      ])));
+      expect(mockIssuesApi.getComment).toHaveBeenCalledWith("issue-1", older.id, expect.anything());
+    } else {
+      expect(mockIssuesApi.getComment).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retains a linked older comment when opening a document without moving the preview cursor", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockLocation.hash = "#comment-6e391846-d4aa-410f-9d9a-6a60d74bce37";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const recent = createIssueComment({ id: "recent-comment", body: "Latest reply" });
+    const older = createIssueComment({ id: "6e391846-d4aa-410f-9d9a-6a60d74bce37", body: "Read my saved evidence" });
+    mockIssuesApi.getComment.mockResolvedValue(older);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [recent], latestCommentId: recent.id, hasMore: true });
+    await act(async () => renderIssueView());
+    const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await waitForAssertion(() => expect(props().comments).toEqual(expect.arrayContaining([expect.objectContaining({ id: older.id })])));
+    mockLocation.hash = "#document-qa-evidence";
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(props().comments).toEqual(expect.arrayContaining([expect.objectContaining({ id: older.id }), expect.objectContaining({ id: recent.id })])));
+    expect(queryClient.getQueryData<IssueRecentComments>([...queryKeys.issues.comments("PAP-1"), "recent"])?.latestCommentId).toBe(recent.id);
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("loads older history after sending from a cold view (reassign=%s)", async (reassign) => {
@@ -2492,7 +2585,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("routes plan to the Plan pane tab and leaves continuation-summary on its existing surface", async () => {
+  it("opens plan and continuation-summary in the pane without switching to full activity", async () => {
     mockPanelState.panelVisible = false;
     mockLocation.hash = "#document-plan";
     mockIssuesApi.get.mockResolvedValue(createIssue());
@@ -2514,11 +2607,11 @@ describe("IssueDetail", () => {
     await act(async () => {
       renderIssueView();
     });
-    expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
     await waitForAssertion(() => {
       const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
-      expect(panel?.props?.documentDeepLink).toBeNull();
+      expect(panel?.props?.documentDeepLink).toMatchObject({ tab: "document", documentKey: "continuation-summary" });
     });
   });
 
@@ -6634,6 +6727,7 @@ describe("IssueDetail", () => {
         comments: [earlier, comment], latestCommentId: comment.id, hasMore: true,
       });
       queryClient.setQueryData(queryKeys.issues.comments(ref), { pages: [[comment, earlier]], pageParams: [null] });
+      queryClient.setQueryData([...queryKeys.issues.comments(ref), "linked", comment.id], comment);
     }
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
     mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
@@ -6670,6 +6764,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       for (const ref of refs) {
         const recent = queryClient.getQueryData<IssueRecentComments>([...queryKeys.issues.comments(ref), "recent"]);
+        expect(queryClient.getQueryData([...queryKeys.issues.comments(ref), "linked", comment.id])).toEqual(action === "delete" ? deleted : null);
         expect(recent?.comments).toEqual(after);
         expect(recent?.latestCommentId).toBe(after.at(-1)!.id);
         expect(queryClient.getQueryData<{ pages: IssueComment[][] }>(queryKeys.issues.comments(ref))?.pages.flat()).toEqual([...after].reverse());

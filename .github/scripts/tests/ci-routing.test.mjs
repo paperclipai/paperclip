@@ -147,13 +147,15 @@ for (const [name, stack, base, expected] of scopeCases) {
 
 const files = (...paths) => JSON.stringify(paths.map((filename) => ({ filename })));
 
-test("profile-ci overrides both middle-stack and release-notes-only skips", () => {
+test("full-suite requests override both middle-stack and release-notes-only skips", () => {
   for (const overrides of [
     { STACK_JSON: JSON.stringify({ position: 2, size: 3, base: { ref: "master" } }), PR_BASE_REF: "stack-1" },
     { STACK_JSON: "null", PR_BASE_REF: "master", TEST_COMPARE_FILES: files("releases/v2026.1015.0.md") },
   ]) {
     assert.equal(executeStep("Select PR CI scope", { ...overrides, PROFILE_CI: "false" }).full_ci, "false");
-    assert.equal(executeStep("Select PR CI scope", { ...overrides, PROFILE_CI: "true" }).full_ci, "true");
+    for (const request of [{ PROFILE_CI: "true" }, { FORCE_FULL_CI: "true" }, { CI_INCREMENTAL_MODE: "full" }]) {
+      assert.equal(executeStep("Select PR CI scope", { ...overrides, ...request }).full_ci, "true");
+    }
   }
 });
 const manyReleaseNotes = JSON.stringify(Array.from({ length: 300 }, (_, index) => ({

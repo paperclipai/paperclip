@@ -9,6 +9,12 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const verifiedProviderEntrypoints = Object.freeze([
   Object.freeze({
+    name: "provision-antigravity",
+    source: resolve(packageRoot, "scripts/provision-antigravity.mjs"),
+    output: resolve(packageRoot, "dist/cli/provision-antigravity.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/provision-antigravity.cjs"),
+  }),
+  Object.freeze({
     name: "provision-cursor",
     source: resolve(packageRoot, "scripts/provision-cursor.mjs"),
     output: resolve(packageRoot, "dist/cli/provision-cursor.js"),
@@ -60,6 +66,9 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
     await mkdir(resolve(packageRoot, "dist/providers"), { recursive: true });
     await cp(resolve(packageRoot, "src/providers"), resolve(packageRoot, "dist/providers"), { recursive: true });
     await copyFile(resolve(packageRoot, "cursor-distributions.json"), resolve(packageRoot, "dist/cursor-distributions.json"));
+    await copyFile(resolve(packageRoot, "antigravity-distributions.json"), resolve(packageRoot, "dist/antigravity-distributions.json"));
+    await mkdir(resolve(packageRoot, "dist/cli"), { recursive: true });
+    await copyFile(resolve(packageRoot, "scripts/patch-antigravity-runtime.admission.py"), resolve(packageRoot, "dist/cli/patch-antigravity-runtime.admission.py"));
   }
   const results = [];
   for (const entrypoint of verifiedProviderEntrypoints) {

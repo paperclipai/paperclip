@@ -102,6 +102,14 @@ The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
 
+The explicit-only [Antigravity additional-agent journey](../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+converts the saved-subscription setup and two-turn file walkthrough into one
+local native cell. It measures agent creation through the ordinary UI,
+instruction-dependent downloaded bytes, same native conversation, durable Done
+lineage and owned runtime cleanup. Current support requires an attached
+self-hosted loopback macOS ARM64 candidate; fresh OAuth, Cloud/remote execution
+and global release qualification are separate gates.
+
 The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
 uses ordinary task APIs and retained native receipts to measure unattended
 receiver behavior. It is a separate manual qualification probe, not a registered

@@ -5,6 +5,7 @@ import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { hasNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
@@ -993,6 +994,7 @@ export async function claimNativeRestartRecoveries(input: {
             wakePolicy: null,
             supersedeOnIdentityChange: true,
           });
+        if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 

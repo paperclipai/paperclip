@@ -39,6 +39,40 @@ The header shows Finish setup instead of Run or Resume, including during compute
 preparation and verification. Terminating agents cannot reopen setup. Final
 submission requests approval when required, then follows the existing preparation
 and verification lifecycle.
+The confirmation shows **Finishing agent setup** until the foreground detail
+query observes actual readiness. **Assign a Task** then hands that current
+record to the composer, so its status does not come from an older paused draft.
+Manual/import pauses and required hire approval remain blocking states.
+
+When the native Runner adapter is available, **Google Antigravity** appears in the ordinary
+adapter picker. Before runtime acceptance, its card says **Not available yet**.
+Selecting it opens Google account setup and model configuration without saving
+an unqualified native execution configuration. The existing inactive draft stays
+held; Test and Finish remain unavailable, and the page says model and connection settings are not
+saved. The selected adapter is retained with the draft: **Back to agents**, reload,
+and **Finish setup** return to the same Google setup. Pending roster rows identify
+Google Antigravity without implying a configured connection or runnable model.
+**Change adapter** returns to the picker with the saved choice selected and allows
+switching that same held draft to another supported adapter.
+Verify discovery, Google-specific setup, draft preservation and the
+disabled actions separately from a successful Antigravity hire or task run.
+
+On an isolated host with a current operator candidate authorization, company-scoped
+adapter inventory can expose **Candidate** with one exact model. That company can
+connect, save, reopen, Test and Finish setup while the global release stays pending.
+Test verifies native account/model admission and cleanup without a model turn.
+Other companies, remote targets, expired authority and other models stay blocked.
+Verify this scoped path separately from production qualification and real task acceptance.
+
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+protects the ordinary roster/picker path, saved personal Google subscription,
+native Test, actual ready handoff, Instructions-only file marker, task and
+same-task follow-up. Its fixed driver starts from the dashboard and creates the
+new agent through visible controls. The current runnable cell attaches to a
+self-hosted target with the admitted local macOS ARM64 candidate and exact low
+model. Saved-account reuse does not qualify fresh OAuth, other platforms or
+global provider release; registration and synthetic controls are separate from
+the retained exploratory and fresh fixed-driver results.
 
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
@@ -52,17 +86,21 @@ resource allocation waits for approval.
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 
-Open **Advanced** at `/agents/:agentId/advanced` for the complete agent
+Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
 [YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
 runtime setting, and adapter key; save, reload, and check the ordinary settings
-and Revisions. Try malformed YAML, a missing/unknown field, a removed nested key,
+and Revisions. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
 and a concurrent settings edit. Errors must retain the draft; stale saves return
 a conflict. Unchanged secret markers must preserve their stored values. Navigating
 away with a draft must show the existing unsaved-change guard. **Reload saved**
 discards the draft. Also edit instruction text, skill pins, direct tool installs,
 channel settings/resources, permissions/trust/project boundaries, secret operations,
 and API key operations. Verify each result in its owning tab. Revision restore is
-an isolated save. Inherited access/history under `observed` is read-only. An
+an isolated save. Default YAML excludes catalogs, inherited definitions, history, and instruction
+contents. Verify profile-key references, named instruction-file patches (`null`
+deletes one file), omitted-setting preservation, and explicit clears. Adding
+unrelated company profiles must not grow this agent’s YAML. Inherited access and
+history remain in their owning tabs. An
 interrupted multi-resource save must report partial progress, preserve returned
 one-time keys, and require reload before another save. Domain APIs retain their
 existing authorization; a multi-resource save is not atomic.

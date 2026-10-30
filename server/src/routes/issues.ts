@@ -9426,11 +9426,16 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true })))) return;
-    // The cold-open read owns only the task row. Related objects and recovery
-    // projections retain their existing authorized detail path.
+    // Saved cards are structural conversation data. Include their local
+    // projection before first paint, independently of slow recovery, workspace
+    // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
+      const [documentPayload, workProducts] = await Promise.all([
+        timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
+        timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
+      ]);
       res.setHeader("Server-Timing", timing.header());
-      res.json(issue);
+      res.json({ ...issue, ...documentPayload, workProducts });
       return;
     }
     const inboxArchiveFieldsPromise =

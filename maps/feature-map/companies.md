@@ -19,7 +19,7 @@ Agent access: [companion](../agent-access-map/companies.md).
 - `decision-models`: `companies/decision-models` — configure and test the company's decision model, then inspect invocation history and recorded usage.
 - `prompt-injection-prevention`: `companies/prompt-injection-prevention` — opt into a shared OpenRouter classifier for existing tool-result guards, test fixed samples, and recover unavailable selections.
 - `fast-responses`: `companies/fast-responses` — configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
-- `agent-observability`: `companies/agent-observability` — configure one company OTLP destination for Codex and Claude Code, test synthetic delivery, and disable export.
+- `agent-observability`: `companies/agent-observability` — configure one company OTLP destination for Codex, Claude Code and native OpenCode, test synthetic delivery, and disable export.
 - `archive`: `companies/archive` — archive and restore through the available controls without confusing archival with deletion.
 - `portability`: `companies/portability` — preview a company package and inspect imported agents, projects, skills, and conflicts.
 
@@ -128,7 +128,7 @@ the test originates at the control plane and does not prove remote runner reacha
 Automated: shared validation, encrypted configuration service, receiver tests, runtime projection,
 and production settings stories cover their respective boundaries. Provider delivery requires a real run.
 
-Manual: configure a disposable company, reload, test, run Codex and Claude Code locally and remotely,
+Manual: configure a disposable company, reload, test, run Codex, Claude Code and native OpenCode locally and remotely,
 inspect their unique markers at the destination, then disable and verify a new marker is absent.
 
 Storybook verification: `agent-observability-01-settings`, `agent-observability-02-states`,

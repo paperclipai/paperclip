@@ -709,6 +709,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let repair_assigned_discovery = args
         .iter()
         .any(|value| value == "--repair-assigned-discovery");
+    let repair_first_task_confirmation = args
+        .iter()
+        .any(|value| value == "--repair-first-task-confirmation");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -1007,6 +1010,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             continue;
         }
+        if repair_first_task_confirmation
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("first-task-confirmation-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("confirmation response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("confirmation rejection omitted guidance")?;
+                if !hint.contains("payload.version")
+                    || !hint.contains("payload.supersedeOnUserComment")
+                    || !hint.contains("Keep approval")
+                    || !hint.contains("confirmation or checkbox")
+                    || hint.contains("payload.questionSet")
+                    || !hint.contains("/additionalProperties")
+                    || hint.contains("PRIVATE_CONFIRMATION_SCOPE")
+                {
+                    return Err("confirmation rejection lacks metadata placement and approval-preserving guidance".into());
+                }
+                log_call(call_log.as_deref(), "first-task:repair-guidance")?;
+                send(
+                    json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"first-task-confirmation", "tool":"request_human_input",
+                        "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                            "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                            "continuationPolicy":"wake_assignee", "payload":{"version":1,"supersedeOnUserComment":false,
+                                "acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true}}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result.pointer("/interaction/kind") != Some(&json!("request_confirmation"))
+                    || result.pointer("/interaction/status") != Some(&json!("pending"))
+                {
+                    return Err("corrected proposal did not return a pending confirmation".into());
+                }
+                log_call(call_log.as_deref(), "first-task:confirmation-pending")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message.get("id") == Some(&json!("terminal-result-request"))
         {
@@ -1022,7 +1072,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(
                 &state_path,
                 &mut state,
-                if success { "completed" } else { "failed" },
+                if success || complete_after_tool_call {
+                    "completed"
+                } else {
+                    "failed"
+                },
             )?;
             continue;
         }
@@ -1754,6 +1808,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "threadId":state.thread_id, "turnId":provider_turn_id,
                             "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
                             "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
+                        }}),
+                    )?;
+                } else if repair_first_task_confirmation {
+                    send(
+                        json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"first-task-confirmation", "tool":"request_human_input",
+                            "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                                "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                                "continuationPolicy":"wake_assignee", "payload":{"acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true},
+                                "version":1,"supersedeOnUserComment":false}
                         }}),
                     )?;
                 } else if let Some(result) = &terminal_result {

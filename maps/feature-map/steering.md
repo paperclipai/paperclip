@@ -58,6 +58,8 @@ inspect the resulting task and run in Paperclip.
 
 ## Driving it
 
+The explicit `stop-redirect` [Product journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) covers `steering/stop-and-pause` only for Stop and one new direction. It requires active work, native cancellation acknowledgement, resource cleanup, and completion without later original-turn activity. It does not qualify pause, interrupt, or all queued-message behavior. Source registration is not a live Cloud pass.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use an agent that stays busy long enough to inspect the queue. Record the adapter,
 native/legacy mode, and advertised steering capability. Test supported and

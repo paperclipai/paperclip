@@ -101,6 +101,8 @@ await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    notificationContext: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT,
+    notificationHelper: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_HELPER,
     noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
@@ -311,8 +313,16 @@ const server = createServer(async (request, response) => {
   if (
     request.method === "GET" &&
     request.url === `/session/${session.id}/message`
-  )
-    return json(response, 200, []);
+  ) {
+    // A long-lived session can hold many megabytes of retained message parts.
+    const historyBytes = Number(
+      await readFile(join(process.env.XDG_DATA_HOME, "fake-message-history-bytes"), "utf8").catch(() => "0"),
+    );
+    return json(response, 200, historyBytes > 0
+      ? [{ info: { id: "msg-history-1", sessionID: session.id, role: "assistant" },
+          parts: [{ id: "part-history-1", type: "text", text: "x".repeat(historyBytes) }] }]
+      : []);
+  }
   if (request.method === "GET" && request.url === "/session/status")
     return json(response, 200, { [session.id]: { type: "idle" } });
   if (request.method === "GET" && request.url?.startsWith("/question?"))

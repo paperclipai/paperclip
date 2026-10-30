@@ -66,6 +66,30 @@ transitions; no permitted-agent or live-provider journey is claimed here.
 Companies requiring hire approval keep drafts paused and allocate no agent-owned
 resource before approval. Selecting an account there is pending verification,
 not approval or execution authority.
+The board confirmation follows preparation and verification through the existing
+foreground detail query before presenting readiness or enabling first-task
+assignment. The handoff updates only an older cached roster record; it cannot
+resume an explicit pause, clear an import hold or bypass approval.
+
+The ordinary picker also exposes pending Google Antigravity configuration when
+the native Runner adapter is available. This is a board configuration preview: selecting it
+does not write native execution settings or remove the inactive draft's setup
+hold. Non-secret draft metadata retains only the selected adapter/provider and
+runner intent for display and resume; it cannot admit execution. Existing Google connection authorization governs credential setup and
+account metadata; Test, hire completion and execution still require the normal
+provider release gates. An isolated operator can authorize one company, exact
+model and pinned local native candidate until a fixed expiry. Only company-local
+adapter discovery projects its agent/model as a Candidate; it never returns the
+launch descriptor or stores that authority on the agent. Server validation and
+native launch independently enforce the trusted descriptor. The selected managed
+home feeds a zero-turn native admission Test; uncertain cleanup returns a bounded
+diagnostic and retains the credential home until physical retirement and refresh
+handoff, then performs normal writeback. This exception leaves global release
+qualification pending. UI discoverability grants no additional agent or probe
+authority. Source: [picker](../../ui/src/components/new-agent/AgentBasicsDialog.tsx)
+and [setup](../../ui/src/components/new-agent/NewAgentSetup.tsx). This scoped note
+is source-only and does not claim a permitted-agent journey or live Antigravity
+task acceptance.
 
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the
@@ -86,6 +110,13 @@ Scoped Evidence: `source-only` — [creation policy](../../server/src/services/a
 [frozen approval activation](../../server/src/modules/agent-lifecycle/adapters/approvals.ts)
 and [same-harness import preservation](../../server/src/services/company-portability.ts)
 at the scoped commit. No permitted-agent journey was executed for this map update.
+
+The board-driven [Antigravity setup/task eval](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+creates its measured agent through the ordinary wizard and reuses only the
+signed-in owner's existing personal default Google grant. Its observer may read
+the owned records; it cannot seed the hire or manufacture readiness. This case
+does not qualify agent-authored hiring, credential administration or a broader
+agent permission boundary.
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.
@@ -112,7 +143,10 @@ The operator's Advanced YAML editor uses the existing configuration GET/PATCH
 operations plus the owning instructions, skills, tools, channels, permissions,
 secrets, API key, and revision APIs. It does not add aggregate write authority;
 each request retains its own company and actor checks. Resource reads fail closed.
-Observed inherited access/history is read-only. Multi-resource writes are
+The compact YAML editor omits inherited access/history, company catalogs, and
+instruction contents. Profile-key references resolve only within the company.
+Omitted settings are preserved; named file patches use explicit null for deletion.
+The normal domain APIs still enforce every write. Multi-resource writes are
 sequential, with preflight comparison and explicit partial-failure recovery;
 Core configuration, managed files, and entry revisions enforce their existing
 atomic revision/hash preconditions. External supporting files and other

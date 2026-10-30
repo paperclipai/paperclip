@@ -29,7 +29,7 @@ import {
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
-import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -86,6 +86,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #sessionId: string | null = null;
   readonly #assertControllerActive?: () => void;
   readonly #assertRunAdmissionActive?: () => void;
+  readonly #onResultCommitted?: () => Promise<void>;
+  readonly #onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
@@ -99,6 +101,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       assertControllerActive?: () => void;
       /** Read-only admission may finish an existing startup solely for restart detachment. */
       assertRunAdmissionActive?: () => void;
+      onResultCommitted?: () => Promise<void>;
+      onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
@@ -109,6 +113,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#onEventPersistence = options.onEventPersistence;
+    this.#onResultCommitted = options.onResultCommitted;
     this.#onDuplicateEvent = options.onDuplicateEvent;
   }
 
@@ -217,6 +223,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
@@ -262,7 +269,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    event = redactRunnerApiPayloads(event);
+    event = redactRunnerApiEvent(event);
     const persisted = await this.#db.transaction(async tx => {
       this.#assertActive(options);
       const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
@@ -287,6 +294,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       return receipt;
     });
     this.#assertActive(options);
+    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceStartedAt + performance.now() - persistenceClock); } catch {}
     if (persisted.disposition === "committed") {
       try {
         publishLiveEvent({
@@ -377,7 +385,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       canonicalSha256,
     });
 
-    await this.#db.transaction(async (tx) => {
+    const insertedResult = await this.#db.transaction(async (tx) => {
       // Result insertion checks the task foreign key. Acquire that parent lock
       // before the run, matching task mutations that subsequently update a run.
       // Otherwise concurrent chat/status writes can deadlock after generation.
@@ -401,7 +409,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       if (existing) {
         this.#assertActive(options);
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
-        return;
+        return false;
       }
       const resultJson = {
         result: validated.result,
@@ -457,6 +465,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
       this.#assertActive(options);
+      return true;
     });
+    if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }

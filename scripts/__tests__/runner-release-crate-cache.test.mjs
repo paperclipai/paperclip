@@ -80,6 +80,7 @@ test("the script's path list and key inputs cover what the release build of the 
   assert.deepEqual(HASHED_INPUTS, [
     `${RUNNER_PACKAGE}/rust-toolchain.toml`,
     `${RUNNER_PACKAGE}/acpx-profiles.json`,
+    `${RUNNER_PACKAGE}/antigravity-distributions.json`,
     `${RUNNER_PACKAGE}/runner/Cargo.toml`,
     `${RUNNER_PACKAGE}/runner/Cargo.lock`,
     `${RUNNER_PACKAGE}/runner/crates/**`,
@@ -280,6 +281,51 @@ test("every file the crate includes by path sits under a hashed input, so an edi
   assert.deepEqual([...forms].sort(), ["concat-manifest-dir", "concat-metavariable", "literal"]);
 });
 
+test("isolated Docker Rust stages preserve the layout of embedded schema and identity inputs", () => {
+  const crateRoot = path.join(repoRoot, RUNNER_PACKAGE, "runner/crates");
+  const sources = [];
+  (function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".rs")) sources.push(full);
+    }
+  })(crateRoot);
+  for (const [dockerfile, stage] of [["Dockerfile", "runner-build"], ["docker/daytona-runner/Dockerfile", "runnerd-build"]]) {
+    const docker = readFileSync(path.join(repoRoot, dockerfile), "utf8");
+    const body = docker.split(/^FROM .+ AS /m).find(part => part.startsWith(`${stage}\n`));
+    assert.ok(body, `${dockerfile}: missing ${stage}`);
+    const workdir = /^WORKDIR (.+)$/m.exec(body)?.[1];
+    assert.ok(workdir?.startsWith("/"), `${dockerfile}: an absolute stage working directory is required`);
+    const copies = [...body.matchAll(/^COPY (?!-)(.+)$/gm)].flatMap(([, instruction]) => {
+      const args = instruction.trim().split(/\s+/);
+      const destination = path.posix.resolve(workdir, args.pop());
+      return args.map(source => {
+        const absolute = path.join(repoRoot, source);
+        return { source: absolute, destination: statSync(absolute).isDirectory() ? destination : path.posix.join(destination, path.basename(source)) };
+      });
+    });
+    const copiedPath = source => {
+      const copy = copies.find(copy => source === copy.source || source.startsWith(`${copy.source}${path.sep}`));
+      return copy ? path.posix.join(copy.destination, path.relative(copy.source, source)) : null;
+    };
+    let checked = 0;
+    for (const source of sources) {
+      for (const { resolved } of crateIncludes(source, readFileSync(source, "utf8"))) {
+        // Cargo test-only fixture trees are intentionally absent from production
+        // Docker stages. Their cache coverage is checked by the preceding test.
+        if (/\/(?:test-fixtures|test\/fixtures|tests\/runner-e2e\/fixtures)(?:\/|$)/.test(resolved)) continue;
+        const stagedSource = copiedPath(source);
+        assert.ok(stagedSource, `${dockerfile}: crate source was not copied: ${path.relative(repoRoot, source)}`);
+        const expected = path.posix.resolve(path.posix.dirname(stagedSource), path.relative(path.dirname(source), resolved));
+        assert.equal(copiedPath(resolved), expected, `${dockerfile}: include input ${path.relative(repoRoot, resolved)} must retain its crate-relative path`);
+        checked++;
+      }
+    }
+    assert.ok(checked > 0, `${dockerfile}: the guard must see real Rust include paths`);
+  }
+});
+
 test("every PR reader restores the crate after the dependency cache and marks it before building", () => {
   for (const [name, buildCommand] of READERS) {
     const body = job(prWorkflow, name);
@@ -310,7 +356,8 @@ test("every PR reader restores the crate after the dependency cache and marks it
 
 test("the Verify Paperclip Runner job restores the crate only in the lanes that build it", () => {
   const body = job(prWorkflow, "verify_paperclip_runner");
-  const lanes = [...body.matchAll(/- lane_label: (.+)\n\s+command: (.+)\n(\s+release_crate: (true)\n)?/g)].map(([, label, , , flag]) => [label, flag === "true"]);
+  const lanes = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
+    .verify_paperclip_runner.map((entry) => [entry.lane_label, entry.release_crate === true]);
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],

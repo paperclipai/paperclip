@@ -79,6 +79,8 @@ Channel-specific forms and identity linking require separate provider evidence.
 
 ## Driving it
 
+The explicit `plan-revise-accept` and `protected-actions` [Product journeys](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) cover `questions-and-approvals/plan-review` and `questions-and-approvals/tool-review`. They share the classic browser actions and saved-state checks. Cloud qualification remains separate; source registration is not a passing result.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use separate disposable requests for accept, decline, and revision paths. Record
 the actor and request revision. Prepare a waiting question through a test agent;

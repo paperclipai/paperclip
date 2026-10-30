@@ -16,6 +16,7 @@ test("a task title survives an outage and saves after server recovery", async ({
       data: { title: "Another task stays unchanged", status: "backlog" },
     }));
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     const header = page.getByTestId("issue-detail-header");
     await expect(header.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
 
@@ -60,6 +61,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await expect(page.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Tasks", exact: true }).first().click();
     await page.getByRole("link").filter({ hasText: first.title }).first().click();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     const header = page.getByTestId("issue-detail-header");
     await expect(header.getByRole("heading", { name: first.title, exact: true })).toBeVisible();
     const dismissAnnouncement = page.getByRole("button", { name: "Dismiss announcement" });
@@ -74,6 +76,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await secondLink.focus();
     await secondLink.press("Enter", { timeout: 5_000 });
     await expect(page).toHaveURL(new RegExp(`${second.id}$`));
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
     await header.getByRole("heading", { name: second.title, exact: true }).click();
     await expect(header.locator("textarea")).toHaveValue(second.title);
@@ -189,6 +192,7 @@ test("startup work retries a failed session lookup while other APIs stay healthy
       await route.fulfill({ status: 500, json: { error: "session_lookup_failed" } });
     });
     await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     const header = page.getByTestId("issue-detail-header");
     await header.getByRole("heading", { name: issue.title, exact: true }).click();
     await header.locator("textarea").fill("Saved after session recovery");

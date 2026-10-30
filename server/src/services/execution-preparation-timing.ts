@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { EXECUTION_PREPARATION_SPAN_ATTRS, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
 
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
+  | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
+  | "run_identity" | "trust_preset" | "task_context"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
   | "configuration_mentions" | "configuration_github_identity" | "configuration_secrets"
@@ -82,7 +84,11 @@ export type ExecutionPhase =
   | "workspace_sync.manifests_persist" | "workspace_sync.descriptor_write" | "workspace_sync.reference_write"
   | "workspace_sync.source_root" | "workspace_sync.repositories" | "workspace_sync.ignore_rules"
   | "workspace_sync.seed_generation" | "workspace_sync.seed_lookup" | "workspace_sync.seed_publish"
+  | "workspace_sync.seed_cache_copy" | "workspace_sync.seed_cache_sync" | "workspace_sync.seed_cache_hash"
+  | "workspace_sync.seed_cache_capacity" | "workspace_sync.seed_cache_evict" | "workspace_sync.seed_cache_locked_publish"
+  | "workspace_sync.seed_read_copy" | "workspace_sync.seed_read_hash" | "workspace_sync.seed_read_touch"
   | "workspace_sync.git_clone" | "workspace_sync.git_archive" | "workspace_sync.seed_replay" | "workspace_sync.seed_persist"
+  | "workspace_sync.git_index_refresh"
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
   | "workspace_sync.seed_extract" | "workspace_sync.seed_snapshot" | "workspace_sync.seed_cleanup"
   | "workspace_sync.inbound_barrier" | "workspace_sync.transfer" | "workspace_sync.progress"
@@ -99,7 +105,7 @@ export type ExecutionPhase =
   | "execution.runtime" | "execution.workspace_ownership" | "execution.workspace_finalize" | "execution.workspace_restore" | "execution.workspace_commit"
   | "execution.workspace_ownership_wait" | "execution.realtime"
   | "execution.usage" | "execution.native_finalize"
-  | "execution.plugin_prepare" | "execution.plugin_project_auth" | "execution.plugin_submit" | "execution.plugin_connection"
+  | "execution.plugin_dispatch" | "execution.plugin_prepare" | "execution.plugin_project_auth" | "execution.plugin_submit" | "execution.plugin_connection"
   | "execution.usage_startup" | "execution.mcp_handoff" | "execution.dispatch_admission" | "execution.budget_reservation"
   | "completion.run" | "completion.output" | "completion.terminal_write" | "completion.cost" | "completion.liveness" | "completion.summary"
   | "response.transaction" | "response.transaction.entry" | "response.transaction.commit" | "response.transaction.rollback" | "response.row_lock" | "response.write"
@@ -140,7 +146,7 @@ export function isRunPhaseActive(phase: ExecutionPhase): boolean {
   return endpointEnabled() && owned?.phase === phase && !owned.ended;
 }
 
-function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}): Promise<T> {
+function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
@@ -165,7 +171,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
   };
   if (!endpointEnabled()) return (async () => work())();
   try {
-    const parent = independent ? undefined : getRunExecutionTraceContext(runId);
+    const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
     const traced = trace.getTracer(name.startsWith("heartbeat.prepare.") ? "paperclip.heartbeat-preparation"
       : name.startsWith("native.controller.") ? "paperclip.native-controller" : "paperclip.execution").startActiveSpan(name, {
@@ -189,13 +195,19 @@ export function withRunExecutionTiming<T>(runId: string, work: () => T | Promise
   return measure(runId, "task.execution_attempt", work, true);
 }
 
+export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
+  return measure(runId, "task.workspace_finalization", work, true);
+}
+
 export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   const owned = ownership.getStore();
   if (!endpointEnabled() || !owned || owned.ended) return work();
   const count = owned.details.get(phase) ?? 0;
   if (count >= 16) return work();
   owned.details.set(phase, count + 1);
-  return measure(owned.runId, phase, work, false, counts);
+  // A startup step can be more specific than the owning run phase. Keep that
+  // causal parent while the child publishes its own context to plugin workers.
+  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {
@@ -242,9 +254,19 @@ const workspaceSyncDetailPhases = {
   "workspace.ignore_rules": "workspace_sync.ignore_rules",
   "workspace.seed_generation": "workspace_sync.seed_generation",
   "workspace.seed_lookup": "workspace_sync.seed_lookup",
+  "workspace.seed_read_copy": "workspace_sync.seed_read_copy",
+  "workspace.seed_read_hash": "workspace_sync.seed_read_hash",
+  "workspace.seed_read_touch": "workspace_sync.seed_read_touch",
   "workspace.seed_publish": "workspace_sync.seed_publish",
+  "workspace.seed_cache_copy": "workspace_sync.seed_cache_copy",
+  "workspace.seed_cache_sync": "workspace_sync.seed_cache_sync",
+  "workspace.seed_cache_hash": "workspace_sync.seed_cache_hash",
+  "workspace.seed_cache_capacity": "workspace_sync.seed_cache_capacity",
+  "workspace.seed_cache_evict": "workspace_sync.seed_cache_evict",
+  "workspace.seed_cache_locked_publish": "workspace_sync.seed_cache_locked_publish",
   "workspace.git_clone": "workspace_sync.git_clone",
   "workspace.git_archive": "workspace_sync.git_archive",
+  "workspace.git_index_refresh": "workspace_sync.git_index_refresh",
   "workspace.seed_replay": "workspace_sync.seed_replay",
   "workspace.seed_persist": "workspace_sync.seed_persist",
   "workspace.overlay_copy": "workspace_sync.overlay_copy",

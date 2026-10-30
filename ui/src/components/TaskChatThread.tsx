@@ -39,7 +39,7 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
-import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import {
   TaskChatTurnStatusIsland,
   taskChatTurnStatusModel,
@@ -1831,7 +1831,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             runId: source.status === "cancelled" ? undefined : source.id,
             ...(branchUnavailable || aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
-              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
+              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive"
+                && meta?.resultJson?.workspaceRestoreFailure !== "restore_invalid_metadata",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,
@@ -2458,12 +2459,31 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // pill's own second-tick keeps the elapsed readout moving. `running` follows
   // tailStreaming: true while live, false through the settle gap — so the tail
   // renders identically either side of the run finishing.
+  const {
+    pending: runnerSubmissionPending,
+    agentId: submissionAgentId,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const tailAgentName =
     liveRun?.agentName ?? linkedRunMetaById.get(tailRunId ?? "")?.agentName;
   const tailAgentId =
     liveRun?.agentId ??
     linkedRunMetaById.get(tailRunId ?? "")?.agentId ??
-    issueAssigneeAgentId;
+    submissionAgentId ?? issueAssigneeAgentId;
   const tailAgent = tailAgentId ? agentMap?.get(tailAgentId) : undefined;
   const visibleTailAgentName = tailAgentName ?? tailAgent?.name ?? null;
   const visibleTailAgentIcon = tailAgent?.icon ?? null;
@@ -2704,29 +2724,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [handleRuntimeRequestDecision, onSkipInteraction],
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
-  const hasAgentAssignee = Boolean(issueAssigneeAgentId);
-  const {
-    pending: runnerSubmissionPending,
-    takingLonger: submissionTakingLonger,
-    begin: beginSubmission,
-    reject: rejectSubmission,
-    blocked: startupBlocked,
-  } = useRunnerSubmission({
-    issueId: issueId ?? null,
-    agentId: issueAssigneeAgentId,
-    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
-    blocked: Boolean(composerPause),
-    comments,
-    issueStatus,
-    runId: liveRun?.id ?? null,
-    linkedRuns,
-    interruption: props.interruption,
-    onRefresh: props.onRefreshLatestComments,
-  });
+  const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
       args[4] ??= crypto.randomUUID();
-      const attempt = beginSubmission(args[4]);
+      const attempt = beginSubmission(args[4], args[2] ? {
+        agentId: args[2].assigneeAgentId,
+        agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
+      } : undefined);
       try {
         await onAdd(...args);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
@@ -2739,7 +2744,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         throw error;
       }
     },
-    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput],
+    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput, agentMap],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
@@ -3037,10 +3042,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : logsAreInitiallyHydrating;
   });
   // Hydrating a run inserts activity around its saved reply and can move the
-  // latest viewport substantially in the full-history view. Cold opens reveal
-  // the brief and recent messages independently; neither plans nor transcripts
-  // may hold them behind the loading screen.
-  const historyPending = !props.compactHistory && (initialHistoryPending || planLoading || transcriptHistoryPending);
+  // latest viewport substantially. Compact opens hydrate only their bounded
+  // recent window, but its saved cards and latest turn must arrive together so
+  // the first readable frame already has its final structure.
+  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
   const scrollNavigation = useTaskChatScrollNavigation();
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
@@ -3055,10 +3060,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         : Boolean(logErrorsByRun?.has(run.id)),
     );
   const historyKey = conversationMode && draftKey ? draftKey : issueId;
-  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(
-    () => (historyPending ? undefined : historyKey),
-  );
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(undefined);
   const historyRevealed = revealedHistoryKey === historyKey;
+  const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
   const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
@@ -3073,12 +3077,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [historyRevealed, historyKey]);
-  // Mount and measure the real thread while concealed, then reveal in one
-  // commit. A frame also lets ancestor navigation scroll restoration finish.
+  // Mount and measure the real thread while concealed. The properties pane
+  // can still be opening when data becomes ready; revealing during its width
+  // transition rewraps cards and races initial anchor/focus scrolling.
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    const frame = requestAnimationFrame(() => setRevealedHistoryKey(historyKey));
+    let previousWidth: number | undefined;
+    let stableFrames = 0;
+    let frame: number;
+    const revealWhenSettled = () => {
+      const width = historyShellRef.current?.getBoundingClientRect().width;
+      stableFrames = width === previousWidth ? stableFrames + 1 : 0;
+      previousWidth = width;
+      if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
+      else frame = requestAnimationFrame(revealWhenSettled);
+    };
+    frame = requestAnimationFrame(revealWhenSettled);
     return () => cancelAnimationFrame(frame);
   }, [historyPending, historyRevealed, historyKey]);
   useEffect(() => {
@@ -3105,6 +3120,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
+            ref={historyShellRef}
           >
             <div
               className={cn(
@@ -3216,9 +3232,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <>
                               {tailRunId || optimisticRunnerStartup ? (
                                 <div data-testid="task-chat-live-transcript">
+                                  <TaskChatShimmerScope items={tailItems}>
+                                  <TaskChatRunnerHeader
+                                    runId={tailRunId}
+                                    agentName={visibleTailAgentName}
+                                    agentIcon={visibleTailAgentIcon}
+                                    agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                    status={optimisticRunnerStartup ? "queued" : tailStatus}
+                                    execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                    preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                    startedAtMs={tailStartedAtMs}
+                                    finishedAtMs={tailFinishedAtMs}
+                                    continuedAfterSteering={paperclipRunnerTail && tailTimelineAnchors.length > 0}
+                                    statusContent={tailRunSource?.adapterType !== "paperclip_runner" && !optimisticRunnerStartup ? (
+                                      <TaskChatLiveRunPill status={tailStatus} execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                        startedAtMs={tailStartedAtMs} finishedAtMs={tailFinishedAtMs} toolSummary={tailToolSummary} />
+                                    ) : undefined}
+                                  />
                                   {tailRunSource?.adapterType === "paperclip_runner" ||
                                   optimisticRunnerStartup ? (
                                     <TaskChatRunnerTurn
+                                      showHeader={false}
                                       runId={tailRunId}
                                       execution={
                                         liveRun?.id === tailRunId
@@ -3254,17 +3288,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     />
                                   ) : (
                                     <TaskChatShimmerScope items={tailItems}>
-                                      <TaskChatLiveRunPill
-                                        status={tailStatus}
-                                        execution={
-                                          liveRun?.id === tailRunId
-                                            ? liveRun.execution
-                                            : null
-                                        }
-                                        startedAtMs={tailStartedAtMs}
-                                        finishedAtMs={tailFinishedAtMs}
-                                        toolSummary={tailToolSummary}
-                                      />
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
@@ -3282,6 +3305,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       />
                                     </TaskChatShimmerScope>
                                   )}
+                                  </TaskChatShimmerScope>
                                 </div>
                               ) : null}
                               {tailTaskCreationItems.map(item => (

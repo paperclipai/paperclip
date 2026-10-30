@@ -1,4 +1,5 @@
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
+import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
@@ -139,6 +140,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
   stateDirectory?: string;
@@ -349,6 +351,7 @@ import {
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
   closeIdleWarmNativeSessionsForRestart,
+  readNativeSessionIdleWork,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
@@ -1683,7 +1686,7 @@ describe("remote provider pack manifest", () => {
       opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
     }).map(([key, path]) => [key, { path, sha256: digest }])) as Record<"nodeCommand" | "opencodeCommand" | "opencodeProxy", { path: string; sha256: string }>;
     const payload = {
-      compatibility: { opencode: 1, acpx: 1 },
+      compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
       target: { platform: "linux", architecture }, runnerSourceRevision: "a".repeat(40),
       pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
         opencode: "1.18.34", acpx: "0.13.1", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
@@ -3770,10 +3773,12 @@ describe("runtime question fallback", () => {
 });
 
 describe("native provider bootstrap environment", () => {
-  it.each(["pi", "cursor", "copilot"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
+  it.each(["pi", "cursor", "copilot", "antigravity"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
     const provider = { kind: "acpx", agent } as NativeExecutionInput["provider"];
     const host = { PATH: "/host/bin", HOME: "/host/home", OPENROUTER_API_KEY: "ambient-pi",
       CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot",
+      GEMINI_API_KEY: "ambient-google", GOOGLE_API_KEY: "ambient-other-google", GEMINI_HOME: "/ambient-google-home",
+      GOOGLE_APPLICATION_CREDENTIALS: "/ambient-google-credential.json", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "ambient-google-subscription",
       PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
     expect(resolveNativeProviderEnvironment(provider, undefined, host)).toEqual({ PATH: "/host/bin", HOME: "/host/home" });
     const explicit = { COPILOT_GITHUB_TOKEN: "explicit-company-binding" };
@@ -9240,6 +9245,38 @@ describe("native warm session supervision", () => {
     expect(onGoalCheckpoint).toHaveBeenCalledOnce();
   });
 
+  it("blocks idle sleep for a released local warm session until its close checkpoint finishes", async () => {
+    await closeIdleWarmNativeSessionsForRestart();
+    markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: false });
+    let finishClose!: () => void;
+    const checkpoint = new Promise<void>(resolve => { finishClose = resolve; });
+    const close = vi.fn(() => checkpoint);
+    const warmExecution = { ...execution, binding: { ...execution.binding,
+      runId: "run-local-idle-sleep", executionWorkspaceId: "workspace-local-idle-sleep" },
+      session: { ...execution.session, normalizedSessionId: "session-local-idle-sleep",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "Completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-local-idle-sleep", normalizedSessionId: warmExecution.session.normalizedSessionId,
+        providerSessionId: "provider-local-idle-sleep", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    try {
+      expect(readNativeSessionIdleWork()).toBe("none");
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: "runner" });
+      expect(close).not.toHaveBeenCalled();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await readIdleLocalWork()).toBe("present");
+      const closing = closeIdleWarmNativeSessionsForRestart();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await readIdleLocalWork()).toBe("present");
+      finishClose(); await closing;
+      expect(readNativeSessionIdleWork()).toBe("none");
+    } finally { finishClose(); await closeIdleWarmNativeSessionsForRestart(); }
+  });
+
   it.each(["environment deletion", "controller restart"])("closes an idle warm session before %s", async (shutdownKind) => {
     const close = vi.fn(async () => undefined);
     const warmExecution = {
@@ -10373,10 +10410,15 @@ describe("native session bounded recovery", () => {
     });
     const stop = vi.fn(async () => undefined);
     const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop });
+    const releasePreparation = vi.fn(async () => {
+      expect(renew).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+    });
     let reached!: () => void, release!: () => void;
     const claiming = new Promise<void>(resolve => { reached = resolve; });
     const preparation = new Promise<void>(resolve => { release = resolve; });
     const running = executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "fresh-runner",
+      onExecutionLeaseAcquired: releasePreparation,
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "fresh-environment", leaseId: "fresh-lease" },
       onEvent: async event => {
         if (event.payload?.span === "native.coordinator.claim") { reached(); await preparation; }
@@ -10388,6 +10430,7 @@ describe("native session bounded recovery", () => {
         db, runId: fresh.binding.runId, attempt: 1, remote: true,
       }));
       expect(stop).not.toHaveBeenCalled();
+      expect(releasePreparation).toHaveBeenCalledOnce();
       release();
       expect(await running).toBe(failure);
       expect(stop).toHaveBeenCalledOnce();
@@ -11817,6 +11860,52 @@ describe("runnerd provider runtime wiring", () => {
       for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
         await expect(access(join(agentHome, name))).rejects.toMatchObject({ code: "ENOENT" });
       }
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = priorHome;
+    }
+  });
+
+  it("projects the selected Antigravity subscription and copies refreshes from the exact native home after close", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    const privateRoot = await realpath(isolatedStateDirectory);
+    process.env.PAPERCLIP_HOME = privateRoot;
+    const managedHome = join(privateRoot, "antigravity-managed-home");
+    await mkdir(join(managedHome, "antigravity-acp"), { recursive: true, mode: 0o700 });
+    const credential = (project?: string) => JSON.stringify({
+      client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+      refresh_token: "fixture-google-refresh", token_uri: "https://oauth2.googleapis.com/token", scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+      ...(project ? { project_id: project } : {}),
+    });
+    const managedToken = join(managedHome, "antigravity-acp", "acp_token.json");
+    await writeFile(managedToken, credential(), { mode: 0o600 });
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model: "caller-selected-model", permissionMode: "deny-all" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    const transportClose = vi.fn(async () => undefined);
+    const nativeTransport = { close: transportClose };
+    state.createTransport.mockReturnValueOnce({ transport: nativeTransport } as never);
+    const close = vi.fn(async () => nativeTransport.close());
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current,
+        runnerInstanceId: "antigravity-credential-close", managedAiCredentialHome: managedHome,
+        runnerEnvironment: { GEMINI_HOME: "/ambient", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed" } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const transport = state.createTransport.mock.calls.at(-1)![0];
+      expect(transport.environment).toMatchObject({ PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential() });
+      expect(transport.environment?.GEMINI_HOME).toBeUndefined();
+      await mkdir(transport.acpxRuntimeDirectory!, { recursive: true, mode: 0o700 });
+      const runtimeHome = join(await resolveAcpxRuntimeRoot(transport.acpxRuntimeDirectory!, execution.session.normalizedSessionId!), "antigravity-home", "antigravity-acp");
+      await mkdir(runtimeHome, { recursive: true, mode: 0o700 });
+      for (const name of ["auth-refresh.json", "auth-refresh.json.tmp"]) await writeFile(join(runtimeHome, name), credential("resolved-project"), { mode: 0o600 });
+      const session = await backend.openSession({} as never);
+      await session.close({ reason: "completed" });
+      expect(close).toHaveBeenCalledOnce();
+      expect(transportClose).toHaveBeenCalledOnce();
+      expect(await readFile(managedToken, "utf8")).toBe(credential("resolved-project"));
+      for (const name of ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp"]) await expect(access(join(runtimeHome, name))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = priorHome;

@@ -1,3 +1,5 @@
+import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
+import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService } from "../services/join-request-retention.js";
 import { approvalRetentionService } from "../services/approval-retention.js";
@@ -62,6 +64,7 @@ const {
   const deliveryWorkErrors: Array<{ queue: string; error: unknown }> = [];
   const deliveryWorkRegisterMock = vi.fn((queue: string, task: {
     retryMs?: number;
+    nextRunAt?: () => number | null;
     run: (signal?: AbortSignal) => Promise<unknown>;
     hasPending?: () => Promise<boolean>;
   }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn(), stop: vi.fn(async () => {}) }));
@@ -153,7 +156,10 @@ const {
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
-    tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
+    tickAgentTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
+    nextAgentTimerAt: vi.fn(async () => null),
+    tickIssueMonitors: vi.fn(async () => ({ checked: 0, triggered: 0, skipped: 0 })),
+    nextIssueMonitorAt: vi.fn(async () => null),
   };
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
@@ -189,6 +195,7 @@ const {
   };
   const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
+    nextScheduledTriggerAt: vi.fn(async () => null),
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
@@ -533,6 +540,25 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+vi.mock("../services/native-runtime/native-harness-backup-expiration.js", () => ({
+  NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS: 60 * 60_000,
+  NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS: 2 * 60_000,
+  NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS: 7,
+  NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS: 7,
+  nativeHarnessBackupExpirationService: vi.fn(() => ({
+    tick: vi.fn(async () => ({ checked: 0, candidates: 0, evidenceCandidates: 0, failed: 0, truncated: false })),
+    noteEvidence: vi.fn(), nextEvidenceAt: vi.fn(() => null),
+    tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn(),
+  })),
+}));
+
+vi.mock("../services/skill-version-retention.js", () => ({
+  skillVersionRetentionService: vi.fn(() => ({
+    listCompanies: vi.fn(async () => []), pruneCompany: vi.fn(async () => ({ checked: 0, truncated: false, nextRunAt: null })),
+    dispose: vi.fn(async () => {}), graceMs: 60 * 60_000,
+  })),
+}));
+
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: createBetterAuthInstanceMock,
@@ -567,6 +593,53 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toHaveLength(enabled ? 1 : 0);
+    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "evidence"] : ["backups"]);
+    const backups = vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value;
+    expect(backups.registerCheckpointExpiration).toHaveBeenCalledTimes(enabled ? 1 : 0);
+  });
+
+  it("tracks held evidence reconstruction after HTTP readiness", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: true }));
+    const pending = Promise.withResolvers<{ truncated: boolean }>();
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
+      tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(() => pending.promise), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
+      tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(getStartupRecoveryState().phase).toBe("ready"); expect(idleWorkSnapshot().active).toBe(1);
+      expect(vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value.registerCheckpointExpiration).toHaveBeenCalledOnce();
+    } finally { pending.resolve({ truncated: false }); await settleStartupHousekeeping(); }
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toEqual([]);
+  });
+
+  it.each([false, true])("registers skill cache retention only when enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ skillVersionRetentionEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(skillVersionRetentionService).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.skillVersionRetention)).toHaveLength(enabled ? 1 : 0);
+  });
+
+  it("keeps held skill-cache reconstruction tracked without delaying readiness", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ skillVersionRetentionEnabled: true }));
+    const pending = Promise.withResolvers<Array<{ id: string }>>();
+    const list = vi.fn(() => pending.promise);
+    vi.mocked(skillVersionRetentionService).mockReturnValueOnce({ listCompanies: list,
+      pruneCompany: vi.fn(), dispose: vi.fn(async () => {}), graceMs: 60 * 60_000 } as never);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(list).toHaveBeenCalledOnce(); expect(getStartupRecoveryState().phase).toBe("ready");
+      expect(idleWorkSnapshot().active).toBe(1);
+    } finally { pending.resolve([]); await settleStartupHousekeeping(); }
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.skillVersionRetention)).toEqual([]);
   });
 
   it.each([false, true])("registers response recovery and its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
@@ -800,6 +873,19 @@ describe("startServer feedback export wiring", () => {
     expect(caseHandoffDeliveryServiceMock.hasPending).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("registers automatic backups independently of heartbeat scheduling when enabled=%s", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: enabled, heartbeatSchedulerEnabled: false }));
+    await startServer();
+    const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.databaseBackups);
+    expect(Boolean(registration)).toBe(enabled);
+    expect(runDatabaseBackup).not.toHaveBeenCalled();
+    if (registration) {
+      expect(registration[1].nextRunAt!()).toBeGreaterThan(Date.now());
+      await registration[1].run(new AbortController().signal);
+      expect(runDatabaseBackup).not.toHaveBeenCalled();
+    }
+  });
+
   it.each([false, true].flatMap(checkpointMode => [false, true].map(fails => ({ checkpointMode, fails }))))
   ("finishes restart backup before idle eligibility (checkpoint=$checkpointMode, failure=$fails)", async ({ checkpointMode, fails }) => {
     const directory = mkdtempSync(path.join(tmpdir(), "startup-idle-backup-"));
@@ -807,11 +893,6 @@ describe("startServer feedback export wiring", () => {
     process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = checkpointMode ? "1" : "0";
     loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
     const eligible = vi.spyOn(idleLocalWork, "markIdleStartupComplete");
-    let retry: (() => void) | undefined;
-    const timers = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
-      if (ms === 60 * 60 * 1000) retry = callback;
-      return 1 as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval);
     let finish!: () => void;
     const pending = new Promise<void>(resolve => { finish = resolve; });
     const writeBackup = async (options: Parameters<typeof runDatabaseBackup>[0]) => {
@@ -843,9 +924,12 @@ describe("startServer feedback export wiring", () => {
       expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
       if (fails) {
         vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
-        expect(retry).toEqual(expect.any(Function));
+        const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.databaseBackups);
+        expect(registration).toBeDefined();
         const activeBeforeRetry = idleWorkSnapshot().active;
-        retry!();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(registration![1].nextRunAt!()!);
+        try { await registration![1].run(new AbortController().signal); }
+        finally { clock.mockRestore(); }
         await vi.waitFor(() => {
           expect(existsSync(idleBackupWakeMarker(directory))).toBe(false);
           // Marker removal precedes directory fsync and release of the work receipt.
@@ -856,7 +940,7 @@ describe("startServer feedback export wiring", () => {
     } finally {
       finish();
       await starting;
-      timers.mockRestore(); eligible.mockRestore();
+      eligible.mockRestore();
       if (previousFlag === undefined) delete process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
       else process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = previousFlag;
       rmSync(directory, { recursive: true, force: true });
@@ -1155,7 +1239,9 @@ describe("startServer feedback export wiring", () => {
       await settleStartupHousekeeping();
 
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
-      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+
+
+      expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
 
       expect(intervalCallback).not.toBeNull();
@@ -1163,11 +1249,14 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
+      const routineWorkerIndex = deliveryWorkRegisterMock.mock.calls.findIndex(([queue]) => queue === DELIVERY_QUEUES.routineSchedules);
+      expect(routineWorkerIndex).toBeGreaterThanOrEqual(0);
+      expect(deliveryWorkRegisterMock.mock.results[routineWorkerIndex]!.value.wake).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.customImageExpiry)).toBe(true);
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(true);

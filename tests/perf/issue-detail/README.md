@@ -52,6 +52,21 @@ include completed requests observed during the sample, even after content paint.
 
 ## Task layout stability
 
+`compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
+a plan, three documents and three saved PR cards. It holds the enriched task
+response, records each visible frame's card count and geometry, and rejects
+cards inserted after the conversation becomes readable. It also checks document,
+older-comment and unknown anchors without full comments/activity/run reads.
+Run it with the same loopback-only URL override below. The fixture URL is saved
+in `test-results/compact-startup-fixture.json` for manual inspection and reuse.
+It also checks a delayed Coordinator preference with Classic enabled, index-based
+Coordinator list navigation, and the responder identity through reassignment,
+comment acknowledgement and legacy runtime discovery. The last case uses a
+deterministic local process, records identity continuity on each frame, and saves
+startup/running screenshots. It does not call a model provider.
+Each send fixture uses a unique task title so repeated runs cannot reuse a
+previous task and its cancelled run through ordinary task deduplication.
+
 `layout-stability.spec.ts` exercises the real task route, including Inbox
 navigation, with 160 Markdown comments and a resolved interaction. It delays
 initial comments, tests failures and retry, tracks a reading anchor across

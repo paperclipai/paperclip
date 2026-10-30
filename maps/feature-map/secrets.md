@@ -26,6 +26,12 @@ Agent access: [companion](../agent-access-map/secrets.md).
 
 Open company Settings → Secrets and the company/personal secret views.
 
+An agent's **Secrets** page also shows its environment variables, including
+masked inline values, company secret references, and user secret references.
+Environment bindings remain available from **Harness / Runtime** as well.
+Save an added variable and reload to confirm that the existing masked bindings
+and their secret references remain present.
+
 ### `proposal-import`
 
 Use the Proposals tab or Import from vault where available.

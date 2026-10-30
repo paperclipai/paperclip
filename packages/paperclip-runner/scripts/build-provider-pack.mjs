@@ -24,6 +24,7 @@ import { parseProviderPackArguments, materializeCandidateProviderPack, providerP
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack } from "./provider-pack-runtime-tree.mjs";
+import { packContractDigest } from "./contracts/contract-fingerprints.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -314,6 +315,9 @@ try {
       }).status !== 0;
   const payload = {
     compatibility,
+    // Semantic digest of the Runner/pack contracts. Image packs are reused only
+    // by a controller whose bundled pack records the same value.
+    contractDigest: packContractDigest(workspaceRoot),
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
       codex: profiles.profiles.codex.agentRuntimeVersion,

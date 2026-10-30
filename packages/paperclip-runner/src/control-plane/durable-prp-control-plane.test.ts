@@ -2438,6 +2438,31 @@ it.each([false, true])(
   },
 );
 
+it.each(["message", "close"] as const)("settles a wire that delivers buffered %s during subscription", async buffered => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-buffered-subscription-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let closed = () => {};
+  try {
+    core.attachWireConnection({
+      onJson: listener => { if (buffered === "message") listener({ invalid: "buffered frame" }); },
+      onClose: listener => {
+        closed = () => listener({ message: "closed" });
+        if (buffered === "close") closed();
+      },
+      close: () => closed(),
+      sendJson: () => {},
+    });
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    // The invalid frame closes its wire. A completed callback must not leave a
+    // ghost connection or a settled promise that makes drain spin forever.
+    expect(() => core.retireSemanticToolCallbacks()).not.toThrow();
+    await core.drainPendingConnectionProcessing();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("refuses a processing-drain absence claim while local or remote ingress remains admitted", async () => {
   const root = mkdtempSync(
     resolve(tmpdir(), "runner-processing-drain-ingress-"),

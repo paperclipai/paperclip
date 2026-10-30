@@ -136,7 +136,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -392,6 +392,7 @@ import {
   type IssueTreeControlMode,
   type WorkspaceFileRef,
   workspaceFileRefSchema,
+  isUuidLike,
 } from "@paperclipai/shared";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -2634,7 +2635,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             browsers={browsers}
             onOpenBrowser={onOpenBrowser}
             hasOlderComments={hasOlderComments}
-            initialHistoryPending={historyExpanded && !!issueId && (
+            initialHistoryPending={!!issueId && (
               initialHistoryPending ||
               commentsInitialLoading ||
               // These responses add rows or change the composer takeover.
@@ -2643,6 +2644,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               initialMetadataPending ||
               activityPending ||
               linkedRunsPending ||
+              inputFacts.isLoading ||
               !runtimeSelectionKnown)
             }
             initialHistoryError={
@@ -3334,12 +3336,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const coreIssueQuery = useQuery({
     queryKey: [...queryKeys.issues.detail(issueId!), "core"],
-    queryFn: ({ signal }) => issuesApi.getCore(issueId!, { signal }),
+    queryFn: async ({ signal }) => {
+      const core = await issuesApi.getCore(issueId!, { signal });
+      seedIssueDetailProjections(queryClient, core, issueId);
+      return core;
+    },
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
     issueId,
-    Boolean(conversation || classicTaskInterfaceEnabled || location.hash || detailTab !== "chat"),
+    // Classic settings can resolve before the personal workspace preference.
+    // Do not persist full-history expansion for a surface we have not chosen.
+    Boolean(conversation || (taskInterfaceSettingsLoaded && classicTaskInterfaceEnabled)),
     coreIssueQuery.data,
   );
   const issueQuery = useQuery({
@@ -3442,9 +3450,35 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       InfiniteData<IssueComment[], string | null>
     >(issueId ?? "pending"),
   });
-  const comments = useMemo(
+  const commentAnchor = location.hash.startsWith("#comment-")
+    ? location.hash.slice("#comment-".length)
+    : null;
+  const linkedCommentId = commentAnchor && isUuidLike(commentAnchor) ? commentAnchor.trim() : null;
+  const windowComments = useMemo(
     () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
     [commentPages?.pages, recentComments.data?.comments],
+  );
+  const linkedComment = useQuery({
+    queryKey: [...queryKeys.issues.comments(issueId!), "linked", linkedCommentId],
+    queryFn: ({ signal }) => issuesApi.getComment(issue!.id, linkedCommentId!, { signal }),
+    enabled: !!issue && !!linkedCommentId && !historyExpanded && !windowComments.some(comment => comment.id === linkedCommentId),
+  });
+  useEffect(() => {
+    const target = linkedComment.data;
+    if (!target || !recentComments.data) return;
+    // A document click changes the hash, not the reader's conversation. Keep
+    // every fetched target in the observed window so that click cannot remove
+    // its source row. The preview cursor still belongs to the latest reply.
+    queryClient.setQueryData<IssueRecentComments>(
+      [...queryKeys.issues.comments(issueId!), "recent"],
+      current => !current || current.comments.some(comment => comment.id === target.id)
+        ? current
+        : { ...current, comments: mergeWindowComments([target], current.comments) },
+    );
+  }, [issueId, linkedComment.data, recentComments.data, queryClient]);
+  const comments = useMemo(
+    () => mergeWindowComments(linkedComment.data ? [linkedComment.data] : [], windowComments),
+    [linkedComment.data, windowComments],
   );
 
   useLayoutEffect(() => {
@@ -3471,14 +3505,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       ISSUE_DETAIL_CONTENT_MEASURE,
     );
   }, [classicTaskInterfaceEnabled, commentsLoading, issue?.id]);
-  const linkedCommentId = location.hash.startsWith("#comment-")
-    ? location.hash.slice("#comment-".length)
-    : null;
   const linkedCommentPending = Boolean(
     linkedCommentId &&
     !comments.some((comment) => comment.id === linkedCommentId) &&
-    !commentsError &&
-    (commentsLoading || hasOlderComments),
+    !(historyExpanded ? commentsError : linkedComment.isError) &&
+    (historyExpanded ? commentsLoading || hasOlderComments : linkedComment.isPending),
   );
   const shouldPrefetchOlderComments = useMemo(
     () =>
@@ -4264,6 +4295,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
       ));
       for (const ref of issueCacheRefs) {
+        queryClient.setQueryData<IssueComment | null>(
+          [...queryKeys.issues.comments(ref), "linked", commentId],
+          current => current ? null : current,
+        );
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(ref),
           (current) => current && { ...current, pages: removeIssueCommentFromPages(current.pages, commentId) },
@@ -4306,6 +4341,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
       ));
       for (const ref of issueCacheRefs) {
+        queryClient.setQueryData<IssueComment | null>(
+          [...queryKeys.issues.comments(ref), "linked", comment.id],
+          current => current ? comment : current,
+        );
         queryClient.setQueryData<
           InfiniteData<IssueComment[], string | null> | undefined
         >(queryKeys.issues.comments(ref), (current) =>
@@ -6342,7 +6381,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const lastMaximizeRequestKeyRef = useRef<string | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
     (hash: string) => {
-      const route = resolveIssueDocumentDeepLink(hash);
+      const resolvedRoute = resolveIssueDocumentDeepLink(hash);
+      // A handoff is a saved document too. Opening it must not switch the
+      // conversation to full activity just because it has a legacy hash.
+      const route = resolvedRoute?.kind === "continuation-summary" && taskChatShellEnabled
+        ? { kind: "properties-pane" as const, tab: "document" as const, documentKey: "continuation-summary", maximize: false }
+        : resolvedRoute;
       if (!route) return false;
 
       if (route.kind === "continuation-summary") {
@@ -6689,13 +6733,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useEffect(() => {
     if (
       !shouldPrefetchOlderComments &&
-      !(linkedCommentPending && hasOlderComments && !commentsLoadingOlder)
+      !(historyExpanded && linkedCommentPending && hasOlderComments && !commentsLoadingOlder)
     )
       return;
     void fetchOlderComments();
   }, [
     fetchOlderComments,
     shouldPrefetchOlderComments,
+    historyExpanded,
     linkedCommentPending,
     hasOlderComments,
     commentsLoadingOlder,
@@ -8446,13 +8491,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     workProductsLoading
                   }
                   initialHistoryError={
-                    (historyExpanded ? commentsError : recentComments.isError) ||
+                    (historyExpanded ? commentsError : recentComments.isError || linkedComment.isError) ||
                     interactionsError ||
                     attachmentsError ||
                     workProductsError
                   }
                   onRetryInitialHistory={() => {
                     void (historyExpanded ? refetchComments() : recentComments.refetch());
+                    if (linkedCommentId && !historyExpanded) void linkedComment.refetch();
                     void refetchInteractions();
                     void refetchAttachments();
                     void refetchWorkProducts();
@@ -8460,7 +8506,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
                   interactions={interactions}
                   documents={issue.documentSummaries ?? []}
-                  workProducts={workProducts ?? []}
+                  workProducts={workProducts ?? issue.workProducts ?? []}
                   attachments={attachments ?? []}
                   hasOlderComments={hasOlderComments}
                   commentsLoadingOlder={commentsLoadingOlder}

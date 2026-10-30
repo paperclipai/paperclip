@@ -34,7 +34,7 @@ import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
-import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS, copilotTaskModelCatalogOptions } from "../../lib/copilot-task-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "../../lib/native-model-catalog";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
@@ -735,12 +735,12 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
-  const copilotCatalog = copilotTaskModelCatalogOptions(assignee);
+  const nativeCatalog = nativeTaskModelCatalogOptions(assignee);
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || copilotCatalog),
+    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || nativeCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
@@ -757,24 +757,24 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
-  const catalogEnvironmentId = copilotCatalog ? assignee?.defaultEnvironmentId ?? null : null;
-  const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
-  const requestCopilotModels = Boolean(copilotCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
+  const catalogEnvironmentId = nativeCatalog ? assignee?.defaultEnvironmentId ?? null : null;
+  const nativeCatalogScope = JSON.stringify(nativeCatalog ?? null);
+  const requestNativeModels = Boolean(nativeCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
   const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), copilotCatalog ?? null]
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), nativeCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
       provider: catalogProvider,
-      ...(copilotCatalog ? { environmentId: catalogEnvironmentId, ...copilotCatalog } : {}),
+      ...(nativeCatalog ? { environmentId: catalogEnvironmentId, ...nativeCatalog } : {}),
     }),
-    ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && (!copilotCatalog || requestCopilotModels),
+    ...(nativeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && (!nativeCatalog || requestNativeModels),
   });
   useEffect(() => {
-    if (requestCopilotModels) void refreshAssigneeModels();
-  }, [requestCopilotModels, copilotCatalogScope, catalogEnvironmentId, companyId, refreshAssigneeModels]);
+    if (requestNativeModels) void refreshAssigneeModels();
+  }, [requestNativeModels, nativeCatalogScope, catalogEnvironmentId, companyId, refreshAssigneeModels]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({

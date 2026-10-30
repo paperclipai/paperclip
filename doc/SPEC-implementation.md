@@ -2368,7 +2368,13 @@ unavailable. Preserve current ownership and newer-work fences. See
   on their snapshot. Importing does not install dependencies or configure host tools.
 - Stage and audit complete packages before publishing. Scripts are allowed through
   the existing content audit and never run on import. Persist binary bytes and executable
-  flags in immutable version inventories (legacy entries default to UTF-8/non-executable).
+  flags in immutable package snapshots (legacy entries default to UTF-8/non-executable).
+  Compatible readers support inline and external inventories. PostgreSQL retains
+  receipts, file mappings and exact Git restore recipes; the storage backend retains
+  bytes. No package is persisted without a valid selected skill. Legacy conversion
+  is automatic and bounded. Unused Git caches can expire and reacquire the recorded
+  commit after current authorization and hash checks; authored/unproven legacy bytes
+  remain durable. See [skill package storage](skill-package-storage.md).
 - Refresh is serialized per source, checks saved selection revisions, and publishes
   valid skills plus per-entry outcomes with required activity records in one transaction.
   Failed packages retain prior versions; access/scan/download failures retain all content.
@@ -2380,8 +2386,10 @@ unavailable. Preserve current ownership and newer-work fences. See
 - Runtime version directories are disposable caches. An hourly, bounded sweep may
   evict non-current copies unused for one hour, preserving active and unresolved
   execution pins. Selection, materialization, and pin persistence serialize with
-  eviction across processes. Missing copies rebuild from immutable database bytes
-  without upstream access. See [recoverable disk cleanup](recoverable-disk-cleanup.md)
+  eviction across processes. Missing copies rebuild from immutable stored packages
+  or legacy database bytes without upstream access. Warm preparation uses manifests
+  and file identities, avoids repository-content SQL/object reads, and does not
+  reconcile unrelated library entries for known selected repository skills. See [recoverable disk cleanup](recoverable-disk-cleanup.md)
   for rollout controls, legacy grace periods, and interrupted cleanup recovery.
 - Manually selected sources retain reviewed selection, with new candidates checked by default and
   explicit folder exclusions retained. Upstream deletion keeps installed content with

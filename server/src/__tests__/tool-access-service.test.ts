@@ -2061,6 +2061,13 @@ describeEmbeddedPostgres("tool access service", () => {
         maxConnections: 1,
       });
       const replacementService = createTestToolAccessService(replacementDb);
+      const firstReplacementPid = (await firstReplacementDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const cleanupPid = (await cleanupDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const replacementPid = (await replacementDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const waitForFirstReplacementLock = (waitingPid: number) => vi.waitFor(async () => {
+        const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${waitingPid}) as blockers`);
+        expect(waiting!.blockers).toContain(firstReplacementPid);
+      }, { timeout: 5000 });
       let releaseFirstReplacement!: () => void;
       const firstReplacementMayCommit = new Promise<void>((resolve) => {
         releaseFirstReplacement = resolve;
@@ -2116,70 +2123,76 @@ describeEmbeddedPostgres("tool access service", () => {
         }
       });
 
-      // The first replacement still owns the departing member lock, so this
-      // gives cleanup time to queue for that lock before the empty replacement
-      // queues for the grant lock.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      let replacementSettled = false;
-      const replacement = replacementService
-        .replaceConnectionGrantMembers(connection.id, grant.id, [])
-        .then(
-          (value) => ({ value, error: null }),
-          (error: unknown) => ({ value: null, error }),
-        )
-        .finally(() => {
-          replacementSettled = true;
-        });
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(replacementSettled).toBe(false);
+      let replacementFinished: Promise<unknown> | undefined;
+      try {
+        await waitForFirstReplacementLock(cleanupPid);
+        let replacementSettled = false;
+        const replacement = replacementService
+          .replaceConnectionGrantMembers(connection.id, grant.id, [])
+          .then(
+            (value) => ({ value, error: null }),
+            (error: unknown) => ({ value: null, error }),
+          )
+          .finally(() => {
+            replacementSettled = true;
+          });
+        replacementFinished = replacement;
+        await waitForFirstReplacementLock(replacementPid);
+        expect(replacementSettled).toBe(false);
 
-      releaseFirstReplacement();
-      await firstReplacement;
-      await membershipIsLocked;
-      expect(replacementSettled).toBe(false);
-      releaseCleanup();
-      await cleanup;
-      const replacementResult = await replacement;
-      expect(replacementResult.value).toBeNull();
-      expect(replacementResult.error).toEqual(
-        expect.objectContaining({
-          message:
-            "Replace inactive audience members before widening access to the whole company",
-          status: 409,
-          details: {
-            code: "audience_widening_blocked",
-            inactiveUserIds: ["departing-user"],
-          },
-        }),
-      );
-      expect(
-        await db
-          .select()
-          .from(connectionGrantMembers)
-          .where(eq(connectionGrantMembers.grantId, grant.id)),
-      ).toEqual([
-        expect.objectContaining({
-          subjectType: "user",
-          subjectId: "departing-user",
-        }),
-      ]);
-
-      const fetchMock = vi
-        .spyOn(globalThis, "fetch")
-        .mockResolvedValue(
-          mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+        expect(replacementSettled).toBe(false);
+        releaseCleanup();
+        await cleanup;
+        const replacementResult = await replacement;
+        expect(replacementResult.value).toBeNull();
+        expect(replacementResult.error).toEqual(
+          expect.objectContaining({
+            message:
+              "Replace inactive audience members before widening access to the whole company",
+            status: 409,
+            details: {
+              code: "audience_widening_blocked",
+              inactiveUserIds: ["departing-user"],
+            },
+          }),
         );
-      const denied = await request(
-        createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
-      )
-        .post(`/api/agents/me/connections/${connection.id}/token`)
-        .send({});
-      expect(denied.status).toBe(403);
-      expect(denied.body).toMatchObject({
-        code: "grant_audience_denied",
-        grantId: grant.id,
-      });
-      expect(fetchMock).not.toHaveBeenCalled();
+        expect(
+          await db
+            .select()
+            .from(connectionGrantMembers)
+            .where(eq(connectionGrantMembers.grantId, grant.id)),
+        ).toEqual([
+          expect.objectContaining({
+            subjectType: "user",
+            subjectId: "departing-user",
+          }),
+        ]);
+
+        const fetchMock = vi
+          .spyOn(globalThis, "fetch")
+          .mockResolvedValue(
+            mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+          );
+        const denied = await request(
+          createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
+        )
+          .post(`/api/agents/me/connections/${connection.id}/token`)
+          .send({});
+        expect(denied.status).toBe(403);
+        expect(denied.body).toMatchObject({
+          code: "grant_audience_denied",
+          grantId: grant.id,
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        releaseFirstReplacement();
+        releaseCleanup();
+        await Promise.allSettled([firstReplacement, cleanup, ...(replacementFinished ? [replacementFinished] : [])]);
+        await Promise.all([firstReplacementDb.$client.end(), replacementDb.$client.end(), cleanupDb.$client.end()]);
+      }
     },
   );
 

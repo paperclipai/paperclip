@@ -10,18 +10,30 @@ pub(crate) struct AcpxReleaseProfile {
     pub agent_runtime_version: Option<&'static str>,
     pub command_digest: &'static str,
     pub requires_provider_policy: bool,
+    pub qualification_pending: bool,
 }
 
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
     Some(match agent {
+        "antigravity" => AcpxReleaseProfile {
+            agent_server_package: "native:antigravity-acp",
+            agent_server_version: "1.4.3",
+            agent_runtime_package: Some("native:antigravity-localharness"),
+            agent_runtime_version: Some("1.4.3"),
+            command_digest:
+                "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+            requires_provider_policy: true,
+            qualification_pending: true,
+        },
         "grok" => AcpxReleaseProfile {
             agent_server_package: "builtin:grok-acp",
             agent_server_version: "1",
             agent_runtime_package: Some("native:grok"),
             agent_runtime_version: Some("1.0.13"),
             command_digest:
-                "sha256:f43a6f5a583972cdcb422784969cd6a97654655b0f135f1cf178317909c404f8",
+                "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         "pi" => AcpxReleaseProfile {
             agent_server_package: "pi-acp",
@@ -29,8 +41,9 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: Some("@earendil-works/pi-coding-agent"),
             agent_runtime_version: Some("1.0.0"),
             command_digest:
-                "sha256:0260d5810e9247986800ad46c1f9b3511a5abd06cb8f142405d5caacbc3960fc",
+                "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "cursor" => AcpxReleaseProfile {
             agent_server_package: "cursor-agent",
@@ -40,6 +53,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:759e7415fea8ed2b6b0e6f362b57652b8768835f9d1fdae4a94c1b5eb3669301",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "copilot" => AcpxReleaseProfile {
             agent_server_package: "@github/copilot",
@@ -47,8 +61,9 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:7b8a6a31925256d225ea3d72fdcfd81b70a45c4b67d3eb0ee5073efff9ac8f8b",
+                "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "claude" => AcpxReleaseProfile {
             agent_server_package: "@agentclientprotocol/claude-agent-acp",
@@ -58,6 +73,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         "codex" => AcpxReleaseProfile {
             agent_server_package: "@agentclientprotocol/codex-acp",
@@ -67,6 +83,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         _ => return None,
     })

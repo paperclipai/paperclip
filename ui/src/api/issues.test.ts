@@ -30,6 +30,14 @@ describe("issuesApi.list", () => {
     mockApi.patch.mockResolvedValue({});
   });
 
+  it("encodes a linked comment id as one path component and forwards cancellation", async () => {
+    const signal = new AbortController().signal;
+    await issuesApi.getComment("issue-1", "../../health?raw=true#fragment", { signal });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/issues/issue-1/comments/..%2F..%2Fhealth%3Fraw%3Dtrue%23fragment", { signal },
+    );
+  });
+
   it.each([null, "stopped-run"])("dispatches a stopped queue using its current revision (%s)", async (target) => {
     mockApi.get.mockResolvedValueOnce({ queueId: "queue-1", targetRunId: null, revision: "revision-2" });
     await issuesApi.interruptLatestQueuedComments("issue-1", target);

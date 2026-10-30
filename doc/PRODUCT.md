@@ -198,6 +198,12 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+Authored and unproven legacy versions retain an independent recovery copy. Unused Git
+packages with an exact restore recipe may expire; later use requires access to that
+original repository and commit.
+External package storage keeps repository contents out of the control-plane database;
+per-turn checks reuse verified local files while rechecking current skill access.
+See [automatic storage and recovery](skill-package-storage.md).
 
 Project-derived skills inherit current project access. Access through any originating
 project is sufficient, including the responsible-user restrictions on agent execution.

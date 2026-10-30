@@ -99,3 +99,6 @@ test-results/
 
 # Opt-in CI timing artifacts
 .ci-profile/
+
+# Content-addressed CI task results
+.turbo/

@@ -1,5 +1,5 @@
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -98,6 +98,19 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
   if (coordinator?.leaseOwner || adapterExecutionControls.has(run.id) ||
       (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()))
     throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+  // Reusable allocations can still owe copyback for a completed native result.
+  // This authorizes only preservation of the exact descriptor, never reuse for
+  // agent execution. Stop verification and physical ownership checks remain below.
+  const acceptedExportResult = reference && workspaceExportCauses.includes(action.cause)
+    && run.runtimeMode === "native" && coordinator?.issueId === input.issueId
+    && coordinator.resultId && run.completionContractId
+    ? (await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, input.issueId),
+      eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+      eq(nativeRunResults.completionContractId, run.completionContractId),
+      eq(nativeRunResults.schemaStatus, "accepted"),
+      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+    )).limit(1))[0] : null;
   const sources = [];
   for (const leaseId of leaseIds as string[]) {
     const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
@@ -109,7 +122,10 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     if (!lease.environmentId) throw invalid("lease_environment_missing");
     if (!lease.providerLeaseId) throw invalid("lease_allocation_missing");
     if (!lease.provider || lease.provider === "local") throw invalid("lease_provider_invalid");
-    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy)) throw invalid("lease_policy_not_retained", lease.leasePolicy);
+    const reusableExport = descriptor && acceptedExportResult
+      && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
+    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport)
+      throw invalid("lease_policy_not_retained", lease.leasePolicy);
     if (typeof remoteCwd !== "string" || !remoteCwd.startsWith("/")) throw invalid("lease_cwd_invalid");
     if (descriptor && lease.providerLeaseId !== descriptor.providerLeaseId) throw invalid("allocation_reference_mismatch");
     if (descriptor && remoteCwd !== descriptor.remoteCwd) throw invalid("cwd_reference_mismatch");

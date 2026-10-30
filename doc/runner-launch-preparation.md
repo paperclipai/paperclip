@@ -32,6 +32,14 @@ descriptor. The transport checks Core's selected profile and policy before
 registration and launch. Core still supplies authorized tools and completion
 criteria through PRP. A failed preparation does not enable a fallback launch.
 
+### Codex probe policy
+
+Core can select `settings.disableCodexProjectInstructions` for a hello probe.
+Preparation must preserve it as `project_doc_max_bytes=0` before `app-server`,
+after any environment-supplied overrides. Core validates this setting alongside
+`disableCodexWebSearch`. Ordinary tasks retain project instructions when the
+setting is absent or false. This does not change the selected filesystem policy.
+
 ### Working directory
 
 In this mode the environment chooses the provider working directory. Core does

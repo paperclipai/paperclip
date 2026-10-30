@@ -167,6 +167,20 @@ describe("ACPX runtime sandbox", () => {
     for (const value of ["provider-secret", "configured-secret", "scoped-run-token", "private-identity"]) expect(config).not.toContain(value);
   });
 
+  it("seeds an isolated Antigravity API-key profile without inherited login/configuration", async () => {
+    const fixture = await sandboxFixture("antigravity");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "antigravity",
+      environment: { GEMINI_API_KEY: "bound-key", GEMINI_HOME: "/foreign/profile", GOOGLE_APPLICATION_CREDENTIALS: "/foreign/adc.json" } });
+    await sandbox.initializeOwnedConfiguration?.();
+    expect(sandbox.launchEnvironment.GEMINI_HOME).toBe(sandbox.agentHomeDirectory);
+    expect(sandbox.launchEnvironment.AGY_ACP_FORCE_FILE_STORAGE).toBe("1");
+    expect(sandbox.launchEnvironment.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    const settings = join(sandbox.agentHomeDirectory, "antigravity-acp/settings.json");
+    expect(JSON.parse(await readFile(settings, "utf8"))).toEqual({ auth: { type: "gemini-api-key" } });
+    expect((await stat(settings)).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(sandbox.persistedEnvironment)).not.toContain("bound-key");
+  });
+
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
     "preserves the requested Claude model %s in its isolated settings",
     async (model) => {
@@ -551,7 +565,7 @@ it("refreshes Copilot native instructions privately on every admission, includin
   expect(await readFile(path, "utf8")).toBe(composed(""));
 });
 
-async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot") {
+async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
   const workspace = join(root, "workspace");
@@ -564,6 +578,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     codex: "gpt-5.6-sol",
     cursor: "provider-model-cursor",
     copilot: "provider-model-copilot",
+    antigravity: "provider-model-antigravity",
   } as const;
   const binding = await createAcpxRecoveryBinding({
     runtimeDirectory,

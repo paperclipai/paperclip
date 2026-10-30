@@ -454,6 +454,41 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("paginates complete native task inventories beyond one hundred results", async () => {
+    const ids = Array.from({ length: 205 }, () => randomUUID()).sort();
+    const foreignCompanyId = randomUUID();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign inventory", issuePrefix: "FINV" });
+    await db.insert(issues).values({ id: foreignId, companyId: foreignCompanyId, title: "synthetic-inventory-key foreign canary", status: "done" });
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId, title: `Inventory pagination ${index}`,
+      description: "synthetic-inventory-key", status: index < 200 ? "done" : "blocked",
+    })));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const search = (arguments_: Record<string, unknown>) => authority.execute({
+      tool: "search_tasks", callId: randomUUID(), arguments: { query: "synthetic-inventory-key", ...arguments_ },
+    }) as Promise<{ tasks: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null }>;
+    try {
+      const first = await search({ limit: 200 });
+      expect(first.tasks).toHaveLength(200);
+      expect(JSON.stringify(first)).not.toContain(foreignId);
+      expect(first).toMatchObject({ limit: 200, returnedCount: 200, hasMore: true, nextCursor: ids[199] });
+      expect(first.tasks.map(task => task.id)).toEqual(ids.slice(0, 200));
+      const last = await search({ limit: 200, cursor: first.nextCursor });
+      expect(last.tasks.map(task => task.id)).toEqual(ids.slice(200));
+      expect(last).toMatchObject({ limit: 200, returnedCount: 5, hasMore: false, nextCursor: null });
+      expect(new Set([...first.tasks, ...last.tasks].map(task => task.id)).size).toBe(205);
+      expect(await search({ cursor: ids[204] })).toMatchObject({ tasks: [], limit: 50, returnedCount: 0, hasMore: false, nextCursor: null });
+      expect(await search({ statuses: ["blocked"], limit: 200 })).toMatchObject({ tasks: ids.slice(200).map(id => ({ id })), returnedCount: 5, hasMore: false });
+      expect(await search({})).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+      expect((await search({ limit: 200, cursor: ids[199]!.toUpperCase() })).tasks.map(task => task.id)).toEqual(ids.slice(200));
+      await expect(search({ cursor: "invalid" })).rejects.toThrow("paperclip_runner_tool_input_invalid");
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [...ids, foreignId]));
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
+    }
+  });
+
   it("returns public task URLs from the current claimed origin in context and search results", async () => {
     const origin = vi.spyOn(cloudIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://board.example");
     const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
@@ -1676,5 +1711,29 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+});
+
+describe("deliverable tool location guidance", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", workspaceRoot: "/task-workspace", apiToolsEnabled: false };
+  const db = new Proxy({} as ConstructorParameters<typeof PaperclipRunnerToolAuthority>[0], {
+    get() { throw new Error("Tool definitions must not query the database"); },
+  });
+  it.each(["local", "remote"] as const)("directs %s workspace-only deliverables to the task cwd", (executionTargetKind) => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind,
+      ...(executionTargetKind === "remote" ? { readRemoteWorkspaceFile: async () => Buffer.alloc(0) } : {}),
+    });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("get_workspace.cwd");
+    expect(description).toContain("AGENT_HOME");
+    expect(description).toContain("Create or copy");
+  });
+  it("preserves the granted-location reader contract", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind: "remote", readRemoteTaskFile: async () => Buffer.alloc(0) });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("absolute within a location granted to this task");
+    expect(description).toContain("including its agent home");
   });
 });
