@@ -12,18 +12,19 @@ deployment.
 - **Passed:** independent-process PostgreSQL/S3 failure matrix; hosted A → B → C
   replacement with predecessor homes absent; C reads and executes B's acknowledged
   save; historical repository pin delivery while a newer revision is installed.
-- **Passed:** latest code review at `040dad3dc3`, confidence 5/5, no unresolved
-  findings. Workspace typecheck, build, all server and Runner CI suites passed.
+- **Passed:** latest code review at `9200e3fcb4`, confidence 5/5, no unresolved
+  findings. Workspace typecheck/build, 33 execution/Studio tests, 16 managed-content
+  tests and the separate-process replacement matrix passed locally.
 - **Passed:** compatible image rollback to `6518b323` retained the newer managed
   revisions and delivered their bytes plus the historical repository pin remotely.
 - **In progress:** deployed unassigned-skill Studio retry after fixing selection
-  and native completion. The browser CI shard passed on rerun; full CI at
-  `040dad3dc3` is green. New changes require another CI/review run.
+  and native completion. Full CI at `040dad3dc3` was green. Current CI found one
+  obsolete restart-scope fixture in two jobs; the corrected 52-case HTTP suite passes.
 
-Runtime candidate `350f1b377c` contains the native Studio scope fix. The subsequent
-`040dad3dc3` commit changes only test assertions, a test database fixture and these
-notes. The chronological record below retains earlier failures and intermediate
-pending states; this section describes the current qualification status.
+Runtime candidate `9200e3fcb4` contains the native Studio selection/completion and
+legacy completeness fixes. Its image is building. The chronological record below
+retains earlier failures and intermediate pending states; this section describes
+the current qualification status.
 
 ## Accepted contract
 
@@ -386,3 +387,18 @@ handoff, and production volume removal are outside this slice.
 - Full workspace typecheck passed after allowing the migration launcher's local IPC
   socket. The initial sandbox attempt failed with `listen EPERM` before that check
   could run. The workspace build is running separately.
+- The workspace build passed on `9200e3fcb4` after correcting a missing-version
+  null check caught by its first attempt. Greptile re-reviewed that commit at
+  5/5 with zero unresolved findings. Image request
+  `0b5a10c1-dccf-4c01-9db7-548ea07897a0` prepares in Cloud run `41120340127`
+  and builds in Core run `41120440752`.
+- Earlier failed Studio fixture `ef0aa327-f719-44a3-bea2-1d051f2a793a` was
+  cancelled through Studio to settle its stale queued pin. Its mismatch report and
+  draft output remain visible. It is still recorded as a failed qualification.
+- CI run `41120305357` found the same obsolete restart-scope fixture in Runner
+  static checks and general server shard 5. The helper always returned no saved
+  skill; preparation now correctly rejects that state. It now reads a real durable
+  test/version row, asserts missing-version rejection first, and still verifies
+  restricted REST scope after task-mode edits. Both focused HTTP cases and server
+  typecheck pass. The complete 52-case HTTP suite passed in 63.78 seconds. This follow-up
+  changes only the test fixture and evidence, leaving image runtime code unchanged.
