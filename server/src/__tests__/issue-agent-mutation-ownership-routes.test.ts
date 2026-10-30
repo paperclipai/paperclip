@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
@@ -5,6 +6,9 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import { redactCurrentUserValue } from "../log-redaction.js";
+import { sanitizeRecord } from "../redaction.js";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
@@ -419,6 +423,11 @@ function createRunContextDb(
       }),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(async () => []),
+      })),
+    })),
   };
   return dbStub;
 }
@@ -1825,6 +1834,88 @@ describe("agent issue mutation checkout ownership", () => {
         unblockDescriptor: { owner: "board", action: "Review the blocker" },
       }),
     );
+  });
+
+  function mockProspectiveBlockedUpdate() {
+    const blockedTransitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+      blockedTransitionAt,
+    }));
+    return blockedTransitionAt;
+  }
+
+  it("records the acknowledgment without waking an agent that blocks its own issue", async () => {
+    const blockedTransitionAt = mockProspectiveBlockedUpdate();
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Provide the missing input" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({ reason: "issue_unblock_requested" }),
+    );
+    expect(res.body.blockedOwnerNotifiedAt).toEqual(expect.any(String));
+    const expectedFingerprint = createHash("md5")
+      .update(`${ownerAgentId}\nProvide the missing input`, "utf8").digest("hex");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          blockedTransitionAt: blockedTransitionAt.toISOString(),
+          unblockDescriptorFingerprint: expectedFingerprint,
+        }),
+      }),
+    );
+  });
+
+  it("keeps the descriptor fingerprint intact when username censoring rewrites the stored action", async () => {
+    mockProspectiveBlockedUpdate();
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Inspect /home/alice/build.log" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const loggedDetails = mockLogActivity.mock.calls.map(([, input]) => input.details)
+      .find((details): details is Record<string, unknown> =>
+        Boolean(details) && typeof details === "object" && "unblockDescriptorFingerprint" in details);
+    expect(loggedDetails).toBeDefined();
+    // Same composition logActivity applies before storage, with censoring on.
+    const stored = redactCurrentUserValue(sanitizeRecord(loggedDetails!),
+      { userNames: ["alice"], homeDirs: ["/home/alice"] });
+    expect((stored.unblockDescriptor as { action: string }).action).not.toContain("alice");
+    expect(stored.unblockDescriptorFingerprint).toBe(loggedDetails!.unblockDescriptorFingerprint);
+    expect(stored.blockedTransitionAt).toBe(loggedDetails!.blockedTransitionAt);
+  });
+
+  it("wakes the named agent owner when the board authors the blocked write", async () => {
+    const blockedTransitionAt = mockProspectiveBlockedUpdate();
+
+    const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Provide the missing input" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ownerAgentId,
+        expect.objectContaining({
+          reason: "issue_unblock_requested",
+          idempotencyKey: `issue-unblock:${issueId}:${blockedTransitionAt.toISOString()}`,
+          payload: { issueId, action: "Provide the missing input" },
+        }),
+      );
+    });
+    expect(res.body.blockedOwnerNotifiedAt).toEqual(expect.any(String));
   });
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
