@@ -294,4 +294,71 @@ describe("plugin SDK test harness", () => {
       body: "relayed reply",
     });
   });
+
+  describe("human-attributed activity entries", () => {
+    function activityManifest(capabilities: PaperclipPluginManifestV1["capabilities"]): PaperclipPluginManifestV1 {
+      return {
+        id: "paperclip.test-human-attributed-activity",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Human-Attributed Activity",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities,
+        entrypoints: { worker: "./dist/worker.js" },
+      };
+    }
+
+    function seedMember(harness: ReturnType<typeof createTestHarness>, status: string) {
+      harness.seed({
+        accessMembers: [{
+          id: `member-${status}`,
+          companyId: "company-1",
+          principalType: "user",
+          principalId: "user-1",
+          status,
+          membershipRole: "member",
+          grants: [],
+          createdAt: new Date("2026-06-03T11:00:00.000Z"),
+          updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+        }],
+      });
+    }
+
+    it("records the verified actorUserId on the entry", async () => {
+      const harness = createTestHarness({
+        manifest: activityManifest(["activity.log.write", "activity.log.write_human_attributed"]),
+      });
+      seedMember(harness, "active");
+
+      await harness.ctx.activity.log({ companyId: "company-1", message: "chat.message_relayed", actorUserId: "user-1" });
+
+      expect(harness.activity).toEqual([
+        { companyId: "company-1", message: "chat.message_relayed", actorUserId: "user-1" },
+      ]);
+    });
+
+    it("requires activity.log.write_human_attributed for actorUserId", async () => {
+      const harness = createTestHarness({ manifest: activityManifest(["activity.log.write"]) });
+      seedMember(harness, "active");
+
+      await expect(
+        harness.ctx.activity.log({ companyId: "company-1", message: "chat.message_relayed", actorUserId: "user-1" }),
+      ).rejects.toThrow("activity.log.write_human_attributed");
+      expect(harness.activity).toEqual([]);
+    });
+
+    it("rejects an actorUserId that is not an active member", async () => {
+      const harness = createTestHarness({
+        manifest: activityManifest(["activity.log.write", "activity.log.write_human_attributed"]),
+      });
+      seedMember(harness, "suspended");
+
+      await expect(
+        harness.ctx.activity.log({ companyId: "company-1", message: "chat.message_relayed", actorUserId: "user-1" }),
+      ).rejects.toThrow('actorUserId "user-1" is not an active human member of this company');
+      expect(harness.activity).toEqual([]);
+    });
+  });
 });
