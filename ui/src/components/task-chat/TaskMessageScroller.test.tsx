@@ -168,6 +168,24 @@ describe("TaskMessageScroller", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("follows a late image resize in the message body after the history status", () => {
+    const observers: { targets: Set<Element>; resize: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      targets = new Set<Element>();
+      constructor(callback: ResizeObserverCallback) { observers.push({ targets: this.targets, resize: () => callback([], this as unknown as ResizeObserver) }); }
+      observe(target: Element) { this.targets.add(target); }
+      disconnect() {}
+    });
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load: vi.fn() }}><div data-testid="image-body">image content</div></TaskMessageScroller>,
+    ));
+    update(0); fakeGeometry(scroller(), { clamp: true }); update(1);
+    const body = container.querySelector('[data-testid="image-body"]')!;
+    Object.defineProperty(scroller(), "scrollHeight", { value: 1400, configurable: true });
+    for (const observer of observers) if (observer.targets.has(body)) observer.resize();
+    expect(scroller().scrollTop).toBe(1000);
+  });
+
   it("retains upward intent when content reconciles before the scroll event", async () => {
     const load = vi.fn();
     const update = (tick: number) => flushSync(() => root.render(

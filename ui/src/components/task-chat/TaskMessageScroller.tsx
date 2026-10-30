@@ -279,7 +279,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     observer.observe(el);
     // The viewport itself does not resize when an image or historical row
     // grows. Observe the content box too, before the browser paints it.
-    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    for (const child of el.children) observer.observe(child);
     return () => observer.disconnect();
   }, [followViewportResize, hidePill, reconcileContent]);
 

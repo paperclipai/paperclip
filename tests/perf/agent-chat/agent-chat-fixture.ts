@@ -8,7 +8,7 @@ export interface ChatFixture {
   issue: { id: string };
   comments: { id: string; body: string }[];
 }
-export async function longChatFixture(request: APIRequestContext, suffix = ""): Promise<ChatFixture> {
+export async function longChatFixture(request: APIRequestContext, suffix = "", options: { delayedImage?: boolean } = {}): Promise<ChatFixture> {
   const count = Number(process.env.PAPERCLIP_CHAT_PERF_MESSAGES ?? 600);
   if (!Number.isSafeInteger(count) || count < 100 || count > 10_000) throw new Error("Use 100–10000 synthetic messages");
   const baseFile = process.env.PAPERCLIP_CHAT_PERF_SEED_FILE ?? `test-results/agent-chat/fixture-${count}.json`;
@@ -44,7 +44,8 @@ export async function longChatFixture(request: APIRequestContext, suffix = ""): 
   for (let index = 0; index < count; index++) {
     const human = index % 2 === 0, id = randomUUID(), runId = human ? null : randomUUID();
     const createdAt = new Date(base + index * 60_000);
-    const body = `History message ${index}. ` + (human ? "Please investigate these findings." : "The investigation is complete.\n\n- Checked the saved evidence.\n- Verified the result.\n\n" + "Saved findings and verification details. ".repeat(index % 7 + 2));
+    let body = `History message ${index}. ` + (human ? "Please investigate these findings." : "The investigation is complete.\n\n- Checked the saved evidence.\n- Verified the result.\n\n" + "Saved findings and verification details. ".repeat(index % 7 + 2));
+    if (options.delayedImage && index === count - 10) body += "\n\nInline evidence: ![Delayed evidence](/__chat-history-image.svg)";
     if (runId) {
       runs.push({ id: runId, companyId: company.id, agentId: agent.id, issueId: issue.id, runtimeMode: "native", status: "succeeded",
         createdAt: new Date(+createdAt - 1000), startedAt: new Date(+createdAt - 900), finishedAt: createdAt, contextSnapshot: { issueId: issue.id, conversationSessionGeneration: issue.conversationSessionGeneration, wakeCommentId: comments.at(-1)?.id } });

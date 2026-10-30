@@ -4,7 +4,7 @@
 600-message, 300-run synthetic conversation. Completed runs have valid native
 assistant events; there are no model calls. It verifies recent-only startup,
 one backward page per upward gesture, delayed/error recovery, an unobscured latest reply, retained rows and
-drafts, Back, older links, one saved live message, and sending before the first upward scroll. The send check uses separate retained fixture files per browser project so queued board input cannot alter the main history dataset. The live-message check posts one reply with a temporary key for the fixture agent, then revokes it. It starts no agent execution. Additional checks keep message paging available during a receipts outage and verify that successive pages request each newly revealed metadata id once. The disposable board user dismisses the current optional announcement before the journeys.
+drafts, Back, older links, one saved live message, and sending before the first upward scroll. The send check uses separate retained fixture files per browser project so queued board input cannot alter the main history dataset. The live-message check posts one reply with a temporary key for the fixture agent, then revokes it. It starts no agent execution. Delayed inline images verify both following the latest reply and retaining an unpinned reading anchor. Additional checks keep message paging available during a receipts outage and verify that successive pages request each newly revealed metadata id once. The disposable board user dismisses the current optional announcement before the journeys.
 
 Use a disposable loopback instance with Agent Chat enabled. The first seed needs
 its matching PostgreSQL URL, with a database name ending in `_test`:
@@ -22,6 +22,7 @@ never point it at a shared instance. The fixture is retained at
 `PAPERCLIP_CHAT_PERF_SEED_FILE` to reuse an existing matching fixture; retained
 fixtures need no database connection for browser journeys.
 `PAPERCLIP_CHAT_PERF_MESSAGES=6000` creates a larger fixture for the same assertions.
+The rig blocks service workers so fixture responses are intercepted deterministically and build-update reloads cannot change the selected UI artifact. The ordinary local prototype keeps the normal service worker enabled.
 The rig runs the same journeys on desktop and mobile. Use `--project=desktop`
 for the smaller iteration loop, then run both projects before handoff.
 

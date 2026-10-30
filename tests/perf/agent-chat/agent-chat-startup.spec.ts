@@ -255,3 +255,36 @@ test("successive older pages hydrate each message and run id only once", async (
     expect(new Set(historical).size).toBe(historical.length);
   }
 });
+
+for (const pinned of [true, false]) test(`a delayed image preserves ${pinned ? "latest following" : "the reading anchor"}`, async ({ page, request }, info) => {
+  const own = await longChatFixture(request, `image-v3-${pinned}-${info.project.name}`, { delayedImage: true });
+  const preference = await request.put(`/api/companies/${own.company.id}/workspace-preferences/me`, { data: { coordinatorWorkspaceEnabled: true } });
+  expect(preference.ok()).toBeTruthy();
+  let release!: () => void, requested!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const pendingImage = new Promise<void>(resolve => { requested = resolve; });
+  await page.route("**/__chat-history-image.svg", async route => {
+    requested(); await held;
+    await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="gray"/></svg>' });
+  });
+  try {
+    await page.goto(`/${own.company.issuePrefix}/chats/${own.agent.id}`); await ready(page);
+    await scrollUp(page, 1200);
+    const images = await page.locator('img[alt="Delayed evidence"]').evaluateAll(nodes => nodes.map(node => ({ src: (node as HTMLImageElement).src, complete: (node as HTMLImageElement).complete, rect: node.getBoundingClientRect().toJSON() })));
+    await fs.writeFile(info.outputPath("image-before-release.json"), JSON.stringify({ images }));
+    await pendingImage;
+    await page.getByRole("button", { name: "Scroll to latest", exact: true }).click();
+    await expect.poll(() => scroller(page).evaluate(root => root.scrollHeight - root.scrollTop - root.clientHeight)).toBeLessThanOrEqual(2);
+    if (!pinned) await scrollUp(page, 200);
+    const saved = await anchor(page);
+    release();
+    await expect(page.locator('img[alt="Delayed evidence"]')).toHaveJSProperty("complete", true);
+    await expect(page.locator('img[alt="Delayed evidence"]')).toHaveJSProperty("naturalWidth", 640);
+    await page.waitForTimeout(200);
+    if (pinned) {
+      const latest = await page.locator(`[id="comment-${own.comments.at(-1)!.id}"]`).boundingBox();
+      const composer = await page.getByTestId("task-chat-composer-dock").boundingBox();
+      expect(latest!.y + latest!.height).toBeLessThanOrEqual(composer!.y + 2);
+    } else expect(Math.abs(await offset(page, saved.id) - saved.top)).toBeLessThanOrEqual(2);
+  } finally { release(); }
+});
