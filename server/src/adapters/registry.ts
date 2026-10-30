@@ -136,6 +136,8 @@ import {
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
@@ -1028,6 +1030,7 @@ export function resolveExternalAdapterRegistration(
  * and avoid racing against the loading window.
  */
 const externalAdaptersReady: Promise<void> = (async () => {
+  if (isCloudManagedInstance()) return;
   try {
     const externalAdapters = await buildExternalAdapters();
     for (const externalAdapter of externalAdapters) {
@@ -1063,6 +1066,7 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  assertExternalAdapterCodeAllowed();
   if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
@@ -1073,6 +1077,7 @@ export function registerServerAdapter(adapter: ServerAdapterModule): void {
 }
 
 export function unregisterServerAdapter(type: string): void {
+  assertExternalAdapterCodeAllowed();
   if (type === processAdapter.type || type === httpAdapter.type) return;
   if (builtinFallbacks.has(type)) {
     pausedOverrides.delete(type);
@@ -1220,6 +1225,7 @@ export async function detectAdapterModel(
  * an override or was already in the requested state.
  */
 export function setOverridePaused(type: string, paused: boolean): boolean {
+  assertExternalAdapterCodeAllowed();
   if (!builtinFallbacks.has(type)) return false;
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {

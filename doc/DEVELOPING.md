@@ -1488,7 +1488,9 @@ Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
-Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
+Local adapters require their corresponding CLI/session setup on the machine running Paperclip. Self-hosted instances can install external adapters through the adapter/plugin flow without hardcoded imports in `server/` or `ui/`.
+
+Cloud-managed instances use only adapter implementations supplied by the release image. A tenant server token or the presence of `PAPERCLIP_MANAGED_CONFIG` enforces this boundary. Startup and UI parser requests do not read external adapter registrations or packages. Install, reinstall, reload, remove, and override operations return `403` with `adapter_install_platform_managed`, including for instance admins. Legacy `adapter-plugins.json` files stay untouched and do not change the built-in registry.
 
 ### Filesystem access boundary (2026-10-20)
 

@@ -49,7 +49,7 @@ import type {
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
@@ -59,22 +59,6 @@ import { resolveAntigravityCandidateAdmission } from "../services/native-runtime
 
 const execFileAsync = promisify(execFile);
 let warnedMalformedAntigravityAdmission = false;
-
-/**
- * Floor: on cloud-managed instances adapter code is bundled into the platform
- * image; fetching and loading external adapter packages at runtime stays off
- * for every actor, including instance admins. Adapter code executes in the
- * server process, so a runtime install would let an instance admin read the
- * platform trust anchors from the process environment (mirrors the
- * bundled-only plugin install floor in plugin-install-guard.ts).
- */
-function assertAdapterCodeInstallAllowed() {
-  if (isCloudManagedInstance()) {
-    throw forbidden("Adapter installation is platform-managed on cloud-managed instances", {
-      code: "adapter_install_platform_managed",
-    });
-  }
-}
 
 /**
  * Floor: when the hosting operator hides the Adapters settings surface
@@ -345,7 +329,7 @@ export function adapterRoutes(options: {
    */
   router.post("/adapters/install", async (req, res) => {
     assertInstanceAdmin(req);
-    assertAdapterCodeInstallAllowed();
+    assertExternalAdapterCodeAllowed();
     assertAdapterManagementVisible();
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
@@ -551,6 +535,7 @@ export function adapterRoutes(options: {
    */
   router.patch("/adapters/:type/override", async (req, res) => {
     assertInstanceAdmin(req);
+    assertExternalAdapterCodeAllowed();
 
     assertAdapterManagementVisible();
 
@@ -581,6 +566,7 @@ export function adapterRoutes(options: {
    */
   router.delete("/adapters/:type", async (req, res) => {
     assertInstanceAdmin(req);
+    assertExternalAdapterCodeAllowed();
     assertAdapterManagementVisible();
 
     const adapterType = req.params.type;
@@ -658,6 +644,7 @@ export function adapterRoutes(options: {
    */
   router.post("/adapters/:type/reload", async (req, res) => {
     assertInstanceAdmin(req);
+    assertExternalAdapterCodeAllowed();
     assertAdapterManagementVisible();
 
     const type = req.params.type;
@@ -711,7 +698,7 @@ export function adapterRoutes(options: {
   // package name, but without the risk of losing the store record.
   router.post("/adapters/:type/reinstall", async (req, res) => {
     assertInstanceAdmin(req);
-    assertAdapterCodeInstallAllowed();
+    assertExternalAdapterCodeAllowed();
     assertAdapterManagementVisible();
 
     const type = req.params.type;
