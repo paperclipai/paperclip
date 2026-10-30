@@ -203,7 +203,9 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
             if (!line.startsWith(AUTH_PREFIX)) continue;
             try {
               const url = validateAntigravityAuthorizationUrl(line.slice(AUTH_PREFIX.length));
-              if (phase !== 2 || state.authorizationUrl !== undefined) throw new Error(LOGIN_ERROR);
+              // stdout and stderr are separate pipes: the authenticate result
+              // can arrive before its authorization URL is drained from stderr.
+              if ((phase !== 2 && phase !== 3) || state.authorizationUrl !== undefined) throw new Error(LOGIN_ERROR);
               state.authorizationUrl = url;
             } catch { fail(); }
           }
