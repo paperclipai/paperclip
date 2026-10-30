@@ -30,7 +30,8 @@ fixture is retained. The combined Claude effort sources use profile 19
 (`sha256:a4c7e955df18bf2448224ecce2120b43ede8054fe00e7b33b4044b8bd284b321`),
 with executable, permission policy and pending qualification unchanged. The
 prior unmerged Claude profile-18 attestation is retained separately as
-`copilot-profile-v18-claude-qualification-identity.json`; earlier evidence keeps
+`copilot-profile-v18-claude-qualification-identity.json` (removed when Copilot
+moved to a release attestation at profile 92); earlier evidence keeps
 its literal source. Pi profile 25 and its source digest remain unchanged by
 this reconciliation. Existing settings and effort/session admission still need
 final packaged and real-provider qualification on the composed Claude source.

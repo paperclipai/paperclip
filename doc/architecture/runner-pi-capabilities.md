@@ -311,7 +311,7 @@ progress but cannot become a final answer. Missing or conflicting boundaries
 fail closed. Loaded history has a separate display-only identity. Retry,
 compaction, extension and command notices retain bounded, redacted severity and
 metadata on `paperclip/pi_notice`; they are never assistant final content.
-The [v8 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v8-identity.json)
+The v8 declaration (`test-fixtures/pi-acp/profile-v8-identity.json`, removed when Pi moved to a release attestation at profile 37)
 also pins the shared ACPX parser and Pi host projections. Previous sessions must
 be reopened. No paid profile-v8 qualification has run.
 
@@ -356,7 +356,7 @@ was aggregated into the final item. Three runs settled across these two cells,
 all owned processes exited, and five later cells did not launch. The native
 message attribution defect is repaired in v8; authenticated v8 qualification
 remains pending. The canonical
-[v7 declaration](../../packages/paperclip-runner/test-fixtures/pi-acp/profile-v7-identity.json)
+v7 declaration (`test-fixtures/pi-acp/profile-v7-identity.json`, since removed)
 binds the exact wrapper, helper, extension and three target closures.
 
 Credential-free regressions run the pinned SDK with synthetic model streams to

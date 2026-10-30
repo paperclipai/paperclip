@@ -71,15 +71,17 @@ Grok launch profile 7 binds the native effort, search, credential, sidecar, and
 Runner admission source, including Rust backend descriptor writes. An older
 installed pack with the same ACPX interface version cannot satisfy this profile.
 The controller stages its current verified
-pack instead. A generated source-identity comment in the launcher preserves the
-existing command byte-digest check; no installation guard is relaxed.
-App source changes alone still permit reuse when the selected
+pack instead. App source changes alone still permit reuse when the selected
 Grok profile matches. Historical profile versions remain decodable, but they do
-not authorize a fresh launch. After changing a bound source, advance the profile
-and run `node packages/paperclip-runner/scripts/grok-profile-identity.mjs`.
-The normal `check:acpx-profiles` build gate verifies this source identity.
-The generator refuses to replace an existing versioned identity with different
-source. Advance the version and retain the previous version's recovery decoder.
+not authorize a fresh launch.
+
+From profile 20, Grok's `commandDigest` is an upstream release attestation: the
+SHA-256 of `launcher.cjs`, which admission already hashes. It changes only when
+the launcher bytes change, and no longer carries a source-identity comment.
+Runner source compatibility is guarded at the pack boundary by the provider
+pack's `contractDigest`. After changing the launcher, run
+`pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`; the
+`check:acpx-profiles` build gate refuses a stale digest.
 
 Provision Grok Build 1.0.13 at
 `/opt/paperclip/providers/grok/1.0.13/grok` in the selected execution environment.

@@ -346,9 +346,11 @@ admission override must never become the production installation recipe.
 
 Pass the actual registered profile through every execution-input parser, not only
 the runtime registry. Derive version types from one declaration so a new profile
-cannot be admitted by one layer and rejected by another. Generators must preserve
-historical identity fixtures; creating today's profile must not rewrite yesterday's
-digest. Also check generated catalogs against their authoring source.
+cannot be admitted by one layer and rejected by another. A provider's
+`commandDigest` attests its upstream release: upstream versions, platform closure
+pins and any launcher bytes. Never bind Paperclip source, absolute paths or the
+pack layout into it; the provider pack's `contractDigest` covers Runner source
+compatibility. Also check generated catalogs against their authoring source.
 
 ### 6.3 Qualify the ordinary setup path as its own integration
 

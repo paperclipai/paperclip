@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { grokProfileIdentity, GROK_PROFILE_VERSION } from "./grok-profile-identity.mjs";
+import { acpxReleaseAttestation, ATTESTED_ACPX_AGENTS } from "./acpx-release-attestations.mjs";
 
 const root = new URL("../", import.meta.url);
 const readJson = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -13,11 +13,18 @@ const contract = await readJson("cursor-contract.json");
 const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
-const grokIdentity = grokProfileIdentity();
-assert.deepEqual(await readJson(`test/fixtures/grok-profile-v${GROK_PROFILE_VERSION}-identity.json`), grokIdentity, "Grok source identity is stale; advance the profile and regenerate its identity");
-assert.equal(manifest.profiles.grok.agentProfileVersion, GROK_PROFILE_VERSION);
-assert.equal(manifest.profiles.grok.commandDigest, grokIdentity.commandDigest);
-assert.equal(`sha256:${createHash("sha256").update(await readFile(new URL("src/providers/grok/launcher.cjs", root))).digest("hex")}`, grokIdentity.commandDigest, "Grok launcher source stamp is stale");
+// Copilot, Grok and Pi digests attest upstream releases; they change only when
+// an upstream version, platform closure or the Grok launcher changes.
+const check = process.argv.includes("--check");
+let attestationsChanged = false;
+for (const agent of ATTESTED_ACPX_AGENTS) {
+  const { commandDigest } = await acpxReleaseAttestation(agent, fileURLToPath(root));
+  if (manifest.profiles[agent].commandDigest === commandDigest) continue;
+  assert.ok(!check, `${agent} release attestation is stale in acpx-profiles.json; run generate:acpx-profiles`);
+  manifest.profiles[agent].commandDigest = commandDigest;
+  attestationsChanged = true;
+}
+if (attestationsChanged) await writeFile(new URL("acpx-profiles.json", root), `${JSON.stringify(manifest, null, 2)}\n`);
 const entries = Object.entries(manifest.profiles);
 for (const [agent, profile] of entries) {
   assert.match(agent, /^[a-z]+$/);
@@ -48,15 +55,6 @@ const { commandDigest, ...attestation } = contract;
 assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
 assert.equal(contract.acpxPatchSha256, createHash("sha256")
   .update(await readFile(new URL("../../patches/acpx@0.13.1.patch", root))).digest("hex"));
-for (const [agent, path] of [["pi", `test-fixtures/pi-acp/profile-v${manifest.profiles.pi.agentProfileVersion}-identity.json`], ["copilot", `test/fixtures/copilot-profile-v${manifest.profiles.copilot.agentProfileVersion}-identity.json`]]) {
-  const identity = await readJson(path);
-  assert.equal(manifest.profiles[agent].agentProfileVersion, identity.declaration.agentProfileVersion);
-  assert.equal(manifest.profiles[agent].commandDigest, identity.commandDigest);
-  const serialized = agent === "pi" ? canonicalJson(identity.declaration)
-    : JSON.stringify(Object.fromEntries(Object.entries(identity.declaration).sort(([a], [b]) => a.localeCompare(b))));
-  assert.equal(identity.commandDigest, `sha256:${createHash("sha256").update(serialized).digest("hex")}`);
-  assert.equal(identity.declaration.acpxPatchSha256, contract.acpxPatchSha256);
-}
 for (const distribution of Object.values(distributions.platforms)) assert.match(distribution.closureSha256, /^[a-f0-9]{64}$/);
 
 const quote = JSON.stringify;
@@ -118,7 +116,7 @@ for (const [path, content] of [
   ["runner/crates/runner-core/src/generated_acpx_profiles.rs", rust],
 ]) {
   const url = new URL(path, root);
-  if (process.argv.includes("--check")) {
+  if (check) {
     assert.equal(await readFile(url, "utf8"), content, `Stale ACPX profiles: ${fileURLToPath(url)}; run generate:acpx-profiles`);
   } else await writeFile(url, content);
 }

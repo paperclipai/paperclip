@@ -70,7 +70,19 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
-## Source-bound profile history
+## Profile identity
+
+Copilot (profile 92), Grok (20) and Pi (37) use upstream release attestations,
+as Claude, Codex, Cursor and Antigravity already did. Each `commandDigest` binds
+upstream versions, the ACPX patch, platform closure pins and Grok's launcher
+bytes. `scripts/acpx-release-attestations.mjs` computes them and
+`generate:acpx-profiles` writes them. A Runner source change no longer changes
+them. Every revision from 1 through the current one decodes, so saved runs reach
+recovery, and launch and recovery admission still require the exact current
+profile and digest. The source-bound identity fixtures were removed with this
+change; the history below describes those earlier profiles.
+
+## Source-bound profile history (before profile attestations)
 
 Copilot profile v68 binds the merged hot-upgrade and current master transport.
 Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
