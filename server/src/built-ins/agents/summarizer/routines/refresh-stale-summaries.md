@@ -59,7 +59,7 @@ This routine is **paused by default** and spends no tokens until an operator ena
 
 - Read-and-report only. This routine must never change issues, workspaces, code, or agent configuration — its only write is the summary revision.
 - Keep every read company-scoped. Do not cross company boundaries.
-- Run on the low-cost model profile lane (`cheap`). Keep each summary short.
+- Keep each summary short.
 - Never fabricate status and never surface secrets from issue bodies or configs.
 
 ## Output

@@ -1,0 +1,1322 @@
+{
+  "schema": "paperclip.copilot-acp-evidence/v1",
+  "harnessVersion": "1.0.88",
+  "package": "@github/copilot-darwin-arm64",
+  "executableSha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "modelSource": "deterministic loopback fixture, COPILOT_OFFLINE=true; not a live model qualification",
+  "scenario": "attached-shell",
+  "costUsd": 0,
+  "filesystemMarkerExistedAtPromptResult": true,
+  "filesystemMarkerExistedAfterPrompt": true,
+  "modelCalls": 3,
+  "modelToolNames": [
+    "bash",
+    "read_bash",
+    "stop_bash",
+    "list_bash",
+    "view",
+    "create",
+    "edit",
+    "skill",
+    "sql",
+    "session_store_sql",
+    "read_agent",
+    "list_agents",
+    "write_agent",
+    "grep",
+    "glob",
+    "task"
+  ],
+  "permissionResponses": [
+    {
+      "id": 0,
+      "outcome": {
+        "outcome": "selected",
+        "optionId": "allow_once"
+      }
+    }
+  ],
+  "wire": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": true,
+            "sse": true
+          },
+          "promptCapabilities": {
+            "image": true,
+            "audio": false,
+            "embeddedContext": true
+          },
+          "sessionCapabilities": {
+            "close": {},
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "Copilot",
+          "title": "Copilot",
+          "version": "1.0.88"
+        },
+        "authMethods": [
+          {
+            "id": "copilot-login",
+            "name": "Log in with Copilot CLI",
+            "description": "Run `copilot login` in the terminal",
+            "_meta": {
+              "terminal-auth": {
+                "command": "/fixture/verified/copilot",
+                "args": [
+                  "login"
+                ],
+                "label": "Copilot Login"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "modes": {
+          "availableModes": [
+            {
+              "id": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "name": "Agent",
+              "description": "Default agent mode for conversational interactions"
+            },
+            {
+              "id": "https://agentclientprotocol.com/protocol/session-modes#plan",
+              "name": "Plan",
+              "description": "Plan mode for creating and executing multi-step plans"
+            },
+            {
+              "id": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+              "name": "Autopilot",
+              "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+            }
+          ],
+          "currentModeId": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        "configOptions": [
+          {
+            "type": "select",
+            "id": "mode",
+            "name": "Mode",
+            "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+            "options": [
+              {
+                "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+                "name": "Agent",
+                "description": "Default agent mode for conversational interactions"
+              },
+              {
+                "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+                "name": "Plan",
+                "description": "Plan mode for creating and executing multi-step plans"
+              },
+              {
+                "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+                "name": "Autopilot",
+                "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+              }
+            ],
+            "category": "mode",
+            "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+          },
+          {
+            "type": "select",
+            "id": "allow_all",
+            "name": "Allow All",
+            "currentValue": "off",
+            "options": [
+              {
+                "value": "on",
+                "name": "On",
+                "description": "Automatically approve all tool, path, and URL requests"
+              },
+              {
+                "value": "off",
+                "name": "Off",
+                "description": "Require approval for tool, path, and URL requests"
+              }
+            ],
+            "category": "permissions",
+            "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "available_commands_update",
+          "availableCommands": [
+            {
+              "name": "add-dir",
+              "description": "Allow file access to a directory and load its .github skills and agents as trusted configuration",
+              "input": {
+                "hint": "directory"
+              }
+            },
+            {
+              "name": "allow-all",
+              "description": "Enable all permissions",
+              "input": {
+                "hint": "[on|off|show]"
+              }
+            },
+            {
+              "name": "permissions",
+              "description": "Switch between permission modes",
+              "input": {
+                "hint": "[default|allow-all|show]"
+              }
+            },
+            {
+              "name": "autopilot",
+              "description": "Toggle autopilot mode, or set an autopilot objective with an optional AI-credit limit (--max-ai-credits)",
+              "input": {
+                "hint": "[on|off|<objective>] [--max-ai-credits <N>]"
+              }
+            },
+            {
+              "name": "compact",
+              "description": "Summarize conversation history to reduce context window usage. Optionally provide focus instructions.",
+              "input": {
+                "hint": "focus instructions"
+              }
+            },
+            {
+              "name": "blame",
+              "description": "Trace code history with git blame and linked Copilot sessions",
+              "input": {
+                "hint": "text | pull request | commit"
+              }
+            },
+            {
+              "name": "chronicle",
+              "description": "Session history tools and insights",
+              "input": {
+                "hint": "standup|search|tips|cost-tips|improve|reindex"
+              }
+            },
+            {
+              "name": "computer",
+              "description": "Show or toggle Computer Use",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "context",
+              "description": "Show context window token usage and visualization"
+            },
+            {
+              "name": "cwd",
+              "description": "Change working directory or show current directory",
+              "input": {
+                "hint": "directory"
+              }
+            },
+            {
+              "name": "env",
+              "description": "Show loaded environment details (instructions, MCP servers, skills, agents, hooks, plugins, LSPs, extensions)"
+            },
+            {
+              "name": "every",
+              "description": "Schedule a recurring prompt or skill for this session",
+              "input": {
+                "hint": "<interval> <prompt>"
+              }
+            },
+            {
+              "name": "after",
+              "description": "Schedule a one-shot prompt or skill for this session",
+              "input": {
+                "hint": "<delay> <prompt>"
+              }
+            },
+            {
+              "name": "fleet",
+              "description": "Enable fleet mode for parallel subagent execution",
+              "input": {
+                "hint": "prompt"
+              }
+            },
+            {
+              "name": "init",
+              "description": "Initialize Copilot instructions for this repository",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "list-dirs",
+              "description": "Display allowed directories and exact session path grants"
+            },
+            {
+              "name": "mcp",
+              "description": "Manage MCP server configuration",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "memory",
+              "description": "Show memory status, or enable/disable memory across sessions",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "model",
+              "description": "Select the AI model for this session (use 'auto' to let Copilot pick automatically). Use /config model to set the user default, '--repo'/'--local' to set the repo default, or 'plan'/'--plan' to set the plan-mode model.",
+              "input": {
+                "hint": "model"
+              }
+            },
+            {
+              "name": "plan",
+              "description": "Create an implementation plan before coding",
+              "input": {
+                "hint": "prompt"
+              }
+            },
+            {
+              "name": "plugin",
+              "description": "Manage plugins and plugin marketplaces",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "rename",
+              "description": "Rename the current session",
+              "input": {
+                "hint": "name"
+              }
+            },
+            {
+              "name": "research",
+              "description": "Run deep research investigation using GitHub search and web sources",
+              "input": {
+                "hint": "topic"
+              }
+            },
+            {
+              "name": "remote",
+              "description": "Show remote status or toggle remote control from GitHub web and mobile",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "reset-allowed-tools",
+              "description": "Reset session tool and exact-path approvals"
+            },
+            {
+              "name": "review",
+              "description": "Run code review agent to analyze changes",
+              "input": {
+                "hint": "additional instructions"
+              }
+            },
+            {
+              "name": "sandbox",
+              "description": "Manage sandbox settings, including file path permissions, network permissions, and more",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "security-review",
+              "description": "Analyze staged and unstaged changes for security vulnerabilities.",
+              "input": {
+                "hint": "additional instructions"
+              }
+            },
+            {
+              "name": "session",
+              "description": "View and manage sessions",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "share",
+              "description": "Share the session via GitHub and get a shareable link",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "skills",
+              "description": "Manage skills for enhanced capabilities",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "subconscious",
+              "description": "Manage Copilot Subconscious memory consolidation",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "usage",
+              "description": "Display session usage metrics and statistics"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "available_commands_update",
+          "availableCommands": [
+            {
+              "name": "add-dir",
+              "description": "Allow file access to a directory and load its .github skills and agents as trusted configuration",
+              "input": {
+                "hint": "directory"
+              }
+            },
+            {
+              "name": "allow-all",
+              "description": "Enable all permissions",
+              "input": {
+                "hint": "[on|off|show]"
+              }
+            },
+            {
+              "name": "permissions",
+              "description": "Switch between permission modes",
+              "input": {
+                "hint": "[default|allow-all|show]"
+              }
+            },
+            {
+              "name": "autopilot",
+              "description": "Toggle autopilot mode, or set an autopilot objective with an optional AI-credit limit (--max-ai-credits)",
+              "input": {
+                "hint": "[on|off|<objective>] [--max-ai-credits <N>]"
+              }
+            },
+            {
+              "name": "compact",
+              "description": "Summarize conversation history to reduce context window usage. Optionally provide focus instructions.",
+              "input": {
+                "hint": "focus instructions"
+              }
+            },
+            {
+              "name": "blame",
+              "description": "Trace code history with git blame and linked Copilot sessions",
+              "input": {
+                "hint": "text | pull request | commit"
+              }
+            },
+            {
+              "name": "chronicle",
+              "description": "Session history tools and insights",
+              "input": {
+                "hint": "standup|search|tips|cost-tips|improve|reindex"
+              }
+            },
+            {
+              "name": "computer",
+              "description": "Show or toggle Computer Use",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "context",
+              "description": "Show context window token usage and visualization"
+            },
+            {
+              "name": "cwd",
+              "description": "Change working directory or show current directory",
+              "input": {
+                "hint": "directory"
+              }
+            },
+            {
+              "name": "env",
+              "description": "Show loaded environment details (instructions, MCP servers, skills, agents, hooks, plugins, LSPs, extensions)"
+            },
+            {
+              "name": "every",
+              "description": "Schedule a recurring prompt or skill for this session",
+              "input": {
+                "hint": "<interval> <prompt>"
+              }
+            },
+            {
+              "name": "after",
+              "description": "Schedule a one-shot prompt or skill for this session",
+              "input": {
+                "hint": "<delay> <prompt>"
+              }
+            },
+            {
+              "name": "fleet",
+              "description": "Enable fleet mode for parallel subagent execution",
+              "input": {
+                "hint": "prompt"
+              }
+            },
+            {
+              "name": "init",
+              "description": "Initialize Copilot instructions for this repository",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "list-dirs",
+              "description": "Display allowed directories and exact session path grants"
+            },
+            {
+              "name": "mcp",
+              "description": "Manage MCP server configuration",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "memory",
+              "description": "Show memory status, or enable/disable memory across sessions",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "model",
+              "description": "Select the AI model for this session (use 'auto' to let Copilot pick automatically). Use /config model to set the user default, '--repo'/'--local' to set the repo default, or 'plan'/'--plan' to set the plan-mode model.",
+              "input": {
+                "hint": "model"
+              }
+            },
+            {
+              "name": "plan",
+              "description": "Create an implementation plan before coding",
+              "input": {
+                "hint": "prompt"
+              }
+            },
+            {
+              "name": "plugin",
+              "description": "Manage plugins and plugin marketplaces",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "rename",
+              "description": "Rename the current session",
+              "input": {
+                "hint": "name"
+              }
+            },
+            {
+              "name": "research",
+              "description": "Run deep research investigation using GitHub search and web sources",
+              "input": {
+                "hint": "topic"
+              }
+            },
+            {
+              "name": "remote",
+              "description": "Show remote status or toggle remote control from GitHub web and mobile",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "reset-allowed-tools",
+              "description": "Reset session tool and exact-path approvals"
+            },
+            {
+              "name": "review",
+              "description": "Run code review agent to analyze changes",
+              "input": {
+                "hint": "additional instructions"
+              }
+            },
+            {
+              "name": "sandbox",
+              "description": "Manage sandbox settings, including file path permissions, network permissions, and more",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "security-review",
+              "description": "Analyze staged and unstaged changes for security vulnerabilities.",
+              "input": {
+                "hint": "additional instructions"
+              }
+            },
+            {
+              "name": "session",
+              "description": "View and manage sessions",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "share",
+              "description": "Share the session via GitHub and get a shareable link",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "skills",
+              "description": "Manage skills for enhanced capabilities",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "subconscious",
+              "description": "Manage Copilot Subconscious memory consolidation",
+              "input": {
+                "hint": ""
+              }
+            },
+            {
+              "name": "usage",
+              "description": "Display session usage metrics and statistics"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "config_option_update",
+          "configOptions": [
+            {
+              "type": "select",
+              "id": "mode",
+              "name": "Mode",
+              "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "options": [
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+                  "name": "Agent",
+                  "description": "Default agent mode for conversational interactions"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+                  "name": "Plan",
+                  "description": "Plan mode for creating and executing multi-step plans"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+                  "name": "Autopilot",
+                  "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+                }
+              ],
+              "category": "mode",
+              "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+            },
+            {
+              "type": "select",
+              "id": "allow_all",
+              "name": "Allow All",
+              "currentValue": "off",
+              "options": [
+                {
+                  "value": "on",
+                  "name": "On",
+                  "description": "Automatically approve all tool, path, and URL requests"
+                },
+                {
+                  "value": "off",
+                  "name": "Off",
+                  "description": "Require approval for tool, path, and URL requests"
+                }
+              ],
+              "category": "permissions",
+              "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "session_info_update",
+          "title": "Reply with Fixture complete.",
+          "updatedAt": "2026-09-28T16:16:25.619Z"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 9943,
+          "size": 64000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "assistant.usage",
+        "timestamp": "2026-09-28T16:16:25.692Z",
+        "data": {
+          "model": "gpt-4.1",
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "cost": 0,
+          "duration": 2,
+          "timeToFirstTokenMs": 1.564876,
+          "outputTtftMs": 1.564917,
+          "interTokenLatencyMs": 0.101458,
+          "initiator": "user",
+          "interactionType": "conversation-agent",
+          "isByok": true,
+          "isAuto": false,
+          "maxPromptTokens": 64000,
+          "transport": "http",
+          "apiCallId": "fixture-1",
+          "rte": false,
+          "apiEndpoint": "/chat/completions",
+          "quotaSnapshots": {},
+          "availableToolCount": 16,
+          "toolTokenCount": 5446,
+          "frontierSource": "estimated",
+          "cacheDetailsReported": false,
+          "numToolCalls": 1,
+          "toolCounts": {
+            "bash": 1
+          },
+          "finishReason": "tool_calls",
+          "contentFilterTriggered": false
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "fixture-tool",
+          "title": "Bounded settlement fixture",
+          "kind": "execute",
+          "status": "pending",
+          "rawInput": {
+            "command": "sleep 2; printf ACP_SHELL_DONE > settlement.txt",
+            "description": "Bounded settlement fixture",
+            "mode": "async",
+            "detach": false
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.720Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.720Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.721Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.721Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 0,
+      "method": "session/request_permission",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "toolCall": {
+          "toolCallId": "fixture-tool",
+          "title": "Bounded settlement fixture",
+          "kind": "execute",
+          "status": "pending",
+          "rawInput": {
+            "command": "sleep 2; printf ACP_SHELL_DONE > settlement.txt",
+            "commands": [
+              "sleep 2; printf ACP_SHELL_DONE > settlement.txt"
+            ]
+          }
+        },
+        "options": [
+          {
+            "optionId": "allow_once",
+            "kind": "allow_once",
+            "name": "Allow once"
+          },
+          {
+            "optionId": "allow_always",
+            "kind": "allow_always",
+            "name": "Always allow"
+          },
+          {
+            "optionId": "reject_once",
+            "kind": "reject_once",
+            "name": "Deny"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.724Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.724Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.724Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.725Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.725Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.725Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.734Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.736Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:25.736Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "fixture-tool",
+          "status": "completed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "<command started in background with shellId: 0>"
+              }
+            }
+          ],
+          "rawOutput": {
+            "content": "<command started in background with shellId: 0>",
+            "detailedContent": "<command started in background with shellId: 0>"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 10012,
+          "size": 64000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Fixture complete."
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "assistant.usage",
+        "timestamp": "2026-09-28T16:16:25.743Z",
+        "data": {
+          "model": "gpt-4.1",
+          "inputTokens": 10,
+          "outputTokens": 3,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "cost": 0,
+          "duration": 1,
+          "timeToFirstTokenMs": 0.7036250000000001,
+          "outputTtftMs": 0.703667,
+          "interTokenLatencyMs": 0.12470800000000001,
+          "initiator": "agent",
+          "interactionType": "conversation-agent",
+          "isByok": true,
+          "isAuto": false,
+          "maxPromptTokens": 64000,
+          "transport": "http",
+          "apiCallId": "fixture-1",
+          "rte": false,
+          "apiEndpoint": "/chat/completions",
+          "quotaSnapshots": {},
+          "availableToolCount": 16,
+          "toolTokenCount": 5446,
+          "frontierSource": "estimated",
+          "cacheDetailsReported": false,
+          "numToolCalls": 0,
+          "toolCounts": {},
+          "finishReason": "stop",
+          "contentFilterTriggered": false
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "fixture-tool",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.747Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.748Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.748Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "d37cae34-0e97-44d6-8bd0-67b879d729d8",
+          "title": "Reading shell output",
+          "kind": "read",
+          "status": "pending",
+          "rawInput": {
+            "shellId": "0",
+            "delay": 0
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "d37cae34-0e97-44d6-8bd0-67b879d729d8",
+          "status": "completed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "\n<shellId: 0 completed with exit code 0>"
+              }
+            }
+          ],
+          "rawOutput": {
+            "content": "\n<shellId: 0 completed with exit code 0>",
+            "detailedContent": "\n<shellId: 0 completed with exit code 0>"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 10142,
+          "size": 64000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Fixture complete."
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "assistant.usage",
+        "timestamp": "2026-09-28T16:16:27.768Z",
+        "data": {
+          "model": "gpt-4.1",
+          "inputTokens": 10,
+          "outputTokens": 3,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "cost": 0,
+          "duration": 1,
+          "timeToFirstTokenMs": 0.794083,
+          "outputTtftMs": 0.7941239999999999,
+          "interTokenLatencyMs": 0.115041,
+          "initiator": "agent",
+          "interactionType": "conversation-agent",
+          "isByok": true,
+          "isAuto": false,
+          "maxPromptTokens": 64000,
+          "transport": "http",
+          "apiCallId": "fixture-1",
+          "rte": false,
+          "apiEndpoint": "/chat/completions",
+          "quotaSnapshots": {},
+          "availableToolCount": 16,
+          "toolTokenCount": 5446,
+          "frontierSource": "estimated",
+          "cacheDetailsReported": false,
+          "numToolCalls": 0,
+          "toolCounts": {},
+          "finishReason": "stop",
+          "contentFilterTriggered": false
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.772Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.773Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.773Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.background_tasks_changed",
+        "timestamp": "2026-09-28T16:16:27.773Z",
+        "data": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "github.com/copilot/sessionEvent",
+      "params": {
+        "sessionId": "08200935-7bdc-42de-8830-8ec1fc23b552",
+        "type": "session.idle",
+        "timestamp": "2026-09-28T16:16:27.775Z",
+        "data": {
+          "mode": "interactive"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "stopReason": "end_turn",
+        "usage": {
+          "inputTokens": 20,
+          "outputTokens": 6,
+          "totalTokens": 26,
+          "thoughtTokens": 0,
+          "cachedReadTokens": 0,
+          "cachedWriteTokens": 0
+        }
+      }
+    }
+  ]
+}

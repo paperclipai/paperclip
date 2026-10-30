@@ -46,16 +46,20 @@ Start immediately after onboarding:
 pnpm paperclipai onboard --run
 ```
 
-Non-interactive defaults + immediate start (prints the URL without opening a browser):
+Quickstart defaults + immediate start:
 
 ```sh
 pnpm paperclipai onboard --yes
 ```
 
-Browser opening is opt-in. Set the environment variable explicitly when that is the desired behavior:
+When onboarding starts Paperclip from an interactive terminal, it opens the
+onboarding page in your browser once. Non-interactive terminals stay silent.
+Suppress browser opening explicitly for headless or automated runs with either
+environment variable:
 
 ```sh
-PAPERCLIP_OPEN_ON_LISTEN=true pnpm paperclipai onboard --yes
+PAPERCLIP_NO_BROWSER=1 pnpm paperclipai onboard --yes
+PAPERCLIP_OPEN_ON_LISTEN=false pnpm paperclipai onboard --yes
 ```
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.

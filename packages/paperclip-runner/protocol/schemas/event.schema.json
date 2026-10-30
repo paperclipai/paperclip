@@ -24,12 +24,14 @@
     "sourceKind": { "enum": ["runner", "control_plane"] },
     "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "itemId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "itemId": { "type": "string", "minLength": 1, "maxLength": 240 },
     "eventType": {
       "enum": [
-        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
+        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
+        "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
         "plan.updated",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
@@ -43,7 +45,7 @@
         "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
         "turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled",
         "item.started", "item.delta", "item.completed", "item.failed", "usage.reported",
-        "semantic_tool.input", "semantic_tool.result",
+        "semantic_tool.input", "semantic_tool.result", "semantic_tool.reconciled",
         "mcp_app.discovered", "mcp_app.resource.resolved", "mcp_app.initializing", "mcp_app.ready", "mcp_app.tool_input", "mcp_app.tool_result", "mcp_app.action.requested", "mcp_app.action.resolved", "mcp_app.host_context.changed", "mcp_app.failed", "mcp_app.teardown",
         "runtime_request.created", "runtime_request.resolved", "runtime_request.expired", "runtime_request.cancelled",
         "interaction.request.proposed", "interaction.request.materialized", "interaction.request.rejected", "interaction.response.progressed", "interaction.response.resolved", "interaction.response.delivered",
@@ -69,6 +71,7 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
+    { "if": { "properties": { "eventType": { "const": "auth.credentials.updated" } } }, "then": { "properties": { "sourceKind": { "const": "runner" }, "priority": { "const": 0 }, "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json" } } } },
     { "if": { "properties": { "eventType": { "const": "plan.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan" } } } },
     { "if": { "properties": { "eventType": { "enum": ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution" } } } },
     { "if": { "properties": { "eventType": { "enum": ["research.started", "research.progressed", "research.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/research" } } } },
@@ -153,6 +156,25 @@
       }
     },
     {
+      "if": { "properties": { "eventType": { "const": "semantic_tool.reconciled" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  { "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json" },
+                  { "type": "object", "properties": { "phase": { "const": "reconciled" } } }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "eventType": { "const": "run.terminal" } } },
       "then": {
         "properties": {
@@ -165,6 +187,47 @@
       "then": {
         "properties": {
           "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/result.schema.json" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       }
     }

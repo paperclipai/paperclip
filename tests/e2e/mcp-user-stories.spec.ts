@@ -24,7 +24,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const body = await json<{ id: string; issuePrefix?: string; prefix?: string; urlKey?: string }>(
     await request.post("/api/companies", { data: { name: `MCP US ${label} ${Date.now()}` } }),
   );
-  await json(await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } }));
   return { companyId: body.id, prefix: body.issuePrefix ?? body.prefix ?? body.urlKey ?? "E2E" };
 }
 
@@ -196,6 +195,10 @@ async function startMockMcp(): Promise<MockMcpServer> {
 }
 
 async function screenshot(page: Page, storyId: string, step: string) {
+  if (new URL(page.url()).pathname.endsWith("/review")) {
+    await expect(page.getByRole("heading", { name: "Review", exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Loading tools…", { exact: true })).toBeHidden();
+  }
   await page.screenshot({ path: `${SCREENSHOT_DIR}/${storyId.toLowerCase()}-${step}.png`, fullPage: true });
 }
 
@@ -304,7 +307,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
       await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-1", "01-connected-app");
-      await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
+      await page.goto(`/${seed.prefix}/activity?action=tool_`);
       await screenshot(page, "US-1", "02-activity");
     } finally {
       await mock.close();
@@ -319,9 +322,10 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       expect(pending.actionRequestId).toBeTruthy();
 
       await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
+      await expect(page.getByRole("heading", { name: "Waiting for your OK" })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-2", "01-review-pending");
 
-      await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
+      await page.getByRole("button", { name: "Allow once", exact: true }).click();
       await pollTestCall(request, connectionId, pending.actionRequestId!, "done");
       expect(mock.captures.filter((capture) => capture.method === "tools/call" && capture.toolName === "sheets:update_cell")).toHaveLength(1);
       await expectAuditEvent(request, seed.companyId, { connectionId, agentId: scout.id, search: "sheets:update_cell" });
@@ -410,7 +414,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
     const health = await request.post(`/api/tool-connections/${connectionId}/health-check`);
     expect(health.status()).toBe(502);
     await page.goto(`/${seed.prefix}/apps/connections`);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
     await screenshot(page, "US-8", "01-needs-attention");
 
     const recovered = await startMockMcp();

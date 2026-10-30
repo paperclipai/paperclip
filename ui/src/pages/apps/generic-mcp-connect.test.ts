@@ -38,6 +38,13 @@ describe("endpointHost", () => {
 });
 
 describe("oauthCallbackUrlForBrowser", () => {
+  it("prefers the callback URL advertised by the server", () => {
+    expect(oauthCallbackUrlForBrowser(
+      "http://localhost:3000",
+      "https://paperclip.example.test/api/tools/oauth/callback",
+    )).toBe("https://paperclip.example.test/api/tools/oauth/callback");
+  });
+
   it("uses localhost for local HTTP callbacks to match the API authorization request", () => {
     expect(oauthCallbackUrlForBrowser("http://127.0.0.1:3200")).toBe(
       "http://localhost:3200/api/tools/oauth/callback",
@@ -90,9 +97,10 @@ describe("genericConnectGuidance", () => {
     expect(genericConnectGuidance("oauth_redirect_origin_unsupported", null).focus).toBe("deployment");
   });
 
-  it("points at the name field when the connection name is already used", () => {
+  it("does not ask the operator to resolve an internal name conflict", () => {
     const guidance = genericConnectGuidance("tool_access_name_conflict", null);
-    expect(guidance).toMatchObject({ title: "That name is taken", focus: "name" });
+    expect(guidance).toMatchObject({ title: "Paperclip couldn’t name this connection", focus: "none" });
+    expect(guidance.body).not.toContain("different name");
   });
 
   it("passes a rejected header's own message through", () => {

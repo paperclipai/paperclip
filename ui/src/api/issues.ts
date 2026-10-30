@@ -1,3 +1,7 @@
+import type { SetIssueTitle } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import type { IssueSummary } from "@paperclipai/shared";
+import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
@@ -9,13 +13,20 @@ import type {
   FeedbackTrace,
   FeedbackVote,
   Issue,
+  IssueAccessGrant,
+  IssueAccessGrantSubjectType,
+  IssueVisibility,
+  IssuePrivacyConstraints,
   IssueChanges,
   IssueAttachment,
   IssueCostSummary,
   IssueComment,
+  IssueRecentComments,
+  IssueQueuedCommentQueue,
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  WorkspaceSourceInspection,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -24,12 +35,146 @@ import type {
   IssueTreeHold,
   IssueWatchdog,
   IssueWorkProduct,
+  RunnerGoalActionAccepted,
+  RunnerGoalActionRequest,
+  RunnerGoalProjection,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { api, ApiError, detachInflightGet, type RequestOptions } from "./client";
+import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { classifySendFailure } from "../lib/pending-send";
+import { interactionResolutionErrorCode } from "../lib/interaction-resolution-error";
+
+function hasCommentReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+  return (
+    typeof row.id === "string" &&
+    uuid.test(row.id) &&
+    typeof row.issueId === "string" &&
+    uuid.test(row.issueId) &&
+    typeof row.body === "string"
+  );
+}
+
+async function confirmedCommentResponse<T>(
+  request: Promise<T>,
+  valid: (response: T) => boolean,
+): Promise<T> {
+  try {
+    const response = await request;
+    if (!valid(response)) throw new CommentSubmissionUnknownError();
+    return response;
+  } catch (error) {
+    // A rejected request is distinct from a lost/invalid receipt. A server 5xx
+    // may also happen after commit; it cannot establish that nothing was saved.
+    if (error instanceof ApiError && error.status < 500) throw error;
+    throw new CommentSubmissionUnknownError();
+  }
+}
+
+/**
+ * Resolutions that failed transiently in this tab. A resolution may land on
+ * the server and lose its response; resending it then gets
+ * `interaction_already_resolved`. That is our own answer, not a conflict, but
+ * only when the saved resolution is exactly the one we sent: someone else may
+ * have resolved the card meanwhile with the same status and different choices.
+ */
+const transientlyFailedResolutions = new Set<string>();
+
+function sameSet(left: readonly string[] | null | undefined, right: readonly string[] | null | undefined): boolean {
+  const a = new Set(left ?? []);
+  const b = new Set(right ?? []);
+  return a.size === b.size && [...a].every((value) => b.has(value));
+}
+
+function sameText(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left?.trim() || null) === (right?.trim() || null);
+}
+
+type AcceptInteractionInput = {
+  selectedClientKeys?: string[];
+  selectedOptionIds?: string[];
+  rememberAction?: boolean;
+};
+
+/** Whether a stored accepted resolution records exactly this accept request. */
+export function acceptedResolutionMatches(current: IssueThreadInteraction, data: AcceptInteractionInput | undefined): boolean {
+  if (current.status !== "accepted") return false;
+  if (current.kind === "suggest_tasks") {
+    // The server skips every suggested task that was not selected.
+    const allKeys = current.payload.tasks.map((task) => task.clientKey);
+    const selected = new Set(data?.selectedClientKeys ?? allKeys);
+    return sameSet(current.result?.skippedClientKeys, allKeys.filter((key) => !selected.has(key)));
+  }
+  if (current.kind === "request_checkbox_confirmation") {
+    return sameSet(current.result?.selectedOptionIds, data?.selectedOptionIds);
+  }
+  return !data?.selectedClientKeys && !data?.selectedOptionIds;
+}
+
+/** Whether a stored rejection records exactly this reject request. */
+export function rejectedResolutionMatches(current: IssueThreadInteraction, reason: string | undefined): boolean {
+  if (current.status !== "rejected") return false;
+  const result = (current.result ?? null) as { reason?: string | null; rejectionReason?: string | null } | null;
+  return sameText(current.kind === "suggest_tasks" ? result?.rejectionReason : result?.reason, reason);
+}
+
+/** Whether stored answers record exactly these answers. */
+export function answeredResolutionMatches(current: IssueThreadInteraction, answers: AskUserQuestionsAnswer[]): boolean {
+  if (current.status !== "answered" || current.kind !== "ask_user_questions") return false;
+  const saved = current.result?.answers ?? [];
+  if (saved.length !== answers.length) return false;
+  return answers.every((answer) => {
+    const match = saved.find((row) => row.questionId === answer.questionId);
+    return Boolean(match && sameSet(match.optionIds, answer.optionIds) && sameText(match.otherText, answer.otherText));
+  });
+}
+
+async function resolveInteractionOnce(
+  issueId: string,
+  interactionId: string,
+  /** Identifies this exact request; a different answer is a different resolution. */
+  requestFingerprint: string,
+  matchesRequest: (current: IssueThreadInteraction) => boolean,
+  request: () => Promise<IssueThreadInteraction>,
+): Promise<IssueThreadInteraction> {
+  const key = `${issueId}:${interactionId}:${requestFingerprint}`;
+  try {
+    const result = await request();
+    transientlyFailedResolutions.delete(key);
+    return result;
+  } catch (error) {
+    if (classifySendFailure(error) === "pending") {
+      transientlyFailedResolutions.add(key);
+      throw error;
+    }
+    if (
+      transientlyFailedResolutions.has(key) &&
+      interactionResolutionErrorCode(error) === "interaction_already_resolved"
+    ) {
+      const current = await api
+        .get<IssueThreadInteraction[]>(`/issues/${issueId}/interactions`)
+        .then((rows) => rows.find((row) => row.id === interactionId) ?? null)
+        .catch((readError: unknown) => {
+          // A temporary read failure is no verdict: let it escape so the
+          // replay policy retries, and the next attempt verifies again.
+          if (classifySendFailure(readError) === "pending") throw readError;
+          return null;
+        });
+      if (current && matchesRequest(current)) {
+        transientlyFailedResolutions.delete(key);
+        return current;
+      }
+    }
+    throw error;
+  }
+}
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
@@ -43,6 +188,10 @@ export type ResolveRecoveryActionResponse = {
 };
 
 export type IssueListFilters = {
+  ids?: readonly string[];
+  parentIds?: readonly string[];
+  oneChildPerParent?: boolean;
+  projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
   projectId?: string;
@@ -60,6 +209,9 @@ export type IssueListFilters = {
   originKindPrefix?: string;
   originId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
+  includeAgentCreatedTasks?: boolean;
+  includeParticipatedTasks?: boolean;
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -68,7 +220,8 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "id";
+  afterId?: string;
   sortDir?: "asc" | "desc";
 };
 
@@ -78,35 +231,77 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.status) params.set("status", filters.status);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
-  if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
-  if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
-  if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
-  if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
-  if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
-  if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
+  if (filters?.oneChildPerParent) params.set("oneChildPerParent", "true");
+  if (filters?.assigneeAgentId)
+    params.set("assigneeAgentId", filters.assigneeAgentId);
+  if (filters?.participantAgentId)
+    params.set("participantAgentId", filters.participantAgentId);
+  if (filters?.assigneeUserId)
+    params.set("assigneeUserId", filters.assigneeUserId);
+  if (filters?.touchedByUserId)
+    params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchivedByUserId)
+    params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
+  if (filters?.unreadForUserId)
+    params.set("unreadForUserId", filters.unreadForUserId);
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
-  if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
+  if (filters?.executionWorkspaceId)
+    params.set("executionWorkspaceId", filters.executionWorkspaceId);
   if (filters?.originKind) params.set("originKind", filters.originKind);
-  if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
+  if (filters?.originKindPrefix)
+    params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
-  if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+  if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
+  if (filters?.includeParticipatedTasks) params.set("includeParticipatedTasks", "true");
+  if (filters?.includeAgentCreatedTasks !== undefined)
+    params.set("includeAgentCreatedTasks", String(filters.includeAgentCreatedTasks));
+  if (filters?.includeRoutineExecutions)
+    params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
-  if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
-  if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
+  if (filters?.includeBlockedInboxAttention)
+    params.set("includeBlockedInboxAttention", "true");
+  if (filters?.includeLiveDescendantSummary)
+    params.set("includeLiveDescendantSummary", "true");
   if (filters?.hasPlanDocument !== undefined) {
     params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
   }
   if (filters?.q) params.set("q", filters.q);
   if (filters?.limit) params.set("limit", String(filters.limit));
-  if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+  if (filters?.offset !== undefined)
+    params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  if (filters?.afterId) params.set("afterId", filters.afterId);
   return params;
 }
 
 export const issuesApi = {
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+    if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
+    const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const path = `/companies/${companyId}/issues/summaries?${params}`;
+    // React Query deduplicates within an account; URL-only HTTP coalescing must
+    // never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
+  /** Fetch every page for bounded task-detail relations, not just the default first page. */
+  listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
+    const pageSize = 500;
+    const tasks = new Map<string, Issue>();
+    let afterId: string | undefined;
+    for (;;) {
+      const page = await issuesApi.list(companyId, { ...filters, limit: pageSize, sortField: "id", sortDir: "asc", afterId }, options);
+      for (const task of page) tasks.set(task.id, task);
+      if (page.length < pageSize) return [...tasks.values()];
+      afterId = page[page.length - 1]!.id;
+    }
+  },
   list: (
     companyId: string,
     filters?: IssueListFilters,
@@ -117,11 +312,18 @@ export const issuesApi = {
     const path = `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`;
     return options ? api.get<Issue[]>(path, options) : api.get<Issue[]>(path);
   },
-  listCompact: (companyId: string, filters?: IssueListFilters, options?: RequestOptions) => {
+  listCompact: (
+    companyId: string,
+    filters?: IssueListFilters,
+    options?: RequestOptions,
+  ) => {
     const params = issueListSearchParams(filters);
-    params.set("view", "compact");
+    params.set("view", filters?.projection ?? "compact");
+    if (filters?.ids) params.set("ids", filters.ids.join(","));
     const path = `/companies/${companyId}/issues?${params.toString()}`;
-    return options ? api.get<CompactIssue[]>(path, options) : api.get<CompactIssue[]>(path);
+    return options
+      ? api.get<CompactIssue[]>(path, options)
+      : api.get<CompactIssue[]>(path);
   },
   count: (
     companyId: string,
@@ -138,49 +340,115 @@ export const issuesApi = {
     const params = new URLSearchParams();
     params.set("attention", filters.attention);
     if (filters.status) params.set("status", filters.status);
-    if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
-    if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters.assigneeAgentId)
+      params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters.assigneeUserId)
+      params.set("assigneeUserId", filters.assigneeUserId);
     if (filters.projectId) params.set("projectId", filters.projectId);
     if (filters.labelId) params.set("labelId", filters.labelId);
     if (filters.q) params.set("q", filters.q);
-    return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
+    return api.get<{ count: number }>(
+      `/companies/${companyId}/issues/count?${params.toString()}`,
+    );
   },
-  listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
+  listLabels: (companyId: string) =>
+    api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
-  get: (id: string, options?: RequestOptions) => options
-    ? api.get<Issue>(`/issues/${id}`, options)
-    : api.get<Issue>(`/issues/${id}`),
-  getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
+  getCore: (id: string, options?: RequestOptions) => api.get<Issue>(`/issues/${id}?view=core`, options),
+  recentComments: (id: string, options?: RequestOptions) => api.get<IssueRecentComments>(`/issues/${id}/recent-comments`, options),
+  get: (id: string, options?: RequestOptions) =>
+    options
+      ? api.get<Issue>(`/issues/${id}`, options)
+      : api.get<Issue>(`/issues/${id}`),
+  getRunnerGoal: (id: string, agentId?: string | null) => {
+    const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
+    return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
+  },
+  actOnRunnerGoal: (id: string, request: RunnerGoalActionRequest) =>
+    api.post<RunnerGoalActionAccepted>(
+      `/issues/${id}/runner-goal/actions`,
+      request,
+    ),
+  getWatchdog: (id: string) =>
+    api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
-  deleteWatchdog: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
-  markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
+  deleteWatchdog: (id: string) =>
+    api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
+  markRead: (id: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markUnread: (id: string) =>
+    api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
-    api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
+    api.post<{ id: string; archivedAt: Date }>(
+      `/issues/${id}/inbox-archive`,
+      {},
+    ),
   unarchiveFromInbox: (id: string) =>
-    api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
+    api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
+      `/issues/${id}/inbox-archive`,
+    ),
+  setTitle: (id: string, data: SetIssueTitle) =>
+    api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
-  update: (id: string, data: Record<string, unknown>) =>
-    api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  update: (id: string, data: Record<string, unknown>) => {
+    const response = api.patch<IssueUpdateResponse>(`/issues/${id}`, data);
+    return typeof data.comment === "string"
+      ? confirmedCommentResponse(response, (value) =>
+          hasCommentReceipt(value?.comment),
+        )
+      : response;
+  },
   decideStalledReview: (id: string, data: StalledReviewDecision) =>
-    api.post<StalledReviewDecisionResponse>(`/issues/${id}/stalled-review-decision`, data),
+    api.post<StalledReviewDecisionResponse>(
+      `/issues/${id}/stalled-review-decision`,
+      data,
+    ),
+  resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
+    api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
+  retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
+    api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
+    api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
+  reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
+    missingWork: string; actionOutcome: "completed" | "not_performed" | "mixed"; outcomeEvidence: string; acknowledgeLostWork: true }) =>
+    api.post<{ runId: string; actionId: string; status: "queued"; replayed: boolean }>(`/issues/${id}/recovery-actions/reconstruct-workspace`, data),
+  recoveryActions: (id: string, source?: { runId: string; actionId?: string }) => {
+    const query = source ? new URLSearchParams({ inspectSourceRunId: source.runId,
+      ...(source.actionId ? { inspectSourceActionId: source.actionId } : {}) }) : null;
+    return api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[];
+      sourceInspection?: WorkspaceSourceInspection }>(`/issues/${id}/recovery-actions${query ? `?${query}` : ""}`);
+  },
   resolveRecoveryAction: (
     id: string,
     data: {
+      executionReconciliation?: ExecutionReconciliation;
+      workspaceBaseRef?: { requestedRef: string; branch: string };
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
+      sourceIssueStatus: Issue["status"];
       resolutionNote?: string | null;
     },
-  ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
+  ) =>
+    api.post<ResolveRecoveryActionResponse>(
+      `/issues/${id}/recovery-actions/resolve`,
+      data,
+    ),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
-    api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
+    api.post<IssueTreeControlPreview>(
+      `/issues/${id}/tree-control/preview`,
+      data,
+    ),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>
-    api.post<{ hold: IssueTreeHold; preview: IssueTreeControlPreview }>(`/issues/${id}/tree-holds`, data),
+    api.post<{ hold: IssueTreeHold; preview: IssueTreeControlPreview }>(
+      `/issues/${id}/tree-holds`,
+      data,
+    ),
   getTreeHold: (id: string, holdId: string) =>
     api.get<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}`),
   listTreeHolds: (
@@ -196,7 +464,9 @@ export const issuesApi = {
     if (filters?.mode) params.set("mode", filters.mode);
     if (filters?.includeMembers) params.set("includeMembers", "true");
     const qs = params.toString();
-    return api.get<IssueTreeHold[]>(`/issues/${id}/tree-holds${qs ? `?${qs}` : ""}`);
+    return api.get<IssueTreeHold[]>(
+      `/issues/${id}/tree-holds${qs ? `?${qs}` : ""}`,
+    );
   },
   getTreeControlState: (id: string) =>
     api.get<{
@@ -207,14 +477,24 @@ export const issuesApi = {
         isRoot: boolean;
         mode: "pause";
         reason: string | null;
-        releasePolicy: { strategy: "manual" | "after_active_runs_finish"; note?: string | null } | null;
+        releasePolicy: {
+          strategy: "manual" | "after_active_runs_finish";
+          note?: string | null;
+        } | null;
       } | null;
     }>(`/issues/${id}/tree-control/state`),
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
-    api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
-  checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
+    api.post<ReleaseIssueTreeHoldResponse>(
+      `/issues/${id}/tree-holds/${holdId}/release`,
+      data,
+    ),
+  checkMonitorNow: (id: string) =>
+    api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
-    api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
+    api.post<IssueRetryNowResponse>(
+      `/issues/${id}/scheduled-retry/retry-now`,
+      {},
+    ),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
@@ -229,57 +509,169 @@ export const issuesApi = {
       order?: "asc" | "desc";
       limit?: number;
     },
+    options?: RequestOptions,
   ) => {
     const params = new URLSearchParams();
     if (filters?.after) params.set("after", filters.after);
     if (filters?.order) params.set("order", filters.order);
     if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
-    return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
+    return api.get<IssueComment[]>(
+      `/issues/${id}/comments${qs ? `?${qs}` : ""}`,
+      options,
+    );
   },
+  getQueuedComments: (id: string) =>
+    api.get<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments`),
+  editQueuedComment: (
+    id: string,
+    commentId: string,
+    data: { body: string; queueId: string; revision: string },
+  ) =>
+    api.patch<IssueQueuedCommentQueue>(
+      `/issues/${id}/queued-comments/${commentId}`,
+      data,
+    ),
+  reorderQueuedComments: (
+    id: string,
+    data: { orderedCommentIds: string[]; queueId: string; revision: string },
+  ) =>
+    api.put<IssueQueuedCommentQueue>(
+      `/issues/${id}/queued-comments/order`,
+      data,
+    ),
+  interruptQueuedComments: (
+    id: string,
+    data: { queueId: string; targetRunId: string | null; revision: string },
+  ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
+  interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
+    const queue = await issuesApi.getQueuedComments(id);
+    if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
+      throw new Error("The queued messages changed. Refresh and try again.");
+    }
+    return issuesApi.interruptQueuedComments(id, {
+      queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,
+    });
+  },
+  steerQueuedComment: (
+    id: string,
+    commentId: string,
+    data: { queueId: string; targetRunId: string; revision: string },
+  ) =>
+    api.post<IssueQueuedCommentQueue>(
+      `/issues/${id}/queued-comments/${commentId}/steer`,
+      data,
+    ),
+  discardQueuedComment: (
+    id: string,
+    commentId: string,
+    data: { queueId: string; revision: string },
+  ) =>
+    api.delete<IssueQueuedCommentQueue>(
+      `/issues/${id}/queued-comments/${commentId}`,
+      data,
+    ),
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
-    api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
+    api.get<AcceptedPlanDecompositionSummary[]>(
+      `/issues/${id}/accepted-plan-decompositions`,
+    ),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+    data?: AcceptInteractionInput,
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `accept:${JSON.stringify([data?.selectedClientKeys ?? null, data?.selectedOptionIds ?? null])}`,
+      (current) => acceptedResolutionMatches(current, data),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/accept`,
+          data ?? {},
+        ),
+    ),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `reject:${JSON.stringify(reason ?? null)}`,
+      (current) => rejectedResolutionMatches(current, reason),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/reject`,
+          reason ? { reason } : {},
+        ),
+    ),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/cancel`,
+      reason ? { reason } : {},
+    ),
+  skipInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/skip`,
+      reason ? { reason } : {},
+    ),
+  dismissInteraction: (id: string, interactionId: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/dismiss`, {}),
   respondToInteraction: (
     id: string,
     interactionId: string,
-    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+    data: {
+      answers: AskUserQuestionsAnswer[];
+      summaryMarkdown?: string | null;
+    },
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+    resolveInteractionOnce(
+      id,
+      interactionId,
+      `respond:${JSON.stringify(data.answers)}`,
+      (current) => answeredResolutionMatches(current, data.answers),
+      () =>
+        api.post<IssueThreadInteraction>(
+          `/issues/${id}/interactions/${interactionId}/respond`,
+          data,
+        ),
+    ),
   submitInteractionVerdicts: (
     id: string,
     interactionId: string,
-    verdicts: { id: string; verdict: "approve" | "reject" | "defer"; reason?: string | null }[],
+    verdicts: {
+      id: string;
+      verdict: "approve" | "reject" | "defer";
+      reason?: string | null;
+    }[],
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/verdicts`, { verdicts }),
-  getComment: (id: string, commentId: string) =>
-    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
-  listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/verdicts`,
+      { verdicts },
+    ),
+  getComment: (id: string, commentId: string, options?: RequestOptions) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${encodeURIComponent(commentId)}`, options),
+  listFeedbackVotes: (id: string) =>
+    api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {
     const qs = options.excludeRoot ? "?excludeRoot=true" : "";
     return api.get<IssueCostSummary>(`/issues/${id}/cost-summary${qs}`);
   },
-  listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
+  listFeedbackTraces: (
+    id: string,
+    filters?: Record<string, string | boolean | undefined>,
+  ) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {
       if (value === undefined) continue;
       params.set(key, String(value));
     }
     const qs = params.toString();
-    return api.get<FeedbackTrace[]>(`/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`);
+    return api.get<FeedbackTrace[]>(
+      `/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`,
+    );
   },
   upsertFeedbackVote: (
     id: string,
@@ -291,14 +683,23 @@ export const issuesApi = {
       allowSharing?: boolean;
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
-    api.post<IssueComment>(
-      `/issues/${id}/comments`,
-      {
+  addComment: (
+    id: string,
+    body: string,
+    reopen?: boolean,
+    interrupt?: boolean,
+    attachmentIds?: string[],
+    clientRequestId?: string,
+  ) =>
+    confirmedCommentResponse(
+      api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
-      },
+        ...(attachmentIds?.length ? { attachmentIds } : {}),
+      }),
+      hasCommentReceipt,
     ),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}?mode=cancel`),
@@ -308,20 +709,42 @@ export const issuesApi = {
     api.get<IssueDocument[]>(
       `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
     ),
-  getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
+  getDocument: (id: string, key: string) =>
+    api.get<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+    ),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
-    api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
+    api.put<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+      data,
+    ),
   lockDocument: (id: string, key: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/lock`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/lock`,
+      {},
+    ),
   unlockDocument: (id: string, key: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/unlock`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/unlock`,
+      {},
+    ),
   listDocumentRevisions: (id: string, key: string) =>
-    api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
+    api.get<DocumentRevision[]>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
+    ),
+  getDocumentRevision: (id: string, key: string, revisionId: string) =>
+    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,
+      {},
+    ),
   deleteDocument: (id: string, key: string) =>
-    api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
-  listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
+    api.delete<{ ok: true }>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+    ),
+  listAttachments: (id: string) =>
+    api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,
     issueId: string,
@@ -333,20 +756,49 @@ export const issuesApi = {
     if (issueCommentId) {
       form.append("issueCommentId", issueCommentId);
     }
-    return api.postForm<IssueAttachment>(`/companies/${companyId}/issues/${issueId}/attachments`, form);
+    return api.postForm<IssueAttachment>(
+      `/companies/${companyId}/issues/${issueId}/attachments`,
+      form,
+    );
   },
   deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
+  // --- Privacy / sharing (PAP-16066) -------------------------------------
+  // Enriched grants for the share sheet: implicit-by-source rows (assignment /
+  // project) plus explicit grants, each carrying subjectDisplayName / avatar /
+  // agentVisibility from the server enrichment pass.
+  privacyConstraints: (id: string) => api.get<IssuePrivacyConstraints>(`/issues/${id}/privacy-constraints`),
+  listAccessGrants: (id: string, options?: RequestOptions) =>
+    options
+      ? api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`, options)
+      : api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`),
+  createAccessGrant: (
+    id: string,
+    data: { subjectType: IssueAccessGrantSubjectType; subjectId: string },
+  ) => api.post<IssueAccessGrant>(`/issues/${id}/access-grants`, data),
+  revokeAccessGrant: (id: string, grantId: string) =>
+    api.post<IssueAccessGrant>(`/issues/${id}/access-grants/${grantId}/revoke`, {}),
+  setVisibility: (id: string, visibility: IssueVisibility) =>
+    api.patch<IssueUpdateResponse>(`/issues/${id}`, { visibility }),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),
   linkApproval: (id: string, approvalId: string) =>
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
-  listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
+    const path = `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`;
+    // Query invalidations must not rejoin a request that read rows before the write.
+    if (options?.fresh) detachInflightGet(path);
+    return api.get<IssueWorkProduct[]>(path, { signal: options?.signal });
+  },
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
-    api.post<IssueDocument>(`/issues/${id}/work-products/${workProductId}/review-document`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/work-products/${workProductId}/review-document`,
+      {},
+    ),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
-  deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  deleteWorkProduct: (id: string) =>
+    api.delete<IssueWorkProduct>(`/work-products/${id}`),
 };

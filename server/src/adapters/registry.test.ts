@@ -1,7 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { listServerAdapters, requireServerAdapter } from "./registry.js";
+import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
+
+const { probeInstallation, probeGrokInstallation, probePiInstallation, verifyApiKey } = vi.hoisted(() => ({
+  verifyApiKey: vi.fn(),
+  probeInstallation: vi.fn(),
+  probeGrokInstallation: vi.fn(),
+  probePiInstallation: vi.fn(),
+}));
+vi.mock("../services/ai-api-key-test.js", () => ({ validateAiApiKey: verifyApiKey }));
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
+  probeAcpxClaudeInstallation: probeInstallation,
+  probeAcpxGrokInstallation: probeGrokInstallation,
+  probeAcpxPiInstallation: probePiInstallation,
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
+}));
 
 // The registry registers a login capability for the two built-in interactive
 // adapters. The test checks the scalar values and the presence of the required
@@ -77,5 +92,167 @@ describe("built-in runtime connection tool delivery", () => {
 
   it.each([...expectedStrategies])("delivers %s runtime tools through %s", (type, strategy) => {
     expect(requireServerAdapter(type).runtimeToolDelivery).toBe(strategy);
+  });
+});
+
+
+describe("native ACPX environment checks", () => {
+  beforeEach(() => {
+    verifyApiKey.mockReset().mockResolvedValue(undefined);
+    probeInstallation.mockReset().mockResolvedValue(undefined);
+    probeGrokInstallation.mockReset().mockResolvedValue(undefined);
+    probePiInstallation.mockReset().mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const context = {
+    companyId: "company-test",
+    adapterType: "paperclip_runner",
+    config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+  };
+
+  it("verifies a native Claude key without the global CLI or a model prompt", async () => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { ...context.config, env: { ANTHROPIC_API_KEY: "test-key" } },
+    });
+    expect(result.status).toBe("pass");
+    expect(verifyApiKey).toHaveBeenCalledExactlyOnceWith("anthropic", "test-key");
+    expect(result.checks.map(check => check.code)).toEqual(["acpx_runtime_ready", "ai_connection_api_key_reverified"]);
+  });
+
+  it.each(["ai_connection_api_key_rejected", "ai_connection_verification_failed"])("fails setup on %s", async code => {
+    verifyApiKey.mockRejectedValue({ details: { code } });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { ...context.config, env: { ANTHROPIC_API_KEY: "test-key" } },
+    });
+    expect(result.status).toBe("fail");
+    expect(result.checks.at(-1)).toMatchObject({ code, level: "error" });
+  });
+
+  it.each(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])("preserves the supplementary probe for custom routing via %s", async name => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { ...context.config, env: { ANTHROPIC_API_KEY: "test-key", [name]: "configured" } },
+    });
+    expect(verifyApiKey).not.toHaveBeenCalled();
+    expect(result.checks.some(check => check.code === "ai_connection_api_key_reverified")).toBe(false);
+  });
+
+  it("reports unsupported local platforms before a successful CLI login can mask them", async () => {
+    probeInstallation.mockRejectedValue(new Error("ACPX Claude requires a supported runtime platform"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual([expect.objectContaining({
+      code: "acpx_runtime_unavailable",
+      level: "error",
+    })]);
+  });
+
+  it.each([
+    ["claude", "claude-opus-5-5", "aarch64", "warn"],
+    ["claude", "claude-opus-5-5", "arm64", "warn"],
+    ["claude", "claude-opus-5-5", "armv7l", "fail"],
+    ["grok", "grok-4.7", "aarch64", "fail"],
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731", "aarch64", "fail"],
+  ])("checks the selected remote %s architecture %s without widening other providers", async (agent, model, architecture, status) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { provider: "acpx", acpxAgent: agent, model },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: `Linux\n${architecture}\n` }) } },
+    });
+    expect(result.status).toBe(status);
+    expect(result.checks[0].code).toBe(status === "warn" ? "acpx_remote_runtime_unverified" : "acpx_runtime_unavailable");
+    expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
+  it("identifies an incomplete installation and gives the operator a repair", async () => {
+    probeInstallation.mockRejectedValue(Object.assign(new Error("The Claude ACP runtime package is missing. Reinstall or rebuild Paperclip."), { code: "ACPX_RUNTIME_PACKAGE_MISSING" }));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(result.checks[0]).toMatchObject({ code: "acpx_runtime_package_missing", message: expect.stringContaining("Reinstall or rebuild") });
+  });
+
+  it("requires a successful installed runtime probe", async () => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("pass");
+    expect(probeInstallation).toHaveBeenCalledWith(context.config.model);
+  });
+
+  it.each([true, false])("checks Grok's own installation readiness (%s)", async (ready) => {
+    if (!ready) probeGrokInstallation.mockRejectedValueOnce(new Error("Grok executable digest mismatch"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context,
+      config: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" },
+    });
+    expect(result.status).toBe(ready ? "pass" : "fail");
+    expect(probeGrokInstallation).toHaveBeenCalledWith("grok-4.7");
+    expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("checks qualified Pi's own installation readiness (%s)", async (ready) => {
+    if (!ready) probePiInstallation.mockRejectedValueOnce(new Error("Pi installation integrity mismatch"));
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context,
+      config: { provider: "acpx", acpxAgent: "pi", model },
+    });
+    expect(result.status).toBe(ready ? "pass" : "fail");
+    expect(probePiInstallation).toHaveBeenCalledWith(model);
+    expect(probeInstallation).not.toHaveBeenCalled();
+    expect(probeGrokInstallation).not.toHaveBeenCalled();
+  });
+
+  it("does not use the host platform to reject a remote environment", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context,
+      executionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
+    });
+    expect(result.status).toBe("warn");
+    expect(result.checks[0].code).toBe("acpx_remote_runtime_unverified");
+    expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
+  const sshTarget = {
+    kind: "remote" as const, transport: "ssh" as const, remoteCwd: "/workspace",
+    spec: {
+      host: "example.test", port: 22, username: "tester", remoteCwd: "/workspace",
+      remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    },
+  };
+
+  it.each([
+    ["Linux\nx86_64\n", "warn"],
+    ["Darwin\nx86_64\n", "warn"],
+    ["Darwin\narm64\n", "warn"],
+    ["Linux\naarch64\n", "warn"],
+    ["Linux\narm64\n", "warn"],
+    ["Linux\narmv7l\n", "fail"],
+    ["", "fail"],
+  ])("qualifies the SSH platform from its own uname output %j", async (stdout, status) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+    const probe = vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand").mockResolvedValue({
+      exitCode: 0, timedOut: false, stdout, stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString(),
+    });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget });
+    expect(result.status).toBe(status);
+    expect(probe).toHaveBeenCalledWith(expect.any(String), sshTarget, "uname -s && uname -m", {
+      cwd: "/workspace", env: {}, timeoutSec: 15,
+    });
+  });
+
+  it.each(["timeout", "exit", "exception"])("does not qualify an SSH target after a probe %s", async (failure) => {
+    const probe = vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand");
+    if (failure === "exception") probe.mockRejectedValue(new Error("connection unavailable"));
+    else probe.mockResolvedValue({
+      exitCode: failure === "exit" ? 1 : 0, timedOut: failure === "timeout",
+      stdout: "Linux\nx86_64\n", stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString(),
+    });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget });
+    expect(result.status).toBe("fail");
+    expect(result.checks[0].code).toBe("acpx_runtime_unavailable");
   });
 });

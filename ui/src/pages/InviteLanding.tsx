@@ -7,7 +7,7 @@ import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
-import { authApi } from "../api/auth";
+import { AuthApiError, authApi, authErrorServerMessage } from "../api/auth";
 import { fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -18,7 +18,12 @@ import { formatDate } from "../lib/utils";
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
 
-const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
+// Agent-invite onboarding remains a legacy-adapter flow. Native runner setup
+// belongs in authenticated agent configuration after an administrator enables
+// the experimental flag.
+const joinAdapterOptions: AgentAdapterType[] = AGENT_ADAPTER_TYPES.filter(
+  (type) => type !== "paperclip_runner",
+);
 const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -61,6 +66,11 @@ function getAuthErrorMessage(error: unknown) {
   return message.length > 0 ? message : null;
 }
 
+/** A bare HTTP status from the auth API, with no server explanation. */
+function isUnexplainedAuthStatus(error: unknown, status: number) {
+  return error instanceof AuthApiError && error.status === status && authErrorServerMessage(error.body) === null;
+}
+
 function mapInviteAuthFeedback(
   error: unknown,
   authMode: AuthMode,
@@ -85,7 +95,7 @@ function mapInviteAuthFeedback(
     };
   }
 
-  if (authMode === "sign_in" && message === "Request failed: 401") {
+  if (authMode === "sign_in" && isUnexplainedAuthStatus(error, 401)) {
     return {
       tone: "error",
       message:
@@ -93,7 +103,7 @@ function mapInviteAuthFeedback(
     };
   }
 
-  if (authMode === "sign_up" && message === "Request failed: 422") {
+  if (authMode === "sign_up" && isUnexplainedAuthStatus(error, 422)) {
     return {
       tone: "info",
       message: `An account may already exist for ${emailLabel}. Try signing in instead.`,

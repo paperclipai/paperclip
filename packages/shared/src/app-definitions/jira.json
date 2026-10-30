@@ -8,8 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "/brands/apps/jira.svg",
-    "darkLogoUrl": "/brands/apps/jira-dark.svg"
+    "logoUrl": "/brands/apps/jira.svg"
   },
   "urlPatterns": [
     "https://mcp.atlassian.com/*"

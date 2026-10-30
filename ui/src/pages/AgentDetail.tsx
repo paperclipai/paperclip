@@ -1,5 +1,21 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
+import { TranscriptSequence } from "../lib/transcript-sequence";
+import { readTranscriptRequest } from "../components/transcript/read-transcript-request";
+import { useTranscriptLiveStream } from "../context/LiveUpdatesProvider";
+import { liveRunEvent, mergeRunEvents } from "../lib/live-run-event";
+import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
+import { grokBotApi } from "@/api/grokBot";
+import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
+import { PrimaryAgentIndicator, SetPrimaryAgentButton } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
+import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
+import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
+import { InstructionHistory } from "../components/InstructionHistory";
+import { AgentCharacter } from "../components/AgentCharacter";
+import { characterStateForAgent } from "@paperclipai/shared";
+import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { usePageVisibility } from "../lib/page-visibility";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -9,12 +25,9 @@ import {
 } from "../api/agents";
 import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
-import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
-import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
@@ -28,7 +41,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
-import { PageTabBar } from "../components/PageTabBar";
+import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
@@ -38,33 +51,37 @@ import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
+import { AgentLifecycleStatus, useAgentLifecycleStatus } from "../components/AgentLifecycleStatus";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
-import { EntityRow } from "../components/EntityRow";
+import { IssueRow } from "../components/IssueRow";
+import { TaskSummaryList } from "../components/TaskSummaryList";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
-import { AuditFeed } from "./audit/AuditFeed";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, queryViewKind, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
-import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { TrustPresetSection } from "../components/TrustPresetSection";
+import { AgentProjectAccessSettings } from "../components/AgentProjectAccessSettings";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
-import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
-import { describeRunRetryState } from "../lib/runRetryState";
+import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar } from "../components/PageTabBar";
+import { AuditFeed } from "./audit/AuditFeed";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   CheckCircle2,
@@ -89,11 +106,10 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import {
-  appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
   MAX_LIVE_EVENTS,
   MAX_LIVE_LOG_LINES,
@@ -102,10 +118,10 @@ import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
-  type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
   type AgentRuntimeState,
+  type Issue,
   type LiveEvent,
   type WorkspaceOperation,
   isResponsibleUserDenialCode,
@@ -113,9 +129,16 @@ import {
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
+import { RunnerInspector } from "../components/RunnerInspector";
+import { HoneycombRunLink } from "../components/HoneycombRunLink";
+import {
+  ProviderTraceStatusBadge,
+  runRequestedProviderTrace,
+} from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
   isStarred,
   resourceMembershipState,
@@ -123,6 +146,16 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
+import {
+  AGENT_DETAIL_NAVIGATION,
+  agentDetailHref,
+  agentLegacyAuditSection,
+  agentScopedAuditHref,
+  parseAgentDetailView,
+  type AgentDetailView,
+} from "./agent-detail-navigation";
+
+const AgentAdvancedTab = lazy(() => import("./AgentAdvancedTab").then(module => ({ default: module.AgentAdvancedTab })));
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -275,9 +308,10 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "runs" | "audit" | "budget";
+/** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
+export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
 
-export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
+const LEGACY_AGENT_DETAIL_TABS = [
   { value: "dashboard", label: "Dashboard" },
   { value: "instructions", label: "Instructions" },
   { value: "skills", label: "Skills" },
@@ -287,7 +321,7 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: s
   { value: "runs", label: "Runs" },
   { value: "audit", label: "Audit" },
   { value: "budget", label: "Budget" },
-];
+] as const;
 
 export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
 
@@ -323,17 +357,7 @@ export function restoreAgentConfigHistoryEntry(
   return true;
 }
 
-export function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "instructions" || value === "prompts") return "instructions";
-  if (value === "configure" || value === "configuration") return "configuration";
-  if (value === "secrets") return "secrets";
-  if (value === "skills") return "skills";
-  if (value === "tools") return "tools";
-  if (value === "budget") return "budget";
-  if (value === "audit") return "audit";
-  if (value === "runs") return value;
-  return "dashboard";
-}
+export { agentDetailHref, agentScopedAuditHref, parseAgentDetailView };
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
   if (!usage) return 0;
@@ -355,6 +379,7 @@ function setsEqual<T>(left: Set<T>, right: Set<T>) {
 function runMetrics(run: HeartbeatRun) {
   const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
   const result = (run.resultJson ?? null) as Record<string, unknown> | null;
+  const usageUnavailable = hasUnavailableProviderAccounting(result);
   const input = usageNumber(usage, "inputTokens", "input_tokens");
   const output = usageNumber(usage, "outputTokens", "output_tokens");
   const cached = usageNumber(
@@ -368,17 +393,19 @@ function runMetrics(run: HeartbeatRun) {
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
   return {
-    input,
-    output,
-    cached,
-    cost,
-    totalTokens: input + output,
+    usageUnavailable,
+    input: usageUnavailable ? null : input,
+    output: usageUnavailable ? null : output,
+    cached: usageUnavailable ? null : cached,
+    cost: usageUnavailable ? null : cost,
+    totalTokens: usageUnavailable ? null : visibleRunTokenTotal(usage),
     provider,
     model,
   };
 }
 
 export type RunLogChunk = {
+  seq?: number;
   ts: string;
   stream: "stdout" | "stderr" | "system";
   chunk: string;
@@ -758,12 +785,28 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
-  const needsDashboardData = activeView === "dashboard";
-  const needsRunData = activeView === "runs" || Boolean(urlRunId);
-  const shouldLoadHeartbeats = needsDashboardData || needsRunData;
+  const activeView: AgentDetailView = urlRunId ? "run-detail"
+    : parseAgentDetailView(urlTab ?? null);
+  const legacyAuditSection = !urlRunId ? agentLegacyAuditSection(urlTab ?? null) : null;
+  const legacyView = urlRunId
+    ? "runs"
+    : legacyAuditSection === "runs"
+      ? "runs"
+      : legacyAuditSection === "activity"
+        ? "audit"
+        : legacyAuditSection === "costs" || legacyAuditSection === "budgets"
+          ? "budget"
+          : activeView === "overview"
+            ? "dashboard"
+            : activeView === "runtime"
+              ? "configuration"
+              : activeView;
+  const needsOverviewData = activeView === "overview";
+  const needsRunData = activeView === "run-detail";
+  const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -780,18 +823,32 @@ export function AgentDetail() {
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
   const prepareAgentNavigation = useCallback(() => {
+    if (activeView === "advanced" && configSaving) return false;
     return confirmAgentConfigNavigation(configDirty);
-  }, [configDirty]);
-
-  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
+  }, [activeView, configDirty, configSaving]);
+  const agentQuery = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  const { data: agent, isLoading, error } = agentQuery;
+  const agentView = useQueryView(agentQuery);
+  const lifecycle = useAgentLifecycleStatus(agent);
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
+  const handleLegacyTabChange = useCallback((next: string) => {
+    if (!prepareAgentNavigation()) return;
+    navigate(`/agents/${canonicalAgentRef || routeAgentRef}/${next}`);
+  }, [canonicalAgentRef, navigate, prepareAgentNavigation, routeAgentRef]);
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -875,7 +932,7 @@ export function AgentDetail() {
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId) && needsDashboardData,
+    enabled: Boolean(resolvedAgentId) && needsOverviewData,
   });
 
   const { data: heartbeats } = useQuery({
@@ -887,58 +944,37 @@ export function AgentDetail() {
   const { data: allIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
-    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsOverviewData,
   });
 
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsDashboardData,
+    enabled: !!resolvedCompanyId && needsOverviewData,
   });
 
-  const { data: budgetOverview } = useQuery({
-    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
-    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
-    refetchInterval: 30_000,
-    staleTime: 5_000,
+  const { data: skillSnapshot } = useQuery({
+    queryKey: queryKeys.agents.skills(resolvedAgentId ?? "__none__"),
+    queryFn: () => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData),
   });
 
-  const assignedIssues = (allIssues ?? [])
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  const { data: overviewCompanySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(resolvedCompanyId ?? "__none__"),
+    queryFn: () => companySkillsApi.list(resolvedCompanyId!),
+    enabled: Boolean(resolvedCompanyId && needsOverviewData),
+  });
+
+  const assignedIssues = useMemo(
+    () => [...(allIssues ?? [])].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [allIssues],
+  );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
-  const agentBudgetSummary = useMemo(() => {
-    const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
-    );
-    if (matched) return matched;
-    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
-    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
-    return {
-      policyId: "",
-      companyId: resolvedCompanyId ?? "",
-      scopeType: "agent",
-      scopeId: agent?.id ?? routeAgentRef,
-      scopeName: agent?.name ?? "Agent",
-      metric: "billed_cents",
-      windowKind: "calendar_month_utc",
-      amount: budgetMonthlyCents,
-      observedAmount: spentMonthlyCents,
-      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
-      utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
-      warnPercent: 80,
-      hardStopEnabled: true,
-      notifyEnabled: true,
-      isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
-      paused: agent?.status === "paused",
-      pauseReason: agent?.pauseReason ?? null,
-      windowStart: new Date(),
-      windowEnd: new Date(),
-    } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+  const overviewSkillNames = useMemo(() => {
+    const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
+    return (skillSnapshot?.desiredSkills ?? []).map((key) => namesByKey.get(key) ?? key);
+  }, [overviewCompanySkills, skillSnapshot?.desiredSkills]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -946,35 +982,20 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (activeView === "advanced" && (configSaving || configDirty)) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
       }
       return;
     }
-    const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "secrets"
-            ? "secrets"
-            : activeView === "skills"
-              ? "skills"
-              : activeView === "tools"
-                ? "tools"
-                : activeView === "runs"
-                  ? "runs"
-                  : activeView === "audit"
-                    ? "audit"
-                    : activeView === "budget"
-                      ? "budget"
-                      : "dashboard";
+    if (legacyAuditSection) return;
+    const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+      navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, legacyAuditSection, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -982,17 +1003,21 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   // Invoke / pause / resume / terminate / duplicate / reset live in the shared
-  // AgentActionButtons component. The detail header keeps only "approve" here,
-  // which is surfaced via the pending-approval banner below.
+  // AgentActionButtons component. Approval and lifecycle retry stay in the detail header.
   const agentAction = useMutation({
-    mutationFn: async (action: "approve") => {
+    mutationFn: async (action: "approve" | "retryLifecycle") => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       if (action === "approve") {
         return agentsApi.approve(agentLookupRef, resolvedCompanyId ?? undefined);
       }
+      return agentsApi.retryLifecycle(agentLookupRef, resolvedCompanyId ?? undefined);
     },
-    onSuccess: () => {
+    onSuccess: (_data, action) => {
       setActionError(null);
+      if (action === "retryLifecycle") {
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.agents.detail(agentLookupRef), "lifecycle"] });
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
@@ -1006,24 +1031,6 @@ export function AgentDetail() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Action failed");
-    },
-  });
-
-  const budgetMutation = useMutation({
-    mutationFn: (amount: number) =>
-      budgetsApi.upsertPolicy(resolvedCompanyId!, {
-        scopeType: "agent",
-        scopeId: agent?.id ?? routeAgentRef,
-        amount,
-        windowKind: "calendar_month_utc",
-      }),
-    onSuccess: () => {
-      if (!resolvedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
 
@@ -1059,29 +1066,18 @@ export function AgentDetail() {
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
-    if (activeView === "dashboard" && !urlRunId) {
+    if (activeView === "overview" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: "Runs", href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
-      } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
-      } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
-      } else if (activeView === "secrets") {
-        crumbs.push({ label: "Secrets" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
-      } else if (activeView === "tools") {
-        crumbs.push({ label: "Tools" });
-      } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
-      } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        const item = AGENT_DETAIL_NAVIGATION
+          .flatMap((section) => section.items)
+          .find((candidate) => candidate.value === activeView);
+        crumbs.push({ label: item?.label ?? "Overview" });
       }
     }
     setBreadcrumbs(crumbs);
@@ -1178,18 +1174,25 @@ export function AgentDetail() {
     return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty, prepareAgentNavigation]);
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
-  if (!agent) return null;
-  if (!urlRunId && !urlTab) {
-    return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
+  if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (agentView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
-  const isPendingApproval = agent.status === "pending_approval";
+  if (!agent) return null;
+  if (!urlRunId && legacyAuditSection) {
+    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
+  }
+  if (!urlRunId && !urlTab) {
+    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
+  }
+  const currentAgent = lifecycle.data && (lifecycle.data.lifecycleVersion ?? 0) >= (agent.lifecycleVersion ?? 0)
+    ? { ...agent, ...lifecycle.data } : agent;
+  const isPendingApproval = currentAgent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (
-    activeView === "configuration" || activeView === "instructions" || activeView === "secrets"
-  ) && (configDirty || configSaving);
+    activeView === "runtime" || activeView === "instructions" || activeView === "secrets"
+  );
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1199,13 +1202,8 @@ export function AgentDetail() {
   const agentStarPending = agentMembershipPending && membershipMutation.variables?.starred !== undefined;
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
-  function handleAgentTabChange(value: string) {
-    if (value === activeView || !prepareAgentNavigation()) return;
-    navigate(`/agents/${canonicalAgentRef}/${value}`);
-  }
-
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -1271,27 +1269,25 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
+        <div className="flex min-w-0 items-center gap-4">
+          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+            <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
+                : null}
+              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span><span>·</span>
+              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
             </div>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
-            </p>
+            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
+            <SetPrimaryAgentButton agent={agent} />
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           <StarToggle
             size="button"
             starred={agentStarred}
@@ -1305,11 +1301,11 @@ export function AgentDetail() {
             })}
           />
           <AgentActionButtons
-            agent={agent}
+            agent={currentAgent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
-            runLabel="Run Heartbeat"
-            actionsDisabled={agentAction.isPending}
+            showStatus={false}
+            actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
             hasPendingNavigationChanges={configDirty}
@@ -1346,7 +1342,7 @@ export function AgentDetail() {
             )}
           </AgentActionButtons>
         </div>
-      </div>
+      </header>
 
       {builtInState && (
         <InlineBanner
@@ -1396,18 +1392,6 @@ export function AgentDetail() {
         />
       )}
 
-      {!urlRunId && (
-        <Tabs
-          value={activeView}
-          onValueChange={handleAgentTabChange}
-        >
-          <PageTabBar
-            items={AGENT_DETAIL_TABS}
-            value={activeView}
-            onValueChange={handleAgentTabChange}
-          />
-        </Tabs>
-      )}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -1425,93 +1409,56 @@ export function AgentDetail() {
         </div>
       )}
 
-      {/* Floating Save/Cancel (desktop) */}
-      {!isMobile && showConfigActionBar && (
-        <div className="fixed bottom-6 right-6 z-30">
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showConfigActionBar && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
-          <div
-            className="flex items-center justify-end gap-2 px-3 py-2"
-            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
+      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
 
       {/* View content */}
-      {activeView === "dashboard" && (
+      {activeView === "overview" && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
-          agentId={agent.id}
+          reportsToAgent={reportsToAgent}
+          directReportCount={directReports.length}
+          skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
         />
       )}
 
       {activeView === "instructions" && (
-        <PromptsTab
+        <div><PromptsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
+          showSaveNotice={false}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
         />
+        {resolvedCompanyId && <AgentConnectionInstructions companyId={resolvedCompanyId} agentId={agent.id} />}
+        </div>
       )}
 
-      {activeView === "configuration" && (
-        <AgentConfigurePage
-          agent={agent}
-          agentId={agent.id}
-          companyId={resolvedCompanyId ?? undefined}
-          onDirtyChange={setConfigDirty}
-          onSaveActionChange={setSaveConfigAction}
-          onCancelActionChange={setCancelConfigAction}
-          onSavingChange={setConfigSaving}
-          updatePermissions={updatePermissions}
-        />
+      {activeView === "runtime" && (
+        <div>
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            canConfigureProviderTrace={canUseProviderTrace}
+            content="runtime"
+            hidePromptTemplate
+            hideInstructionsFile
+          />
+        </div>
       )}
 
       {activeView === "secrets" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1536,7 +1483,50 @@ export function AgentDetail() {
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
       )}
 
-      {activeView === "runs" && (
+      {activeView === "channels" && resolvedCompanyId && (
+        <AgentChannelsPanel agentId={agent.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeView === "permissions" && (
+        <div>
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            content="permissions"
+          />
+        </div>
+      )}
+
+      {activeView === "api-keys" && (
+        <div className="max-w-3xl">
+          <KeysTab agentId={agent.id} companyId={resolvedCompanyId ?? undefined} />
+        </div>
+      )}
+
+      {activeView === "revisions" && (
+        <AgentRevisionsTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
+      )}
+
+      {activeView === "advanced" && (
+        <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>}>
+          <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={setConfigDirty} onSavingChange={setConfigSaving}
+            onSaved={updated => {
+              const nextRef = agentRouteRef(updated);
+              const currentKey = [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null];
+              void queryClient.cancelQueries({ queryKey: currentKey, exact: true });
+              queryClient.setQueryData(currentKey, { ...agent, ...updated });
+              queryClient.setQueryData([...queryKeys.agents.detail(nextRef), lookupCompanyId ?? null], { ...agent, ...updated });
+              if (nextRef !== routeAgentRef) navigate(`/agents/${nextRef}/advanced`, { replace: true });
+            }} />
+        </Suspense>
+      )}
+
+      {activeView === "run-detail" && (
         <RunsTab
           runs={heartbeats ?? []}
           companyId={resolvedCompanyId!}
@@ -1548,20 +1538,14 @@ export function AgentDetail() {
         />
       )}
 
-      {activeView === "audit" && resolvedCompanyId ? (
-        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} hideHeader />
-      ) : null}
-
-      {activeView === "budget" && resolvedCompanyId ? (
-        <div className="max-w-3xl">
-          <BudgetPolicyCard
-            summary={agentBudgetSummary}
-            isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
-            variant="plain"
-          />
+      {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
+        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <div className="flex gap-2">
+          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
+          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
         </div>
-      ) : null}
+      </footer>}
+
     </div>
   );
 }
@@ -1756,59 +1740,140 @@ function LatestRunCard({
   );
 }
 
-/* ---- Agent Overview (main single-page view) ---- */
+/* ---- Agent Overview ---- */
 
-function AgentOverview({
+export function AgentOverview({
   agent,
   runs,
   assignedIssues,
   runtimeState,
-  agentId,
+  reportsToAgent,
+  directReportCount,
+  skillNames,
   agentRouteId,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
-  assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
+  assignedIssues: Issue[];
   runtimeState?: AgentRuntimeState;
-  agentId: string;
+  reportsToAgent?: Agent;
+  directReportCount: number;
+  skillNames: string[];
   agentRouteId: string;
 }) {
+  const designSandbox = useDesignSandbox();
   const issuesById = useMemo(() => {
     const map = new Map<string, (typeof assignedIssues)[number]>();
     for (const issue of assignedIssues) map.set(issue.id, issue);
     return map;
   }, [assignedIssues]);
-
+  const configuredModel = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse"
+    ? "Managed by Muse"
+    : asNonEmptyString(agent.adapterConfig?.model)
+    ?? asNonEmptyString(agent.adapterConfig?.modelName)
+    ?? asNonEmptyString(agent.runtimeConfig?.model)
+    ?? "Adapter default";
+  const lastRun = runs[0] ?? null;
+  const identity = useQuery({
+    queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
+    queryFn: () => agentsApi.getIdentity(agent.id, agent.companyId),
+  });
+  const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
+  const userDirectory = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
+    queryFn: () => accessApi.listUserDirectory(agent.companyId),
+    enabled: hasHumanCreator,
+  });
+  const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   return (
-    <div className="space-y-8">
-      {/* Latest Run */}
+    <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
 
-      {/* Charts */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
-          <RunActivityChart runs={runs} />
-        </ChartCard>
-        {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
-        {SHOW_TASK_PRIORITY_UI && (
-          <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-            <PriorityChart issues={assignedIssues} />
-          </ChartCard>
-        )}
-        <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-          <IssueStatusChart issues={assignedIssues} />
-        </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
-          <SuccessRateChart runs={runs} />
-        </ChartCard>
+      <div className="grid gap-4 md:grid-cols-2">
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 id="agent-identity-heading" className="text-sm font-medium">Identity</h3>
+            <StatusBadge status={agent.status} />
+          </div>
+          <div className="space-y-3">
+            <SummaryRow label="Role"><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>
+            <SummaryRow label="Title"><span className="text-sm">{agent.title ?? "Not set"}</span></SummaryRow>
+            <SummaryRow label="Reports to">
+              {reportsToAgent ? (
+                <Link className="text-sm hover:underline" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
+                  {reportsToAgent.name}
+                </Link>
+              ) : <span className="text-sm">Board</span>}
+            </SummaryRow>
+            <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
+            {hasHumanCreator && queryViewKind(userDirectory) === "error" ? (
+              <SummaryRow label="Created by"><span className="text-sm text-destructive">Could not load creator</span></SummaryRow>
+            ) : creatorLabel ? (
+              <SummaryRow label="Created by"><span className="text-sm">{creatorLabel}</span></SummaryRow>
+            ) : null}
+            <SummaryRow label="Public key">
+              {identity.isPending || queryViewKind(identity) === "reconnecting" ? <span className="text-sm text-muted-foreground">Loading…</span>
+                : queryViewKind(identity) === "error" ? <span className="text-sm text-muted-foreground">Could not load public key</span>
+                : identity.data ? (
+                  <CopyText text={identity.data.publicKeyPem} ariaLabel="Copy public key" title="Copy public key">
+                    <span className="font-mono text-sm">{identity.data.keyId.slice(0, 19)}…</span>
+                  </CopyText>
+                ) : (
+                  <div className="text-sm">
+                    <div>Not created yet</div>
+                    <div className="text-xs text-muted-foreground">Created automatically on the next managed run</div>
+                  </div>
+                )}
+            </SummaryRow>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-runtime-heading">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 id="agent-runtime-heading" className="text-sm font-medium">Harness / Runtime</h3>
+            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
+          </div>
+          <div className="space-y-3">
+            <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
+            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>}
+            <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
+            <SummaryRow label="Last run">
+              <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
+            </SummaryRow>
+            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" && <GrokBotWorkSummary companyId={agent.companyId} agentId={agent.id} />}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-capabilities-heading">
+          <h3 id="agent-capabilities-heading" className="mb-3 text-sm font-medium">Capabilities</h3>
+          {agent.capabilities?.trim() ? (
+            <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{agent.capabilities}</MarkdownBody>
+          ) : (
+            <p className="text-sm text-muted-foreground">No capability summary has been added.</p>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-skills-heading">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 id="agent-skills-heading" className="text-sm font-medium">Skills</h3>
+            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "skills")}>Manage</Link>
+          </div>
+          {skillNames.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {skillNames.slice(0, 8).map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}
+              {skillNames.length > 8 ? <Badge variant="outline">+{skillNames.length - 8} more</Badge> : null}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No skills enabled.</p>
+          )}
+        </section>
       </div>
 
-      {/* Recent Issues */}
-      <div className="space-y-3">
+      <section className="space-y-3" aria-labelledby="agent-recent-tasks-heading">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Tasks</h3>
+          <h3 id="agent-recent-tasks-heading" className="text-sm font-medium">Recent Tasks</h3>
           <Link
-            to={`/issues?participantAgentId=${agentId}`}
+            to={`/issues?participantAgentId=${agent.id}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             See All &rarr;
@@ -1817,108 +1882,24 @@ function AgentOverview({
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
-          <div className="border border-border rounded-lg">
-            {assignedIssues.slice(0, 10).map((issue) => (
-              <EntityRow
+          <div className="overflow-hidden rounded-lg border border-border">
+            {designSandbox ? <TaskSummaryList issues={assignedIssues.slice(0, 6)} /> : assignedIssues.slice(0, 6).map((issue) => (
+              <IssueRow
                 key={issue.id}
-                identifier={issue.identifier ?? issue.id.slice(0, 8)}
-                title={issue.title}
-                to={`/issues/${issue.identifier ?? issue.id}`}
-                trailing={<StatusBadge status={issue.status} />}
+                issue={issue}
+                presentation="task"
+                metadata={<span className="text-xs text-muted-foreground">{relativeTime(issue.updatedAt)}</span>}
+                showDivider
               />
             ))}
-            {assignedIssues.length > 10 && (
-              <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more tasks
+            {assignedIssues.length > 6 && (
+              <div className="border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
+                +{assignedIssues.length - 6} more tasks
               </div>
             )}
           </div>
         )}
-      </div>
-
-      {/* Costs */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
-      </div>
-    </div>
-  );
-}
-
-/* ---- Costs Section (inline) ---- */
-
-function CostsSection({
-  runtimeState,
-  runs,
-}: {
-  runtimeState?: AgentRuntimeState;
-  runs: HeartbeatRun[];
-}) {
-  const runsWithCost = runs
-    .filter((r) => {
-      const metrics = runMetrics(r);
-      return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  return (
-    <div className="space-y-4">
-      {runtimeState && (
-        <div className="border border-border rounded-lg p-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
-            <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
-              <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
-            </div>
-          </div>
-        </div>
-      )}
-      {runsWithCost.length > 0 && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border bg-accent/20">
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th scope="col" className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th scope="col" className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runsWithCost.slice(0, 10).map((run) => {
-                const metrics = runMetrics(run);
-                return (
-                  <tr key={run.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
-                    <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {metrics.cost > 0
-                        ? `$${metrics.cost.toFixed(4)}`
-                        : "-"
-                      }
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      </section>
     </div>
   );
 }
@@ -1948,29 +1929,15 @@ export function syncAgentRouteAfterRename(
   return true;
 }
 
-function AgentConfigurePage({
+export function AgentRevisionsTab({
   agent,
-  agentId,
   companyId,
-  onDirtyChange,
-  onSaveActionChange,
-  onCancelActionChange,
-  onSavingChange,
-  updatePermissions,
 }: {
   agent: AgentDetailRecord;
-  agentId: string;
   companyId?: string;
-  onDirtyChange: (dirty: boolean) => void;
-  onSaveActionChange: (save: (() => void) | null) => void;
-  onCancelActionChange: (cancel: (() => void) | null) => void;
-  onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { tab: urlTab } = useParams<{ tab?: string }>();
-  const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   const { data: configRevisions } = useQuery({
     queryKey: queryKeys.agents.configRevisions(agent.id),
@@ -1982,87 +1949,55 @@ function AgentConfigurePage({
     onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, "revisions")) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
     },
   });
 
   return (
-    <div className="max-w-3xl space-y-6">
-      <ConfigurationTab
-        agent={agent}
-        onDirtyChange={onDirtyChange}
-        onSaveActionChange={onSaveActionChange}
-        onCancelActionChange={onCancelActionChange}
-        onSavingChange={onSavingChange}
-        updatePermissions={updatePermissions}
-        companyId={companyId}
-        hidePromptTemplate
-        hideInstructionsFile
-      />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
+    <div className="max-w-3xl space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-medium">Configuration Revisions</h3>
+        <span className="text-xs text-muted-foreground">{configRevisions?.length ?? 0} total</span>
       </div>
-
-      {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
-        <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
-          onClick={() => setRevisionsOpen((v) => !v)}
-        >
-          {revisionsOpen
-            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
-        </button>
-        {revisionsOpen && (
-          <div className="mt-3">
-            {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-muted-foreground">
-                        <span className="font-mono">{revision.id.slice(0, 8)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{formatDate(revision.createdAt)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{revision.source}</span>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2.5 text-xs"
-                        onClick={() => rollbackConfig.mutate(revision.id)}
-                        disabled={rollbackConfig.isPending}
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
-                    </p>
-                  </div>
-                ))}
+      {(configRevisions ?? []).length === 0 ? (
+        <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {(configRevisions ?? []).map((revision) => (
+            <div key={revision.id} className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-mono">{revision.id.slice(0, 8)}</span>
+                  <span className="mx-1">·</span>
+                  <span>{formatDate(revision.createdAt)}</span>
+                  <span className="mx-1">·</span>
+                  <span>{revision.source}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => rollbackConfig.mutate(revision.id)}
+                  disabled={rollbackConfig.isPending}
+                >
+                  Restore
+                </Button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+              <p className="text-xs text-muted-foreground">
+                Changed: {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 /* ---- Configuration Tab ---- */
 
-function ConfigurationTab({
+export function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
@@ -2072,7 +2007,8 @@ function ConfigurationTab({
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
-  content = "configuration",
+  content = "runtime",
+  canConfigureProviderTrace = false,
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
@@ -2083,7 +2019,8 @@ function ConfigurationTab({
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
-  content?: "configuration" | "secrets";
+  content?: "runtime" | "permissions" | "secrets";
+  canConfigureProviderTrace?: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2092,13 +2029,14 @@ function ConfigurationTab({
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
+  const catalogProvider = agent.adapterType === "paperclip_runner" ? String(agent.adapterConfig.provider ?? "codex") : undefined;
   const { data: adapterModels } = useQuery({
     queryKey:
       companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
-    enabled: Boolean(companyId) && content === "configuration",
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
+    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot", "muse"].includes(catalogProvider ?? ""),
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
@@ -2106,7 +2044,7 @@ function ConfigurationTab({
   const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
     queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
     queryFn: () => projectsApi.list(companyId!),
-    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
+    enabled: Boolean(companyId && lowTrustSelected) && content === "permissions",
   });
 
   const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
@@ -2114,22 +2052,25 @@ function ConfigurationTab({
       ? [...queryKeys.issues.list(companyId), "low-trust-boundary-candidates"]
       : ["issues", "__low-trust-disabled"],
     queryFn: () => issuesApi.list(companyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
-    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
+    enabled: Boolean(companyId && lowTrustSelected) && content === "permissions",
   });
 
   const updateAgent = useMutation({
-    mutationFn: (data: Record<string, unknown>) => agentsApi.update(agent.id, data, companyId),
+    mutationFn: ({ target, patch }: { target: AgentDetailRecord; patch: Record<string, unknown> }) =>
+      agentsApi.update(target.id, patch, target.companyId),
     onMutate: () => {
       setAwaitingRefreshAfterSave(true);
     },
-    onSuccess: (updated) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    onSuccess: (updated, { target }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(target.companyId) });
+      if (lastAgentRef.current.id !== target.id
+        || !syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? content)) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.urlKey) });
       }
-      pushToast({ title: "Agent saved", tone: "success" });
+      pushToast({ title: "Agent saved", tone: updated.configurationWarnings?.length ? "warn" : "success",
+        body: updated.configurationWarnings?.map(warning => warning.message).join("\n") });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);
@@ -2149,11 +2090,18 @@ function ConfigurationTab({
     }
     lastAgentRef.current = agent;
   }, [agent, awaitingRefreshAfterSave]);
-  const isConfigSaving = updateAgent.isPending || awaitingRefreshAfterSave;
+  const isConfigSaving = content !== "permissions" && (updateAgent.isPending || awaitingRefreshAfterSave);
 
   useEffect(() => {
     onSavingChange(isConfigSaving);
   }, [onSavingChange, isConfigSaving]);
+
+  useEffect(() => {
+    if (content !== "permissions") return;
+    onDirtyChange(false);
+    onSaveActionChange(null);
+    onCancelActionChange(null);
+  }, [content, onCancelActionChange, onDirtyChange, onSaveActionChange]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canCreateSkills = agent.permissions?.canCreateSkills !== false;
@@ -2172,11 +2120,11 @@ function ConfigurationTab({
             : "Disabled unless explicitly granted.";
 
   return (
-    <div className="space-y-6">
-      <AgentConfigForm
+    <div className="agent-settings-form space-y-6">
+      {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutateAsync(patch)}
+        onSave={(patch) => updateAgent.mutateAsync({ target: agent, patch })}
         isSaving={isConfigSaving}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -2185,16 +2133,18 @@ function ConfigurationTab({
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
-        content={content}
+        content={content === "runtime" ? "configuration" : "secrets"}
         sectionLayout="cards"
-      />
-      {content === "configuration" ? (
-        <p className="text-xs text-muted-foreground">
-          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-        </p>
-      ) : null}
+        environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
+        compactTestFeedback
+        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
+        sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
+        canConfigureProviderTrace={canConfigureProviderTrace}
+      /> : null}
 
-      {content === "configuration" ? <TrustPresetSection
+
+      {content === "permissions" ? <TrustPresetSection
+        projectAccessEditor={<AgentProjectAccessSettings agent={agent} />}
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
         companyId={companyId}
@@ -2217,7 +2167,7 @@ function ConfigurationTab({
         }
       /> : null}
 
-      {content === "configuration" ? <div>
+      {content === "permissions" ? <div>
         <h3 className="text-sm font-medium mb-3">Permissions</h3>
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
@@ -2292,7 +2242,9 @@ export function PromptsTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  showSaveNotice = true,
 }: {
+  showSaveNotice?: boolean;
   agent: Agent;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
@@ -2303,9 +2255,16 @@ export function PromptsTab({
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
-  const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [selectedFile, setSelectedFileState] = useState<string>("AGENTS.md");
+  const [instructionMode, setInstructionMode] = useState<"read" | "edit" | "raw">("read");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
+  const draftBaseRevisionRef = useRef<string | null | undefined>(undefined);
+  const draftBaseHashRef = useRef<string | null | undefined>(undefined);
+  const [candidateRunId, setCandidateRunId] = useState<string | null>(null);
+  const [readOnlyCandidateRunId, setReadOnlyCandidateRunId] = useState<string | null>(null);
+  const candidateAgentRef = useRef(agent.id);
+  candidateAgentRef.current = agent.id;
   const [bundleDraft, setBundleDraft] = useState<{
     mode: "managed" | "external";
     rootPath: string;
@@ -2325,11 +2284,28 @@ export function PromptsTab({
     entryFile: string;
     selectedFile: string;
   } | null>(null);
+  // MDXEditor can normalize markdown and emit onChange while it mounts. Only
+  // treat editor output as a draft after a real interaction so merely opening
+  // an instructions file cannot mark the agent dirty.
+  const editorInteractedRef = useRef(false);
+  const markEditorInteracted = useCallback(() => {
+    editorInteractedRef.current = true;
+  }, []);
+  const setSelectedFile = useCallback((filePath: string) => {
+    editorInteractedRef.current = false;
+    draftBaseRevisionRef.current = undefined;
+    draftBaseHashRef.current = undefined;
+    setCandidateRunId(null);
+    setSelectedFileState(filePath);
+  }, []);
 
   useEffect(() => {
+    editorInteractedRef.current = false;
     setSelectedFile("AGENTS.md");
+    setInstructionMode("read");
     setShowFilePanel(false);
     setDraft(null);
+    setReadOnlyCandidateRunId(null);
     setBundleDraft(null);
     setNewFilePath("");
     setShowNewFileInput(false);
@@ -2347,6 +2323,7 @@ export function PromptsTab({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),
     queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
     enabled: Boolean(companyId && isLocal),
+    refetchInterval: draft === null ? 5000 : false,
   });
 
   const persistedMode = bundle?.mode ?? "managed";
@@ -2380,10 +2357,68 @@ export function PromptsTab({
   const selectedFileExists = bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
   const selectedFileSummary = bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
 
-  const { data: selectedFileDetail, isLoading: fileLoading } = useQuery({
+  const { data: selectedFileDetail, isLoading: fileLoading, error: fileError } = useQuery({
     queryKey: queryKeys.agents.instructionsFile(agent.id, selectedOrEntryFile),
     queryFn: () => agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
     enabled: Boolean(companyId && isLocal && selectedFileExists),
+    refetchInterval: draft === null ? 5000 : false,
+  });
+
+  const candidates = useQuery({
+    queryKey: queryKeys.agents.instructionCandidates(agent.id),
+    queryFn: () => agentsApi.instructionCandidates(agent.id, companyId),
+    enabled: Boolean(companyId && isLocal && currentMode === "managed"),
+  });
+  // Whole-folder failures belong to their run's diagnostics. They have no
+  // preserved edits to resolve and do not describe the current saved files.
+  const preservedCandidates = candidates.data?.filter((candidate) => candidate.contract !== "agent_files") ?? [];
+  const loadCandidate = useMutation({
+    mutationFn: async (candidate: AgentInstructionCandidate) => {
+      if (candidate.content === null) throw new Error("These instruction edits have not been retrieved yet.");
+      const file = await agentsApi.instructionsFile(agent.id, candidate.entryFile, companyId).catch((error) => {
+        if (error instanceof ApiError && error.status === 404 && candidate.baseRevisionId === null) return null;
+        throw error;
+      });
+      return { candidate, file, agentId: agent.id };
+    },
+    onSuccess: ({ candidate, file, agentId: requestedAgentId }) => {
+      if (candidateAgentRef.current !== requestedAgentId) return;
+      setSelectedFile(candidate.entryFile);
+      if (file) queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, candidate.entryFile), file);
+      draftBaseRevisionRef.current = file?.revision?.id ?? null;
+      setCandidateRunId(candidate.runId);
+      setDraft(candidate.content);
+      setInstructionMode("edit");
+    },
+  });
+  const resolveCandidate = useMutation({
+    mutationFn: async (data: { runId: string; content: string; baseRevisionId: string | null }) => ({
+      file: await agentsApi.resolveInstructionCandidate(agent.id, data.runId, { content: data.content, baseRevisionId: data.baseRevisionId }, companyId),
+      agentId: agent.id,
+    }),
+    onSuccess: ({ file, agentId: requestedAgentId }) => {
+      if (candidateAgentRef.current !== requestedAgentId) return;
+      setDraft(null);
+      setCandidateRunId(null);
+      draftBaseRevisionRef.current = undefined;
+      draftBaseHashRef.current = undefined;
+      queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, file.path), file);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionCandidates(agent.id) });
+    },
+  });
+
+  const refreshCandidateBase = useMutation({
+    mutationFn: async () => ({
+      file: await agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
+      agentId: agent.id, runId: candidateRunId,
+    }),
+    onSuccess: ({ file, agentId: requestedAgentId, runId }) => {
+      if (candidateAgentRef.current !== requestedAgentId || candidateRunId !== runId) return;
+      draftBaseRevisionRef.current = file.revision?.id ?? null;
+      queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, file.path), file);
+      resolveCandidate.reset();
+    },
   });
 
   const updateBundle = useMutation({
@@ -2393,8 +2428,11 @@ export function PromptsTab({
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
     }) => agentsApi.updateInstructionsBundle(agent.id, data, companyId),
-    onMutate: () => setAwaitingRefresh(true),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+    },
     onSuccess: () => {
+      setAwaitingRefresh(true);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
@@ -2403,10 +2441,25 @@ export function PromptsTab({
   });
 
   const saveFile = useMutation({
-    mutationFn: (data: { path: string; content: string; clearLegacyPromptTemplate?: boolean }) =>
+    mutationFn: (data: { path: string; content: string; baseRevisionId?: string | null; baseHash?: string | null; clearLegacyPromptTemplate?: boolean }) =>
       agentsApi.saveInstructionsFile(agent.id, data, companyId),
-    onMutate: () => setAwaitingRefresh(true),
-    onSuccess: (_, variables) => {
+    onMutate: () => {
+      editorInteractedRef.current = false;
+    },
+    onSuccess: (file, variables) => {
+      setDraft(null);
+      draftBaseRevisionRef.current = undefined;
+      draftBaseHashRef.current = undefined;
+      queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, variables.path), file);
+      // Keep the selected file present while the refreshed bundle is in flight.
+      // Otherwise removing its pending placeholder briefly selects AGENTS.md.
+      queryClient.setQueryData<AgentInstructionsBundle>(queryKeys.agents.instructionsBundle(agent.id), previous => previous ? {
+        ...previous, files: [...previous.files.filter(item => item.path !== file.path), {
+          path: file.path, size: file.size, language: file.language, markdown: file.markdown,
+          isEntryFile: file.isEntryFile, editable: file.editable, deprecated: file.deprecated,
+          virtual: file.virtual, binary: file.binary, contentHash: file.contentHash,
+        }],
+      } : previous);
       setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, variables.path) });
@@ -2417,8 +2470,11 @@ export function PromptsTab({
   });
 
   const deleteFile = useMutation({
-    mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
-    onMutate: () => setAwaitingRefresh(true),
+    mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId, bundle?.files.find(file => file.path === relativePath)?.contentHash),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+      setAwaitingRefresh(true);
+    },
     onSuccess: (_, relativePath) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
@@ -2496,7 +2552,7 @@ export function PromptsTab({
       return;
     }
     if (lastFileVersionRef.current !== versionKey) {
-      setDraft(null);
+      if (draftBaseRevisionRef.current === undefined) setDraft(null);
       lastFileVersionRef.current = versionKey;
     }
   }, [awaitingRefresh, currentMode, currentRootPath, selectedFileDetail, selectedFileExists, selectedOrEntryFile]);
@@ -2539,11 +2595,18 @@ export function PromptsTab({
       ),
   );
   const fileDirty = draft !== null && draft !== currentContent;
-  const isDirty = bundleDirty || fileDirty;
-  const isSaving = updateBundle.isPending || saveFile.isPending || deleteFile.isPending || awaitingRefresh;
+  const isDirty = bundleDirty || fileDirty || candidateRunId !== null;
+  const isSaving = updateBundle.isPending || saveFile.isPending || resolveCandidate.isPending || loadCandidate.isPending || refreshCandidateBase.isPending || deleteFile.isPending || awaitingRefresh;
 
   useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
   useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
+
+  useEffect(() => () => {
+    onSaveActionChange(null);
+    onCancelActionChange(null);
+    onDirtyChange(false);
+    onSavingChange(false);
+  }, [onCancelActionChange, onDirtyChange, onSaveActionChange, onSavingChange]);
 
   useEffect(() => {
     onSaveActionChange(isDirty ? () => {
@@ -2557,10 +2620,15 @@ export function PromptsTab({
             entryFile: bundleDraft.entryFile,
           });
         }
-        if (fileDirty) {
+        if (candidateRunId) {
+          await resolveCandidate.mutateAsync({ runId: candidateRunId, content: displayValue,
+            baseRevisionId: draftBaseRevisionRef.current ?? null });
+        } else if (fileDirty) {
           await saveFile.mutateAsync({
             path: selectedOrEntryFile,
             content: displayValue,
+            ...(bundle?.persistence === "agent_files" ? { baseHash: draftBaseHashRef.current !== undefined ? draftBaseHashRef.current : selectedFileDetail?.contentHash ?? null } : {}),
+            ...(selectedOrEntryFile === currentEntryFile && currentMode === "managed" ? { baseRevisionId: draftBaseRevisionRef.current !== undefined ? draftBaseRevisionRef.current : selectedFileDetail?.revision?.id ?? null } : {}),
             clearLegacyPromptTemplate: shouldClearLegacy,
           });
         }
@@ -2571,10 +2639,15 @@ export function PromptsTab({
     bundle,
     bundleDirty,
     bundleDraft,
+    candidateRunId,
+    resolveCandidate,
     displayValue,
     fileDirty,
     isDirty,
     onSaveActionChange,
+    selectedFileDetail?.revision?.id,
+    currentEntryFile,
+    currentMode,
     saveFile,
     selectedOrEntryFile,
     updateBundle,
@@ -2582,6 +2655,10 @@ export function PromptsTab({
 
   useEffect(() => {
     onCancelActionChange(isDirty ? () => {
+      draftBaseRevisionRef.current = undefined;
+      draftBaseHashRef.current = undefined;
+      setCandidateRunId(null);
+      resolveCandidate.reset();
       setDraft(null);
       if (bundle) {
         setBundleDraft({
@@ -2591,7 +2668,7 @@ export function PromptsTab({
         });
       }
     } : null);
-  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath]);
+  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath, resolveCandidate]);
 
   const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -2642,9 +2719,9 @@ export function PromptsTab({
           ))}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
+      {showSaveNotice && <p className="text-xs text-muted-foreground">
         Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
-      </p>
+      </p>}
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -2822,6 +2899,7 @@ export function PromptsTab({
                   size="icon"
                   variant="outline"
                   className="h-7 w-7"
+                  aria-label="Add agent file"
                   onClick={() => setShowNewFileInput(true)}
                 >
                   +
@@ -2902,6 +2980,7 @@ export function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
+              setInstructionMode("read");
               if (!fileOptions.includes(filePath)) setDraft("");
               if (isMobile) setShowFilePanel(false);
             }}
@@ -2968,6 +3047,21 @@ export function PromptsTab({
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-md border border-border p-0.5" role="group" aria-label="Instruction file view">
+                {(["read", "edit", "raw"] as const).map((mode) => (
+                  <Button
+                    key={mode}
+                    type="button"
+                    size="sm"
+                    variant={instructionMode === mode ? "secondary" : "ghost"}
+                    className="capitalize"
+                    aria-pressed={instructionMode === mode}
+                    onClick={() => setInstructionMode(mode)}
+                  >
+                    {mode}
+                  </Button>
+                ))}
+              </div>
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
@@ -3002,26 +3096,127 @@ export function PromptsTab({
             </div>
           </div>
 
-          {selectedFileExists && fileLoading && !selectedFileDetail ? (
+          {currentMode === "managed" && preservedCandidates.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-sm font-medium">Preserved instruction edits</p>
+              <p className="text-sm text-muted-foreground">Older instruction-only sessions have edits to review.</p>
+              {preservedCandidates.map((candidate) => (
+                <div key={candidate.runId} className="flex flex-wrap items-center gap-3">
+                  <span className="font-mono text-xs text-muted-foreground">{candidate.runId.slice(0, 8)}</span>
+                  <span className="text-sm text-muted-foreground">{candidate.entryFile} · {formatDate(candidate.createdAt)}</span>
+                  <Button type="button" variant="outline" size="sm"
+                    disabled={candidate.content === null || (candidate.entryFile === currentEntryFile && (isDirty || isSaving))}
+                    aria-expanded={candidate.entryFile !== currentEntryFile ? readOnlyCandidateRunId === candidate.runId : undefined}
+                    onClick={() => {
+                      if (candidate.entryFile !== currentEntryFile) {
+                        setReadOnlyCandidateRunId((current) => current === candidate.runId ? null : candidate.runId);
+                      } else {
+                        loadCandidate.mutate(candidate);
+                      }
+                    }}>Review preserved edits</Button>
+                  {candidate.errorMessage && <p className="text-sm text-muted-foreground">{candidate.errorMessage}</p>}
+                  {candidate.entryFile !== currentEntryFile && <p className="text-sm text-muted-foreground">The instruction entry changed. These edits remain preserved for the original file.</p>}
+                  {candidate.entryFile !== currentEntryFile && candidate.content !== null && readOnlyCandidateRunId === candidate.runId && (
+                    <div role="region" aria-label={`Preserved edits for ${candidate.entryFile}`} className="w-full space-y-3">
+                      <p className="text-sm text-muted-foreground">Read only: {candidate.entryFile}. To keep any of these edits in {currentEntryFile}, copy them and edit the current entry explicitly.</p>
+                      <CopyText text={candidate.content} ariaLabel={`Copy preserved edits for ${candidate.entryFile}`}
+                        className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+                        <Copy className="h-3.5 w-3.5" />Copy preserved edits
+                      </CopyText>
+                      <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-3 font-mono text-sm">{candidate.content}</pre>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {candidateRunId && <div role="status" className="space-y-3">
+            <p className="text-sm text-muted-foreground">Reviewing preserved edits. Save to apply your resolved draft and close this preserved edit.</p>
+            <details><summary className="cursor-pointer text-sm text-muted-foreground">Compare current instructions</summary>
+              <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">{currentContent}</pre>
+            </details>
+            {draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null) && <p className="text-sm text-destructive">The current instructions changed after this draft was loaded. Refresh the current revision, compare the instructions, and save your resolved draft again.</p>}
+            {(resolveCandidate.error || draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null)) && <Button type="button" variant="outline" size="sm" disabled={isSaving} onClick={() => refreshCandidateBase.mutate()}>Refresh current revision</Button>}
+          </div>}
+          {(candidates.error || loadCandidate.error || resolveCandidate.error || refreshCandidateBase.error) && <p role="alert" className="text-sm text-destructive">{(candidates.error ?? loadCandidate.error ?? resolveCandidate.error ?? refreshCandidateBase.error)?.message} Your preserved edits remain available.</p>}
+          {(saveFile.error || fileError || updateBundle.error) && <p role="alert" className="text-sm text-destructive">{(saveFile.error ?? fileError ?? updateBundle.error)?.message} Your unsaved edits are retained.</p>}
+          {selectedFileDetail?.receipt?.materialization === "pending" && <p role="status" className="text-sm text-muted-foreground">Revision saved. The instruction file still needs to be rebuilt from the saved revision.</p>}
+          {selectedFileDetail?.revision && currentMode === "managed" && bundle?.persistence !== "agent_files" && <InstructionHistory
+            key={selectedOrEntryFile} agentId={agent.id} companyId={companyId} path={selectedOrEntryFile}
+            currentRevisionId={selectedFileDetail.revision.id} disabled={isDirty || isSaving}
+            onRestored={(file) => {
+              setDraft(null);
+              draftBaseRevisionRef.current = undefined;
+              draftBaseHashRef.current = undefined;
+              queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, selectedOrEntryFile), file);
+              queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+            }}
+          />}
+          {selectedFileDetail?.binary ? (
+            <div className="space-y-3 rounded-md border border-border p-4">
+              <p className="text-sm text-muted-foreground">This file is preserved with the agent directory. Download it to view its contents.</p>
+              <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>Download {selectedOrEntryFile}</a>
+            </div>
+          ) : selectedFileExists && fileLoading && !selectedFileDetail ? (
             <PromptEditorSkeleton />
+          ) : instructionMode === "read" ? (
+            <div className="min-h-(--sz-420px) rounded-md border border-border bg-background p-4">
+              {displayValue.trim() ? (
+                useMarkdownEditor ? (
+                  <MarkdownBody className="max-w-none text-sm leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                    {displayValue}
+                  </MarkdownBody>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">{displayValue}</pre>
+                )
+              ) : (
+                <p className="text-sm text-muted-foreground">This instruction file is empty.</p>
+              )}
+            </div>
+          ) : instructionMode === "raw" ? (
+            <pre
+              data-testid="instructions-raw-source"
+              className="min-h-(--sz-420px) overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-4 font-mono text-sm leading-7"
+            >
+              {displayValue}
+            </pre>
           ) : useMarkdownEditor ? (
-            <MarkdownEditor
-              key={selectedOrEntryFile}
-              value={displayValue}
-              onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
-              className="min-w-0 overflow-hidden"
-              contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
-              imageUploadHandler={async (file) => {
-                const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                return asset.contentPath;
-              }}
-            />
+            <div
+              onBeforeInputCapture={markEditorInteracted}
+              onDropCapture={markEditorInteracted}
+              onInput={markEditorInteracted}
+              onKeyDownCapture={markEditorInteracted}
+              onPasteCapture={markEditorInteracted}
+              onPointerDownCapture={markEditorInteracted}
+            >
+              <MarkdownEditor
+                key={selectedOrEntryFile}
+                value={displayValue}
+                onChange={(value) => {
+                  if (!editorInteractedRef.current) return;
+                  if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
+                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
+                  setDraft(value ?? "");
+                }}
+                placeholder="# Agent instructions"
+                className="min-w-0 overflow-hidden"
+                contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
+                imageUploadHandler={async (file) => {
+                  const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
+                  const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                  return asset.contentPath;
+                }}
+              />
+            </div>
           ) : (
             <textarea
+              aria-label="Instruction file editor"
               value={displayValue}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
+                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
+                setDraft(event.target.value);
+              }}
               className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
               placeholder="File contents"
             />
@@ -3130,17 +3325,18 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {summary.slice(0, 60)}
         </span>
       )}
-      {(metrics.totalTokens > 0 || metrics.cost > 0) && (
+      {(metrics.usageUnavailable || (metrics.totalTokens ?? 0) > 0 || (metrics.cost ?? 0) > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
-          {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
+          {metrics.usageUnavailable && <span>Usage and cost unavailable</span>}
+          {metrics.totalTokens !== null && metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.cost !== null && metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
     </Link>
   );
 }
 
-function RunsTab({
+export function RunsTab({
   runs,
   companyId,
   agentId,
@@ -3159,10 +3355,6 @@ function RunsTab({
 }) {
   const { isMobile } = useSidebar();
 
-  if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
-  }
-
   // Sort by created descending
   const sorted = [...runs].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -3170,7 +3362,16 @@ function RunsTab({
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
   const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
+  const selectedRun = selection.run;
+  if (selectedRunId && !selectedRun) {
+    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    return <div role="alert">
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+    </div>;
+  }
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -3224,6 +3425,41 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
+export function AgentFileRunNotice({ resultJson }: { resultJson: HeartbeatRun["resultJson"] }) {
+  const save = asRecord(resultJson?.instructionSave);
+  const storageWarning = asNonEmptyString(save?.storageWarning);
+  const error = asNonEmptyString(save?.errorMessage);
+  const syncFailure = save?.contract === "agent_files" && save.state === "unavailable" && error;
+  // A quota rejection is already explained by the storage warning. A separate
+  // I/O failure must stay visible even when storage was full at run start.
+  const showSyncFailure = syncFailure && (!storageWarning || save?.errorCode !== "AGENT_FILES_LIMIT_EXCEEDED");
+  return <>
+    {storageWarning && <InlineBanner tone="warning" title="Agent storage warning" compact>{storageWarning}</InlineBanner>}
+    {showSyncFailure && <InlineBanner tone="warning" title="Agent file sync failed for this run" compact>{error}</InlineBanner>}
+  </>;
+}
+
+export function RunAccountingMetrics({ run }: { run: HeartbeatRun }) {
+  const metrics = runMetrics(run);
+  if (!metrics.usageUnavailable && ![metrics.input, metrics.output, metrics.cached, metrics.cost].some(value => (value ?? 0) > 0)) return null;
+  const values = [
+    ["Input", metrics.input === null ? "Unavailable" : formatTokens(metrics.input)],
+    ["Output", metrics.output === null ? "Unavailable" : formatTokens(metrics.output)],
+    ["Cached", metrics.cached === null ? "Unavailable" : formatTokens(metrics.cached)],
+    ["Cost", metrics.cost === null ? "Unavailable" : metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"],
+  ];
+  return (
+    <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
+      {values.map(([label, value]) => (
+        <div key={label}>
+          <div className="text-xs text-muted-foreground">{label}</div>
+          <div className="text-sm font-medium font-mono">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3236,12 +3472,33 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ),
   });
   const run = hydratedRun ?? initialRun;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const paperclipDeveloperMode =
+    experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const canRerunWithProviderTrace = canUseProviderTrace && supportsRawProviderTrace(adapterType, adapterConfig);
+  const { data: providerTraceRows } = useQuery({
+    queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
+    queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
+    enabled: canUseProviderTrace,
+    refetchInterval:
+      run.status === "running" || run.status === "queued" ? 3000 : false,
+  });
+  const providerTraceMetadata = providerTraceRows?.[0] ?? null;
   const metrics = runMetrics(run);
   const { data: userDirectory } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
     queryFn: () => accessApi.listUserDirectory(run.companyId),
     enabled: Boolean(run.companyId && run.responsibleUserId),
-    retry: false,
   });
   const responsibleUserName = useMemo(() => {
     if (!run.responsibleUserId) return null;
@@ -3252,14 +3509,16 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
     setClaudeLoginResult(null);
   }, [run.id]);
 
+  const grokWork = run.driverKind === "grok_bot_mcp";
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
+    mutationFn: () => grokWork ? grokBotApi.stop(run.companyId, run.agentId, run.id) : heartbeatsApi.cancel(run.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
@@ -3300,7 +3559,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
   });
 
-  const canRetryRun = run.status === "failed" || run.status === "timed_out";
+  const canRetryRun = (run.status === "failed" || run.status === "timed_out")
+    && run.execution?.phase !== "recovery_needed" && !run.execution?.successorRunId;
   const retryPayload = useMemo(() => {
     const payload: Record<string, unknown> = {};
     const context = asRecord(run.contextSnapshot);
@@ -3315,18 +3575,32 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.contextSnapshot]);
   const retryRun = useMutation({
     mutationFn: async () => {
+      return agentsApi.retryFailedRun(run.agentId, run.id, run.companyId);
+    },
+    onSuccess: (newRun) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      if (newRun.runId)
+        navigate(`/agents/${agentRouteId}/runs/${newRun.runId}`);
+      else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
+    },
+  });
+
+  const rerunWithTrace = useMutation({
+    mutationFn: async () => {
       const result = await agentsApi.wakeup(run.agentId, {
         source: "on_demand",
         triggerDetail: "manual",
-        reason: "retry_failed_run",
+        reason: "rerun_with_provider_trace",
         payload: retryPayload,
+        debug: { providerTrace: "raw" },
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
+        throw new Error(result.message ?? "Trace re-run was skipped.");
       }
       return result;
     },
     onSuccess: (newRun) => {
+      setInspectorOpen(false);
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
       navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
     },
@@ -3384,12 +3658,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
-  const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
   const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
   const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
-  const retryState = describeRunRetryState(run);
 
   return (
     <div className="space-y-4 min-w-0">
@@ -3397,13 +3669,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           git workspace it could not validate, wired to the same reconcile / repair / re-issue /
           break-glass handlers as the task detail page. */}
       <RunWorkspaceRecoverySurface run={run} />
+      <AiConnectionPoolRunDetails context={run.contextSnapshot} />
+      {grokWork && <p className="text-sm text-muted-foreground">Runs in Grok Bot. Usage not reported. Stopping this session revokes Paperclip authority; remote execution may continue. Open the Grok Bot desktop app to inspect it. This view contains Paperclip-reported activity.</p>}
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={run.status} />
+              <ProviderTraceStatusBadge
+                trace={providerTraceMetadata}
+                requested={runRequestedProviderTrace(run.contextSnapshot)}
+                showOff
+              />
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"
@@ -3412,7 +3691,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {grokWork ? cancelRun.isPending ? "Stopping Paperclip work…" : "Stop Paperclip work" : cancelRun.isPending ? "Cancelling…" : "Cancel"}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -3439,6 +3718,31 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {retryRun.isPending ? "Retrying…" : "Retry"}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-6 px-2"
+                onClick={() => setInspectorOpen(true)}
+              >
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                Inspect run
+              </Button>
+              <HoneycombRunLink
+                runId={run.id}
+                enabled={paperclipDeveloperMode && canUseProviderTrace}
+              />
+              {canRerunWithProviderTrace && !["queued", "running"].includes(run.status) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-6 px-2"
+                  onClick={() => rerunWithTrace.mutate()}
+                  disabled={rerunWithTrace.isPending}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {rerunWithTrace.isPending ? "Starting…" : "Re-run with provider trace"}
+                </Button>
+              ) : null}
             </div>
             {/* Adapter type · provider · model */}
             {(() => {
@@ -3472,12 +3776,35 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </span>
               </div>
             )}
-            {resumeRun.isError && (
+            {Boolean(run.identityHistory?.length) && (
+              <details className="text-xs text-muted-foreground" data-testid="run-identity-history">
+                <summary className="cursor-pointer">GitHub identity history</summary>
+                <ol className="mt-2 space-y-2">
+                  {run.identityHistory!.map((identity) => {
+                    const person = userDirectory?.users.find((entry) => entry.principalId === identity.responsibleUserId);
+                    return (
+                      <li key={identity.id}>
+                        <span className="text-foreground">{person?.user?.name ?? person?.user?.email ?? identity.responsibleUserId ?? "No responsible person"}</span>
+                        {" · "}{identity.cause}{" · "}{identity.status}
+                        {identity.github ? (
+                          <span className="block">
+                            {identity.github.login ? `@${identity.github.login} · ` : ""}
+                            {identity.github.source ? `${identity.github.source} · ` : ""}
+                            {identity.github.status}{identity.github.reason ? `: ${identity.github.reason}` : ""}
+                          </span>
+                        ) : <span className="block">No GitHub operation recorded</span>}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </details>
+            )}
+            {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
               </div>
             )}
-            {retryRun.isError && (
+            {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
@@ -3500,6 +3827,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
+            <AgentFileRunNotice resultJson={run.resultJson} />
             {run.error && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
@@ -3517,7 +3845,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 >
                   {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
                 </Button>
-                {runClaudeLogin.isError && (
+                {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
@@ -3565,53 +3893,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
               </div>
             )}
-            {retryState && (
-              <div className="rounded-md border border-border/70 bg-accent/20 px-3 py-2 text-xs leading-5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={cn(
-                      "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
-                      retryState.tone,
-                    )}
-                  >
-                    {retryState.badgeLabel}
-                  </span>
-                  {retryState.retryOfRunId ? (
-                    <Link
-                      to={`/agents/${agentRouteId}/runs/${retryState.retryOfRunId}`}
-                      className="font-mono text-foreground hover:underline"
-                    >
-                      {retryState.retryOfRunId.slice(0, 8)}
-                    </Link>
-                  ) : null}
-                </div>
-                {retryState.detail ? <p className="mt-2 text-muted-foreground">{retryState.detail}</p> : null}
-                {retryState.secondary ? <p className="text-muted-foreground">{retryState.secondary}</p> : null}
-              </div>
-            )}
+            <RunRetryDetails run={run} agentRouteId={agentRouteId} />
           </div>
 
-          {/* Right column: metrics */}
-          {hasMetrics && (
-            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
-              <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
-              </div>
-            </div>
-          )}
+          <RunAccountingMetrics run={run} />
         </div>
 
         {/* Collapsible session row */}
@@ -3658,7 +3943,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                         ? "clearing session..."
                         : "clear session for these tasks"}
                     </button>
-                    {clearSessionsForTouchedIssues.isError && (
+                    {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
@@ -3721,23 +4006,45 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Log viewer */}
       <LogViewer run={run} adapterType={adapterType} />
       <ScrollToBottom />
+      <RunnerInspector
+        runId={run.id}
+        run={run}
+        open={inspectorOpen}
+        onOpenChange={setInspectorOpen}
+        onRerunWithTrace={
+          canRerunWithProviderTrace && !["queued", "running"].includes(run.status)
+            ? () => rerunWithTrace.mutate()
+            : undefined
+        }
+      />
     </div>
   );
 }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const hasMoreEventsRef = useRef(false);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
+  const loadMoreEventsRef = useRef<(() => void) | null>(null);
+  const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffset] = useState(0);
+  const [logOffset, setLogOffsetState] = useState(0);
+  const logOffsetRef = useRef(0);
+  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
+    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
+    setLogOffsetState(logOffsetRef.current);
+  }, []);
+  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
-  const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
@@ -3760,6 +4067,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return err instanceof ApiError && err.status === 404;
   }
 
+  function appendLogLines(incoming: RunLogChunk[]) {
+    setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
+      ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
+    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+  }
+
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
     const combined = `${pendingLogLineRef.current}${content}`;
@@ -3770,18 +4083,20 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       pendingLogLineRef.current = "";
     }
 
-    const parsed: Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }> = [];
+    const parsed: RunLogChunk[] = [];
     for (const line of split) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
         const stream =
           raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk });
+        const seq = readChunkSeq(raw.seq);
+        logSequenceRef.current.confirm(seq);
+        parsed.push({ ts, stream, chunk, seq });
       } catch {
         // ignore malformed lines
       }
@@ -3790,24 +4105,149 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     if (parsed.length > 0) {
       // Live runs stream forever, so cap the retained tail. Terminated runs are
       // paginated by the user via "Load more log" and keep their full history.
-      setLogLines((prev) =>
-        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
-      );
+      appendLogLines(parsed);
     }
   }
 
-  // Fetch events
-  const { data: initialEvents } = useQuery({
-    queryKey: ["run-events", run.id],
-    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+  const refreshEventsRef = useRef<((force?: boolean) => void) | null>(null);
+  const refreshLogRef = useRef<((force?: boolean) => void) | null>(null);
+  const eventSequenceRef = useRef(new TranscriptSequence());
+  const logSequenceRef = useRef(new TranscriptSequence());
+  const eventsReadCursorRef = useRef(0);
+  const eventsCatchupCursorRef = useRef(0);
+  const retainedEventHistoryThroughRef = useRef(0);
+  const logIdentityRef = useRef<string | null>(run.logRef ?? null);
+  const retiredLogRefs = useRef(new Set<string>());
+  const wasLiveRef = useRef(isLive);
+  const bindLog = (ref: unknown): "same" | "changed" | "stale" => {
+    if (typeof ref !== "string" || !ref || ref === logIdentityRef.current) return "same";
+    if (retiredLogRefs.current.has(ref)) return "stale";
+    const prior = logIdentityRef.current;
+    logIdentityRef.current = ref;
+    if (!prior) return "same";
+    retiredLogRefs.current.add(prior);
+    if (retiredLogRefs.current.size > 8) retiredLogRefs.current.delete(retiredLogRefs.current.values().next().value!);
+    pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
+    logSequenceRef.current = new TranscriptSequence();
+    setLogLines([]); setLogOffset(0);
+    return "changed";
+  };
+  useEffect(() => {
+    eventsReadCursorRef.current = 0; eventsCatchupCursorRef.current = 0; retainedEventHistoryThroughRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
+    wasLiveRef.current = isLive;
+    logIdentityRef.current = run.logRef ?? null; retiredLogRefs.current.clear();
+    hasMoreEventsRef.current = false; setHasMoreEvents(false); setLoadingMoreEvents(false); setEventsError(null);
+    setEvents([]); setLoading(true);
+  }, [run.id, run.companyId]);
+  useEffect(() => { if (isLive) wasLiveRef.current = true; }, [isLive]);
+
+  function appendEvents(rows: HeartbeatRunEvent[], retainHistory = false) {
+    if (retainHistory) retainedEventHistoryThroughRef.current = Math.max(
+      retainedEventHistoryThroughRef.current, rows.at(-1)?.seq ?? 0,
+    );
+    setEvents(previous => {
+      const merged = mergeRunEvents(previous, rows);
+      if (!isLive && !wasLiveRef.current) return merged;
+      const retainedThrough = Math.max(200, retainedEventHistoryThroughRef.current);
+      const prefix = merged.filter(row => row.seq <= retainedThrough);
+      const tail = merged.filter(row => row.seq > retainedThrough);
+      return [...prefix, ...tail.slice(-MAX_LIVE_EVENTS)];
+    });
+  }
+
+  const stream = useTranscriptLiveStream(isLive ? [run.id] : [], { companyId: run.companyId, enabled: visible }, event => {
+    if (event.companyId !== run.companyId) return;
+    const payload = asRecord(event.payload);
+    if (!payload || payload.runId !== run.id) return;
+    if (event.type === "heartbeat.run.log") {
+      const binding = bindLog(payload.logRef);
+      if (binding === "stale") return;
+      const seq = readChunkSeq(payload.seq);
+      if (payload.truncated === true) logSequenceRef.current.requireHistory(seq);
+      const gap = logSequenceRef.current.observe(seq);
+      if (binding === "changed" || payload.truncated === true || gap) refreshLogRef.current?.();
+      if (payload.truncated === true) return;
+      const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
+      if (!chunk) return;
+      const channel = payload.stream === "stderr" || payload.stream === "system" ? payload.stream : "stdout";
+      appendLogLines([{ ts: asNonEmptyString(payload.ts) ?? event.createdAt, stream: channel, chunk, seq }]);
+      return;
+    }
+    if (event.type === "heartbeat.run.progress") {
+      const line = buildHeartbeatProgressLogLine(payload, event.createdAt);
+      if (!line) return;
+      const key = heartbeatProgressLogLineKey(line);
+      if (seenProgressLogLineKeysRef.current.has(key)) return;
+      seenProgressLogLineKeysRef.current.add(key); appendLogLines([line]);
+      return;
+    }
+    if (event.type === "heartbeat.run.status") {
+      refreshEventsRef.current?.(true); refreshLogRef.current?.(true); return;
+    }
+    const row = liveRunEvent(event);
+    if (!row) return;
+    const commitSignal = row.message === null && row.payload === null;
+    if (commitSignal) eventSequenceRef.current.requireHistory(row.seq);
+    if (eventSequenceRef.current.observe(row.seq)) refreshEventsRef.current?.();
+    if (commitSignal) return;
+    appendEvents([row]);
   });
 
   useEffect(() => {
-    if (initialEvents) {
-      setEvents(initialEvents);
-      setLoading(false);
-    }
-  }, [initialEvents]);
+    setLoadingMoreEvents(false);
+    if (!visible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const abort = new AbortController();
+    let reading = false;
+    let pendingRefresh = false;
+    let failedRead: { requested: boolean; catchup: boolean } | null = null;
+    const read = async (requested = false, catchup = false) => {
+      if (cancelled) return;
+      if (reading) { if (catchup) pendingRefresh = true; return; }
+      if (hasMoreEventsRef.current && !requested && !catchup) return;
+      reading = true; pendingRefresh = false; setLoadingMoreEvents(true); setEventsError(null);
+      window.clearTimeout(timer); timer = undefined;
+      let failed = false;
+      try {
+        const cursor = catchup ? Math.max(eventsCatchupCursorRef.current, eventsReadCursorRef.current) : eventsReadCursorRef.current;
+        const initializesHistory = eventsReadCursorRef.current === 0;
+        const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
+        if (cancelled) return;
+        appendEvents(rows, !catchup || initializesHistory);
+        const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
+        eventsCatchupCursorRef.current = Math.max(eventsCatchupCursorRef.current, next);
+        eventSequenceRef.current.confirm(next);
+        if (catchup) {
+          if (rows.length === 1000 && next > cursor) pendingRefresh = true;
+        }
+        if (!catchup || initializesHistory) {
+          eventsReadCursorRef.current = next;
+          hasMoreEventsRef.current = rows.length === 1000 && next > cursor;
+          setHasMoreEvents(hasMoreEventsRef.current);
+        }
+        failed = eventSequenceRef.current.needsCatchup;
+        failedRead = null;
+      } catch {
+        failed = true; failedRead = { requested, catchup };
+        if (!cancelled) setEventsError("Could not load events. Try again.");
+      }
+      if (cancelled) return;
+      reading = false; setLoadingMoreEvents(false); setLoading(false);
+      if (pendingRefresh) void read(false, true);
+      else if (failed || (isLive && !stream.healthy && !hasMoreEventsRef.current)) {
+        timer = window.setTimeout(() => void read(requested, catchup || eventSequenceRef.current.needsCatchup), 2000);
+      }
+    };
+    refreshEventsRef.current = () => { void read(false, wasLiveRef.current); };
+    loadMoreEventsRef.current = () => { void read(failedRead?.requested ?? true, failedRead?.catchup ?? false); };
+    void read(false, wasLiveRef.current && (stream.healthy || eventsReadCursorRef.current > 0));
+    return () => {
+      cancelled = true; refreshEventsRef.current = null; loadMoreEventsRef.current = null;
+      abort.abort(); if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [visible, run.id, run.companyId, run.status, stream.healthy, stream.epoch]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
     if (scrollContainerRef.current) return scrollContainerRef.current;
@@ -3890,51 +4330,62 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setIsFollowing((prev) => (prev ? prev : true));
   }, [events.length, logLines.length, isLive, getScrollContainer]);
 
-  // Fetch persisted shell log
+  // Reset only when the log source changes, never when visibility changes.
   useEffect(() => {
-    let cancelled = false;
     pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
     seenProgressLogLineKeysRef.current = new Set();
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
+  }, [run.id, run.logRef, setLogOffset]);
 
-    if (!run.logRef && !shouldPollShellLog) {
-      setLogLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
+  useEffect(() => {
+    if (!visible) return;
+    if (!run.logRef && !shouldPollShellLog) { setLogLoading(false); return; }
+    let cancelled = false;
+    let timer: number | undefined;
+    const abort = new AbortController();
     setLogLoading(true);
+    let reading = false;
+    let pendingRefresh = false;
     const load = async () => {
+      if (cancelled || reading) return;
+      reading = true; pendingRefresh = false;
+      window.clearTimeout(timer); timer = undefined;
+      let failed = false;
       try {
-        const result = await heartbeatsApi.log(run.id, 0, RUN_LOG_PAGE_BYTES);
-        if (cancelled) return;
-        appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? result.content.length;
-        setLogOffset(next);
-        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
-      } catch (err) {
-        if (!cancelled) {
-          if (shouldPollShellLog && isRunLogUnavailable(err)) {
-            setLogLoading(false);
-            return;
-          }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+        for (;;) {
+          const offset = logOffsetRef.current;
+          const result = await readTranscriptRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), abort.signal);
+          if (cancelled) return;
+          const binding = bindLog(result.logRef);
+          if (binding === "stale") { failed = true; break; }
+          if (binding === "changed" && offset !== 0) continue;
+          appendLogContent(result.content, result.nextOffset === undefined);
+          const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
+          setLogOffset(next); setLogError(null);
+          setHasMoreLog(!wasLiveRef.current && result.nextOffset !== undefined && !!result.content);
+          if (!wasLiveRef.current || result.nextOffset === undefined || !result.content || next <= offset) break;
         }
-      } finally {
-        if (!cancelled) setLogLoading(false);
+        failed ||= logSequenceRef.current.needsCatchup;
+      } catch (err) {
+        if (cancelled) return;
+        failed = shouldPollShellLog || !isRunLogUnavailable(err);
+        if (!isRunLogUnavailable(err)) setLogError(err instanceof Error ? err.message : "Failed to load run log");
       }
+      if (cancelled) return;
+      reading = false;
+      setLogLoading(false);
+      if (pendingRefresh) void load();
+      else if (failed || (shouldPollShellLog && !stream.healthy)) timer = window.setTimeout(() => void load(), 2000);
     };
-
+    refreshLogRef.current = (force = false) => { if (force) pendingRefresh = true; void load(); };
     void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+    return () => { cancelled = true; refreshLogRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [visible, run.id, run.companyId, run.logRef, isLive ? null : run.logBytes, shouldPollShellLog, stream.healthy, stream.epoch]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -3943,7 +4394,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     try {
       const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
       appendLogContent(result.content, result.nextOffset === undefined);
-      const next = result.nextOffset ?? logOffset + result.content.length;
+      const next = result.nextOffset ?? logOffset + new TextEncoder().encode(result.content).byteLength;
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
@@ -3952,168 +4403,6 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       setLoadingMoreLog(false);
     }
   }
-
-  // Poll for live updates
-  useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
-    const interval = setInterval(async () => {
-      const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
-      try {
-        const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
-        if (newEvents.length > 0) {
-          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, events]);
-
-  // Poll shell log for running runs
-  useEffect(() => {
-    if (!shouldPollShellLog || isStreamingConnected) return;
-    const interval = setInterval(async () => {
-      try {
-        const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
-        if (result.content) {
-          appendLogContent(result.content, result.nextOffset === undefined);
-        }
-        if (result.nextOffset !== undefined) {
-          setLogOffset(result.nextOffset);
-        } else if (result.content.length > 0) {
-          setLogOffset((prev) => prev + result.content.length);
-        }
-      } catch (err) {
-        if (isRunLogUnavailable(err)) return;
-        // ignore polling errors
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
-
-  // Stream live updates from websocket (primary path for running runs).
-  useEffect(() => {
-    if (!isLive) return;
-
-    let closed = false;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const url = buildSameOriginWebSocketUrl(
-        `/api/companies/${encodeURIComponent(run.companyId)}/events/ws`,
-      );
-      socket = new WebSocket(url);
-
-      socket.onopen = () => {
-        setIsStreamingConnected(true);
-      };
-
-      socket.onmessage = (message) => {
-        const rawMessage = typeof message.data === "string" ? message.data : "";
-        if (!rawMessage) return;
-
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(rawMessage) as LiveEvent;
-        } catch {
-          return;
-        }
-
-        if (event.companyId !== run.companyId) return;
-        const payload = asRecord(event.payload);
-        const eventRunId = asNonEmptyString(payload?.runId);
-        if (!payload || eventRunId !== run.id) return;
-
-        if (event.type === "heartbeat.run.log") {
-          const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
-          if (!chunk) return;
-          const streamRaw = asNonEmptyString(payload.stream);
-          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
-          const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
-          return;
-        }
-
-        if (event.type === "heartbeat.run.progress") {
-          const line = buildHeartbeatProgressLogLine(payload, event.createdAt);
-          if (!line) return;
-          const key = heartbeatProgressLogLineKey(line);
-          if (seenProgressLogLineKeysRef.current.has(key)) return;
-          seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
-          return;
-        }
-
-        if (event.type !== "heartbeat.run.event") return;
-
-        const seq = typeof payload.seq === "number" ? payload.seq : null;
-        if (seq === null || !Number.isFinite(seq)) return;
-
-        const streamRaw = asNonEmptyString(payload.stream);
-        const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" || streamRaw === "system"
-            ? streamRaw
-            : null;
-        const levelRaw = asNonEmptyString(payload.level);
-        const level =
-          levelRaw === "info" || levelRaw === "warn" || levelRaw === "error"
-            ? levelRaw
-            : null;
-
-        const liveEvent: HeartbeatRunEvent = {
-          id: seq,
-          companyId: run.companyId,
-          runId: run.id,
-          agentId: run.agentId,
-          seq,
-          eventType: asNonEmptyString(payload.eventType) ?? "event",
-          stream,
-          level,
-          color: asNonEmptyString(payload.color),
-          message: asNonEmptyString(payload.message),
-          payload: asRecord(payload.payload),
-          createdAt: new Date(event.createdAt),
-        };
-
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
-        });
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-
-      socket.onclose = () => {
-        setIsStreamingConnected(false);
-        scheduleReconnect();
-      };
-    };
-
-    connect();
-
-    return () => {
-      closed = true;
-      setIsStreamingConnected(false);
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "run_detail_unmount");
-      }
-    };
-  }, [isLive, run.companyId, run.id, run.agentId]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -4156,7 +4445,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
-  if (events.length === 0 && logLines.length === 0 && !logError) {
+  if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
     return <p className="text-xs text-muted-foreground">No log events.</p>;
   }
 
@@ -4302,9 +4591,15 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         </div>
       )}
 
-      {events.length > 0 && (
+      {(events.length > 0 || eventsError) && (
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          {eventsError && <p className="text-sm text-destructive">{eventsError}</p>}
+          {(hasMoreEvents || eventsError) && (
+            <Button variant="outline" size="sm" disabled={loadingMoreEvents} onClick={() => loadMoreEventsRef.current?.()}>
+              {loadingMoreEvents ? "Loading..." : eventsError ? "Retry events" : "Load more events"}
+            </Button>
+          )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color
@@ -4313,7 +4608,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 ?? "text-foreground";
 
               return (
-                <div key={evt.id} className="flex gap-2">
+                <div key={`${evt.runId}:${evt.seq}`} className="flex gap-2">
                   <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
                     {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
                   </span>
@@ -4339,7 +4634,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 /* ---- Keys Tab ---- */
 
-function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");

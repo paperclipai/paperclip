@@ -326,12 +326,7 @@ describe("GitHub external object provider", () => {
         status: 403,
         headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
       }),
-      { ok: false, liveness: "unreachable", errorCode: "github_rate_limited" },
-    ],
-    [
-      "not-found",
-      new Response("", { status: 404, headers: { etag: '"missing"' } }),
-      { ok: true, snapshot: expect.objectContaining({ displayKey: "GitHub Pull Request", iconKey: "github", statusKey: "not_found", statusIconKey: "archive", statusCategory: "archived", statusTone: "muted" }) },
+      { ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" },
     ],
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
@@ -347,6 +342,365 @@ describe("GitHub external object provider", () => {
 
     expect(result).toEqual(expect.objectContaining(expected));
     expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies a 404 as not-found when the repository is visible to the credentials", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) {
+        return new Response(JSON.stringify({ full_name: "acme/app" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app",
+      expect.objectContaining({ headers: expect.not.objectContaining({ authorization: expect.any(String) }) }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        displayKey: "GitHub Pull Request",
+        iconKey: "github",
+        statusKey: "not_found",
+        statusIconKey: "archive",
+        statusCategory: "archived",
+        statusTone: "muted",
+        isTerminal: true,
+        data: expect.objectContaining({ provider: "github", notFound: true, probeVerified: true }),
+      }),
+    });
+    expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("caches repository-visibility probes per company and repo", async () => {
+    let probeCalls = 0;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) {
+        probeCalls += 1;
+        return new Response(JSON.stringify({ full_name: "acme/app" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    await resolver.resolve({ companyId: "company-1", object: githubObject("pull/42", "pull_request") });
+    await resolver.resolve({ companyId: "company-1", object: githubObject("pull/99", "pull_request") });
+
+    expect(probeCalls).toBe(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/repos/acme/app"))).toHaveLength(1);
+  });
+
+  it("does not reuse a cached probe verdict across credential changes", async () => {
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/repos/acme/app")) {
+        const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+        if (auth === "Bearer token-A" || auth === "Bearer token-B") {
+          return new Response(JSON.stringify({ full_name: "acme/app" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("", { status: 404 });
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    let token: string | null = "token-A";
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      tokenProvider: async () => token,
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const visibleVerdict = await resolver.resolve({ companyId: "company-1", object: githubObject("pull/42", "pull_request") });
+
+    // Same repo, same credentials: probe result is reused.
+    await resolver.resolve({ companyId: "company-1", object: githubObject("pull/99", "pull_request") });
+    const probesUnderTokenA = fetch.mock.calls.filter(([url]) => String(url).endsWith("/repos/acme/app"));
+    expect(probesUnderTokenA).toHaveLength(1);
+
+    // Credential now only has access to a different repo — cache must not
+    // serve the stale "visible" verdict, or this object would be frozen as a
+    // probe-verified not-found forever.
+    token = "other-token";
+    const hiddenVerdict = await resolver.resolve({ companyId: "company-1", object: githubObject("pull/10", "pull_request") });
+
+    expect(visibleVerdict).toEqual(
+      expect.objectContaining({ ok: true, snapshot: expect.objectContaining({ isTerminal: true }) }),
+    );
+    expect(hiddenVerdict).toEqual(
+      expect.objectContaining({ ok: false, liveness: "auth_required", errorCode: "github_repo_not_accessible" }),
+    );
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/repos/acme/app"))).toHaveLength(2);
+  });
+
+  it("classifies a 404 as auth-required when the repository itself is hidden", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) {
+        return new Response("", { status: 404 });
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_not_accessible",
+        errorMessage: expect.stringContaining("acme/app"),
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies a 404 as unreachable when the repository probe itself fails", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) {
+        throw new Error("network down");
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "unreachable",
+        errorCode: "github_repo_probe_failed",
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies a 404 as rate-limited when the repository probe is rate-limited", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) {
+        return new Response("", {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
+        });
+      }
+      return new Response("", { status: 404, headers: { etag: '"missing"' } });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "rate_limited",
+        errorCode: "github_rate_limited",
+      }),
+    );
+    expect(result).not.toEqual(
+      expect.objectContaining({ ok: false, liveness: "auth_required", errorCode: "github_repo_not_accessible" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies an authenticated rate limit as rate-limited rather than unreachable", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      tokenProvider: async () => "ghp_secret",
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("ghp_secret");
+  });
+
+  it("classifies a 429 as rate-limited", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 429,
+      headers: { "retry-after": "60" },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
+  });
+
+  it("limits a server-environment token to public repositories and never fetches a private object", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true, full_name: "acme/app" });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/42"), expect.anything());
+    expect(JSON.stringify(result)).not.toContain("env-token");
+  });
+
+  it("fails closed when a server-environment token probe does not confirm the repository is public", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      // No `private` flag: public visibility is not positively confirmed.
+      if (url.endsWith("/repos/acme/app")) return response({ full_name: "acme/app" });
+      return response({ state: "open", draft: false, merged: false, title: "Unconfirmed PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/42"), expect.anything());
+    expect(JSON.stringify(result)).not.toContain("env-token");
+  });
+
+  it("uses a server-environment token to resolve a public repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: false });
+      return response({ state: "open", draft: false, merged: false, title: "Public PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
+  });
+
+  it("re-verifies public access for a server-environment token instead of reusing a cached verdict", async () => {
+    let repoPrivate = false;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: repoPrivate });
+      return response({ state: "open", draft: false, merged: false, title: "acme/app PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    // First refresh while the repository is public: the object resolves.
+    const publicResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+    expect(publicResult.ok).toBe(true);
+
+    // The repository becomes private inside the probe-cache TTL. The server token
+    // still has access, but this company did not authorize it, so the second object
+    // must not reuse the cached "public" verdict to read private details.
+    repoPrivate = true;
+    const privateResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/43", "pull_request"),
+    });
+
+    expect(privateResult).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/43"), expect.anything());
+    expect(JSON.stringify(privateResult)).not.toContain("env-token");
+  });
+
+  it("lets a company-scoped token resolve a private repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
   });
 });
 
@@ -784,6 +1138,183 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     expect(refreshed).toEqual([]);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps terminal objects fresh-for-display after their refresh window passes", async () => {
+    const { companyId, issueId } = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "closed" as const,
+        statusTone: "muted" as const,
+        statusKey: "closed",
+        statusLabel: "Closed",
+        isTerminal: true,
+        ttlSeconds: 1,
+      },
+    }));
+    const svc = externalObjectService(db, {
+      resolvers: [{ providerKey: "url", objectType: "link", resolve }],
+      github: false,
+    });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    await svc.refreshObject(object.id, { companyId, force: true });
+    // Expire the refresh window so the display path computes liveness from
+    // scratch. Terminal objects must still show as fresh, never as stale.
+    await db
+      .update(externalObjects)
+      .set({ nextRefreshAt: new Date(0) })
+      .where(eq(externalObjects.id, object.id));
+
+    const summary = await svc.getIssueSummary(issueId);
+    const displayed = summary.objects[0];
+    expect(displayed?.liveness).toBe("fresh");
+    expect(displayed?.isTerminal).toBe(true);
+
+    const summaryLater = await svc.getIssueSummaries(companyId, [issueId]).then((map) => map.get(issueId));
+    expect(summaryLater?.objects[0]?.liveness).toBe("fresh");
+    expect(summaryLater?.staleCount).toBe(0);
+    expect(summaryLater?.byLiveness?.stale ?? 0).toBe(0);
+  });
+
+  it("re-checks previously frozen GitHub not-found objects so they can self-heal", async () => {
+    const { companyId } = await createIssue();
+    const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
+    if (!canonical) throw new Error("expected canonical url");
+    const inserted = await db.insert(externalObjects).values({
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "acme/app#pull/42",
+      sanitizedCanonicalUrl: canonical.sanitizedCanonicalUrl,
+      canonicalIdentityHash: canonical.canonicalIdentityHash,
+      displayTitle: "acme/app#42",
+      statusKey: "not_found",
+      statusLabel: "Not found",
+      statusCategory: "archived",
+      statusTone: "muted",
+      liveness: "fresh",
+      isTerminal: true,
+      nextRefreshAt: new Date(0),
+      data: { provider: "github", notFound: true },
+    }).returning();
+    const object = inserted[0]!;
+
+    const snapshot = {
+      statusKey: "open" as const,
+      statusLabel: "Open" as const,
+      statusCategory: "open" as const,
+      statusTone: "info" as const,
+      statusIconKey: "git-pull-request" as const,
+      displayTitle: "acme/app#42",
+      isTerminal: false,
+      ttlSeconds: 300,
+      data: { provider: "github", owner: "acme", repo: "app", number: 42 },
+    };
+    const resolver: ExternalObjectResolver = {
+      providerKey: "github",
+      objectType: "pull_request",
+      resolve: vi.fn(async () => ({ ok: true as const, snapshot })),
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    expect(object.isTerminal).toBe(true);
+
+    const refreshed = await svc.refreshDueObjects(companyId);
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0]?.refreshed).toBe(true);
+
+    const updated = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    expect(updated.statusLabel).toBe("Open");
+    expect(updated.isTerminal).toBe(false);
+    expect(updated.liveness).toBe("fresh");
+  });
+
+  it("does not re-check probe-verified GitHub not-found objects (deleted references are terminal)", async () => {
+    const { companyId } = await createIssue();
+    const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
+    if (!canonical) throw new Error("expected canonical url");
+    await db.insert(externalObjects).values({
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "acme/app#pull/42",
+      sanitizedCanonicalUrl: canonical.sanitizedCanonicalUrl,
+      canonicalIdentityHash: canonical.canonicalIdentityHash,
+      displayTitle: "acme/app#42",
+      statusKey: "not_found",
+      statusLabel: "Not found",
+      statusCategory: "archived",
+      statusTone: "muted",
+      liveness: "fresh",
+      isTerminal: true,
+      nextRefreshAt: new Date(0),
+      data: { provider: "github", notFound: true, probeVerified: true },
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "github",
+      objectType: "pull_request",
+      resolve: vi.fn(async () => ({
+        ok: true as const,
+        snapshot: {
+          statusKey: "open",
+          statusLabel: "Open",
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          isTerminal: false,
+          ttlSeconds: 300,
+        },
+      })),
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+
+    const refreshed = await svc.refreshDueObjects(companyId);
+
+    expect(refreshed).toEqual([]);
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not re-check terminal objects that are not GitHub not-found verdicts", async () => {
+    const { companyId } = await createIssue();
+    const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
+    if (!canonical) throw new Error("expected canonical url");
+    await db.insert(externalObjects).values({
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "acme/app#pull/42",
+      sanitizedCanonicalUrl: canonical.sanitizedCanonicalUrl,
+      canonicalIdentityHash: canonical.canonicalIdentityHash,
+      displayTitle: "acme/app#42",
+      statusKey: "merged",
+      statusLabel: "Merged",
+      statusCategory: "succeeded",
+      statusTone: "success",
+      liveness: "fresh",
+      isTerminal: true,
+      nextRefreshAt: new Date(0),
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "github",
+      objectType: "pull_request",
+      resolve: vi.fn(async () => ({
+        ok: true as const,
+        snapshot: {
+          statusKey: "open",
+          statusLabel: "Open",
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          isTerminal: false,
+          ttlSeconds: 300,
+        },
+      })),
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+
+    const refreshed = await svc.refreshDueObjects(companyId);
+
+    expect(refreshed).toEqual([]);
+    expect(resolver.resolve).not.toHaveBeenCalled();
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {

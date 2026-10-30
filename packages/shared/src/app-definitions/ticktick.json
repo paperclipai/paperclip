@@ -25,7 +25,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.ticktick.com"
+        "serverUrl": "https://mcp.ticktick.com",
+        "scopesHint": [
+          "tasks:write",
+          "tasks:read"
+        ]
       },
       "guidanceMd": "Connect TickTick in the browser. A TickTick account with MCP access.",
       "riskTier": "S3",

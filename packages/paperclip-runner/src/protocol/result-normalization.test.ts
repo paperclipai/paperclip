@@ -6,6 +6,36 @@ import {
 import { validatePrpStructuredRunResult } from "./replay-contract.js";
 
 describe("normalizePrpResultSignals", () => {
+  it("normalizes an explicit null continuation without weakening completion rules", () => {
+    const providerResult = {
+      reportedWorkDisposition: "done",
+      summary: "Renamed the task to bobathan.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
+        remainingWork: [],
+      },
+      evidence: [],
+      verification: [],
+      continuation: null,
+    };
+    const validated = validatePrpStructuredRunResult(providerResult);
+    expect(validated).toMatchObject({ ok: true, result: { reportedWorkDisposition: "done" } });
+    if (validated.ok) expect(validated.result).not.toHaveProperty("continuation");
+    expect(providerResult).toHaveProperty("continuation", null);
+    expect(validatePrpStructuredRunResult({
+      ...providerResult,
+      reportedWorkDisposition: "yielded",
+    })).toMatchObject({ ok: false });
+    expect(normalizeLegacyPrpStructuredRunResult({
+      ...providerResult,
+      continuation: { kind: "response_wake", summary: "Contradictory wait.", idempotencyKey: "wait-1" },
+    })).toHaveProperty("continuation", {
+      kind: "response_wake", summary: "Contradictory wait.", idempotencyKey: "wait-1",
+    });
+  });
+
   it("accepts legacy completion aliases as one canonical PRP result", () => {
     const legacy = {
       schema: "paperclip.run_result.v1",
@@ -14,33 +44,18 @@ describe("normalizePrpResultSignals", () => {
       completionClaim: {
         contractRevision: "1",
         objectiveSatisfied: true,
-        criteria: [
-          {
-            criterionId: "objective",
-            status: "satisfied",
-            evidenceRefs: ["file:a"],
-          },
-        ],
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: ["file:a"] }],
         remainingWork: [],
       },
       evidence: [{ ref: "file:a" }],
-      verification: [
-        {
-          command: "node --test",
-          cwd: "fixture",
-          status: "passed",
-          result: "4 passed",
-        },
-      ],
+      verification: [{ command: "node --test", cwd: "fixture", status: "passed", result: "4 passed" }],
     };
 
     expect(normalizeLegacyPrpStructuredRunResult(legacy)).toMatchObject({
       reportedWorkDisposition: "done",
       attentionRequests: [],
       artifacts: [],
-      verification: [
-        { commandOrCheck: "node --test", status: "passed", detail: "4 passed" },
-      ],
+      verification: [{ commandOrCheck: "node --test", status: "passed", detail: "4 passed" }],
     });
     expect(validatePrpStructuredRunResult(legacy)).toMatchObject({
       ok: true,
@@ -55,9 +70,7 @@ describe("normalizePrpResultSignals", () => {
       completionClaim: {
         contractRevision: "1",
         objectiveSatisfied: true,
-        criteria: [
-          { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
-        ],
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
         remainingWork: [],
       },
       evidence: [],
@@ -69,6 +82,44 @@ describe("normalizePrpResultSignals", () => {
     });
   });
 
+  it("requires an identified owner for blocked results", () => {
+    const blockedResult = {
+      reportedWorkDisposition: "blocked",
+      summary: "External input is required.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: false,
+        criteria: [
+          { criterionId: "objective", status: "not_satisfied", evidenceRefs: [] },
+        ],
+        remainingWork: [
+          { description: "Wait for external input.", blocksCompletion: true },
+        ],
+      },
+      evidence: [],
+      verification: [],
+      blocker: {
+        reasonCode: "external_input_required",
+        owner: {},
+        unblockAction: "Provide the required input.",
+        scope: "current_track",
+      },
+    };
+
+    expect(validatePrpStructuredRunResult(blockedResult)).toMatchObject({
+      ok: false,
+    });
+    expect(
+      validatePrpStructuredRunResult({
+        ...blockedResult,
+        blocker: {
+          ...blockedResult.blocker,
+          owner: { kind: "external", name: "External input" },
+        },
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
   it("normalizes unambiguous completion aliases emitted by smaller tool callers", () => {
     const toolShaped = {
       schema: "paperclip_paperclip_finish",
@@ -77,9 +128,7 @@ describe("normalizePrpResultSignals", () => {
       completionClaim: {
         contractRevision: "1",
         objectiveSatisfied: true,
-        criteria: [
-          { criterionId: "objective", status: "passed", evidenceRefs: [] },
-        ],
+        criteria: [{ criterionId: "objective", status: "passed", evidenceRefs: [] }],
         remainingWork: [],
       },
       evidence: [],
@@ -98,22 +147,18 @@ describe("normalizePrpResultSignals", () => {
   });
 
   it("normalizes unambiguous verification aliases from smaller tool callers", () => {
-    expect(
-      validatePrpStructuredRunResult({
-        reportedWorkDisposition: "completed",
-        summary: "Answered the question.",
-        completionClaim: {
-          contractRevision: "1",
-          objectiveSatisfied: true,
-          criteria: [
-            { criterionId: "objective", status: "pass", evidenceRefs: [] },
-          ],
-          remainingWork: [],
-        },
-        evidence: [],
-        verification: [{ commandOrCheck: "model check", status: "success" }],
-      }),
-    ).toMatchObject({
+    expect(validatePrpStructuredRunResult({
+      reportedWorkDisposition: "completed",
+      summary: "Answered the question.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "pass", evidenceRefs: [] }],
+        remainingWork: [],
+      },
+      evidence: [],
+      verification: [{ commandOrCheck: "model check", status: "success" }],
+    })).toMatchObject({
       ok: true,
       result: {
         verification: [{ commandOrCheck: "model check", status: "passed" }],
@@ -123,36 +168,28 @@ describe("normalizePrpResultSignals", () => {
 
   it("turns legacy environment_constraint attention into a verification caveat", () => {
     const normalized = normalizePrpResultSignals({
-      verification: [
-        {
-          commandOrCheck: "Run npm test",
-          status: "not_run",
-        },
-      ],
-      attentionRequests: [
-        {
-          kind: "environment_constraint",
-          summary: "Node and npm are unavailable in this sandbox.",
-        },
-      ],
+      verification: [{
+        commandOrCheck: "Run npm test",
+        status: "not_run",
+      }],
+      attentionRequests: [{
+        kind: "environment_constraint",
+        summary: "Node and npm are unavailable in this sandbox.",
+      }],
     });
 
     expect(normalized.actionableAttentionRequests).toEqual([]);
-    expect(normalized.verification).toEqual([
-      expect.objectContaining({
-        commandOrCheck: "Run npm test",
-        status: "not_run",
-        reasonCode: "tool_unavailable",
-        detail: "Node and npm are unavailable in this sandbox.",
-      }),
-    ]);
-    expect(normalized.ignoredAttentionRequests).toEqual([
-      expect.objectContaining({
-        sourceKind: "environment_constraint",
-        disposition: "verification_caveat",
-        reasonCode: "legacy_environment_constraint_normalized",
-      }),
-    ]);
+    expect(normalized.verification).toEqual([expect.objectContaining({
+      commandOrCheck: "Run npm test",
+      status: "not_run",
+      reasonCode: "tool_unavailable",
+      detail: "Node and npm are unavailable in this sandbox.",
+    })]);
+    expect(normalized.ignoredAttentionRequests).toEqual([expect.objectContaining({
+      sourceKind: "environment_constraint",
+      disposition: "verification_caveat",
+      reasonCode: "legacy_environment_constraint_normalized",
+    })]);
 
     const canonical = normalizeLegacyPrpStructuredRunResult({
       schema: "paperclip.run_result.v1",
@@ -161,63 +198,43 @@ describe("normalizePrpResultSignals", () => {
       completionClaim: {
         contractRevision: "1",
         objectiveSatisfied: true,
-        criteria: [
-          { criterionId: "objective", status: "satisfied", evidenceRefs: [] },
-        ],
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
         remainingWork: [],
       },
       evidence: [],
-      verification: [
-        {
-          command: "npm test",
-          status: "blocked",
-          result: "Node is unavailable.",
-        },
-      ],
-      attentionRequests: [
-        {
-          kind: "environment_constraint",
-          summary: "Node and npm are unavailable in this sandbox.",
-        },
-      ],
+      verification: [{ command: "npm test", status: "blocked", result: "Node is unavailable." }],
+      attentionRequests: [{
+        kind: "environment_constraint",
+        summary: "Node and npm are unavailable in this sandbox.",
+      }],
     });
     expect(canonical).toMatchObject({
       attentionRequests: [],
-      verification: [
-        {
-          commandOrCheck: "npm test",
-          status: "not_run",
-          reasonCode: "tool_unavailable",
-          detail:
-            "Node is unavailable.\nNode and npm are unavailable in this sandbox.",
-        },
-      ],
+      verification: [{
+        commandOrCheck: "npm test",
+        status: "not_run",
+        reasonCode: "tool_unavailable",
+        detail: "Node is unavailable.\nNode and npm are unavailable in this sandbox.",
+      }],
     });
-    expect(validatePrpStructuredRunResult(canonical)).toMatchObject({
-      ok: true,
-    });
+    expect(validatePrpStructuredRunResult(canonical)).toMatchObject({ ok: true });
   });
 
   it("normalizes an unavailable command reported as failed into a not-run caveat", () => {
     const normalized = normalizePrpResultSignals({
-      verification: [
-        {
-          commandOrCheck: "tsc --noEmit",
-          status: "failed",
-          reasonCode: "dependency_missing",
-          detail:
-            "Repository dependencies are not installed, so the compiler could not start.",
-        },
-      ],
+      verification: [{
+        commandOrCheck: "tsc --noEmit",
+        status: "failed",
+        reasonCode: "dependency_missing",
+        detail: "Repository dependencies are not installed, so the compiler could not start.",
+      }],
     });
 
-    expect(normalized.verification).toEqual([
-      expect.objectContaining({
-        commandOrCheck: "tsc --noEmit",
-        status: "not_run",
-        reasonCode: "dependency_missing",
-      }),
-    ]);
+    expect(normalized.verification).toEqual([expect.objectContaining({
+      commandOrCheck: "tsc --noEmit",
+      status: "not_run",
+      reasonCode: "dependency_missing",
+    })]);
   });
 
   it("preserves typed actionable requests and legacy review requests", () => {
@@ -233,16 +250,8 @@ describe("normalizePrpResultSignals", () => {
     });
 
     expect(normalized.actionableAttentionRequests).toEqual([
-      expect.objectContaining({
-        kind: "approval",
-        ownerClass: "human",
-        legacy: false,
-      }),
-      expect.objectContaining({
-        kind: "review",
-        ownerClass: "human",
-        legacy: true,
-      }),
+      expect.objectContaining({ kind: "approval", ownerClass: "human", legacy: false }),
+      expect.objectContaining({ kind: "review", ownerClass: "human", legacy: true }),
     ]);
   });
 
@@ -257,18 +266,9 @@ describe("normalizePrpResultSignals", () => {
 
     expect(normalized.actionableAttentionRequests).toEqual([]);
     expect(normalized.ignoredAttentionRequests).toEqual([
-      expect.objectContaining({
-        disposition: "ignored",
-        reasonCode: "attention_request_kind_unsupported",
-      }),
-      expect.objectContaining({
-        disposition: "rejected",
-        reasonCode: "attention_request_malformed",
-      }),
-      expect.objectContaining({
-        disposition: "rejected",
-        reasonCode: "attention_request_malformed",
-      }),
+      expect.objectContaining({ disposition: "ignored", reasonCode: "attention_request_kind_unsupported" }),
+      expect.objectContaining({ disposition: "rejected", reasonCode: "attention_request_malformed" }),
+      expect.objectContaining({ disposition: "rejected", reasonCode: "attention_request_malformed" }),
     ]);
   });
 });

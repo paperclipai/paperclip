@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
+import os from "node:os";
 import http from "node:http";
 import express from "express";
 import request from "supertest";
@@ -21,7 +22,11 @@ import * as sentryModule from "../sentry.js";
  */
 
 const DSN_ENV = "SENTRY_DSN";
+const FRONTEND_DSN_ENV = "SENTRY_DSN_FRONTEND";
+const BACKEND_DSN_ENV = "SENTRY_DSN_BACKEND";
 const originalDsn = process.env[DSN_ENV];
+const originalFrontendDsn = process.env[FRONTEND_DSN_ENV];
+const originalBackendDsn = process.env[BACKEND_DSN_ENV];
 
 async function importFreshSentry() {
   vi.resetModules();
@@ -90,11 +95,17 @@ const DEFAULT_INTEGRATION_NAMES = [
 
 beforeEach(() => {
   delete process.env[DSN_ENV];
+  delete process.env[FRONTEND_DSN_ENV];
+  delete process.env[BACKEND_DSN_ENV];
 });
 
 afterEach(() => {
   if (originalDsn === undefined) delete process.env[DSN_ENV];
   else process.env[DSN_ENV] = originalDsn;
+  if (originalFrontendDsn === undefined) delete process.env[FRONTEND_DSN_ENV];
+  else process.env[FRONTEND_DSN_ENV] = originalFrontendDsn;
+  if (originalBackendDsn === undefined) delete process.env[BACKEND_DSN_ENV];
+  else process.env[BACKEND_DSN_ENV] = originalBackendDsn;
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/node");
   vi.doUnmock("../peer-version-check.js");
@@ -116,6 +127,97 @@ describe("sentryReady", () => {
 });
 
 describe("captureException", () => {
+  it("sends only private normalized portfolio diagnostics on the matching event", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { CloudPortfolioError } = await import("../services/cloud-portfolio-error.js");
+    await sentryReady;
+    const error = new CloudPortfolioError("upstream", { phase: "fetch", elapsedMs: 270, upstreamStatus: null }, { code: "ECONNRESET" });
+    Object.assign(error, { cause: new Error("private cause"), headers: { authorization: "private token" } });
+    Object.defineProperty(error, "diagnostics", { value: { token: "private replacement" } });
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      expect.objectContaining({ message: error.message, stack: error.stack }),
+      { tags: { error_code: "cloud_portfolio_failure" }, fingerprint: ["{{ default }}"], contexts: {
+        cloud_portfolio: { phase: "fetch", elapsedMs: 270, upstreamStatus: null, networkCode: "ECONNRESET" },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[0]![0]).not.toHaveProperty("cause");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
+  it("adds the normalized storage failure to the original error's event only", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { recordS3Failure } = await import("../storage/s3-failure.js");
+    await sentryReady;
+    const error = Object.assign(new Error("The request signature we calculated does not match"), {
+      name: "SignatureDoesNotMatch",
+      $metadata: { httpStatusCode: 403, requestId: "req-4G-1", attempts: 1, extendedRequestId: "private host id" },
+      StringToSign: "private string to sign",
+    });
+    recordS3Failure(error, "get_object");
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      error,
+      { tags: { storage_operation: "get_object", storage_error_code: "SignatureDoesNotMatch" }, fingerprint: ["{{ default }}"], contexts: {
+        storage_failure: { provider: "s3", operation: "get_object", errorCode: "SignatureDoesNotMatch", httpStatus: 403, requestId: "req-4G-1", attempts: 1 },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0]![1])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
+  it("adds bounded Stop timeout context only to that event", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { AdapterStopTimeoutError } = await import("../services/adapter-stop-timeout.js");
+    await sentryReady;
+    const error = new AdapterStopTimeoutError(60_000, {
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "cursor", runtimeMode: "legacy", abortRequested: true,
+      phase: "instruction_collection", phaseElapsedMs: 60_321,
+    });
+    Object.assign(error, { providerResponse: "private fixture payload" });
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      expect.objectContaining({ message: error.message, stack: error.stack }),
+      { tags: { error_code: "adapter_stop_unconfirmed" }, fingerprint: ["{{ default }}"], contexts: {
+        adapter_stop: { runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor", runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000,
+          phase: "instruction_collection", phaseElapsedMs: 60_321 },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private fixture payload");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
+  it("does not send arbitrary Stop diagnostic values", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { AdapterStopTimeoutError } = await import("../services/adapter-stop-timeout.js");
+    await sentryReady;
+    captureException(new AdapterStopTimeoutError(NaN, {
+      runId: "private fixture payload", adapterType: "private fixture payload", runtimeMode: "private fixture payload",
+      phase: "private fixture payload", phaseElapsedMs: Infinity,
+    }));
+    expect(JSON.stringify(sdk.captureException.mock.calls)).not.toContain("private fixture payload");
+    expect(sdk.captureException.mock.calls[0]).toEqual([expect.any(Error), expect.objectContaining({ contexts: {
+      adapter_stop: { runId: null, adapterType: "unknown", runtimeMode: "unknown", abortRequested: null, timeoutMs: null,
+        phase: "unknown", phaseElapsedMs: null },
+    } })]);
+  });
+
   it("is a no-op and does not throw when the gate is closed", async () => {
     const { captureException, sentryReady } = await importFreshSentry();
     await sentryReady;
@@ -255,8 +357,15 @@ describe("finalizeServerShutdown Sentry teardown", () => {
 
 describe("missing @sentry/node package", () => {
   it("logs one warning and resolves", async () => {
-    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Keep this failure-mode test valid when the optional real-SDK tests run.
+    vi.doMock("../peer-version-check.js", () => ({
+      checkExactPeerVersions: () => ({
+        ok: false,
+        detail: { missing: ["@sentry/node"], mismatched: [] },
+      }),
+    }));
 
     const { sentryReady } = await importFreshSentry();
 
@@ -274,7 +383,7 @@ describe("missing @sentry/node package", () => {
 
 describe("@sentry/node installed at an unsupported version", () => {
   it("logs one diagnostic and resolves without importing the package", async () => {
-    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.doMock("../peer-version-check.js", () => ({
       checkExactPeerVersions: () => ({
@@ -300,6 +409,62 @@ describe("@sentry/node installed at an unsupported version", () => {
     );
 
     vi.doUnmock("../peer-version-check.js");
+  });
+});
+
+describe("split DSN gating", () => {
+  it("opens the gate and passes the backend DSN to Sentry.init when SENTRY_DSN_BACKEND alone is set", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://public-backend@o0.ingest.sentry.io/2";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(mocks.init).toHaveBeenCalledTimes(1);
+    const initOptions = mocks.init.mock.calls[0][0] as { dsn: string };
+    expect(initOptions.dsn).toBe("https://public-backend@o0.ingest.sentry.io/2");
+  });
+
+  it("leaves the gate closed and loads no SDK when SENTRY_DSN_FRONTEND alone is set", async () => {
+    process.env[FRONTEND_DSN_ENV] = "https://public-frontend@o0.ingest.sentry.io/1";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(mocks.init).not.toHaveBeenCalled();
+  });
+
+  it("logs one warning that names the three variables and holds no DSN value when only SENTRY_DSN is set", async () => {
+    process.env[DSN_ENV] = "https://public-legacy@o0.ingest.sentry.io/3";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0]!;
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN_FRONTEND"));
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN_BACKEND"));
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN"));
+    for (const call of warn.mock.calls) {
+      for (const arg of call) {
+        expect(String(arg)).not.toContain("https://public-legacy@o0.ingest.sentry.io/3");
+      }
+    }
+  });
+
+  it("logs no warning when both specific variables are set", async () => {
+    process.env[FRONTEND_DSN_ENV] = "https://public-frontend@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public-backend@o0.ingest.sentry.io/2";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -389,6 +554,125 @@ describe("buildSentryInitOptions", () => {
 
     expect(httpIntegration).toHaveBeenCalledWith({ breadcrumbs: false });
     expect(resolved.filter((i) => i.name === "Http")).toHaveLength(1);
+  });
+});
+
+describe("buildSentryInitOptions serverName", () => {
+  it("sets serverName to the host name", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
+
+  it("reads the host name from node:os at call time, not at module load time", async () => {
+    vi.doMock("node:os", () => ({
+      default: { hostname: () => "fixed-test-host" },
+      hostname: () => "fixed-test-host",
+    }));
+
+    const { buildSentryInitOptions } = await importFreshSentry();
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe("fixed-test-host");
+
+    vi.doUnmock("node:os");
+  });
+
+  const SENTRY_NAME_ENV = "SENTRY_NAME";
+  let originalSentryName: string | undefined;
+
+  beforeEach(() => {
+    originalSentryName = process.env[SENTRY_NAME_ENV];
+  });
+
+  afterEach(() => {
+    if (originalSentryName === undefined) delete process.env[SENTRY_NAME_ENV];
+    else process.env[SENTRY_NAME_ENV] = originalSentryName;
+  });
+
+  it("uses SENTRY_NAME as serverName when the variable holds a non-empty string", async () => {
+    process.env[SENTRY_NAME_ENV] = "opaque-operator-id";
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe("opaque-operator-id");
+  });
+
+  it("uses the host name as serverName when SENTRY_NAME is absent", async () => {
+    delete process.env[SENTRY_NAME_ENV];
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
+
+  it("uses the host name as serverName when SENTRY_NAME is an empty string", async () => {
+    process.env[SENTRY_NAME_ENV] = "";
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
+});
+
+describe("buildSentryInitOptions release", () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const readBuildCommit = vi.fn<() => string | null>();
+  const integrations = {
+    httpIntegration: () => ({ name: "Http" }),
+    onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("SENTRY_RELEASE", "");
+    readBuildCommit.mockReturnValue(commit);
+    vi.doMock("../build-commit.js", () => ({ readBuildCommit }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.doUnmock("../build-commit.js");
+    readBuildCommit.mockReset();
+  });
+
+  it("uses the server build commit", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBe(commit);
+  });
+
+  it("preserves an operator's explicit release", async () => {
+    vi.stubEnv("SENTRY_RELEASE", " custom-release ");
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBe("custom-release");
+  });
+
+  it("leaves an unknown build unattributed", async () => {
+    // Keep one module factory and change its return value explicitly for this
+    // case, rather than depending on a second factory replacing the first.
+    readBuildCommit.mockReturnValue(null);
+    const { buildSentryInitOptions } = await importFreshSentry();
+    expect(buildSentryInitOptions("test-dsn", integrations).release).toBeUndefined();
+    expect(readBuildCommit).toHaveBeenCalled();
   });
 });
 
@@ -498,6 +782,22 @@ describe.skipIf(!sentryPackage)("captured event shape against the real @sentry/n
     };
     Sentry.init(options);
   }
+
+  it("attaches the actual build commit to an emitted event", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubEnv("PAPERCLIP_BUILD_COMMIT", commit);
+    vi.stubEnv("SENTRY_RELEASE", "");
+    try {
+      let captured: Record<string, unknown> | null = null;
+      await initRealSentryForTest((event) => { captured = event; });
+      sentryPackage!.captureException(new Error("build attribution check"));
+      await sentryPackage!.flush(2000);
+      expect(captured).toMatchObject({ release: commit });
+      expect(captured).not.toHaveProperty("request");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("a server event captured after a console.error call carries no console breadcrumb", async () => {
     const Sentry = sentryPackage!;

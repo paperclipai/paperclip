@@ -53,8 +53,9 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   } as unknown as Project;
 }
 
-function primedClient() {
+function primedClient(hiddenSettings: string[] = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.health, { hiddenSettings });
   client.setQueryData(queryKeys.instance.experimentalSettings, { enableIsolatedWorkspaces: true });
   return client;
 }
@@ -74,10 +75,10 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(project: Project, onFieldUpdate: (field: string, data: Record<string, unknown>) => void) {
+function render(project: Project, onFieldUpdate: (field: string, data: Record<string, unknown>) => void, hiddenSettings: string[] = []) {
   act(() => {
     root.render(
-      <QueryClientProvider client={primedClient()}>
+      <QueryClientProvider client={primedClient(hiddenSettings)}>
         <TooltipProvider>
           <ProjectProperties project={project} onFieldUpdate={onFieldUpdate} getFieldSaveState={() => "idle"} onArchive={noop} />
         </TooltipProvider>
@@ -107,7 +108,8 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       vi.fn(),
     );
     expect(concurrencySelect().value).toBe("serialize");
-    expect(container.textContent).toContain("Runs always take turns in the shared project workspace");
+    expect(container.textContent).toContain("Sandbox runs take turns in the shared project workspace");
+    expect(container.textContent).toContain("Local/SSH folders allow concurrent runs");
   });
 
   it("writes the picked value onto executionWorkspacePolicy when changed", () => {
@@ -125,5 +127,47 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
         executionWorkspacePolicy: expect.objectContaining({ sharedWorkspaceConcurrency: "allow" }),
       }),
     );
+  });
+});
+
+it("hides project isolation controls without rewriting its policy", () => {
+  const onFieldUpdate = vi.fn();
+  render(makeProject(), onFieldUpdate, ["workspaces.isolation"]);
+  expect(container.textContent).not.toContain("Execution Workspaces");
+  expect(container.textContent).not.toContain("Enable isolated task checkouts");
+  expect(container.querySelector('select[aria-label="Shared workspace concurrency"]')).toBeNull();
+  expect(onFieldUpdate).not.toHaveBeenCalled();
+});
+
+
+describe("ProjectProperties — workspace storage selection", () => {
+  const inherited = {
+    source: "default" as const, pluginId: "provider-one", displayName: "Managed storage", error: null,
+    effectivePolicy: { enabled: true, defaultMode: "isolated_workspace" as const, storageProviderPluginId: "provider-one", workspaceStrategy: { type: "git_worktree" as const } },
+    providers: [{ id: "provider-one", displayName: "Managed storage", isDefault: true }, { id: "provider-two", displayName: "Alternative", isDefault: false }],
+  };
+  function storageSelect() { return container.querySelector<HTMLSelectElement>('select[aria-label="Workspace storage provider"]')!; }
+  it("displays the inherited default without saving it as an override", () => {
+    render(makeProject({ executionWorkspacePolicy: null, workspaceProvider: inherited }), vi.fn());
+    expect(storageSelect().value).toBe("inherit");
+    expect(container.textContent).toContain("Inherited default: Managed storage");
+  });
+  it.each(["core", "provider-two", "inherit"])("saves the deliberate %s choice while preserving explicit settings", value => {
+    const onFieldUpdate = vi.fn();
+    render(makeProject({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: "provider-one", sharedWorkspaceConcurrency: "serialize" }, workspaceProvider: inherited }), onFieldUpdate);
+    act(() => { storageSelect().value = value; storageSelect().dispatchEvent(new Event("change", { bubbles: true })); });
+    const policy = { enabled: true, sharedWorkspaceConcurrency: "serialize", ...(value === "inherit" ? {} : { storageProviderPluginId: value === "core" ? null : value }) };
+    expect(onFieldUpdate).toHaveBeenCalledWith("workspace_storage_provider", { executionWorkspacePolicy: policy });
+  });
+  it("does not copy inherited mode, strategy, or provider when another setting changes", () => {
+    const onFieldUpdate = vi.fn();
+    render(makeProject({ executionWorkspacePolicy: null, workspaceProvider: inherited }), onFieldUpdate);
+    act(() => { concurrencySelect().value = "allow"; concurrencySelect().dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onFieldUpdate).toHaveBeenCalledWith("execution_workspace_shared_concurrency", { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "allow" } });
+  });
+  it("shows default conflicts and keeps the provider control usable", () => {
+    render(makeProject({ workspaceProvider: { ...inherited, error: "Select a storage provider in project configuration" } }), vi.fn());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Select a storage provider");
+    expect(storageSelect().disabled).toBe(false);
   });
 });

@@ -72,8 +72,10 @@ export function ProfilesIndex({
     [agents.data],
   );
 
-  const invalidate = () =>
+  const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
+  };
 
   const errorBody = (error: unknown) => String((error as Error)?.message ?? error);
 

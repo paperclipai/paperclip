@@ -1,0 +1,1 @@
+Synthetic HEIC fixture generated on macOS from a 16 × 16 solid RGB (40, 120, 180) PNG with `sips -s format heic`. Contains no personal photo or metadata. The test exercises the installed heif2jpeg native binary. This does not replace qualification with an actual iPhone photo.

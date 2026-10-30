@@ -10,7 +10,7 @@ describe("Apps agent selector contract", () => {
     const appConnect = source("./AppsConnect.tsx");
     const connectionSetupFlow = source("../../features/connections/ConnectionSetupFlow.tsx");
     const permissions = source("./app-detail/PermissionsPanel.tsx");
-    const tester = source("./app-detail/TestPanel.tsx");
+    const tester = source("./app-detail/ActionTestDialog.tsx");
     const profiles = source("../tools/ProfilesTab.tsx");
     const audit = source("../tools/AuditTab.tsx");
 

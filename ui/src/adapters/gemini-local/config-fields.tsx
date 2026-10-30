@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftNumberInput,
@@ -12,6 +13,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Gemini prompt at runtime.";
 
 export function GeminiLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -27,14 +29,14 @@ export function GeminiLocalConfigFields({
   const engine = rawEngine === "acp" || rawEngine === "cli" ? rawEngine : "auto";
   const acpSelected = engine === "acp";
 
-  return (
+  return configFieldsForSection(section, (
     <>
       {/*
         The execution engine picks which binary runs on the execution host, and
         the ACP sub-fields below name host paths. The platform-managed
         environment owns both, so the managed-sandbox-only policy hides them.
       */}
-      {!managedSandboxOnly && <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Gemini CLI with diagnostics.">
+      {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
         <select
           className={inputClass}
           value={engine}
@@ -45,7 +47,7 @@ export function GeminiLocalConfigFields({
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
         >
-          <option value="auto">Auto (ACP preferred)</option>
+          <option value="auto">Default (ACP)</option>
           <option value="cli">Gemini CLI</option>
           <option value="acp">ACP</option>
         </select>
@@ -53,7 +55,7 @@ export function GeminiLocalConfigFields({
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
-            <Field
+            <Field configSection="advanced"
               label="ACP server command"
               hint="Optional override for the Gemini ACP server command. Defaults to gemini --acp."
             >
@@ -74,7 +76,7 @@ export function GeminiLocalConfigFields({
               />
             </Field>
           )}
-          <Field label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
+          <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
             <select
               className={inputClass}
               value={
@@ -140,7 +142,7 @@ export function GeminiLocalConfigFields({
               </div>
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
           >
@@ -193,5 +195,5 @@ export function GeminiLocalConfigFields({
         </Field>
       )}
     </>
-  );
+  ));
 }

@@ -34,7 +34,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "chat.read",
       "capabilityProfile": {
         "key": "read",
@@ -42,7 +42,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -52,12 +53,10 @@
         "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
         "scopesHint": [
           "https://www.googleapis.com/auth/chat.spaces.readonly",
-          "https://www.googleapis.com/auth/chat.memberships.readonly",
-          "https://www.googleapis.com/auth/chat.messages.readonly",
-          "https://www.googleapis.com/auth/chat.users.readstate.readonly"
+          "https://www.googleapis.com/auth/chat.messages.readonly"
         ]
       },
-      "guidanceMd": "Connect Google Chat to search conversations and read messages.",
+      "guidanceMd": "Connect Google Chat to search conversations and read messages. Read/unread filtering and membership listing are not supported.",
       "warnings": [
         "Google Workspace MCP servers are in Developer Preview."
       ],
@@ -74,7 +73,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -87,16 +87,14 @@
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
           "https://www.googleapis.com/auth/chat.spaces.readonly",
-          "https://www.googleapis.com/auth/chat.memberships.readonly",
-          "https://www.googleapis.com/auth/chat.messages.readonly",
-          "https://www.googleapis.com/auth/chat.users.readstate.readonly"
+          "https://www.googleapis.com/auth/chat.messages.readonly"
         ],
         "oauthAuthorizationParams": {
           "access_type": "offline",
           "prompt": "consent"
         }
       },
-      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI.",
+      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI. Read/unread filtering and membership listing are not supported.",
       "consoleLinks": {
         "register": "https://console.cloud.google.com/auth/clients",
         "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
@@ -112,7 +110,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "chat.write",
       "capabilityProfile": {
         "key": "write",
@@ -120,7 +118,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -130,13 +129,11 @@
         "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
         "scopesHint": [
           "https://www.googleapis.com/auth/chat.spaces.readonly",
-          "https://www.googleapis.com/auth/chat.memberships.readonly",
           "https://www.googleapis.com/auth/chat.messages.readonly",
-          "https://www.googleapis.com/auth/chat.users.readstate.readonly",
           "https://www.googleapis.com/auth/chat.messages.create"
         ]
       },
-      "guidanceMd": "Connect Google Chat to read conversations and send approved messages.",
+      "guidanceMd": "Connect Google Chat to read conversations and send approved messages. Read/unread filtering and membership listing are not supported.",
       "warnings": [
         "Sending messages requires approval.",
         "Google Workspace MCP servers are in Developer Preview."
@@ -154,7 +151,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -167,9 +165,7 @@
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
           "https://www.googleapis.com/auth/chat.spaces.readonly",
-          "https://www.googleapis.com/auth/chat.memberships.readonly",
           "https://www.googleapis.com/auth/chat.messages.readonly",
-          "https://www.googleapis.com/auth/chat.users.readstate.readonly",
           "https://www.googleapis.com/auth/chat.messages.create"
         ],
         "oauthAuthorizationParams": {
@@ -177,7 +173,7 @@
           "prompt": "consent"
         }
       },
-      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI.",
+      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI. Read/unread filtering and membership listing are not supported.",
       "consoleLinks": {
         "register": "https://console.cloud.google.com/auth/clients",
         "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"

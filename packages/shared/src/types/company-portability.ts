@@ -1,3 +1,5 @@
+import type { AgentAppearance } from "../agent-appearance.js";
+import type { AgentRunnerChoice } from "../agent-runner.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
 import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
@@ -210,6 +212,7 @@ export interface CompanyPortabilityIssueManifestEntry {
 }
 
 export interface CompanyPortabilityAgentManifestEntry {
+  runner?: AgentRunnerChoice;
   slug: string;
   name: string;
   path: string;
@@ -217,6 +220,7 @@ export interface CompanyPortabilityAgentManifestEntry {
   role: string;
   title: string | null;
   icon: string | null;
+  appearance?: AgentAppearance | null;
   capabilities: string | null;
   reportsToSlug: string | null;
   reportsToExistingAgentId: string | null;
@@ -385,6 +389,7 @@ export interface CompanyPortabilityPreviewResult {
 }
 
 export interface CompanyPortabilityAdapterOverride {
+  runner?: AgentRunnerChoice;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
 }

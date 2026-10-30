@@ -15,7 +15,7 @@ function validDoc(overrides: Record<string, unknown> = {}) {
     v: 1,
     mode: "cloud",
     catalogVersion: "2026.720.0",
-    features: { enableApps: false, enablePipelines: true },
+    features: { enableApps: false, enableStatusCards: true },
     plugins: { autoInstall: ["daytona", "kubernetes"] },
     ...overrides,
   });
@@ -29,7 +29,6 @@ describe("managedFeatureKeySet", () => {
     // Server-managed bookkeeping fields are not overlayable features.
     expect(keys.has("worktreeRunExecutionActivatedAt")).toBe(false);
     expect(keys.has("worktreeRunExecutionActivationInstanceId")).toBe(false);
-    expect(keys.has("issueGraphLivenessAutoRecoveryLookbackHours")).toBe(false);
   });
 });
 
@@ -51,10 +50,18 @@ describe("parseManagedConfigEnv", () => {
       v: 1,
       mode: "cloud",
       catalogVersion: "2026.720.0",
-      features: { enableApps: false, enablePipelines: true },
+      features: { enableApps: false, enableStatusCards: true },
       plugins: { autoInstall: ["daytona", "kubernetes"] },
       environments: [],
     });
+  });
+
+  it("accepts the deprecated runner ingress key for managed-config compatibility", () => {
+    const config = parseManagedConfigEnv(
+      envWith(validDoc({ features: { enableRunnerPreviewIngress: true } })),
+    );
+
+    expect(config?.features).toEqual({ enableRunnerPreviewIngress: true });
   });
 
   it("accepts empty features {} and autoInstall [] sections", () => {
@@ -156,6 +163,14 @@ describe("parseManagedConfigEnv", () => {
     expect(() => parseManagedConfigEnv(envWith(validDoc({ features: ["enableApps"] })))).toThrow(
       /"features" must be an object/,
     );
+  });
+
+  it.each([true, false])("ignores the retired Pipelines flag (%s) from older Cloud catalogs", (enabled) => {
+    const config = parseManagedConfigEnv(envWith(validDoc({
+      features: { enablePipelines: enabled, enableCases: true },
+    })));
+    expect(config?.features).toEqual({ enableCases: true });
+    expect(managedFeatureKeySet().has("enablePipelines")).toBe(false);
   });
 
   it("throws on an unknown feature key", () => {

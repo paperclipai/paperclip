@@ -1,11 +1,11 @@
 /**
  * Catalog of the redesign's motion tokens. This mirrors the `--motion-*`
- * custom properties declared in ui/src/index.css :root, and is the list the dev
+ * custom properties declared in ui/src/index.css and its motion token import, and is the list the dev
  * tweak panel renders controls from.
  *
- * A finish-line test parses index.css for `--motion-*` declarations and asserts
+ * A finish-line test parses the token layer for `--motion-*` declarations and asserts
  * this catalog is 1:1 with them, so the two can never silently drift: add a
- * token to index.css and you must add it here (and vice-versa).
+ * shared --motion-* token to the token layer and you must add it here (and vice-versa).
  */
 
 export type MotionTokenKind = "time" | "easing";
@@ -30,6 +30,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-scroll-pill-in", group: "Easing", kind: "easing" },
   { name: "--motion-ease-scroll-pill-out", group: "Easing", kind: "easing" },
   { name: "--motion-ease-in", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-pane-width-reset", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-pane-reveal", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -55,15 +57,29 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-question-page-enter", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-handoff-fade", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-handoff-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-word-fade", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-tool-shimmer", group: "States", kind: "time", min: 0, max: 5000, step: 50 },
+  { name: "--motion-sandbox-playback-step", group: "Preview", kind: "time", min: 0, max: 10000, step: 100 },
+  { name: "--motion-sandbox-stream-tick", group: "Preview", kind: "time", min: 0, max: 1000, step: 10 },
+  { name: "--motion-sandbox-word-tick", group: "Preview", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-turn-meta", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-line-scroll", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-interstitial-dwell", group: "States", kind: "time", min: 0, max: 10000, step: 100 },
   { name: "--motion-scroll-pill-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-scroll-pill-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-mobile-nav-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-mobile-nav-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-scrollbar-idle-delay", group: "States", kind: "time", min: 0, max: 2000, step: 10 },
   { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-pane-reveal", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-pane-width-reset", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-side-panel-tab", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
 ];
 
 /** Common easing presets offered by the tweak panel's easing picker. */

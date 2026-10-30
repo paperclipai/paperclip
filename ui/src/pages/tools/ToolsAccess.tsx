@@ -5,10 +5,8 @@ import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
-import { AuditTab } from "./AuditTab";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
-import { RunYourOwnTab } from "./RunYourOwnTab";
 import { SmokeLabTab } from "./SmokeLabTab";
 import {
   ADVANCED_TABS,
@@ -22,17 +20,13 @@ function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
     case "profiles":
       return <ProfilesIndex companyId={companyId} />;
-    case "audit":
-      return <AuditTab companyId={companyId} />;
     case "gateways":
       return <GatewaysTab companyId={companyId} />;
     case "smoke-lab":
       return <SmokeLabTab companyId={companyId} />;
     case "paste-config":
-      return <PasteConfigTab companyId={companyId} />;
-    case "run-your-own":
     default:
-      return <RunYourOwnTab companyId={companyId} />;
+      return <PasteConfigTab companyId={companyId} />;
   }
 }
 
@@ -40,7 +34,7 @@ export function ToolsAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
-  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "run-your-own") as ToolTabKey;
+  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "paste-config") as ToolTabKey;
   const advanced = isAdvancedSetupTab(activeTab);
   const tabLabel = TOOL_TABS.find((t) => t.key === activeTab)?.label;
 
@@ -51,7 +45,7 @@ export function ToolsAccess() {
       ...(advanced
         ? [{ label: "Advanced setup" }]
         : [
-            { label: "Advanced setup", href: advancedTabHref("run-your-own") },
+            { label: "Advanced setup", href: advancedTabHref("paste-config") },
             { label: tabLabel ?? "Developer tools" },
           ]),
     ]);
@@ -62,18 +56,23 @@ export function ToolsAccess() {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to open advanced setup.</div>;
   }
 
+  if (params.tab === "run-your-own") {
+    return <Navigate to="/apps" replace />;
+  }
+
   // Retired developer tabs (PAP-10915/PAP-10928) — keep old links working.
   if (
     params.tab === "applications" ||
     params.tab === "connections" ||
     params.tab === "overview" ||
-    params.tab === "examples"
+    params.tab === "examples" ||
+    params.tab === "audit"
   ) {
-    return <Navigate to="/apps/connections" replace />;
+    return <Navigate to="/apps" replace />;
   }
 
   if (params.tab === "runtime") {
-    return <Navigate to="/apps/connections" replace />;
+    return <Navigate to="/apps" replace />;
   }
 
   if (params.tab === "policies") {
@@ -82,7 +81,7 @@ export function ToolsAccess() {
 
   if (advanced) {
     // M8a/M8b chrome (PAP-10839 wires): Advanced badge, plain-words subtitle,
-    // and a two-tab switcher. The developer surface stays behind a quiet link.
+    // and a focused setup tab. The developer surface stays behind a quiet link.
     return (
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>

@@ -58,9 +58,44 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 
+export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
+  return interaction.status === "pending"
+    && interaction.acceptanceBlocker === "workspace_sync_pending";
+}
+
+/** Keep recovery affordances aligned with the server's deferredInteractionCondition. */
+export function isDeferredConversationInteraction(interaction: IssueThreadInteraction): boolean {
+  if (!interaction.dismissedAt || interaction.effectiveResolverPolicySource !== "requested") return false;
+  if (interaction.kind === "connection_intent") return false;
+  const payload = interaction.payload;
+  return !("toolAction" in payload || "secretProposal" in payload || "connectionAuthorization" in payload)
+    && !("target" in payload && payload.target?.type === "issue_document");
+}
+
+/** Poll only while an approval is preparing; retain each surface's idle cadence. */
+export function interactionReadinessRefetchInterval(
+  interactions: IssueThreadInteraction[] | undefined,
+  fallback: number | false = false,
+): number | false {
+  return interactions?.some(isInteractionPreparingApproval) ? 2_000 : fallback;
+}
+
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];
+}
+
+/**
+ * These takeovers already expose a deliberate non-accept path in their form.
+ * Showing the composer's generic Skip beside Reject/Revise duplicates that
+ * escape hatch and makes the action hierarchy ambiguous.
+ */
+export function interactionReplacesComposerSkip(
+  interaction: IssueThreadInteraction,
+): boolean {
+  return interaction.kind === "request_confirmation"
+    || interaction.kind === "request_checkbox_confirmation"
+    || interaction.kind === "suggest_tasks";
 }
 
 export function isIssueThreadInteraction(
@@ -188,6 +223,7 @@ export function buildIssueThreadInteractionSummary(
   const administrativeOutcome = interaction.result && "outcome" in interaction.result
     ? interaction.result.outcome
     : null;
+  if (administrativeOutcome === "skipped") return "Skipped interaction";
   if (administrativeOutcome === "withdrawn") return "Withdrawn interaction";
   if (administrativeOutcome === "issue_closed") return "Expired when issue closed";
   if (administrativeOutcome === "addressee_deleted") return "Cancelled when addressee was deleted";
@@ -209,7 +245,10 @@ export function buildIssueThreadInteractionSummary(
 
   if (interaction.kind === "request_confirmation") {
     if (interaction.status === "accepted") return "Confirmed request";
-    if (interaction.status === "rejected") return "Declined request";
+    if (interaction.status === "rejected") {
+      const rejectLabel = interaction.payload.rejectLabel?.trim();
+      return rejectLabel ? `Selected “${rejectLabel}”` : "Declined request";
+    }
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation expired after comment";
@@ -269,6 +308,34 @@ export function buildIssueThreadInteractionSummary(
     return count === 1 ? "Question expired" : "Questions expired";
   }
   return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
+}
+
+/** Readable model input for a durable answer delivered into a successor run. */
+export function buildAnsweredQuestionsDeliveryText(
+  interaction: AskUserQuestionsInteraction,
+): string {
+  const questionSet = interaction.payload.questionSet;
+  const legacyQuestionById = new Map(
+    interaction.payload.questions.map((question) => [question.id, question] as const),
+  );
+  const canonicalQuestionById = new Map(
+    (questionSet?.questions ?? []).map((question) => [question.id, question] as const),
+  );
+  const lines = (interaction.result?.answers ?? []).map((answer) => {
+    const canonical = canonicalQuestionById.get(answer.questionId);
+    const legacy = legacyQuestionById.get(answer.questionId);
+    const optionLabels = new Map(
+      (canonical?.options ?? legacy?.options ?? []).map((option) => [option.id, option.label] as const),
+    );
+    const values = answer.optionIds.map((optionId) => optionLabels.get(optionId) ?? optionId);
+    if (answer.otherText?.trim()) values.push(answer.otherText.trim());
+    const prompt = canonical?.prompt ?? legacy?.prompt ?? answer.questionId;
+    const label = canonical?.header && canonical.header !== prompt
+      ? `${canonical.header} — ${prompt}`
+      : prompt;
+    return `- ${label}: ${values.join(", ") || "No answer"}`;
+  });
+  return ["Answered questions", ...(lines.length > 0 ? ["", ...lines] : [])].join("\n");
 }
 
 export function buildSuggestedTaskTree(

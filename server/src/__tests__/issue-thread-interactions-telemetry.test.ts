@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,7 +30,8 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: telemetryMocks.getTelemetryClient,
 }));
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_INTERACTION_TELEMETRY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
@@ -38,8 +40,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-interaction-telemetry-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-interaction-telemetry-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
     interactionsSvc = issueThreadInteractionService(db);
   }, 20_000);
 
@@ -65,6 +67,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -158,6 +161,42 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       interaction_kind: "request_confirmation",
       used_deprecated_resolver_policy_alias: true,
     });
+  });
+
+  it("emits skipped resolution telemetry for composer Skip", async () => {
+    const { companyId, issueId } = await seedIssue("Skipped interaction telemetry");
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Continue with the proposed change?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.skipInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    const dimensions = lastInteractionResolvedDimensions();
+    expect(dimensions).toMatchObject({
+      interaction_kind: "request_confirmation",
+      status: "cancelled",
+      resolved_by_kind: "user",
+      resolution_reason: "skipped",
+      created_by_kind: "user",
+      continuation_policy: "none",
+      target_type: "none",
+    });
+    expectNoRawInteractionIds(dimensions);
   });
 
   it("emits accepted suggested-task telemetry with created and skipped task counts", async () => {
@@ -402,6 +441,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
+        supersedeOnUserComment: true,
         questions: [
           {
             id: "scope",
@@ -527,6 +567,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       payload: {
         version: 1,
         prompt: "Approve this plan?",
+        supersedeOnUserComment: true,
       },
     }, {
       userId: "local-board",
