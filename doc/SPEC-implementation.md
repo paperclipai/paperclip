@@ -2117,6 +2117,32 @@ placements may use a lazy live character. See [agent-personas.md](agent-personas
 for persistence, migration, rendering, and integration contracts.
 ### Experimental task-backed agent chat (2026-09-10)
 
+Ordinary task and routine runs in standard mode may publish with
+`send_chat_message({body,idempotencyKey})` or `POST /api/agents/me/chat/messages`.
+The authenticated company, agent and run responsible human determine the sole
+destination. Recheck execution ownership, membership, task/destination access
+and canonical source privacy at commit. Reject missing recipients, restricted
+source tasks, Ask/planning/review/watchdog runs and stopped runs. The shared
+comment-write boundary enforces the fixed conversation agent.
+
+The chat messaging service atomically creates a waiting conversation if needed
+and commits an attributed issue comment and audit record. Agent request IDs are
+unique per conversation and author; keys incorporate the source task for retries
+across runs, and changed content conflicts. Server-authored provenance identifies
+the source task and run. Existing events refresh discovery, messages and unread
+projections. Source execution transcripts remain outside the chat's linked-run
+history. There is no delivery worker, message outbox or extra model turn.
+
+Sending does not change task disposition, cancel/settle a chat turn or suppress
+automatic handoff completion notifications. `/new` permits future background
+messages in the current history. Ordinary chat replies retain session checks.
+Chat list/detail responses use per-user read state before human participation;
+the foreground chat marks rendered messages read through an optional comment
+cutoff, retaining unseen concurrent arrivals. Existing navigation ordering is
+preserved with accessible unread dots and an aggregate Chat indicator.
+`enableAgentChat` gates delivery; external channels, push/email and private-chat
+redesign are outside this contract.
+
 `enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.

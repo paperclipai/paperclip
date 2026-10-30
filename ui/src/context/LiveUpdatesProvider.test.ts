@@ -16,6 +16,20 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("discovers first proactive deliveries without invalidating another human's chat list", () => {
+    const client = new QueryClient();
+    const mine = queryKeys.agentChats.list("company-1", "user-1");
+    const theirs = queryKeys.agentChats.list("company-1", "user-2");
+    client.setQueryData(mine, []);
+    client.setQueryData(theirs, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "new-chat", action: "issue.comment_added",
+      details: { conversationUserId: "user-1", conversationAgentId: "kodi", commentId: "digest" },
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(mine)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
+    client.clear();
+  });
   it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");

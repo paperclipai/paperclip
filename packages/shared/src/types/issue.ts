@@ -1178,6 +1178,12 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  chatMessage?: {
+    sourceTaskId: string;
+    sourceTaskIdentifier: string;
+    sourceRunId: string;
+    contentHash: string;
+  };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */

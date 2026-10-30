@@ -1,5 +1,20 @@
 # Database
 
+### Proactive agent chat messages
+
+Migration `0417_regular_dorian_gray.sql` adds an agent-scoped unique constraint
+on `issue_comments(issue_id, author_agent_id, client_request_id)` alongside the
+existing human request constraint. Proactive delivery stores a source-task-scoped
+retry key and server-authored `metadata.chatMessage` provenance/content fingerprint.
+The comment and audit record commit together; a retry returns the original receipt.
+Conversation creation reuses the unique company/agent/human identity and existing
+advisory-lock order. No message outbox is added.
+
+Chat list/detail unread projections reuse `issue_read_states`, including chats
+with no human participation. Read cutoffs use the exact PostgreSQL comment
+timestamp; upserts take the greatest previous/new cutoff so delayed requests
+cannot move a read receipt backward or clear a later unseen arrival.
+
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
 ### Persistent case handoffs

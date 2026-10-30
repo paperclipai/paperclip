@@ -1,0 +1,192 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import { agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
+import { withConversationReadState } from "../services/agent-chat-read-state.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueService } from "../services/issues.js";
+import { activityService } from "../services/activity.js";
+import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
+import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
+import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
+
+(support.supported ? describe : describe.skip)("proactive agent chat messages", () => {
+  let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
+  const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  beforeAll(async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
+    server = await startRunnerApiTestServer({ humanSessions: true });
+    await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: true });
+  }, 60_000);
+  afterAll(async () => {
+    await server?.close();
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+  });
+  const fixture = () => server.fixture({ connectionScenario: "fresh", apiToolsEnabled: false, disableWakeOnDemand: true });
+  type Fixture = Awaited<ReturnType<typeof fixture>>;
+  const input = { body: "## Morning review\n\nThree PRs need your review.", idempotencyKey: "morning-pr-digest" };
+  const send = (f: Fixture, value: unknown = input) => sendAgentChatMessage(server.db, f, value);
+  const httpSend = (f: Fixture, value: unknown = input) => fetch(`${server.apiUrl}/api/agents/me/chat/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)}` },
+    body: JSON.stringify(value),
+  });
+
+  it("publishes through the native tool without generic API tools, without starting a turn or changing the source", async () => {
+    const f = await fixture();
+    expect(f.authority.definitions().map(d => d.name)).toContain("send_chat_message");
+    const before = await issueService(server.db).getById(f.issueId);
+    const receipt = await f.authority.execute({ tool: "send_chat_message", arguments: input, callId: randomUUID() }) as { commentId: string; conversationId: string; chatUrl: string };
+    const snapshot = await f.snapshot();
+    const comment = snapshot.comments.find(c => c.id === receipt.commentId)!;
+    expect(comment).toMatchObject({ body: input.body, authorAgentId: f.agentId, createdByRunId: f.runId, onBehalfOfUserId: f.responsibleUserId,
+      metadata: { chatMessage: { sourceTaskId: f.issueId, sourceRunId: f.runId } } });
+    expect(snapshot.issues.find(i => i.id === receipt.conversationId)).toMatchObject({ conversationAgentId: f.agentId,
+      conversationUserId: f.responsibleUserId, conversationState: "waiting", executionRunId: null, status: "in_review" });
+    expect(await issueService(server.db).getById(f.issueId)).toEqual(before);
+    expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(snapshot.activity.filter(a => a.action === "issue.comment_added")).toHaveLength(1);
+    expect(await activityService(server.db).runsForIssue(f.companyId, receipt.conversationId)).toEqual([]);
+    expect(receipt.chatUrl).toContain(`/chats/${f.agentId}`);
+    expect(await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: receipt.conversationId }])).toMatchObject([{ isUnreadForMe: true }]);
+    expect(await f.authority.recover({ tool: "send_chat_message", arguments: input, callId: randomUUID() }))
+      .toMatchObject({ result: { commentId: receipt.commentId, replayed: true } });
+  });
+
+  it("creates once under concurrent first sends and recovers a committed response across run retries", async () => {
+    const f = await fixture();
+    expect(await f.authority.recover({ tool: "send_chat_message", arguments: input, callId: randomUUID() })).toBeNull();
+    expect((await f.snapshot()).issues.filter(i => i.conversationAgentId)).toHaveLength(0);
+    const [a, b] = await Promise.all([send(f), send(f)]);
+    expect(a!.commentId).toBe(b!.commentId);
+    expect((await f.snapshot()).comments).toHaveLength(1);
+    const other = await send(f, { ...input, idempotencyKey: "second" });
+    expect(other!.commentId).not.toBe(a!.commentId);
+    await expect(send(f, { ...input, body: "Different digest" })).rejects.toThrow(/different content/);
+    const nextRunId = randomUUID();
+    await server.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+    await server.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", nativeIssueId: f.issueId, responsibleUserId: f.responsibleUserId });
+    await server.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+    expect(await send({ ...f, runId: nextRunId })).toMatchObject({ commentId: a!.commentId, replayed: true });
+    expect((await f.snapshot()).comments).toHaveLength(2);
+  });
+
+  it("supports HTTP routine delivery during an active chat reply and after a context reset", async () => {
+    const f = await fixture();
+    await server.db.update(heartbeatRuns).set({ invocationSource: "automation", triggerDetail: "routine" }).where(eq(heartbeatRuns.id, f.runId));
+    const first = await httpSend(f);
+    expect(first.status, await first.clone().text()).toBe(201);
+    const receipt = await first.json();
+    const replyRun = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: replyRun, companyId: f.companyId, agentId: f.agentId, status: "running",
+      nativeIssueId: receipt.conversationId, responsibleUserId: f.responsibleUserId, contextSnapshot: { issueId: receipt.conversationId, conversationSessionGeneration: 0 } });
+    await server.db.update(issues).set({ executionRunId: replyRun, conversationState: "active" }).where(eq(issues.id, receipt.conversationId));
+    const before = await issueService(server.db).getById(receipt.conversationId);
+    expect((await httpSend(f, { ...input, idempotencyKey: "during-reply" })).status).toBe(201);
+    const after = await issueService(server.db).getById(receipt.conversationId);
+    expect(after).toMatchObject({ executionRunId: replyRun, conversationState: before!.conversationState, status: before!.status });
+    await server.db.update(issues).set({ conversationSessionGeneration: 1, conversationState: "waiting", executionRunId: null }).where(eq(issues.id, receipt.conversationId));
+    expect((await httpSend(f, { ...input, idempotencyKey: "after-new" })).status).toBe(201);
+    await expect(issueService(server.db).addComment(receipt.conversationId, "Stale reply", { agentId: f.agentId, runId: replyRun })).rejects.toThrow(/earlier session/);
+    expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+    expect((await f.snapshot()).comments).toHaveLength(3);
+  });
+
+  it("isolates two humans sharing an agent and two agents serving one human", async () => {
+    const f = await fixture();
+    const a = await send(f);
+    const userId = randomUUID();
+    await server.db.insert(authUsers).values({ id: userId, name: "Second human", email: `${userId}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    await server.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await server.db.update(heartbeatRuns).set({ responsibleUserId: userId }).where(eq(heartbeatRuns.id, f.runId));
+    const b = await send(f);
+    expect(b!.conversationId).not.toBe(a!.conversationId);
+    const [agent] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Second agent", status: "active", adapterType: "process" }).returning();
+    const runId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent.id, status: "running", issueId: f.issueId, responsibleUserId: userId });
+    await server.db.update(issues).set({ assigneeAgentId: agent.id, executionRunId: runId }).where(eq(issues.id, f.issueId));
+    const c = await send({ ...f, agentId: agent.id, runId });
+    expect(new Set([a!.conversationId, b!.conversationId, c!.conversationId]).size).toBe(3);
+    await expect(issueService(server.db).addComment(a!.conversationId, "Wrong agent", { agentId: agent.id, runId })).rejects.toThrow(/Only this conversation/);
+    await expect(issueService(server.db).addComment(b!.conversationId, "Bypass", { agentId: f.agentId, runId: f.runId })).rejects.toThrow(/earlier session/);
+  });
+
+  it("delivers to its own chat while preserving pending questions and the original handoff completion", async () => {
+    const f = await fixture(), svc = issueService(server.db);
+    const own = await svc.create(f.companyId, { title: "Own chat", assigneeAgentId: f.agentId,
+      conversationAgentId: f.agentId, conversationUserId: f.responsibleUserId!, conversationState: "waiting", status: "in_review" });
+    const [coordinator] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Coordinator", status: "active", adapterType: "process" }).returning();
+    const origin = await svc.create(f.companyId, { title: "Origin chat", assigneeAgentId: coordinator.id,
+      conversationAgentId: coordinator.id, conversationUserId: f.responsibleUserId!, conversationState: "waiting", status: "in_review" });
+    await recordAcceptedChatHandoff(server.db, (await svc.getById(f.issueId))!, origin);
+    const [question] = await server.db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: own.id,
+      kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Proceed?" } }).returning();
+    expect(await send(f)).toMatchObject({ conversationId: own.id });
+    expect(await server.db.select().from(issueComments).where(eq(issueComments.issueId, origin.id))).toEqual([]);
+    expect(await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, question.id))).toEqual([question]);
+    expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    await svc.update(f.issueId, { status: "done" });
+    expect(await server.db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.taskId, f.issueId)))
+      .toMatchObject([{ status: "pending", responseCommentId: null }]);
+    expect(await server.db.select().from(chatTaskHandoffs).where(eq(chatTaskHandoffs.taskId, f.issueId)))
+      .toMatchObject([{ conversationId: origin.id, agentId: coordinator.id }]);
+  });
+
+  it.each(["ask", "planning", "review", "watchdog", "stopped", "stale", "missing-human", "revoked", "private-task", "private-project", "private-ancestor", "paused-agent"])("rejects %s before creating a chat", async kind => {
+    const f = await fixture();
+    if (kind === "ask" || kind === "planning") await server.db.update(issues).set({ workMode: kind }).where(eq(issues.id, f.issueId));
+    if (kind === "review") await server.db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "watchdog") await server.db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, taskWatchdog: true, watchedIssueId: f.issueId } }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "stopped") await server.db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "stale") await server.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    if (kind === "missing-human") await server.db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "revoked") await server.db.delete(companyMemberships).where(eq(companyMemberships.principalId, f.responsibleUserId!));
+    if (kind === "private-task") await server.db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issueId));
+    if (kind === "private-project") await server.db.update(projects).set({ visibility: "private", privacyOwnerUserId: f.responsibleUserId }).where(eq(projects.id, f.projectId));
+    if (kind === "private-ancestor") {
+      await server.db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.blockerId));
+      await server.db.update(issues).set({ parentId: f.blockerId, privacyParentIssueId: f.blockerId, privacyRootIssueId: f.blockerId }).where(eq(issues.id, f.issueId));
+    }
+    if (kind === "paused-agent") await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    await expect(send(f)).rejects.toThrow();
+    expect((await f.snapshot()).comments).toHaveLength(0);
+    expect((await f.snapshot()).issues.filter(i => i.conversationAgentId)).toHaveLength(0);
+  });
+
+  it("rejects forged destinations and server-owned provenance, and respects the feature gate", async () => {
+    const f = await fixture();
+    expect((await httpSend(f, { ...input, agentId: f.agentId })).status).toBe(400);
+    await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: false });
+    try { expect((await httpSend(f)).status).toBe(404); }
+    finally { await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: true }); }
+    const receipt = await send(f);
+    const [comment] = await server.db.select().from(issueComments).where(eq(issueComments.id, receipt!.commentId));
+    await expect(issueService(server.db).addComment(f.issueId, "Forged source", { agentId: f.agentId, runId: f.runId }, { metadata: comment.metadata! })).rejects.toThrow(/server-owned/);
+  });
+
+  it("keeps unseen concurrent arrivals unread with exact comment cutoffs and monotonic receipts", async () => {
+    const f = await fixture();
+    const a = (await send(f))!, b = (await send(f, { ...input, idempotencyKey: "later" }))!;
+    await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123456+00'::timestamptz` }).where(eq(issueComments.id, a.commentId));
+    await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123789+00'::timestamptz` }).where(eq(issueComments.id, b.commentId));
+    const cookie = await server.humanSession(f.responsibleUserId!);
+    const mark = (id: string) => fetch(`${server.apiUrl}/api/issues/${a.conversationId}/read`, { method: "POST", headers: { Cookie: cookie, Origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ throughCommentId: id }) });
+    const unread = async () => (await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: a.conversationId }]))[0].isUnreadForMe;
+    const response = await mark(a.commentId);
+    expect(response.status, await response.text()).toBe(200);
+    expect(await unread()).toBe(true);
+    expect((await mark(b.commentId)).status).toBe(200);
+    expect(await unread()).toBe(false);
+    await mark(a.commentId);
+    expect(await unread()).toBe(false);
+    const foreign = await server.fixture({ connectionScenario: "fresh" });
+    const foreignMessage = (await send(foreign))!;
+    expect((await mark(foreignMessage.commentId)).status).toBe(404);
+    const chats = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/chats`, { headers: { Cookie: cookie } });
+    expect(chats.status).toBe(200);
+    expect(await chats.json()).toMatchObject([{ id: a.conversationId, isUnreadForMe: false }]);
+  });
+});

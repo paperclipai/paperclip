@@ -38,6 +38,8 @@ import {
   slackSearchConfigSchema,
   // Agent
   submitAgentCommentarySchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   agentCommentaryQuerySchema,
   AGENT_PALETTE_IDS,
   AGENT_AVATAR_SIZES,
@@ -1670,6 +1672,7 @@ function resolveOperationAuthLevel(
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
+  if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "board";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
@@ -4736,7 +4739,7 @@ registry.registerPath({
   path: "/api/issues/{id}/read",
   tags: ["issues"],
   summary: "Mark an issue as read",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), body: { ...jsonBody(markIssueReadSchema), required: false } },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -5758,6 +5761,15 @@ registry.registerPath({
   description: "Same board, permission and task-privacy gates as the list. Returns the full body with agent, task and run context. Foreign-company and invisible entries return 404.",
   request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agents/me/chat/messages", tags: ["agents"],
+  summary: "Send a task message to the agent's own chat",
+  description: "Requires the assigned agent's active standard task run and an active responsible human. Resolves or creates that agent's conversation automatically. Company visibility, task permissions, Stop and retry safety apply. Does not wake the chat agent or change task status.",
+  request: { body: jsonBody(sendChatMessageSchema) },
+  responses: { 200: r.ok(), 201: { ...r.ok(), description: "Message saved" }, 400: r.badRequest,
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentCommentaryAcknowledgementSchema = z.object({

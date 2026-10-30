@@ -348,6 +348,14 @@ See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
 ### Experimental persistent agent conversations
 
+Agents can deliver proactive task and routine results into their own chat with
+the task's responsible human. A morning PR digest arrives as an agent message
+with a source-task link and unread indicators, even before the first human
+message. The person can reply using the digest as context. Publishing a message
+and completing work are separate actions; sending never starts or interrupts a
+chat turn. Delivery obeys membership, run authority and task privacy, and stays
+behind the Agent Chat setting. This version delivers in-app only.
+
 Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
 ### Agent chat project handoff (2026-09-11)

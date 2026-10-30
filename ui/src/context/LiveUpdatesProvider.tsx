@@ -1433,8 +1433,10 @@ function invalidateActivityQueries(
   if (entityType === "issue") {
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
-    if (knownChat || action === "issue.conversation_opened" && ownActorActivity) {
+    const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
+    if (knownChat || ownChatDelivery || action === "issue.conversation_opened" && ownActorActivity) {
       queryClient.invalidateQueries({ queryKey: chatListKey });
+      queryClient.invalidateQueries({ queryKey: ["agent-chat", companyId, currentActor.userId] });
     }
     if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
       // An ancestor hold or reparenting changes descendants' effective pause.

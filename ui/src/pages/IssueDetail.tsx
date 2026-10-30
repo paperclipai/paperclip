@@ -1,4 +1,5 @@
 import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
+import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
@@ -1940,6 +1941,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     }
     const projectedComments = commentsToProject.map((comment) => {
+      if (comment.metadata?.chatMessage) return { ...comment, runId: null };
       const activityMeta = runMetaByCommentId.get(comment.id);
       // Internal run finalization can persist a reply without a separate
       // comment_added activity row. Its durable authoring run is stronger
@@ -6049,6 +6051,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   useEffect(() => {
     if (!issueId || !issue?.id) return;
+    if (issue.conversationAgentId) return;
     if (lastMarkedReadIssueIdRef.current === issue.id) return;
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
@@ -8024,6 +8027,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   return (
     <FileViewerProvider issueId={conversation && !conversation.issue ? "" : issue.id} enabled={fileViewerEnabled}>
+      <AgentChatReadProvider issueId={issue.conversationAgentId && issue.conversationUserId === (currentUserId ?? "local-board") && (!conversation || conversation.issue) ? issue.id : undefined} companyId={issue.companyId} userId={currentUserId}>
       <TextAttachmentContext.Provider value={taskChatShellEnabled ? handleOpenTextAttachment : null}><IssueGalleryContext.Provider value={openIssueGallery}>
         <div
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
@@ -8929,6 +8933,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           <ScrollToBottom />
         </div>
       </IssueGalleryContext.Provider></TextAttachmentContext.Provider>
+      </AgentChatReadProvider>
     </FileViewerProvider>
   );
 }

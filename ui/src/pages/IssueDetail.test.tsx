@@ -1630,7 +1630,7 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+    expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
     expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
     expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });

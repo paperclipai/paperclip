@@ -479,6 +479,10 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (
