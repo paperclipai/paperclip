@@ -122,3 +122,50 @@ it("does not release an ambiguous database intent while dispatch is drained", as
   draining = false; await vi.advanceTimersByTimeAsync(30_000);
   expect(run).toHaveBeenCalledTimes(2); expect(coordinator.nextWakeAt()).toBeNull();
 });
+
+it("backs off an expired deadline when only the domain is drained and resumes promptly", async () => {
+  vi.useFakeTimers();
+  let paused = false;
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const run = vi.fn(async () => {});
+  const domainCanRun = vi.fn(() => !paused);
+  const deadline = Date.now() + 1_000;
+  const next = vi.fn(async () => run.mock.calls.length === 1 ? deadline : null);
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.agentTimers, {
+    run, next, canRun: domainCanRun, retryMs: 30_000,
+  });
+  await worker.ready;
+  paused = true;
+  const before = idleWorkSnapshot();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(coordinator.nextWakeAt()).toBe(Date.now() + 30_000);
+  const attempts = domainCanRun.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(90_000);
+  expect(domainCanRun.mock.calls.length - attempts).toBeLessThanOrEqual(12);
+  // Four attempts (expiry plus three retries), each begins and ends tracked work.
+  expect(idleWorkSnapshot().generation - before.generation).toBe(8);
+  expect(idleWorkSnapshot().active).toBe(before.active);
+  expect(run).toHaveBeenCalledOnce(); expect(next).toHaveBeenCalledOnce(); expect(owner.execute).not.toHaveBeenCalled();
+  paused = false;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(run).toHaveBeenCalledTimes(2); expect(coordinator.nextWakeAt()).toBeNull();
+});
+
+it("retains a prompt paused wake when a new request preempts a far-future deadline", async () => {
+  vi.useFakeTimers();
+  let paused = false;
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const run = vi.fn(async () => {});
+  const deadline = Date.now() + 86_400_000;
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.agentTimers, {
+    run, next: async () => run.mock.calls.length === 1 ? deadline : null, canRun: () => !paused, retryMs: 30_000,
+  });
+  await worker.ready; paused = true; worker.wake();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(coordinator.nextWakeAt()).toBe(Date.now() + 30_000);
+  expect(owner.execute).not.toHaveBeenCalled();
+  paused = false; await vi.advanceTimersByTimeAsync(30_000);
+  expect(run).toHaveBeenCalledTimes(2); expect(coordinator.nextWakeAt()).toBeNull();
+});
