@@ -59,6 +59,7 @@ import {
   type DeploymentExposure,
   type DeploymentMode,
 } from "@paperclipai/shared";
+import { resolvePluginHostVersion } from "./plugin-host-version.js";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -917,7 +918,7 @@ export async function createApp(
       lifecycleManager: lifecycle,
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
-        hostVersion: opts.hostVersion ?? serverVersion,
+        hostVersion: resolvePluginHostVersion(opts.hostVersion),
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
       },
