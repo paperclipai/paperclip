@@ -12,3 +12,12 @@ it("rejects unsupported Markdown rather than stripping unknown or invisible cont
   for (const source of ["Visible <!-- hidden -->", "Visible ![image](https://fixture.test/image.png)", "~~Visible~~"])
     expect(taskReplyContentMatches({ body: "Visible" }, source)).toBe(false);
 });
+
+it("uses the production company prefix and current task URL without accepting a changed target", () => {
+  const observation = { body: "Read Outcome", pageUrl: "https://fixture.test/QA/issues/QA-123",
+    content: [{ text: "Read " }, { href: "/QA/issues/QA-123#document-outcome", label: "Outcome" }] };
+  for (const href of ["/issues/QA-123#document-outcome", "#document-outcome"])
+    expect(taskReplyContentMatches(observation, `Read [Outcome](${href})`)).toBe(true);
+  for (const href of ["/OTHER/issues/QA-123#document-outcome", "/QA/issues/QA-999#document-outcome", "#document-other"])
+    expect(taskReplyContentMatches(observation, `Read [Outcome](${href})`)).toBe(false);
+});

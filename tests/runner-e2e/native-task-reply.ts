@@ -5,7 +5,7 @@ import { taskReplyContentMatches, type ReplyContentPart } from "./task-reply-con
 type Row = Record<string, any>;
 export interface TaskReplyObservation {
   body: string; anchor: string | null; settled: boolean; nativeFinal: boolean; visible: boolean;
-  content?: ReplyContentPart[]; origin?: string;
+  content?: ReplyContentPart[]; origin?: string; pageUrl?: string;
 }
 export type BoundTaskFinalReply = Omit<Awaited<ReturnType<typeof readBoundTaskFinalReply>>, "sourceBody"> & { sourceBody?: string };
 
@@ -54,13 +54,14 @@ export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agen
 
 export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElement>): TaskReplyObservation[] {
   return elements.map(element => {
-    const content: Array<{ text: string } | { href: string; label: string }> = [];
+    const content: Array<{ text: string } | { href: string; label: string; decorated: boolean }> = [];
     const walk = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) { content.push({ text: node.textContent ?? "" }); return; }
       if (!(node instanceof HTMLElement) || node.getAttribute("aria-hidden") === "true"
         || getComputedStyle(node).display === "none" || getComputedStyle(node).visibility === "hidden") return;
       if (node instanceof HTMLAnchorElement) {
-        if (node.getClientRects().length && node.innerText.trim()) content.push({ href: node.href, label: node.innerText });
+        if (node.getClientRects().length && node.innerText.trim()) content.push({ href: node.href, label: node.innerText,
+          decorated: node.matches('[data-mention-kind="issue"], [data-sidebar-document-link]') });
         return;
       }
       const block = ["P", "DIV", "BR", "LI", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6"].includes(node.tagName);
@@ -71,7 +72,7 @@ export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElemen
     walk(element);
     return {
       body: (element as HTMLElement).innerText.trim(),
-      content, origin: location.origin,
+      content, origin: location.origin, pageUrl: location.href,
       anchor: element.closest("[data-thread-anchor]")?.getAttribute("data-thread-anchor") ?? null,
       settled: element.closest('[data-testid="task-chat-turn"]')?.getAttribute("data-settled") === "true",
       nativeFinal: element.closest('[data-testid="task-chat-final-response"]') !== null,

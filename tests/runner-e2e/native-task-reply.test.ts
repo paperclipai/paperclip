@@ -80,7 +80,7 @@ it("binds complete Markdown content and the exact link destination despite a dec
   const published = { ...run, resultJson: { presentationDecision: { commentId: "selected" } } };
   const bubble: TaskReplyObservation = { ...observed, anchor: "selected", origin: "https://fixture.test",
     body: "I couldn't retrieve the pages. See QA-123.",
-    content: [{ text: "I couldn't retrieve the pages. See " }, { href: "https://fixture.test/QA/issues/QA-123#document-outcome", label: "QA-123" }, { text: "." }] };
+    content: [{ text: "I couldn't retrieve the pages. See " }, { href: "https://fixture.test/QA/issues/QA-123#document-outcome", label: "QA-123", decorated: true }, { text: "." }] };
   expect(taskReplyBelongsToRun(bubble, published, "owned-agent", [comment])).toBe(true);
   const copy = events(); copy[0]!.payload.prpEvent.payload.text = body;
   expect(taskReplyBelongsToRun({ ...bubble, anchor: "final-run:turn" }, run, "owned-agent", [], copy)).toBe(true);

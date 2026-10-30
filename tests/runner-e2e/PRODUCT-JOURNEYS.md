@@ -118,6 +118,8 @@ thread anchor and observed text; classic protocol comment matchers stay strict.
 Markdown replies compare complete text and exact link destinations after parsing
 CommonMark. Whitespace and inline formatting can change during rendering. A
 document or issue chip can replace a link label, but must retain its destination.
+Ordinary links retain their source label. Destination resolution uses the existing
+production company-route helper and the current task URL for fragments.
 Receipts retain both source Markdown and observed content. Unsupported constructs
 such as images, raw HTML and GFM-only formatting fail closed. Exact marker checks
 remain exact, and decline checks inspect both visible explanations and source
