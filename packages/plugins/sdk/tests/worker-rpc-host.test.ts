@@ -177,8 +177,29 @@ describe("worker performAction context", () => {
           agentId: null,
           runId: null,
           companyId: null,
+          authenticationSource: null,
         },
         companyId: null,
+      });
+
+      await expect(callWorker("performAction", {
+        key: "inspect",
+        params: {},
+        actorContext: {
+          type: "user",
+          userId: "board-user-1",
+          agentId: null,
+          runId: null,
+          companyId: "host-company",
+          authenticationSource: "board_key",
+        },
+      })).resolves.toMatchObject({
+        actor: {
+          type: "user",
+          userId: "board-user-1",
+          companyId: "host-company",
+          authenticationSource: "board_key",
+        },
       });
     } finally {
       worker.stop();

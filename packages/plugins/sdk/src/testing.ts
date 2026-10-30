@@ -624,6 +624,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       agentId: stringOrNull(actorInput?.agentId),
       runId: stringOrNull(actorInput?.runId),
       companyId,
+      authenticationSource: stringOrNull(actorInput?.authenticationSource),
     });
     return Object.freeze({ actor, companyId });
   }
