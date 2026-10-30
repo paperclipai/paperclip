@@ -485,6 +485,51 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .rejects.toThrow("Company deletion requires a database transaction");
   });
 
+  it("deletes an agent that still owns an open conversation", async () => {
+    const agent = await hire();
+    await db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, agent.id));
+    const [conversation, task] = await db.insert(issues).values([
+      {
+        companyId,
+        title: "Open conversation",
+        status: "in_progress",
+        assigneeAgentId: agent.id,
+        createdByAgentId: agent.id,
+        conversationAgentId: agent.id,
+        conversationUserId: "board-user",
+        conversationState: "active",
+      },
+      {
+        companyId,
+        title: "Assigned task",
+        assigneeAgentId: agent.id,
+        createdByAgentId: agent.id,
+      },
+    ]).returning();
+
+    await createAgentLifecycle(db).purgeAgent(agent.id);
+
+    expect(await db.select().from(agents).where(eq(agents.id, agent.id))).toHaveLength(0);
+    const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: conversation.id,
+        status: "in_progress",
+        assigneeAgentId: null,
+        createdByAgentId: null,
+        conversationAgentId: null,
+        conversationUserId: null,
+        conversationState: null,
+      }),
+      expect.objectContaining({
+        id: task.id,
+        assigneeAgentId: null,
+        createdByAgentId: null,
+        conversationAgentId: null,
+      }),
+    ]));
+  });
+
   it("rejects individual deletion before cleanup and rolls back failed cleanup", async () => {
     const agent = await hire();
     const effects = createAgentLifecycleEffects();
