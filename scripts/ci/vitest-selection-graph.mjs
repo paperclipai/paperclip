@@ -168,7 +168,9 @@ export async function selectProjectTests({ root = process.cwd(), project, change
           const resolved = realpathSync(input);
           const relative = path.relative(root, resolved).split(path.sep).join("/");
           const directory = statSync(resolved).isDirectory();
-          if (!inside(root, resolved) || (!directory && !tracked.has(relative))) return [];
+          if (!inside(root, resolved) || (directory
+            ? ![...tracked].some(file => file.startsWith(`${relative}/`))
+            : !tracked.has(relative))) return [];
           paths.push({ path: resolved, directory });
         }
       } catch { return []; }

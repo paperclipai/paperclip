@@ -46,6 +46,12 @@ export function repositoryFileInputs(file, program) {
   visit(program);
   const tainted = new Set();
   for (const node of nodes) {
+    if (node.type === "MetaProperty" && node.meta.name === "import" && node.property.name === "meta") {
+      const member = parents.get(node), use = parents.get(member);
+      if (member?.type !== "MemberExpression" || member.computed || !["url", "dirname", "filename"].includes(member.property.name)
+        || (use?.type === "AssignmentExpression" && use.left === member)
+        || use?.type === "UpdateExpression" || (use?.type === "UnaryExpression" && use.operator === "delete")) tainted.add("import.meta");
+    }
     if (node.type !== "Identifier") continue;
     const parent = parents.get(node);
     const binding = imports.get(node.name);
@@ -82,7 +88,7 @@ export function repositoryFileInputs(file, program) {
       if (node.name === "__dirname") return path.dirname(file);
       if (node.name === "__filename") return file;
     }
-    if (node.type === "MemberExpression" && importMeta(node.object) && !node.computed) {
+    if (node.type === "MemberExpression" && importMeta(node.object) && !node.computed && !tainted.has("import.meta")) {
       if (node.property.name === "url") return pathToFileURL(file).href;
       if (node.property.name === "dirname") return path.dirname(file);
       if (node.property.name === "filename") return file;

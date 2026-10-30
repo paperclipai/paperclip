@@ -73,6 +73,8 @@ test("file input edges require module-relative paths and non-escaping read APIs"
     'import fs from "node:fs"; const input = new URL("./leaf.ts", import.meta.url); input.pathname = "/other.ts"; fs.readFileSync(input);',
     'import fs from "node:fs"; import path from "node:path"; path.join = custom; fs.readFileSync(path.join(__dirname,"leaf.ts"));',
     'import fs from "node:fs"; import path from "node:path"; mutate(path); fs.readFileSync(path.join(__dirname,"leaf.ts"));',
+    'import fs from "node:fs"; import.meta.url = "file:///other/test.ts"; fs.readFileSync(new URL("./leaf.ts", import.meta.url));',
+    'import fs from "node:fs"; const meta = import.meta; meta.url = "file:///other/test.ts"; fs.readFileSync(new URL("./leaf.ts", import.meta.url));',
   ]) assert.deepEqual(analyze(source).covered, [], source);
 });
 
@@ -117,4 +119,8 @@ test("unchanged consumer workspaces follow cross-package imports and file inputs
   write("consumer/symlink.test.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("../producer/link.ts",import.meta.url));');
   git("add", ".");
   assert.ok((await select(["producer/leaf.ts"])).inputRelated.includes("consumer/symlink.test.ts"));
+  write("generated/unknown.ts", "export const generated = true;");
+  write("consumer/generated.test.ts", 'import {readdirSync} from "node:fs"; readdirSync(new URL("../generated/",import.meta.url));');
+  git("add", "consumer/generated.test.ts");
+  assert.ok((await select(["producer/other.ts"])).alwaysRun.includes("consumer/generated.test.ts"));
 });
