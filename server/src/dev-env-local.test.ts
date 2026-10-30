@@ -29,10 +29,10 @@ describe("dev .env.local loading", () => {
     expect(resolveRepoEnvLocalPath(fakeServerRoot)).toBe(path.join(repoRoot, ".env.local"));
   });
 
-  it("always passes the file and a glob that matches only that file, even before it exists", () => {
+  it("always passes the file and a watch glob that works before the file exists", () => {
     const envLocalPath = path.join(repoRoot, ".env.local");
     expect(devEnvLocalNodeArgs(fakeServerRoot)).toEqual([`--env-file-if-exists=${envLocalPath}`]);
-    expect(devEnvLocalWatchArgs(fakeServerRoot)).toEqual(["--include", path.join(repoRoot, ".env.loca[l]")]);
+    expect(devEnvLocalWatchArgs(fakeServerRoot)).toEqual(["--include", `${envLocalPath}*`]);
   });
 
   it("wires the same file into the server dev script and the watch wrapper", () => {

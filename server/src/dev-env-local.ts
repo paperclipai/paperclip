@@ -9,8 +9,5 @@ export function devEnvLocalNodeArgs(serverRoot: string): string[] {
 }
 
 export function devEnvLocalWatchArgs(serverRoot: string): string[] {
-  const envLocalPath = resolveRepoEnvLocalPath(serverRoot);
-  const fileName = path.basename(envLocalPath);
-  const lastCharacterAsClass = `${fileName.slice(0, -1)}[${fileName.slice(-1)}]`;
-  return ["--include", path.join(path.dirname(envLocalPath), lastCharacterAsClass)];
+  return ["--include", `${resolveRepoEnvLocalPath(serverRoot)}*`];
 }
