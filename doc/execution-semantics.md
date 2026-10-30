@@ -410,6 +410,8 @@ Run-scoped write authorization is subtree-scoped: a run may mutate its checked-o
 
 Review tasks — security reviews, code reviews, QA verdicts — must instruct the delegate to post findings on **their own review issue** and mark it `done`. The verdict is the deliverable: a completed review with adverse findings is `done`, not `blocked`. The parent's owner is engaged by `issue_blockers_resolved` (plus the direct-parent report comment where the reviewer's preset allows it) and owns any follow-up fixes.
 
+For a QA `NEEDS_FIX` verdict where the source owner has no ready dependency path, the reviewer must leave an assigned, task-bound successor before closing: reuse an open fix for the same PR head and findings or create one for the source programmer, then create or reuse a re-QA task blocked by that fix. Read back the assignment and dependency. The fix assignment wakes the programmer; completion of the fix wakes the blocked re-QA issue through `issue_blockers_resolved`. A finding comment, PR comment, or agent mention is evidence, not a work assignment. Paperclip does not parse free-text verdicts or CI comments to infer the source owner, deduplicate fixes, or create this graph automatically; callers must use the ordinary task APIs. A final QA gate remains separate from an incremental re-QA pass.
+
 Never instruct a low-trust delegate to comment on the parent issue. That instruction is guaranteed to be denied at the authorization boundary, and a reviewer that converts the denial into a `blocked` disposition with a prose-only owner strands the whole tree indefinitely.
 
 ### The Courier Pattern (Lateral Coordination)

@@ -110,6 +110,48 @@ describe("runner backlog task creation", () => {
     expect(f.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("preserves an assigned fix and dependent re-QA after a NEEDS_FIX review closes", async () => {
+    const f = await fixture(false);
+    const programmerId = randomUUID();
+    await db.insert(agents).values({ id: programmerId, companyId: f.companyId, name: "Programmer", role: "engineer", status: "active", adapterType: "paperclip_runner" });
+
+    const fixCall = { tool: "create_task", callId: "fix-pr-head", arguments: {
+      idempotencyKey: "needs-fix:pr-1:head-a:finding-1",
+      title: "Fix QA finding at PR head A",
+      description: "QA NEEDS_FIX at head A: reproduce and repair finding 1.",
+      assigneeActorId: programmerId,
+    } };
+    const fix = await f.authority.execute(fixCall) as { task: { id: string } };
+    expect(await f.authority.execute(fixCall)).toEqual(fix);
+    expect((await db.select().from(issues).where(eq(issues.id, fix.task.id)))[0]).toMatchObject({
+      status: "todo", assigneeAgentId: programmerId, parentId: f.issueId,
+    });
+    expect(f.enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(f.enqueueWakeup.mock.calls[0]?.[1]?.idempotencyKey).toBe(f.enqueueWakeup.mock.calls[1]?.[1]?.idempotencyKey);
+
+    const reQaCall = { tool: "create_task", callId: "re-qa-pr-head", arguments: {
+      idempotencyKey: "re-qa:pr-1:head-a:finding-1",
+      title: "Recheck QA finding at new PR head",
+      blockedByTaskIds: [fix.task.id],
+      assigneeActorId: f.agentId,
+    } };
+    const reQa = await f.authority.execute(reQaCall) as { task: { id: string } };
+    expect((await db.select().from(issues).where(eq(issues.id, reQa.task.id)))[0]).toMatchObject({
+      status: "blocked", assigneeAgentId: f.agentId, parentId: f.issueId,
+    });
+    expect(await issueService(db).getRelationSummaries(reQa.task.id)).toMatchObject({
+      blockedBy: [expect.objectContaining({ id: fix.task.id })],
+    });
+    expect(f.enqueueWakeup).toHaveBeenCalledTimes(2);
+
+    await issueService(db).update(f.issueId, { status: "done" });
+    expect((await db.select().from(issues).where(eq(issues.id, fix.task.id)))[0]?.status).toBe("todo");
+    await issueService(db).update(fix.task.id, { status: "done" });
+    expect(await issueService(db).listWakeableBlockedDependents(fix.task.id)).toEqual([
+      expect.objectContaining({ id: reQa.task.id, assigneeAgentId: f.agentId }),
+    ]);
+  });
+
   it.each(["in_progress", "done", "blocked", null])("rejects unsupported initial status %s before mutation", async status => {
     const f = await fixture(true);
     await expect(f.authority.execute({ tool: "create_task", callId: "invalid", arguments: { idempotencyKey: "invalid", title: "Invalid", status } })).rejects.toThrow();
