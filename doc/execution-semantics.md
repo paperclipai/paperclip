@@ -2711,6 +2711,13 @@ The first production release containing recovery readers and redaction for both
 private recovery fields is the disk-independent rollback floor. Earlier
 development-reader probes do not establish a published rollback target.
 
+Active remote adoption and compatible idle warm reuse carry an existing verified
+Runner proof. Preparation revalidates that proof and the exact process's liveness,
+then preserves its in-place harness state. The later protocol attachment still
+authenticates the durable PRP authority. A provider lease acquisition described as
+`resumed` does not establish that this already-running harness was suspended.
+Ordinary resumed leases retain their verified suspension and backup checks.
+
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete
 identity and lack of pending delivery/cleanup. Only a lifecycle projection is

@@ -12611,6 +12611,53 @@ describe("runnerd provider runtime wiring", () => {
       runnerArtifact: artifact, adoptExistingRunner: { pid: 123, startedAt: "2026-09-19T10:00:00.000Z" } });
     expect(state.resolveRemoteRunnerBinary).not.toHaveBeenCalled();
     expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch") || request.args.includes("--build-metadata"))).toBe(false);
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch")
+      || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
+  });
+
+  it.each(["verified", "no-proof", "dead", "stale"] as const)("reuses only verified idle warm process during actual remote preparation: %s", async mode => {
+    const previous = scopedNativeExecution(`warm-live-preparation-${mode}`);
+    previous.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+    const current = { ...previous, binding: { ...previous.binding, runId: `${previous.binding.runId}-next` } };
+    const identity = { runId: previous.binding.runId, normalizedSessionId: previous.session.normalizedSessionId!,
+      runnerInstanceId: "retained-warm-runner", environmentLeaseId: "retained-lease", turnId: "prior-turn", itemId: "prior-item" };
+    const root = await initializeScopedRunnerRoot(previous, identity.runnerInstanceId);
+    await writeRunnerAuthority(root, identity, "suspended");
+    const projections = vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery").mockResolvedValue({ kind: "no_prior_execution" });
+    onTestFinished(() => projections.mockRestore());
+    const db = leaseDb(current), ordinarySelect = db.select.bind(db);
+    db.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson
+      ? priorNativeRunDb(previous).select(fields as never) : ordinarySelect(fields as never)) as Db["select"];
+    let alive = true;
+    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: request.args[2] === "paperclip-runner-recovery-check" && !alive ? 45 : 0,
+      timedOut: false, stderr: "", stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      }) : request.args[0] === "--version" ? "codex-cli 0.160.0" : request.args[1]?.includes("base64")
+        ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "ready", outbox: [], pendingTerminalDelivery: null })).toString("base64")
+        : request.args[1]?.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" }));
+    const revalidate = vi.fn(async () => undefined);
+    const syncIn = vi.fn(async () => undefined);
+    await createRunnerdBackend({ db, execution: current, runnerInstanceId: identity.runnerInstanceId,
+      runnerIngressAuthorized: true,
+      ...(mode === "no-proof" ? {} : { remoteWarmRecovery: { identity, reuseProcess: true, previousExecution: previous,
+        checkpoint: {} as never, remote: { providerLeaseId: "retained-sandbox", remoteCwd: "/workspace" }, revalidate } }),
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
+        leaseId: identity.environmentLeaseId, providerKey: "daytona", effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "retained-sandbox" }, runner: { execute, syncIn } } as never });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    if (mode === "dead") alive = false;
+    if (mode === "stale") revalidate.mockRejectedValueOnce(new Error("fixture_warm_owner_changed"));
+    if (mode === "verified") await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    else await expect(options.prepareExternalRunnerState()).rejects.toThrow(mode === "no-proof" ? "resumed_not_suspended"
+      : mode === "dead" ? "runner_remote_process_identity_unavailable" : "fixture_warm_owner_changed");
+    expect(syncIn).not.toHaveBeenCalled();
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch")
+      || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
   it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(

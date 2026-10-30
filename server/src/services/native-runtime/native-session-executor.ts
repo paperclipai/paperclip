@@ -13075,7 +13075,20 @@ async function createRunnerdBackendWithinSessionClaim(
                       bytesTransferred: 0,
                     },
                   });
-                  if (sandboxLeaseAcquisition?.outcome === "resumed") {
+                  if (sandboxLeaseAcquisition?.outcome === "resumed" && adoptedProcess &&
+                      (input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery)) {
+                    // Active recovery and a verified idle warm handoff adopt the
+                    // exact surviving process, rather than restoring a suspended
+                    // per-turn backup. Identity/lease/PID generation were verified
+                    // above; refresh that proof after any preparation wait. The
+                    // transport still authenticates the durable PRP authority.
+                    await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", async () => {
+                      await input.remoteWarmRecovery?.revalidate();
+                      if (!await adoptedProcess.isAlive()) {
+                        throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
+                      }
+                    });
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed") {
                     const reuseStartedAtMs = Date.now();
                     const state = await measureNativeRunnerSpan(
                       input.trace,

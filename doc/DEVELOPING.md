@@ -2781,6 +2781,8 @@ The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
 Control-port tests also cover terminal snapshots before accepted results and
 result-replay contention with the status writer's coordinator-first lock order.
+Remote adoption tests must invoke actual external-state preparation. Inspecting
+transport options alone does not exercise the resumed-lease harness checks.
 Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
 host cannot start embedded Postgres:
 
