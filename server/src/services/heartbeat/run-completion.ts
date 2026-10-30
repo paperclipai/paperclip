@@ -408,7 +408,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       failedProcessRunCancellations.get(run.id);
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
-    const latestRun = await getRun(run.id);
+    const latestRun = await getRun(run.id, { unsafeFullResultJson: true });
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
     } else if (signal.aborted) {

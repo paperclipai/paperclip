@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -16,6 +16,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { issueService } from "../issues.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -44,7 +45,7 @@ function callbacks(db: Db) {
     classifyAndPersistRunLiveness: vi.fn<Dependencies["classifyAndPersistRunLiveness"]>(async run => run),
     completeSkillTestRunForHeartbeatOutcome: vi.fn<Dependencies["completeSkillTestRunForHeartbeatOutcome"]>(async () => null),
     refreshContinuationSummaryForRun: vi.fn<Dependencies["refreshContinuationSummaryForRun"]>(async () => null),
-    findRunIssueComment: vi.fn<Dependencies["findRunIssueComment"]>(async () => null),
+    findRunIssueComment: vi.fn(lifecycle.findRunIssueComment),
     findLatestCompletedFinalAgentMessage: vi.fn<Dependencies["findLatestCompletedFinalAgentMessage"]>(async () => null),
     finalizeIssueCommentPolicy: vi.fn<Dependencies["finalizeIssueCommentPolicy"]>(async () => ({ outcome: "not_applicable", queuedRun: null })),
     handleIssueReviewPathDisposition: vi.fn<Dependencies["handleIssueReviewPathDisposition"]>(async () => undefined),
@@ -260,6 +261,42 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.completeRun(f.input);
     expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: "provider-session", resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
+  });
+
+  it.each(["applied", "duplicate"])("retains oversized %s file receipts and publishes the real final answer once", async disposition => {
+    const f = await fixture({ runtimeMode: "native" });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Export the report and explain its prerequisites", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+    const prepared = await issueService(db).addComment(issue.id, "Prepared Public report for this response.",
+      { agentId: f.agent.id, runId: f.run.id }, { authorizationReason: "paperclip_runner_protocol" });
+    const canonical = { semanticToolReceipts: { file: { operationId: "register_deliverable", input: { filename: "report.txt" }, result: {
+      commandId: "deliverable-prepared:attachment", disposition, attachmentId: "attachment", entityRefs: ["attachment", "product", prepared.id],
+    } } }, retainedOpaqueState: randomBytes(128 * 1024).toString("base64") };
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, resultJson: canonical }).where(eq(heartbeatRuns.id, f.run.id));
+    const displayed = await f.deps.getRun(f.run.id);
+    expect(displayed?.resultJson).toMatchObject({ truncated: true, truncationReason: "oversized_result_json" });
+    expect(displayed?.resultJson?.semanticToolReceipts).toBeUndefined();
+    f.input.issueId = issue.id; f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    const summary = "The report is attached. Credentials were excluded; configure a supported runtime before importing it.";
+    f.input.adapterResult.resultJson = { nativeResult: { schema: "paperclip.run_result.v1", summary } };
+    f.input.adapterResult.summary = summary;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: issue.id,
+      result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: null,
+      sourceInstanceId: "test", normalizedSessionId: "native-session", providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    f.deps.issuesSvc.addComment.mockImplementation(issueService(db).addComment);
+    await f.completion.completeRun(f.input);
+    const saved = await read(f.run.id);
+    expect(saved.resultJson).toMatchObject({ semanticToolReceipts: canonical.semanticToolReceipts, retainedOpaqueState: canonical.retainedOpaqueState,
+      presentationDecision: { commentAction: "create", chosenSource: "semantic_result_summary" } });
+    expect(saved.resultJson?.truncated).toBeUndefined();
+    const comments = () => db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+    expect((await comments()).map(row => row.body)).toEqual(expect.arrayContaining([prepared.body, summary]));
+    expect(await comments()).toHaveLength(2);
+    await f.completion.completeRun(f.input);
+    expect(await comments()).toHaveLength(2);
+    expect((await read(f.run.id)).resultJson?.semanticToolReceipts).toEqual(canonical.semanticToolReceipts);
+    expect(f.deps.issuesSvc.addComment).toHaveBeenCalledOnce();
   });
 
   it("reports trace completion before a later write throws and reads output after log finalization", async () => {
