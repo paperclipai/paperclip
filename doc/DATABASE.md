@@ -161,6 +161,12 @@ indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
 
+Issue-wide secret redaction reads only runs whose `context_snapshot` holds a
+`paperclipSecretRedactions` registry. The partial index
+`heartbeat_runs_company_secret_redactions_idx` holds only those runs, so a
+comments read no longer detoasts the context of every run of the issue. Most
+runs never register a secret, so the index stays small.
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a

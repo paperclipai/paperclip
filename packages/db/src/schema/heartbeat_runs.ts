@@ -216,6 +216,10 @@ export const heartbeatRuns = pgTable(
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),
+    companySecretRedactionsIdx: index("heartbeat_runs_company_secret_redactions_idx")
+      .on(table.companyId)
+      .concurrently()
+      .where(sql`${table.contextSnapshot} ? 'paperclipSecretRedactions'`),
     // Match creation provenance precedence, including empty legacy IDs.
     companyOriginIssueIdx: index("heartbeat_runs_company_origin_issue_idx")
       .on(table.companyId, sql`coalesce(
