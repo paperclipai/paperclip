@@ -1133,6 +1133,43 @@ it("refuses a reusable close checkpoint when the local provider snapshot is unre
   }
 }, 15_000);
 
+it("installs required accounting acceptance before the Runner acknowledgement callback returns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-required-accounting-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  const spy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return new OriginalCore(options);
+  });
+  let release!: () => void;
+  const accepted = new Promise<void>(resolve => { release = resolve; });
+  const onAccountingEvent = vi.fn(async () => accepted);
+  const bundle = createCapabilityRunnerdCodexTransport({ stateDirectory: directory, sourceCodexHome: "", environment: {},
+    runnerBinary: process.execPath, runnerArtifact: { version: "test", digest: `sha256:${"a".repeat(64)}` },
+    codexCommand: process.execPath, codexArgs: [], onAccountingEvent,
+    controlPlaneRegistration: async () => { throw new Error("stop before Runner dispatch"); },
+  });
+  try {
+    await expect(bundle.transport.request("thread/start", { cwd: directory })).rejects.toThrow();
+    const report = { eventType: "usage.reported", sourceEventId: "required-usage" } as PrpEvent;
+    let returned = false;
+    const result = callbacks.onCommittedEvent!(report).then(() => { returned = true; });
+    await vi.waitFor(() => expect(onAccountingEvent).toHaveBeenCalledExactlyOnceWith(report));
+    expect(returned).toBe(false);
+    release();
+    await result;
+    expect(returned).toBe(true);
+    const failure = new Error("receipt unavailable");
+    onAccountingEvent.mockRejectedValueOnce(failure);
+    await expect(callbacks.onCommittedEvent!(report)).rejects.toBe(failure);
+  } finally {
+    release();
+    await bundle.transport.close().catch(() => undefined);
+    spy.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("uses the same API result envelope for live dispatch and recovered receipts", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-recovered-api-"));
   const OriginalCore = durableControlPlane.DurablePrpControlPlane;

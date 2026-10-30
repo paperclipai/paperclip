@@ -377,7 +377,8 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
 }
 
 export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
-  input = { ...input, disabledTypes: await adapterSettingsService(db).getDisabledTypes() };
+  const disabledTypes = await adapterSettingsService(db).getDisabledTypes();
+  input = { ...input, disabledTypes };
   const cursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud";
   const nativeCursor = cursor && input.runner !== "legacy"
     && (input.adapterType === "paperclip_runner" || input.runner === "paperclip");
@@ -390,7 +391,7 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
     // legacy agents still require an explicit conversion decision.
     const useSetupDefault = cursorSetupDefault && managedCursorApiDefaultEnabled(settings.experimental);
     if (nativeCursor || useSetupDefault) {
-      if (input.disabledTypes.includes("cursor_cloud") || input.disabledTypes.includes("paperclip_runner")) {
+      if (disabledTypes.includes("cursor_cloud") || disabledTypes.includes("paperclip_runner")) {
         throw unprocessable("Cursor Cloud is disabled on this instance. Enable its adapter or choose another harness.", { code: "agent_runner_unavailable" });
       }
       assertProviderApiPlacementPolicy(settings.general ?? {});

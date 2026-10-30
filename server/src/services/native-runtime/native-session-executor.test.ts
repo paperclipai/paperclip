@@ -112,6 +112,10 @@ vi.mock("../usage-receipts.js", async (importOriginal) => ({
   createRunUsageRecorder: usageRecorder.create,
 }));
 
+vi.mock("./native-usage-delivery.js", () => ({
+  createNativeUsageDelivery: vi.fn(async () => ({ capture: async () => undefined })),
+}));
+
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
   stop: vi.fn(async () => undefined),
@@ -142,6 +146,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
@@ -256,8 +261,8 @@ vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
   return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
     constructor(...args: ConstructorParameters<typeof original.PaperclipControlPlanePort>) {
       super(...args);
-      accountingEvents.committed = args[2]?.onCommittedEvent;
-      accountingEvents.duplicate = args[2]?.onDuplicateEvent;
+      accountingEvents.committed = args[2]?.onCommittedEvent ? event => args[2]!.onCommittedEvent!(event, 1) : undefined;
+      accountingEvents.duplicate = args[2]?.onDuplicateEvent ? event => args[2]!.onDuplicateEvent!(event, 1) : undefined;
     }
   } };
 });
@@ -1568,6 +1573,7 @@ describe("native provider usage normalization", () => {
       schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/acme/fixture" }],
     } } as NativeExecutionInput["provider"];
     expect(nativeUsageCostUsd({ runDelta: { inputTokens: 0, outputTokens: 0, providerCostUsd } }, provider)).toBeUndefined();
+    expect(nativeUsageBiller(provider)).toBe("cursor");
     expect(resolveNativeBilling(provider)).toEqual({ provider: "cursor", biller: "cursor", billingType: "unknown" });
   });
   it.each([["cursor", "cursor"], ["copilot", "github"], ["pi", "openrouter"]] as const)("keeps %s cost unknown and attributes its actual biller", (agent, biller) => {
@@ -7297,6 +7303,36 @@ describe("native terminal-turn accounting", () => {
     expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: true }));
     expect(usageRecorder.create).not.toHaveBeenCalled();
   });
+  it("binds retained warm transport usage to the successor run authority", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "native-warm-usage-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = directory;
+    const first = { ...execution, binding: { ...execution.binding, runId: "first-warm-usage", executionWorkspaceId: "warm-usage-workspace" },
+      session: { ...execution.session, normalizedSessionId: "warm-usage-session", lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60000 } } } as NativeExecutionInputV1;
+    const second = { ...first, binding: { ...first.binding, runId: "second-warm-usage" } };
+    const firstCapture = vi.fn(async (_event: PrpEvent) => {}), secondCapture = vi.fn(async (_event: PrpEvent) => {});
+    try {
+      await createRunnerdBackend({ db: leaseDb(first), execution: first, runnerInstanceId: "warm-producer", onAccountingEvent: firstCapture });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const retainedHook = state.createTransport.mock.calls.at(-1)![0].onAccountingEvent!;
+      const firstReport = { eventType: "usage.reported", runId: first.binding.runId, sourceInstanceId: "warm-producer" } as PrpEvent;
+      await retainedHook(firstReport);
+      expect(firstCapture).toHaveBeenCalledExactlyOnceWith(firstReport);
+      await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
+      await createRunnerdBackend({ db: leaseDb(second), execution: second, runnerInstanceId: "warm-producer", onAccountingEvent: secondCapture });
+      await expect(retainedHook({ ...firstReport, eventType: "run.attached" })).resolves.toBeUndefined();
+      expect(secondCapture).not.toHaveBeenCalled();
+      const secondReport = { ...firstReport, runId: second.binding.runId };
+      await retainedHook(secondReport);
+      expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);
+      expect(firstCapture).toHaveBeenCalledTimes(1);
+      await expect(retainedHook(firstReport)).rejects.toThrow("native_usage_run_binding_mismatch");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses the canonical recorder for partial and completed usage when no onUsage callback is supplied", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.execute.mockReset().mockImplementationOnce(async () => {
@@ -12707,7 +12743,14 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["github", "assigned"] as const)("cleans run-owned access after overlapping executor failure: %s", async failure => {
+  it.each((["codex", "opencode"] as const).flatMap(provider =>
+    (["github", "assigned"] as const).map(failure => ({ provider, failure })),
+  ))("cleans run-owned access after overlapping $provider executor failure: $failure", async ({ provider, failure }) => {
+    const current = {
+      ...execution,
+      provider: provider === "codex" ? execution.provider : { kind: "opencode", model: null },
+      session: { ...execution.session, driverKind: provider === "codex" ? "codex_app_server" : "opencode_server" },
+    } as NativeExecutionInputV1;
     const issueService = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
       update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
     } as unknown as ReturnType<typeof issueServiceModule.issueService>);
@@ -12733,7 +12776,7 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mockClear();
     let settled = false;
     const running = executePaperclipNativeSession({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-overlap-cleanup",
+      db: leaseDb(current), execution: current, runnerInstanceId: "runner-overlap-cleanup",
       useRunnerd: true, managedGitHub: true,
       runnerEnvironment: {
         PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
@@ -12759,7 +12802,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.execute).not.toHaveBeenCalled();
       expect(state.createBackend).not.toHaveBeenCalled();
       if (failure === "assigned") {
-        expect(activate).toHaveBeenCalledWith(execution.binding);
+        expect(activate).toHaveBeenCalledWith(current.binding);
         expect(deactivate).toHaveBeenCalledOnce();
         expect(stop).toHaveBeenCalledOnce();
       }
