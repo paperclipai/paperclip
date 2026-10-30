@@ -1948,7 +1948,7 @@ describe("remote provider pack manifest", () => {
         const packRoot = command.args?.[2];
         const valid = mode === "staged" || mode === "preinstalled" && packRoot === "/opt/paperclip-runner/provider-pack"
           || transferred && mode !== "failed-final";
-        return { exitCode: verification && !valid ? 1 : 0, timedOut: false, signal: null,
+        return { pid: null, startedAt: null, exitCode: verification && !valid ? 1 : 0, timedOut: false, signal: null,
           stdout: command.args?.[0] === "--version" ? "1.18.34\n"
             : command.args?.some(value => value.includes("for candidate in")) ? "/opt/paperclip-runner/provider-pack\n" : "",
           stderr: verification && !valid ? "manifest mismatch" : "" };
