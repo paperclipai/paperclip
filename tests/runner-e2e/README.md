@@ -11,12 +11,17 @@ qualification.
 The explicit-only `daytona-restart-continuity` suite runs the existing
 `recover-controller` journey with the recorded Codex and Claude staging models
 on fresh Daytona fixtures. After a completed task tool in an active revision
-turn, it keeps the owned development controller offline for 125 seconds, beyond
-the controller's two-minute reconnect budget. The existing independent oracle
+turn, it keeps the owned development controller offline for 300 seconds. This
+exceeds the 60-second ownership lease and remains within the Runner's 420-second
+reconnect grace. The existing independent oracle
 requires the original process, native session, sandbox lease and receipt prefix,
 one completion and successful workspace finalization, plus verified downloaded
-work. It permits one attempt per cell and retains failed evidence. This is
+work. After completion, it replaces the controller again with its native cache
+unavailable and asks a new turn to execute the saved project. The continuation
+oracle requires the same retained provider session and a new useful result.
+It permits one attempt per cell and retains failed evidence. This is
 development API-key acceptance, distinct from staging subscription recovery.
+The five-minute outage is a resilience test, not an HTTP downtime allowance.
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.

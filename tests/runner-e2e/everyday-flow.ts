@@ -26,6 +26,7 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { gradeRetainedControllerContinuation, retainedControllerRun } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -1440,13 +1441,33 @@ export async function runEverydayFlow(input: Input) {
           artifactGradeModeForPhase("reviewed-delivery"),
           "reviewed-delivery",
         );
-    } else if (caseId === "recover-controller")
+    } else if (caseId === "recover-controller") {
       await download(
         parent!.id,
         artifactGradeModeForPhase("recovered-delivery"),
         "recovered-delivery",
       );
-    else if (caseId === "stop-redirect")
+      if (execution.suite.definitionMetadata?.retainedControllerContinuation === true) {
+        const prior = ev.runs.filter(run => run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!prior) throw new Error("Retained continuation requires a completed source run");
+        const before = retainedControllerRun(prior), priorIds = new Set(ev.runs.map(run => run.id));
+        const outage = await input.restart();
+        await openParent();
+        const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`);
+        await settled(`${marker} queue_r`);
+        const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!after) throw new Error("Retained continuation produced no new successful run");
+        const events = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${after.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+        const evidence = { before, after: retainedControllerRun(after), outage: outage || undefined, requestedAt,
+          completedTool: events.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed"),
+          usefulReply: settledAgentReply?.authorAgentId === fixtures.agent.id && String(settledAgentReply.body ?? "").includes(`${marker} queue_r`) };
+        ev.checks.push(...gradeRetainedControllerContinuation(evidence));
+        await input.evidence("retained-controller-continuation.json", evidence);
+      }
+    } else if (caseId === "stop-redirect")
       check(
         "new-direction-delivered",
         settledAgentReply?.authorAgentId === fixtures.agent.id &&

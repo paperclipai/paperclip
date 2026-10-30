@@ -297,3 +297,59 @@ This is protocol and persistence evidence. The separate
 `everyday-workflows.runner-codex.daytona.recover-controller` Product E2E cell
 qualifies the actual Daytona/provider path, including completion and workspace
 finalization. Neither test substitutes for the other's failure boundary.
+
+The explicit `daytona-restart-continuity.runner-codex.daytona.recover-controller`
+cell fixes the outage at 300 seconds and adds a second replacement after
+completion. Its new turn executes the saved project through normal admission.
+The oracle compares hashed native/provider session identities and requires a new
+completed tool receipt and correct answer. An installed A/B/A artifact manifest
+uses the last replacement for this retained-session continuation/rollback check.
+The general everyday suite retains its 125-second default. These intervals are
+fault tests, not permitted HTTP deployment downtime. Both fixtures retain the
+workspace and remote sandbox; they do not prove whole-webserver disk loss.
+
+## Database cost qualification
+
+`scripts/benchmark-native-controller-recovery.ts` compares a pinned source
+baseline with the candidate's real PRP writer, control-plane snapshot port and
+lease renewal. It uses identical fixtures with 300 controllers and 10,000 prior
+tasks, in baseline/candidate/candidate/baseline order. `steady` distributes control
+checkpoints; `burst` aligns them every five seconds. `pilot` checks instrumentation
+with ten controllers. No provider is called.
+
+Run on an otherwise idle disposable Linux Postgres cluster with
+`pg_stat_statements` preloaded and its extension available. Give Postgres and the
+Node client two CPUs and 1536 MiB each. Set these explicit inputs:
+
+```sh
+BENCH_DISPOSABLE_POSTGRES=1 \
+BENCH_DATABASE_URL=postgres://postgres:fixture-password@127.0.0.1:5432/postgres \
+BENCH_BASELINE_ROOT=/absolute/path/to/pinned-baseline \
+BENCH_REPORT_ROOT=/absolute/path/to/new-report-directory \
+BENCH_POSTGRES_CGROUP=/absolute/path/to/postgres-cgroup \
+node --import ./cli/node_modules/tsx/dist/loader.mjs \
+  scripts/benchmark-native-controller-recovery.ts steady
+```
+
+The baseline needs the same installed dependency versions and built workspace
+packages. It supplies the baseline writer, snapshot port and PRP controller;
+the request fixtures, renewal path and pool policy are common controls. When
+running an exported tree without Git metadata, supply its exact
+`BENCH_BASELINE_REVISION`, `BENCH_CANDIDATE_REVISION` and
+`BENCH_CANDIDATE_DIFF`. Record the export source and verify its bytes separately.
+Use a fresh report directory for every attempt. Only new random databases are
+created; successful trial databases are dropped, and the owned template remains
+for inspection until the disposable cluster is removed.
+
+The report counts SQL across all three pools, actual snapshot/PRP transactions,
+changed records/bytes, WAL, database CPU, sampled memory, pool admission,
+transaction latency, lock-waiter samples and database request latency. Pool
+admission ends at connection assignment/BEGIN encoding; BEGIN response time is
+separate. Postgres execution time includes lock waits. This does **not** yet
+provide a lock-wait latency distribution or HTTP latency. Report those limits;
+do not call this whole-application load qualification.
+
+Correctness and absolute gates must pass before interpreting relative costs.
+Dropped operations invalidate paired comparisons. The report retains failures
+and refuses an overall pass if p99, drain, throughput, memory, CPU or the 10%
+relative regression gate fails. Do not change pool limits to conceal a failure.

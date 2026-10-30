@@ -1160,12 +1160,12 @@ const repositoryModelProfiles = [
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
-    description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",
+    description: "Keep the original active native runner, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
     groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
     environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
-      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
+      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
+    definitionMetadata: { version: 3, scheduling: "explicit-only", controllerDowntimeMs: 300_000, retainedControllerContinuation: true,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },
