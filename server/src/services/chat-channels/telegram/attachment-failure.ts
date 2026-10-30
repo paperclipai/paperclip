@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "../../status-card-notifications.js";
+import { notifyIssueRecovery } from "../../issue-recovery-notifications.js";
 import { createProviderEffects, type ProviderEffectTarget } from "../provider-effects.js";
 
 import type { EndpointRow, RuntimeContext, InboundRuntimeContext } from "../runtime-types.js";
@@ -79,6 +80,7 @@ export function createTelegramAttachmentFailure(db: Db, options: TelegramAttachm
           })(),
       );
     const effect = await db.transaction(async (tx) => {
+      await notifyIssueRecovery(tx, { companyId: input.endpoint.companyId });
       // Replace the optimistic attachment placeholder with an explicit safe
       // Paperclip-visible failure. The message link stays authoritative for
       // exact provider redelivery, while no agent wakeup is enqueued for an

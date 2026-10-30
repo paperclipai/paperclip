@@ -2,6 +2,10 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  strandedAssignments: "stranded-assignments",
+  resolvedDependencies: "resolved-dependencies",
+  taskWatchdogs: "task-watchdogs",
+  staleIssueLocks: "stale-issue-locks",
   scheduledRetryDispatch: "scheduled-retry-dispatch",
   queuedRunDispatch: "queued-run-dispatch",
   statusCardEvaluation: "status-card-evaluation",

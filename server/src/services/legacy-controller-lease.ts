@@ -77,14 +77,18 @@ async function renewOnLivenessPool(
   });
 }
 
-export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean> {
-  if (run.runtimeMode === "native" || !run.controllerBootId) return false;
-  const [owner] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+export async function liveLegacyControllerExpiresAt(db: Db, run: Run): Promise<Date | null> {
+  if (run.runtimeMode === "native" || !run.controllerBootId) return null;
+  const [owner] = await db.select({ expiresAt: heartbeatRuns.controllerLeaseExpiresAt }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
     eq(heartbeatRuns.status, "running"),
     gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   ));
-  return Boolean(owner);
+  return owner?.expiresAt ?? null;
+}
+
+export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean> {
+  return (await liveLegacyControllerExpiresAt(db, run)) !== null;
 }
 
 export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "processPid" | "processGroupId">;

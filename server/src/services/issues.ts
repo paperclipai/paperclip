@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
@@ -7634,6 +7635,7 @@ export function issueService(db: Db) {
     }
 
     await notifyAttentionRetentionWork(dbOrTx, { companyId });
+    await notifyIssueRecovery(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -11521,7 +11523,9 @@ export function issueService(db: Db) {
           await notifyMergeConfirmationWork(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined
-          || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined) {
+          || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined || patch.parentId !== undefined
+          || patch.executionState !== undefined || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
+          || blockedByIssueIds !== undefined) {
           await notifyRunDispatch(tx, { companyId: receiptExisting.companyId });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyRoutineExecutionStatus(tx, id);
@@ -13852,6 +13856,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
         return existing;
