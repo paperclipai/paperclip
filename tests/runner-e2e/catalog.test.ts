@@ -686,6 +686,9 @@ describe("runner E2E catalog", () => {
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
     expect(task!.buildPrompt("nonce")).toContain("first call get_task_context");
+    expect(task!.buildPrompt("nonce")).toContain("criteria:CURRENT_TURN_CRITERIA");
+    expect(task!.buildPrompt("nonce")).toContain("entry for every current criterion ID");
+    expect(task!.buildPrompt("nonce")).not.toContain('criterionId:"objective"');
     expect(task!.buildPrompt("nonce")).toContain(
       "identifies the exact revised Plan revision used as the confirmation target as accepted",
     );

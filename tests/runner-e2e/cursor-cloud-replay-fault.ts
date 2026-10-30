@@ -101,7 +101,7 @@ export function createCursorCloudReplayFaultFetch(input: {
         if (cutNextRead) {
           proof.cutCount += 1;
           save();
-          controller.error(new Error("Injected Cursor Cloud SSE disconnect"));
+          controller.error(new TypeError("Injected Cursor Cloud SSE disconnect"));
           void reader.cancel().catch(() => {});
           return;
         }
