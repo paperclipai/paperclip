@@ -11,7 +11,7 @@ or an orphaned active lease. Explicit user retry keeps its existing direct path.
 | Duty | Truth | Trigger and next deadline | Quiet condition |
 | --- | --- | --- | --- |
 | Failed teardown | Existing `environment_leases` rows in `pending_cleanup` | Commit signal; later of row backoff and saved retry/ownership deadline | No pending lease or deferred orphan |
-| Failed acquisition before a DB row exists | Existing local orphan spool and the producing runtime's buffer | Local buffer registration; five-minute retry while buffered; startup spool load | Durable row owns recovery and spool copy is removed |
+| Interrupted acquisition | `sandbox_creation_operations` committed before provider creation | Transaction signal; saved acquisition deadline; five-minute backoff after recovery failure | Normal lease or one claimed cleanup lease owns the resource; unsupported uncertainty requires operator reconciliation |
 | Historical provider verification | Existing failed ephemeral leases and finished custom-image setups without matching cleanup proof | Commit signal; five-minute retry while an unverified candidate remains | No unverified candidates, including retained verified history |
 
 `environment-cleanup-state.ts` owns the deadline query and the shared safe reader
@@ -47,8 +47,9 @@ settlement and uncertainty handling through the shared DB implementation.
 - `heartbeat/recovery.ts` and `heartbeat/run-control.ts`: orphan-active recovery,
   retry settlement, and explicit recovery of historical leases.
 - `environment-task-runtime.ts`: unconfirmed plugin task termination and plugin
-  replacement orphans, including a registered deferred flusher when the row
-  cannot be written. The flusher retains an idle hold until the row is durable.
+  replacement creations. Replacement intent commits before the provider call.
+- `sandbox-creation-operations.ts`: admission, atomic lease transfer, and bounded
+  recovery. An unavailable database stops admission before external creation.
 - `sandbox-stop-and-retain.ts`: persisted Stop intent and its settlement.
 - `native-workspace-export-resume.ts` and `native-workspace-export-retry.ts`:
   terminal-export cleanup, resumed-export cleanup claims, and settlement.
@@ -64,7 +65,49 @@ already pending claim remain covered by its existing deadline. Deletion removes
 work; an already scheduled reconciliation observes that removal. Independent SQL
 writers and another server process are not covered by these process-local signals.
 
-## Deferred orphan buffers
+## Creation ownership
+
+A creation operation retains company, original environment, run, request identity,
+provider, and nonsecret configuration references. Its environment FK uses SET NULL;
+company/run/task identifiers remain after those records are removed. One operation
+owns each company/environment/run/request. A retry of an attached operation returns
+its active lease. Pending or unresolved ownership never authorizes another create.
+Normal success transfers operation ownership and the lease in one transaction.
+Current company binding and run authority are checked again at attachment.
+Declared secret-reference fields retain only their references and nonsecret value
+hashes. Recovery refuses lookup under a changed credential value; it records manual
+reconciliation instead of treating a missing resource in a new account as proof.
+A missing, deleted, disabled, or archived saved secret, a missing or inactive saved version,
+or an explicitly disabled/coming-soon provider vault also records manual
+reconciliation before provider lookup. Admin-disabled credentials require operator
+reconciliation; recovery does not reactivate or use them. Temporary secret-provider
+or database failures retain the pending operation and its retry deadline.
+
+Recovery never resumes partially prepared execution. It asks a capable provider to
+inspect the stable creation identity, validates its ownership envelope, and transfers
+one cleanup lease under the operation lock. The existing claimed cleanup worker
+owns deletion and confirms resolution. Failed lookup/transfer records a bounded
+retry and permits other operations to proceed. An attached operation cannot transfer
+to cleanup. Pending creation blocks instance sleep until its obligation transfers.
+
+Daytona version 0.1.10 declares creationOperationVersion 1. It uses the committed
+operation UUID in its existing creation name and labels. Recovery uses an explicit
+creationOperation request on the existing read-only inspect hook and strict failed-creation deletion path. Normal lease
+inspection still uses its recorded resource ID; creationOperationId metadata is
+provenance only. A missing name alone cannot prove a late allocation will never appear. Missing identity or an
+unsupported provider records needs_reconciliation and an operation-scoped warning.
+A deleted company also records manual reconciliation before credential lookup or
+cleanup transfer. A company lock fences deletion during the transfer transaction.
+That manual diagnostic has no automatic timer and does not prevent idle. The row
+must be reconciled before retrying the same request. Other providers do not yet
+claim automatic creation lookup. Generic plugin operations retain identity only, including a returned task resource
+ID before expiry checks or lease attachment. A failed or ambiguous attachment keeps
+that known ID for reconciliation; it does not authorize unconditional release.
+These operations do not copy credentials, resolved configuration, or provider
+payloads into the operation record. A lost provider reply can still leave the
+resource ID unknown.
+
+## Legacy deferred orphan buffers
 
 Runtimes that hold an unwritten orphan register their flusher in a registry scoped
 to the shared database handle. Registration wakes the worker without contacting
@@ -75,8 +118,9 @@ runtime. The registry retains only runtimes with unresolved buffer ownership.
 Unreadable directories, records, and malformed records retain a retry; a missing
 spool directory is an empty spool. A spool read failure still allows other runtimes to flush their buffers and
 persisted leases to clean up, then fails the sweep so recovery stays scheduled.
-Each concrete cleanup pass reloads the spool, including entries appended by
-plugin task replacement after startup and entries beyond buffer capacity.
+Each concrete cleanup pass reloads existing legacy spool entries, including entries
+beyond buffer capacity. Normal acquisition and plugin task replacement do not append
+new fallback files. Retained entries remain available for the separate cutover inventory.
 No empty-spool filesystem or database polling is introduced. Existing limits on a simultaneous database,
 spool, and buffer-capacity failure remain; this is not a new durable queue.
 

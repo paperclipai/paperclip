@@ -131,6 +131,13 @@ perform provider migration: `local_storage` and `provider_mismatch` are blocking
 results for cloud qualification, not instructions to switch configuration and retry.
 A directory of extracted caches is never a durable object backend.
 
+The maintenance CLI reads the existing storage configuration directly so it can
+verify legacy local-disk objects before cutover. On Cloud it still requires the
+persisted runtime configuration and never seeds or changes that configuration.
+This maintenance boundary does not start a server or relax Cloud server startup
+requirements for external PostgreSQL, shared object storage and a stable secret
+key. Apply operations retain their existing stopped-writer gates.
+
 Conversion establishes the rollback floor. Afterward only compatible version-reading
 binaries may overlap or be rolled back against the same remote state. Reattaching an
 old volume does not roll back committed content. Filesystem-authoritative binaries
