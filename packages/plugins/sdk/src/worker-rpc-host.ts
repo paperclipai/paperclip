@@ -873,6 +873,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             parentId: input.parentId,
             inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
             title: input.title,
+            idempotencyKey: input.idempotencyKey,
+            allowDuplicate: input.allowDuplicate,
             description: input.description,
             status: input.status,
             priority: input.priority,

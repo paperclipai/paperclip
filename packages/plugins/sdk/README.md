@@ -568,6 +568,7 @@ const child = await ctx.issues.create({
   parentId: missionIssueId,
   inheritExecutionWorkspaceFromIssueId: missionIssueId,
   title: "Implement feature slice",
+  idempotencyKey: "paperclip.missions:mission-alpha:feature-1",
   status: "todo",
   assigneeAgentId: workerAgentId,
   billingCode: "mission:alpha",
@@ -576,6 +577,16 @@ const child = await ctx.issues.create({
   blockedByIssueIds: [planningIssueId],
 });
 ```
+
+Use `idempotencyKey` when a retry must return the original issue. The key is
+company-wide, not plugin-scoped. Prefix it with your plugin ID and use 1–255
+characters. The host trims surrounding whitespace. Keys become eligible for
+cleanup after seven days, so they are retry receipts, not permanent issue IDs.
+
+Set `allowDuplicate: false` to reuse a recent open issue with the same normalized
+title and parent. Set `allowDuplicate: true` to bypass that title check. A matching
+idempotency key still returns its original issue in either case. Omitting both
+fields preserves the existing SDK behavior.
 
 If `originKind` is omitted, the host stores `plugin:<pluginKey>`. Plugins may use sub-kinds such as `plugin:<pluginKey>:feature`, but the host rejects attempts to set another plugin's namespace.
 

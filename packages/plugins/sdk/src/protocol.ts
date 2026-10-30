@@ -1916,6 +1916,8 @@ export interface WorkerToHostMethods {
       parentId?: string;
       inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
+      idempotencyKey?: string | null;
+      allowDuplicate?: boolean;
       description?: string;
       status?: string;
       priority?: string;
