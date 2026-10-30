@@ -1701,7 +1701,7 @@ export function environmentService(db: Db) {
           cleanupStatus: environmentLeases.cleanupStatus, releasedAt: environmentLeases.releasedAt,
         }).from(environmentLeases).where(condition).for("update");
         if (!previous) return null;
-        await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined });
+        await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined, leaseId: id });
         if (previous.heartbeatRunId && (previous.status !== status ||
             (options?.cleanupStatus !== undefined && previous.cleanupStatus !== options.cleanupStatus) ||
             (status !== "retained" && !previous.releasedAt))) {
@@ -1821,7 +1821,7 @@ export function environmentService(db: Db) {
         const [lease] = await tx.select({ companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId, metadata: environmentLeases.metadata })
           .from(environmentLeases).where(eq(environmentLeases.id, id)).for("update");
         if (!lease) return null;
-        await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
+        await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: id });
         return tx.update(environmentLeases)
         .set({
           metadata: preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata)),

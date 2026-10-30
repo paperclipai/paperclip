@@ -8092,7 +8092,8 @@ export async function executePaperclipNativeSession(input: {
     }
     releaseRetainedNativeSessionCleanup(input.db, {
       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    });
+    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+      issueId: input.execution.binding.issueId });
   }
 }
 
@@ -9474,7 +9475,8 @@ async function executePaperclipNativeSessionWithinScope(
                   warmNativeSessions.set(warmSessionId, {
                     onReleased: () => releaseRetainedNativeSessionCleanup(input.db, {
                       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-                    }),
+                    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+                      issueId: input.execution.binding.issueId }),
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     runId: input.execution.binding.runId,
@@ -11815,7 +11817,8 @@ export async function createRunnerdBackend(input: {
     initializingSessionToolAuthorities.delete(sessionScopeId);
     releaseRetainedNativeSessionCleanup(input.db, {
       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    });
+    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+      issueId: input.execution.binding.issueId });
   }
 }
 
@@ -12860,7 +12863,7 @@ async function createRunnerdBackendWithinSessionClaim(
       })
       .where(eq(environmentLeases.id, leaseId))
       .returning({ id: environmentLeases.id })
-      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
+      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined, leaseId });
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 

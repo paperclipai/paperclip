@@ -1,3 +1,6 @@
+import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
+import { notifyRetainedNativeSessionCleanup, onRetainedNativeSessionCleanupRelease, releaseRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
+import { environmentService } from "../services/environments.js";
 import { agentService } from "../services/agents.js";
 import { publishNativeHarnessBackup } from "../services/native-runtime/native-harness-backup-publication.js";
 import { registerNativeHarnessBackupExpirationWork } from "../services/native-runtime/native-harness-backup-expiration-work.js";
@@ -14,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   agents,
   agentTaskSessions,
@@ -84,6 +87,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   });
 
   async function seedSession(input: {
+    companyId?: string; agentId?: string;
     issueStatus?: string;
     closedDaysAgo?: number;
     runStatus?: string;
@@ -93,9 +97,10 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     cleanupActive?: boolean;
   } = {}) {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
-    const companyId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Backups", issuePrefix: `B${companyId.slice(0, 6)}` });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Coder" }).returning();
+    const companyId = input.companyId ?? randomUUID();
+    if (!input.companyId) await db.insert(companies).values({ id: companyId, name: "Backups", issuePrefix: `B${companyId.slice(0, 6)}` });
+    const [agent] = input.agentId ? [{ id: input.agentId }]
+      : await db.insert(agents).values({ companyId, name: "Coder" }).returning();
     const issueStatus = input.issueStatus ?? "done";
     const closedAt = new Date(now.getTime() - (input.closedDaysAgo ?? 10) * DAY_MS);
     const [issue] = await db.insert(issues).values({
@@ -731,6 +736,153 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
       expect(await exists(other.current)).toBe(true);
     } finally { db.$client.options.debug = previous; directories.mockRestore(); }
     await quiet();
+  });
+
+  it("coalesces repeated task writes to one retained root in a large company with the same historical agent", async () => {
+    const own = await seedSession({ issueStatus: "todo" });
+    const unrelated = [];
+    for (let index = 0; index < 80; index++) unrelated.push(await seedSession({ companyId: own.companyId,
+      agentId: own.agentId, issueStatus: index % 2 ? "todo" : "done", closedDaysAgo: 2,
+      runStatus: index % 3 ? "succeeded" : "running" }));
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups({ isSessionBusy: digest => unrelated.some((entry, index) => index % 4 === 0 && entry.scope === digest) });
+    await settled(due); await quiet(60_000);
+    const reads = vi.spyOn(fs, "readFile");
+    const queries: Array<{ query: string; parameters: unknown[] }> = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => { queries.push({ query, parameters }); };
+    try {
+      await db.transaction(async tx => {
+        await issueService(db).update(own.issueId, { status: "done" }, tx);
+        for (let index = 0; index < 12; index++) await issueService(db).update(own.issueId,
+          { completedAt: new Date(now.getTime() - DAY_MS) }, tx);
+      });
+      const writes = queries.length;
+      await settled(due);
+      expect(reads.mock.calls.map(call => String(call[0]))).toEqual([path.join(own.root, "control-plane", "control-plane-state.json")]);
+      expect(queries.length - writes).toBeLessThanOrEqual(20);
+      const otherIds = unrelated.flatMap(entry => [entry.issueId, entry.runId, entry.sessionId]);
+      expect(queries.filter(query => query.parameters.some(parameter => otherIds.some(id => String(parameter).includes(id))))).toEqual([]);
+    } finally { reads.mockRestore(); db.$client.options.debug = previous; }
+    await issueService(db).update(own.issueId, { status: "todo" }); await settled(due);
+    await quiet(); expect(await exists(own.current)).toBe(true);
+  });
+
+  it("indexes protected session relations so a new run, historical task close and exact process release reactivate only its backup", async () => {
+    const own = await seedSession({ closedDaysAgo: 2 });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    const [linked] = await db.insert(issues).values({ companyId: own.companyId, title: "New linked task", status: "todo" }).returning();
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups(); await settled(due); await quiet(60_000);
+    const reads = vi.spyOn(fs, "readFile");
+    const runId = randomUUID();
+    try {
+      await db.transaction(async tx => {
+        await notifyNativeEnvironmentSettlement(tx, { companyId: own.companyId, runId, issueId: linked!.id });
+        await tx.insert(heartbeatRuns).values({ id: runId, companyId: own.companyId, agentId: own.agentId,
+          nativeSessionId: own.sessionId, nativeIssueId: linked!.id, issueId: other.issueId, status: "running" });
+      });
+      await settled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+      expect(reads).toHaveBeenCalled(); reads.mockClear();
+      await issueService(db).update(linked!.id, { status: "done" }); await settled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true); reads.mockClear();
+      await db.transaction(async tx => {
+        await notifyRetainedNativeSessionCleanup(tx, { companyId: own.companyId, runId, agentId: own.agentId });
+        await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      });
+      const [closed] = await db.select().from(issues).where(eq(issues.id, linked!.id));
+      const later = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+      await settled(later); reads.mockClear();
+      const cleanupScope = { companyId: own.companyId, agentId: own.agentId };
+      const observed = vi.fn(); const stop = onRetainedNativeSessionCleanupRelease(db, observed);
+      releaseRetainedNativeSessionCleanup(db, cleanupScope, { companyId: own.companyId, runId });
+      expect(observed).toHaveBeenCalledWith(cleanupScope, { companyId: own.companyId, runId }); stop();
+      await settled(later);
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+      expect(reads).toHaveBeenCalled();
+      await issueService(db).update(linked!.id, { status: "todo" }); await settled();
+    } finally { reads.mockRestore(); }
+    expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("ordinary lease release without a run uses its source identity instead of other retained roots", async () => {
+    const own = await seedSession({ leaseStatus: "retained" });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    await startBackups(); await settled(); await quiet(60_000);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, own.companyId));
+    const reads = vi.spyOn(fs, "readFile");
+    try {
+      await environmentService(db).releaseLease(lease!.id, "expired"); await settled();
+      expect(reads).toHaveBeenCalled();
+      expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+    } finally { reads.mockRestore(); }
+    expect(await exists(own.current)).toBe(false); expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("retains the future deadline when a lease metadata edit removes its last backup reference", async () => {
+    const own = await seedSession({ leaseStatus: "retained", closedDaysAgo: 2 });
+    const other = await seedSession({ companyId: own.companyId, agentId: own.agentId, issueStatus: "todo" });
+    await startBackups(); await settled();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, own.companyId));
+    const reads = vi.spyOn(fs, "readFile"); const due = now.getTime() + 5 * DAY_MS + 1;
+    try {
+      await environmentService(db).updateLeaseMetadata(lease!.id, {}); await settled(due);
+      expect(reads).toHaveBeenCalled(); expect(reads.mock.calls.every(call => String(call[0]).startsWith(own.root))).toBe(true);
+    } finally { reads.mockRestore(); }
+    await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(own.current)).toBe(false); expect(await exists(other.current)).toBe(true); await quiet();
+  });
+
+  it("allows an ordinary task reopen while backup byte counting is held outside the retirement lock", async () => {
+    const own = await seedSession(); const lstat = fs.lstat;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const held = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === path.join(own.current, "codex-home", "history.jsonl")) {
+        entered.resolve(); await release.promise;
+      }
+      return lstat(...args);
+    });
+    const startup = startBackups(); await entered.promise;
+    try {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        await issueService(db).update(own.issueId, { status: "todo" }, tx);
+      });
+    } finally { release.resolve(); await startup; held.mockRestore(); }
+    await settled(); expect(await exists(own.current)).toBe(true); expect(backupErrors).toEqual([]); await quiet();
+  });
+
+  it.each(["EIO", "EACCES"])("retains a failed identity read as real retry debt (%s)", async code => {
+    const own = await seedSession(); const read = fs.readFile;
+    const fault = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      if (String(args[0]) === path.join(own.root, "control-plane", "control-plane-state.json")) {
+        throw Object.assign(new Error("controlled identity I/O failure"), { code });
+      }
+      return read(...args);
+    });
+    await startBackups(); expect(backupErrors).toHaveLength(1);
+    const retry = coordinator!.nextWakeAt()!; expect(retry - Date.now()).toBeGreaterThanOrEqual(29_000);
+    expect(await exists(own.current)).toBe(true); fault.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry - Date.now()); await settled();
+    expect(await exists(own.current)).toBe(false); expect(await taskSessionCount(own.agentId)).toBe(0); await quiet();
+  });
+
+  it("reconstructs future retention without issue row locks", async () => {
+    await seedSession({ closedDaysAgo: 2 }); const queries: string[] = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => { queries.push(query); };
+    try {
+      await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+      expect(queries.some(query => /for\s+share/i.test(query))).toBe(false);
+    } finally { db.$client.options.debug = previous; }
+    await quiet();
+  });
+
+  it("rejects destructive backup scopes outside the controller digest namespace", async () => {
+    await emptyStateBase(); const remove = vi.spyOn(fs, "rm");
+    await expect(service().expireBackup("../outside")).rejects.toThrow("Invalid native harness backup scope");
+    expect(remove).not.toHaveBeenCalled(); remove.mockRestore();
   });
 
   it.each([false, true])("finishes cleanup journals after ordinary agent deletion (restart %s)", async restart => {

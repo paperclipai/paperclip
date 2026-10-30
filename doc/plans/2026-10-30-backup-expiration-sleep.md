@@ -14,9 +14,13 @@ must invalidate the source when it changes. A busy process or failed I/O leaves
 real unresolved cleanup and uses the shared retry backoff. Dry-run reports an
 eligible source once and waits for source invalidation or restart.
 
-Startup pages existing disk scopes and indexes company ownership, including
-protected backups. Company notifications inspect only that index; local backup
-publication adds newly created roots. Roots without backup or cleanup tombstones
+Startup pages existing disk scopes and indexes each backup's actual session,
+run, coalesced native-task/task, agent and lease references, including protected
+backups. Ordinary task, run, lease and process-release notifications retain
+these identities and inspect only affected roots. New run or lease references
+resolve through the owner's database relationships. Local publication retains
+its exact digest. Explicit company or instance configuration changes can still
+reconstruct their whole affected scope. Roots without backup or cleanup tombstones
 perform no backup SQL. After discovery and all obligations settle, there is no
 recurring SQL or filesystem scan. Startup reconstructs future work; inspecting a
 source never changes its business timestamps. Runtime task close/reopen and
@@ -30,6 +34,11 @@ An independent process writing those files must use the same producer ingress;
 manual disk edits require reconstruction on restart. Database writer ingress
 continues to use the existing transaction-aware work signals. This change adds
 no permanent database listener and does not add a polling table or migration.
+
+Read-only reconstruction does not lock issue rows. Transient identity I/O errors
+retain a retry obligation; missing or malformed state remains unrecognized.
+Byte accounting occurs before the retirement transaction. The current backup
+age is rechecked inside the transaction before the rename.
 
 The existing issue share locks now remain held through the retirement rename.
 This fences task reopen while the backup becomes unavailable. A failed database

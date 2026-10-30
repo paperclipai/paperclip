@@ -11488,7 +11488,7 @@ export function issueService(db: Db) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
         if (patch.status !== undefined || patch.completedAt !== undefined || patch.cancelledAt !== undefined) {
-          await notifyNativeHarnessBackupExpiration(tx, { companyId: receiptExisting.companyId });
+          await notifyNativeHarnessBackupExpiration(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
