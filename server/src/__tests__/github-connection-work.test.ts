@@ -125,6 +125,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const [failed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
     expect(failed!.providerTenant!.github!.bindingSync!.removeInstallationIds).toEqual(["202"]);
     const retryAt = Date.parse(failed!.providerTenant!.github!.continuityRetry!.at);
+    const attemptedRemovals = bindings.filter(binding => binding.installationId === "202").length;
     const restarted = createGitHubGrantContinuity(db, f.dependencies);
     expect(await restarted.nextGitHubConnectionContinuityAt()).toBe(retryAt);
     await vi.advanceTimersByTimeAsync(29_000);
@@ -133,7 +134,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     await Promise.all([restarted.sweepGitHubConnectionContinuity(), restarted.sweepGitHubConnectionContinuity()]);
     const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
     expect(saved!.providerTenant!.github!.bindingSync).toBeUndefined(); expect(saved!.providerTenant!.github!.continuityRetry).toBeUndefined();
-    expect(bindings.filter(binding => binding.installationId === "202")).toHaveLength(1);
+    expect(bindings.filter(binding => binding.installationId === "202")).toHaveLength(attemptedRemovals + 1);
     expect(githubRequests).toBe(0);
     expect(await restarted.nextGitHubConnectionContinuityAt()).toBeGreaterThan(Date.now());
     await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.id));
