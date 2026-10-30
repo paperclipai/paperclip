@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
   authAccounts,
@@ -213,6 +213,12 @@ async function reserveTestPort(): Promise<{ port: number; release: () => Promise
     }),
   };
 }
+
+// Production helpers spawn git without execGitSync, so isolate them here too.
+beforeEach(() => {
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+});
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);
