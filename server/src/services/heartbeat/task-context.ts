@@ -69,7 +69,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
       : wakeCommentContext;
   const issueAncestors = issueRef
-    ? await issuesSvc.getAncestors(issueRef.id)
+    ? await issuesSvc.getAncestors(issueRef.id, agent.companyId)
     : [];
   if (continuationSummary) {
     context.paperclipContinuationSummary = {

@@ -2987,6 +2987,32 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     expect(other).toBeNull();
   });
 
+  it("scopes task ancestor context to the caller company", async () => {
+    const { companyId, rootId } = await seedChain();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId: otherCompanyId,
+      title: "Cross-company fixture",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "OTHER-1",
+      parentId: rootId,
+    });
+
+    expect((await svc.getAncestors(childId))[0]?.id).toBe(rootId);
+    expect(await svc.getAncestors(childId, otherCompanyId)).toEqual([]);
+    expect(await svc.getAncestors(childId, companyId)).toEqual([]);
+  });
+
   it("ignores closed ancestors created by the agent", async () => {
     const { delegatorId, midId } = await seedChain();
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, midId));

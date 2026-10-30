@@ -4,6 +4,59 @@ import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
+import { extractGitHubPullRequestReferences } from "../github-pull-request-references.js";
+
+const MAX_TASK_PULL_REQUEST_REFERENCES = 12;
+const MAX_TASK_REFERENCE_SOURCE_CHARS = 64_000;
+
+function boundTaskReferenceSource(text: string): string {
+  if (text.length <= MAX_TASK_REFERENCE_SOURCE_CHARS) return text;
+  const bounded = text.slice(0, MAX_TASK_REFERENCE_SOURCE_CHARS);
+  const lastWhitespace = bounded.search(/\s(?=\S*$)/);
+  return lastWhitespace < 0 ? "" : bounded.slice(0, lastWhitespace + 1);
+}
+
+function taskPullRequestReferences(input: {
+  issue: { identifier?: string | null; id: string; description?: string | null } | null;
+  ancestors: Array<{ identifier?: string | null; id: string; description?: string | null }>;
+  taskPlan?: { documentId: string; revisionNumber: number; body: string } | null;
+  wakeComment?: { id: string; body: string } | null;
+  wakeComments: Array<{ id: string; body: string }>;
+}) {
+  const sources = [
+    ...(input.issue?.description ? [{ label: "task description", text: input.issue.description }] : []),
+    ...input.ancestors.map((ancestor, index) => ({
+      label: `${index === 0 ? "parent" : `ancestor ${index + 1}`} ${ancestor.identifier || ancestor.id}`,
+      text: ancestor.description ?? "",
+    })),
+    ...(input.taskPlan?.body ? [{ label: `task plan revision ${input.taskPlan.revisionNumber}`, text: input.taskPlan.body }] : []),
+    ...input.wakeComments.slice(0, 8).map((comment, index) => ({ label: `wake comment ${index + 1}`, text: comment.body })),
+    ...(input.wakeComments.length === 0 && input.wakeComment?.body
+      ? [{ label: "wake comment", text: input.wakeComment.body }]
+      : []),
+  ];
+  const references = new Map<string, { owner: string; repo: string; number: number; sources: string[] }>();
+  let omittedCount = 0;
+  for (const source of sources) {
+    for (const reference of extractGitHubPullRequestReferences(
+      [boundTaskReferenceSource(source.text)],
+      { includeShorthand: false },
+    )) {
+      const key = `${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
+      const existing = references.get(key);
+      if (existing) {
+        if (!existing.sources.includes(source.label) && existing.sources.length < 4) existing.sources.push(source.label);
+        continue;
+      }
+      if (references.size >= MAX_TASK_PULL_REQUEST_REFERENCES) {
+        omittedCount += 1;
+        continue;
+      }
+      references.set(key, { owner: reference.owner, repo: reference.repo, number: reference.number, sources: [source.label] });
+    }
+  }
+  return { references, omittedCount };
+}
 
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
@@ -20,6 +73,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier?: string | null;
     title?: string | null;
+    description?: string | null;
     status?: string | null;
     priority?: string | null;
   }> | null;
@@ -98,6 +152,13 @@ export function buildPaperclipTaskMarkdown(input: {
       : null);
   const effectiveWakeComments =
     wakeComments.length > 0 ? wakeComments : wakeComment ? [wakeComment] : [];
+  const pullRequestReferences = taskPullRequestReferences({
+    issue,
+    ancestors,
+    taskPlan: input.taskPlan,
+    wakeComment,
+    wakeComments: effectiveWakeComments,
+  });
   const renderWakeCommentBodies = input.includeWakeComments !== false;
   const rejectedPlan = input.planReview?.status === "rejected";
   const acceptedPlanContinuation =
@@ -325,6 +386,18 @@ export function buildPaperclipTaskMarkdown(input: {
         `- [ancestor context truncated after ${ancestors.length} entries]`,
       );
     }
+  }
+  if (pullRequestReferences.references.size > 0) {
+    lines.push(
+      "",
+      "Structured GitHub pull request references:",
+      "For a pull request task, use the owner, repository, and number from its exact referenced PR URL. This target takes precedence over a workspace remote or fork. Do not silently rewrite generic MCP tool arguments or retry against another repository. If the task references conflicting PR targets and does not identify which one to use, inspect the existing task source that establishes the target or ask for clarification.",
+      ...[...pullRequestReferences.references.values()].map(reference =>
+        `- ${JSON.stringify(reference.sources.join(", "))}: https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`),
+      ...(pullRequestReferences.omittedCount > 0
+        ? [`- [${pullRequestReferences.omittedCount} additional PR reference(s) omitted after the limit]`]
+        : []),
+    );
   }
   if (effectiveWakeComments.length === 1) {
     lines.push(

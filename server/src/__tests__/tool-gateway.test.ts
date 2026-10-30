@@ -2177,8 +2177,9 @@ rl.on("line", (line) => {
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
     const upstreamName = "file_download_batch_exports_count_rows_create";
+    const upstreamArguments = { owner: "upstream-owner", repo: "project", pullNumber: 42, method: "get" };
     const fake = await startFakeRemoteMcpServer((request) => {
-      expect(request.body).toMatchObject({ method: "tools/call", params: { name: upstreamName, arguments: {} } });
+      expect(request.body).toMatchObject({ method: "tools/call", params: { name: upstreamName, arguments: upstreamArguments } });
       return { body: { jsonrpc: "2.0", id: request.body?.id, result: { content: [{ type: "text", text: "ok" }] } } };
     });
     try {
@@ -2191,7 +2192,7 @@ rl.on("line", (line) => {
       const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.catalogEntryId === catalogEntry.id)!;
       expect(`mcp__paperclip-assigned__${tool.name}`.length).toBeLessThanOrEqual(128);
       expect((await gateway.listToolsForSession(session.token)).find((entry) => entry.catalogEntryId === catalogEntry.id)?.name).toBe(tool.name);
-      await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+      await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: upstreamArguments });
     } finally {
       await fake.close();
     }

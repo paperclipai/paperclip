@@ -46,6 +46,15 @@ describe("merged pull-request confirmation extraction", () => {
     ]);
   });
 
+  it("rejects a PR number followed by URL-path text instead of its boundary", () => {
+    expect(extractGitHubPullRequestReferences([
+      "https://github.com/acme/project/pull/42garbage",
+      "https://github.com/acme/project/pull/43/files",
+    ])).toEqual([
+      { host: "github.com", owner: "acme", repo: "project", number: 43 },
+    ]);
+  });
+
   it("requires merge intent and excludes document and tool-action confirmations", () => {
     const base = {
       kind: "request_confirmation",
