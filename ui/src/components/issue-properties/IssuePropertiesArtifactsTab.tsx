@@ -54,6 +54,20 @@ export type TaskDocumentEditorOptions = Pick<ComponentProps<typeof IssueDocument
   "mentions" | "imageUploadHandler" | "externalReferences" | "feedbackVotes" | "feedbackDataSharingPreference"
   | "feedbackTermsUrl" | "onVote" | "agentMap" | "userProfileMap">;
 
+/** Shared authoring and signed-in permissions for task and conversation hosts. */
+export function TaskGeneralDocuments({ issue, documentEditor }: { issue: Issue; documentEditor: TaskDocumentEditorOptions }) {
+  const { data: session } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  return (
+    <IssueDocumentsSection
+      issue={issue}
+      generalDocumentsOnly
+      canDeleteDocuments={Boolean(session?.user?.id)}
+      canManageDocumentLocks={Boolean(session?.user?.id)}
+      {...documentEditor}
+    />
+  );
+}
+
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
   /** Present only when this host owns the chat shell's document editor. */
@@ -423,11 +437,6 @@ export function IssuePropertiesArtifactsTab({
 }: IssuePropertiesArtifactsTabProps) {
   const { enabled: v1 } = useArtifactsV1Enabled();
   const documentAuthoring = documentEditor !== undefined;
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    enabled: documentAuthoring,
-  });
   const {
     data: attachments,
     isPending: attachmentsPending,
@@ -580,13 +589,9 @@ export function IssuePropertiesArtifactsTab({
     ) : content;
     return documentAuthoring ? (
       <div className="space-y-4">
-        <IssueDocumentsSection
+        <TaskGeneralDocuments
           issue={issue}
-          generalDocumentsOnly
-          canDeleteDocuments={Boolean(session?.user?.id)}
-          canManageDocumentLocks={Boolean(session?.user?.id)}
-          agentMap={agentsById}
-          {...documentEditor}
+          documentEditor={{ agentMap: agentsById, ...documentEditor }}
         />
         {artifacts}
       </div>

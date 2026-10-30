@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
-import { IssuePropertiesArtifactsTab, type TaskDocumentEditorOptions } from "./IssuePropertiesArtifactsTab";
+import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "./IssuePropertiesArtifactsTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -230,6 +230,23 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     };
     render({ documentEditor: options });
     await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining(options)));
+  });
+
+  it("uses the same conversation-scoped editor and signed-in permissions beside agent artifacts", async () => {
+    const conversation = { ...issue, conversationAgentId: "agent-1" };
+    const options: TaskDocumentEditorOptions = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/conversation-image/content"),
+      mentions: [{ id: "agent-1", name: "Agent", kind: "agent" }],
+      externalReferences: {}, onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}>
+      <TaskGeneralDocuments issue={conversation} documentEditor={options} />
+    </QueryClientProvider>));
+    await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({
+      ...options, issue: conversation, generalDocumentsOnly: true, canDeleteDocuments: true, canManageDocumentLocks: true,
+    })));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
   });
 
   it("keeps the same general document authoring with the legacy artifact cards", async () => {

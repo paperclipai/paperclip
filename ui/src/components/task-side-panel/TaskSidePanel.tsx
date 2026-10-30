@@ -41,7 +41,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
-import { IssuePropertiesArtifactsTab, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
+import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
 import { ArtifactUploadButton } from "@/components/artifacts/ArtifactUploadControls";
 import { useIssueArtifactUploads } from "@/hooks/useIssueArtifactUploads";
@@ -837,7 +837,14 @@ function TaskSidePanelForScope({
         : <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />
     ) : null;
   } else if (activeTab.payload.kind === "artifacts" && conversationAgentId) {
-    content = <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />;
+    content = (
+      <div className="space-y-4">
+        <section aria-label="Conversation documents">
+          <TaskGeneralDocuments issue={issue} documentEditor={documentEditor ?? {}} />
+        </section>
+        <AgentArtifactsPanel companyId={issue.companyId} agentId={conversationAgentId} />
+      </div>
+    );
   } else if (activeTab.payload.kind === "artifacts") {
     content = <TextAttachmentContext.Provider value={(id, title) => {
       markInteracted();

@@ -70,10 +70,15 @@ vi.mock("@/components/IssueProperties", () => ({
 }));
 
 const artifactsTabRender = vi.hoisted(() => vi.fn());
+const generalDocumentsRender = vi.hoisted(() => vi.fn());
 vi.mock("@/components/issue-properties/IssuePropertiesArtifactsTab", () => ({
   IssuePropertiesArtifactsTab: (props: unknown) => {
     artifactsTabRender(props);
     return <div>Artifacts content</div>;
+  },
+  TaskGeneralDocuments: (props: unknown) => {
+    generalDocumentsRender(props);
+    return <div data-testid="conversation-document-editor">Conversation documents</div>;
   },
 }));
 
@@ -147,6 +152,7 @@ describe("TaskSidePanel", () => {
 
   beforeEach(() => {
     artifactsTabRender.mockClear();
+    generalDocumentsRender.mockClear();
     coordinator.enabled = false;
     window.localStorage.clear();
     browserFixture.data = [];
@@ -454,6 +460,30 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
     expect(container.textContent).toContain("Agent artifacts agent-1");
     expect(container.textContent).not.toContain("Artifacts content");
+  });
+
+  it.each([
+    { coordinatorEnabled: false, mobile: false },
+    { coordinatorEnabled: false, mobile: true },
+    { coordinatorEnabled: true, mobile: false },
+    { coordinatorEnabled: true, mobile: true },
+  ])("keeps conversation document authoring beside agent artifacts ($coordinatorEnabled, $mobile)", async ({ coordinatorEnabled, mobile }) => {
+    coordinator.enabled = coordinatorEnabled;
+    const conversation = issue({ conversationAgentId: "agent-1" });
+    const documentEditor = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/conversation-image/content"),
+      mentions: [{ id: "agent-1", name: "Agent", kind: "agent" as const }],
+      externalReferences: {}, onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    await render(panel({ issue: conversation, documentEditor, mobile }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const artifacts = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent?.includes("Artifacts"));
+    expect(artifacts).toBeTruthy();
+    await act(async () => artifacts!.click());
+    expect(container.querySelectorAll('[data-testid="conversation-document-editor"]')).toHaveLength(1);
+    expect(generalDocumentsRender).toHaveBeenCalledWith(expect.objectContaining({ issue: conversation, documentEditor }));
+    expect(container.textContent).toContain("Agent artifacts agent-1");
+    expect(artifactsTabRender).not.toHaveBeenCalled();
   });
 
   it("keeps a chat on the conversation's own Artifacts while Agent Chat is off", async () => {
