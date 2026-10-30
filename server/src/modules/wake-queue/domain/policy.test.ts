@@ -6,6 +6,7 @@ import {
   decideQueuedCommentReorder,
   decideQueuedCommentWakeLookup,
   decideReleaseRecovery,
+  decideTerminalDeferredWakeReopen,
   decideWakeAdmission,
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
@@ -694,6 +695,39 @@ describe("decideQueuedCommentReorder", () => {
       expect(decideQueuedCommentReorder(testCase.facts)).toEqual(testCase.expected);
     });
   }
+});
+
+describe("decideTerminalDeferredWakeReopen", () => {
+  const base = {
+    issueStatus: "done",
+    assigneeAgentId: "agent-1",
+    wakeAgentId: "agent-1",
+    requestedByActorType: "agent",
+    wakeReason: "issue_commented",
+    resumeIntent: true,
+    queuedCommentCount: 1,
+    allSelfAuthored: false,
+    hasCommentCreatedAfter: true,
+  };
+
+  it("reopens when an agent resume carries a post-completion comment", () => {
+    expect(decideTerminalDeferredWakeReopen(base)).toBe(true);
+  });
+
+  it("does not reopen when the agent resume comments all predate completion", () => {
+    expect(decideTerminalDeferredWakeReopen({ ...base, hasCommentCreatedAfter: false })).toBe(false);
+  });
+
+  it("reopens for a user-requested deferred wake", () => {
+    expect(
+      decideTerminalDeferredWakeReopen({
+        ...base,
+        requestedByActorType: "user",
+        resumeIntent: false,
+        hasCommentCreatedAfter: false,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("decideQueuedCommentActorOwnsEntry", () => {

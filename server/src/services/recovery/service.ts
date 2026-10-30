@@ -41,6 +41,8 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lte,
+  ne,
   not,
   notExists,
   notInArray,
@@ -4034,6 +4036,192 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  /**
+   * Detects a stale post-done workspace-validation race: a prior succeeded run
+   * already finished the issue (`livenessReason` says Issue is done), and the
+   * failing wake is not a reopen / status-change that superseded that
+   * completion. Callers reclaim to `done` with `false_positive` instead of
+   * board-parking the leaf.
+   */
+  async function findPriorSuccessfulDoneEvidence(
+    issue: typeof issues.$inferSelect,
+    failedRun: LatestIssueRun,
+  ): Promise<{ id: string; finishedAt: Date; livenessReason: string | null } | null> {
+    if (!failedRun) return null;
+    const failedStartedAt = failedRun.startedAt ?? failedRun.createdAt;
+    if (!(failedStartedAt instanceof Date)) return null;
+
+    const [prior] = await db
+      .select({
+        id: heartbeatRuns.id,
+        finishedAt: heartbeatRuns.finishedAt,
+        livenessReason: heartbeatRuns.livenessReason,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          eq(heartbeatRuns.status, "succeeded"),
+          ne(heartbeatRuns.id, failedRun.id),
+          isNotNull(heartbeatRuns.finishedAt),
+          lte(heartbeatRuns.finishedAt, failedStartedAt),
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${issue.id}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1);
+    if (!prior?.finishedAt) return null;
+    // A bare succeeded run is not completion evidence — only an explicit done
+    // liveness reason proves the leaf finished (avoids marking unfinished work
+    // complete when an in_progress run happened to succeed).
+    if (!/issue is done/i.test(prior.livenessReason ?? "")) return null;
+
+    const context = parseObject(failedRun.contextSnapshot);
+    const failedWakeReason = readNonEmptyString(context.wakeReason) ?? "";
+    // Reopen / status-change wakes supersede the prior completion. Do not
+    // treat their workspace_validation failures as post-done races.
+    if (
+      failedWakeReason === "issue_reopened_via_comment" ||
+      failedWakeReason === "issue_status_changed" ||
+      failedWakeReason === "issue_reopened"
+    ) {
+      return null;
+    }
+
+    // Any intervening run for this issue that itself reopened / status-changed
+    // after the prior done finish also supersedes that completion.
+    const intervening = await db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          ne(heartbeatRuns.id, failedRun.id),
+          ne(heartbeatRuns.id, prior.id),
+          isNotNull(heartbeatRuns.startedAt),
+          gt(heartbeatRuns.startedAt, prior.finishedAt),
+          lte(heartbeatRuns.startedAt, failedStartedAt),
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${issue.id}`,
+        ),
+      );
+    for (const row of intervening) {
+      const wakeReason =
+        readNonEmptyString(parseObject(row.contextSnapshot).wakeReason) ?? "";
+      if (
+        wakeReason === "issue_reopened_via_comment" ||
+        wakeReason === "issue_status_changed" ||
+        wakeReason === "issue_reopened"
+      ) {
+        return null;
+      }
+    }
+
+    const commentIds = new Set<string>();
+    const wakeCommentIds = context.wakeCommentIds;
+    if (Array.isArray(wakeCommentIds)) {
+      for (const entry of wakeCommentIds) {
+        const id = readNonEmptyString(entry);
+        if (id) commentIds.add(id);
+      }
+    }
+    for (const key of ["wakeCommentId", "commentId"] as const) {
+      const id = readNonEmptyString(context[key]);
+      if (id) commentIds.add(id);
+    }
+
+    if (commentIds.size > 0) {
+      const comments = await db
+        .select({ id: issueComments.id, createdAt: issueComments.createdAt })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, issue.companyId),
+            eq(issueComments.issueId, issue.id),
+            inArray(issueComments.id, [...commentIds]),
+          ),
+        );
+      if (comments.length === 0) return null;
+      if (comments.every((comment) => comment.createdAt.getTime() <= prior.finishedAt!.getTime())) {
+        return {
+          id: prior.id,
+          finishedAt: prior.finishedAt,
+          livenessReason: prior.livenessReason ?? null,
+        };
+      }
+      return null;
+    }
+
+    return {
+      id: prior.id,
+      finishedAt: prior.finishedAt,
+      livenessReason: prior.livenessReason ?? null,
+    };
+  }
+
+  async function reclaimPostTerminalWorkspaceValidationRace(input: {
+    issue: RecoveryIssue;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+    prior: { id: string; finishedAt: Date; livenessReason: string | null };
+    tx: DbTransaction;
+    publications: ActivityPublication[];
+    postCommitActions: IssuePostCommitAction[];
+  }) {
+    const resolutionNote =
+      `Prior delivery run ${input.prior.id} completed` +
+      (input.prior.livenessReason ? ` with livenessReason=${input.prior.livenessReason}` : "") +
+      ` at ${input.prior.finishedAt.toISOString()}; stale post-done workspace_validation race auto-dismissed.`;
+
+    // Must use the held FOR UPDATE connection — an outer-pool update deadlocks
+    // against escalateStrandedAssignedIssue's issue row lock.
+    const transactionIssuesSvc = issueService(input.tx as unknown as Db);
+    const updated = await transactionIssuesSvc.update(
+      input.issue.id,
+      { status: "done" },
+      input.tx,
+      input.publications,
+      input.postCommitActions,
+    );
+    if (!updated) return null;
+
+    await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      kind: "workspace_validation",
+      cause: "workspace_validation_failed",
+      status: "resolved",
+      outcome: "false_positive",
+      resolutionNote,
+    }, input.tx);
+
+    await logActivity(input.tx as unknown as Db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.latestRun?.id ?? null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "done",
+        previousStatus: input.previousStatus,
+        source: "recovery.reclaim_post_terminal_workspace_validation",
+        recoveryCause: "workspace_validation_failed",
+        latestRunId: input.latestRun?.id ?? null,
+        priorSucceededRunId: input.prior.id,
+        resolutionNote,
+        outcome: "false_positive",
+      },
+    }, input.publications);
+
+    return updated;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
@@ -4055,7 +4243,6 @@ export function recoveryService(
       )).for("update").limit(1).then((rows) => rows[0] ?? null);
       if (!current || current.hiddenAt
         || current.status !== input.issue.status
-        || ["done", "cancelled"].includes(current.status)
         || current.statusVersion !== input.issue.statusVersion
         || current.lastStatusDecisionId !== input.issue.lastStatusDecisionId
         || current.assigneeAgentId !== input.issue.assigneeAgentId
@@ -4064,6 +4251,39 @@ export function recoveryService(
         || current.checkoutRunId !== input.issue.checkoutRunId
         || current.executionAgentNameKey !== input.issue.executionAgentNameKey
         || current.updatedAt.getTime() !== input.issue.updatedAt.getTime()) {
+        return null;
+      }
+
+      // Cancelled is terminal and must not be overwritten by post-done reclaim
+      // (user/board cancel between wake-release and this reread stays cancelled).
+      if (current.status === "cancelled") {
+        return null;
+      }
+
+      // Post-terminal workspace_validation reclaim runs even when the leaf is
+      // already done: dismiss board-orphan park / restore done as false_positive.
+      // Must happen before the remaining terminal short-circuit below so `done`
+      // can still reclaim; cancelled already returned above.
+      const recoveryCause = resolveStrandedRecoveryCause(
+        input.latestRun,
+        input.recoveryCause,
+      );
+      if (recoveryCause === "workspace_validation_failed") {
+        const prior = await findPriorSuccessfulDoneEvidence(current, input.latestRun);
+        if (prior) {
+          return reclaimPostTerminalWorkspaceValidationRace({
+            issue: current,
+            previousStatus: input.previousStatus,
+            latestRun: input.latestRun,
+            prior,
+            tx,
+            publications,
+            postCommitActions,
+          });
+        }
+      }
+
+      if (current.status === "done") {
         return null;
       }
 

@@ -3,6 +3,7 @@ import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/c
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
+  decideTerminalDeferredWakeReopen,
   decideWakeAdmission,
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
@@ -341,20 +342,18 @@ async function promoteDeferredWake(
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
-      companyId: run.companyId,
-      issueId: currentIssue.id,
-      finishingRunId: run.id,
-      commentIds: workingCandidate.deferredCommentIds,
+      companyId: run.companyId, issueId: currentIssue.id, finishingRunId: run.id,
+      commentIds: workingCandidate.deferredCommentIds, after: currentIssue.completedAt,
     });
-    shouldReopen =
-      !selfAuthorship.allSelfAuthored &&
-      (workingCandidate.requestedByActorType === "user" ||
-        workingCandidate.wakeReason === "issue_reopened_via_comment" ||
-        (currentIssue.status === "done" &&
-          workingCandidate.agentId === currentIssue.assigneeAgentId &&
-          workingCandidate.requestedByActorType === "agent" &&
-          workingCandidate.deferredContextSeed.resumeIntent === true &&
-          workingCandidate.queuedCommentIds.length > 0));
+    shouldReopen = decideTerminalDeferredWakeReopen({
+      issueStatus: currentIssue.status, assigneeAgentId: currentIssue.assigneeAgentId,
+      wakeAgentId: workingCandidate.agentId, requestedByActorType: workingCandidate.requestedByActorType,
+      wakeReason: workingCandidate.wakeReason,
+      resumeIntent: workingCandidate.deferredContextSeed.resumeIntent === true,
+      queuedCommentCount: workingCandidate.queuedCommentIds.length,
+      allSelfAuthored: selfAuthorship.allSelfAuthored,
+      hasCommentCreatedAfter: selfAuthorship.hasCommentCreatedAfter,
+    });
   }
 
   // Agent continuations can outlive the work they addressed. Live,

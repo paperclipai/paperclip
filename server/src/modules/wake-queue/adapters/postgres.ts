@@ -137,6 +137,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     originKind: row.originKind,
     monitorNextCheckAt: row.monitorNextCheckAt,
     executionState: (row.executionState as Record<string, unknown> | null) ?? null,
+    completedAt: row.completedAt ?? null,
     responsibleUserId: row.responsibleUserId,
     parentId: row.parentId,
     originId: row.originId,
@@ -402,12 +403,17 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
-    async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
+    async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds, after }) {
       const rows = await tx
-        .select({ createdByRunId: issueComments.createdByRunId })
+        .select({ createdByRunId: issueComments.createdByRunId, createdAt: issueComments.createdAt })
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
-      return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+      const afterAt = after instanceof Date ? after : null;
+      return {
+        allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
+        hasCommentCreatedAfter:
+          afterAt !== null && rows.some((row) => row.createdAt instanceof Date && row.createdAt.getTime() > afterAt.getTime()),
+      };
     },
 
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {

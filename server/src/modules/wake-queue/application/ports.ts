@@ -157,7 +157,9 @@ export interface WakeQueueTransaction {
     issueId: string;
     finishingRunId: string;
     commentIds: string[];
-  }): Promise<{ allSelfAuthored: boolean }>;
+    /** When set, also report whether any comment was created strictly after this instant. */
+    after?: Date | null;
+  }): Promise<{ allSelfAuthored: boolean; hasCommentCreatedAfter: boolean }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;
