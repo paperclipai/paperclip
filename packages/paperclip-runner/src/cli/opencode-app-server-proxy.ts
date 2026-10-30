@@ -411,6 +411,9 @@ async function handle(message: RpcMessage): Promise<void> {
       break;
     case "thread/read":
       if (!session) throw new Error("OpenCode thread is not open");
+      // runnerd reads only turn metadata after resume. Hydrating the retained
+      // OpenCode message history here grows with the session and can exceed
+      // runnerd's bounded stdout frame, which permanently blocks resume.
       result = {
         thread: {
           id: session.ids().driverSessionId,
@@ -419,7 +422,6 @@ async function handle(message: RpcMessage): Promise<void> {
             ? [{ id: activeTurnId, status: "inProgress" }]
             : [],
         },
-        transcript: await session.read?.(),
       };
       break;
     default:

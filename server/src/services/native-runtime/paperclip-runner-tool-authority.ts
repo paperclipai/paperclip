@@ -368,7 +368,7 @@ export class PaperclipRunnerToolAuthority {
                     ...(descriptor.inputSchema.properties?.contentRef ?? {}),
                     description: this.binding.readRemoteTaskFile
                       ? "Path to the file on the execution host: workspace-relative or absolute within a location granted to this task, including its agent home."
-                      : "Workspace-relative source path. Absolute paths, URLs, traversal, and symlinks are rejected.",
+                      : "Workspace-relative source path under get_workspace.cwd. Create or copy the file there before registering; AGENT_HOME is for personal instructions and memory. Absolute paths, URLs, traversal, and symlinks are rejected.",
                   },
                 },
               }

@@ -184,9 +184,8 @@ changed cache definitions.
 The repository variable `CI_INCREMENTAL_MODE` accepts `enabled` (the default),
 `shadow` (report selections but execute everything), or `full`. Add the `full-ci`
 label to force all checks on one PR. Authorized `profile-ci` runs also execute
-everything. Forced and shadow runs bypass task-result cache reads. The task helper
-uses Turbo's write-only local cache mode for forced execution; the Actions policy
-still controls cache archive restore and publication. Every routing run
+everything. Forced and shadow runs disable local and remote task-result cache
+reads and writes. Every routing run
 with a valid plan publishes affected and scheduled job counts with input reasons
 in its job summary. Required aggregates reject failed, cancelled, and unexpectedly
 skipped selected suites; the verify aggregate includes serialized tests and the

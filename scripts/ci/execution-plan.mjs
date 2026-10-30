@@ -8,12 +8,6 @@ export function sourceFiles(cwd = process.cwd()) {
 
 const literalGlob = (file) => file.replace(/([*?{}[\]\\])/g, "\\$1");
 
-export function turboCacheArgs(force) {
-  // Turbo rejects --force together with --cache. Write-only cache keeps forced
-  // lanes executing while retaining their successful local results.
-  return [force ? "--cache=local:w" : "--cache=local:rw"];
-}
-
 const groups = {
   "ci:server": "general-server-without-chat",
   "ci:chat": "general-chat",

@@ -6,10 +6,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium, type Browser, type BrowserContext } from "@playwright/test";
 import { runnerSuites } from "../catalog.js";
-import { productJourneys, parseTargetConfig, preparationPreview } from "./catalog.js";
+import { productJourneys, parseTargetConfig, preparationPreview, isAgentJourney, agentJourneyRuns } from "./catalog.js";
 import { journeyFixtures } from "./fixtures.js";
 import { taskProperties } from "./task-properties.js";
 import { askQuestion, taskCreate } from "./basic-flows.js";
+import { runAgentJourney } from "./agent-flows.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
@@ -101,11 +102,11 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "basic-flows.ts", "basic-evidence.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
-  definitionHash.update(await readFile(path.join(import.meta.dirname, "../user-actions.ts")));
+  for (const name of ["catalog.ts", "task-properties.ts", "basic-flows.ts", "basic-evidence.ts", "agent-flows.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const file of ["catalog.ts", "api.ts", "run-observations.ts", "user-actions.ts", "plan-revision-flow.ts", "skill-studio-flow.ts", "protected-action-flow.ts", "story-artifact.ts", "stop-redirect-flow.ts", "everyday-cases.ts", "everyday-delivery.ts", "everyday-decisions.ts", "connection-guidance-evidence.ts", "everyday-artifact.py"]) definitionHash.update(await readFile(path.join(import.meta.dirname, "..", file)));
   definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
-  const expected = config.journeys.map(id => `product-journeys.${config.id}.${id === "cloud-onboarding" ? config.modelProfileId : id === "ask-question" ? "configured-agent" : "browser"}.${config.executionEnvironment}.${id}`);
+  const expected = config.journeys.map(id => `product-journeys.${config.id}.${id === "cloud-onboarding" ? config.modelProfileId : isAgentJourney(id) ? "configured-agent" : "browser"}.${config.executionEnvironment}.${id}`);
   let reportPersisted = false;
   const failFinalization = (code: string) => {
     for (const result of results) {
@@ -164,7 +165,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       const profile = id === "cloud-onboarding" ? runnerSuites.flatMap(suite => suite.profiles).find(p => p.id === config.modelProfileId) : undefined;
       const result: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2", executionId: expected[index]!, suiteId: "product-journeys", suiteDefinitionHash,
-        source, attempt: 1, status: "failed", profileId: id === "ask-question" ? "configured-agent" : profile?.id ?? "browser", environmentId: config.executionEnvironment, caseId: id,
+        source, attempt: 1, status: "failed", profileId: isAgentJourney(id) ? "configured-agent" : profile?.id ?? "browser", environmentId: config.executionEnvironment, caseId: id,
         provider: profile?.provider ?? null, model: profile?.model ?? null, runtimeMode: profile?.generation ?? "none", startedAt, finishedAt: startedAt, durationMs: 0, cleanup: "not_started", productJourney: evidence,
       };
       results.push(result);
@@ -191,13 +192,20 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
           evidence.startingState = ready.startingState;
           await persist();
           phase = "journey";
-          if (id === "ask-question") {
+          if (isAgentJourney(id)) {
             if (!ready.agent) throw new JourneyError("blocked", "configured_agent_required");
             result.profileId = "configured-agent";
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            await askQuestion(ready, session!, campaignId, evidence);
+            if (id === "ask-question") await askQuestion(ready, session!, campaignId, evidence);
+            else await runAgentJourney(id, ready, session!, campaignId, evidence, { deadlineAt,
+              directory: path.join(outputDir, "private-stories", id),
+              capture: async (_id, _label, file) => {
+                const directory = path.join(outputDir, "private-stories", id);
+                await mkdir(directory, { recursive: true, mode: 0o700 });
+                await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file));
+              } });
           } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
           else await taskProperties(ready, session!, campaignId, evidence);
         }
@@ -252,6 +260,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         if (receipt.operations) result.productJourney!.operations = receipt.operations;
       }
       for (const result of results) {
+        if (isAgentJourney(result.caseId as import("./types.js").JourneyId) && result.status === "passed"
+          && (!seen.has(result.caseId) || result.runIds?.length !== agentJourneyRuns[result.caseId as keyof typeof agentJourneyRuns])) throw new JourneyError("failed", "paid_journey_receipt_missing");
         if (result.caseId === "cloud-onboarding" && result.status === "passed" && (!seen.has(result.caseId) || !result.runIds?.length || !result.productJourney?.operations || !result.productJourney.operations.traceIds.length)) throw new JourneyError("failed", "paid_journey_receipt_missing");
         // Success-only checks must run before a disposable target can be deleted.
         // Cleanup is provisional here; the observed cleanup result is retained below.

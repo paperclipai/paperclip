@@ -1072,7 +1072,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(
                 &state_path,
                 &mut state,
-                if success { "completed" } else { "failed" },
+                if success || complete_after_tool_call {
+                    "completed"
+                } else {
+                    "failed"
+                },
             )?;
             continue;
         }
