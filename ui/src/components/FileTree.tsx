@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
 import {
@@ -50,8 +50,6 @@ type VisibleFileTreeNode = {
   depth: number;
 };
 
-const TREE_BASE_INDENT = 16;
-const TREE_STEP_INDENT = 24;
 const TREE_ROW_HEIGHT_CLASS = "min-h-9";
 
 const fileTreeToneClass: Record<FileTreeTone, string | undefined> = {
@@ -247,8 +245,19 @@ export type FileTreeProps = {
   fileTones?: Record<string, FileTreeTone | undefined>;
   /** Internal-only escape hatch for current host call sites that need richer row content. */
   renderFileExtra?: (node: FileTreeNode, checked: boolean) => ReactNode;
+  /** Rich labels reuse the tree's icons, spacing, focus, and selection controls. */
+  renderLabel?: (node: FileTreeNode) => ReactNode;
+  checkboxLabel?: (node: FileTreeNode) => string;
+  /** Override selection for package nodes; null leaves an aligned, non-selectable row. */
+  getCheckboxState?: (node: FileTreeNode) => 'checked' | 'mixed' | 'unchecked' | null;
+  renderNodeExtra?: (node: FileTreeNode) => ReactNode;
+  /** Search hides rows, while folder check states still include all descendants. */
+  visiblePaths?: ReadonlySet<string>;
+  disabled?: boolean;
   /** @deprecated Use fileTones for public surfaces. Kept for compatibility with host-only callers. */
   fileRowClassName?: (node: FileTreeNode, checked: boolean) => string | undefined;
+  /** Compact explorer rows place disclosure controls before the checkbox and icon. */
+  layout?: "default" | "explorer";
   showCheckboxes?: boolean;
   /** Allow long file and directory names to wrap instead of forcing horizontal overflow. */
   wrapLabels?: boolean;
@@ -269,7 +278,14 @@ export function FileTree({
   fileBadges,
   fileTones,
   renderFileExtra,
+  renderLabel,
+  checkboxLabel,
+  getCheckboxState,
+  renderNodeExtra,
+  visiblePaths,
+  disabled = false,
   fileRowClassName,
+  layout = "default",
   showCheckboxes = true,
   wrapLabels = true,
   loading = false,
@@ -279,11 +295,12 @@ export function FileTree({
 }: FileTreeProps) {
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
   const visibleNodes = useMemo(
-    () => flattenVisibleNodes(nodes, expandedDirs),
-    [expandedDirs, nodes],
+    () => flattenVisibleNodes(nodes, expandedDirs).filter(({ node }) => !visiblePaths || visiblePaths.has(node.path)),
+    [expandedDirs, nodes, visiblePaths],
   );
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const tabStop = visibleNodes.some(({ node }) => node.path === focusedPath) ? focusedPath : visibleNodes[0]?.node.path;
 
   function focusPath(path: string) {
     setFocusedPath(path);
@@ -293,11 +310,13 @@ export function FileTree({
   }
 
   function toggleNode(node: FileTreeNode) {
+    if (disabled) return;
     if (node.kind === "dir") onToggleDir(node.path);
     else onSelectFile(node.path);
   }
 
   function handleRowKeyDown(event: KeyboardEvent<HTMLDivElement>, index: number, node: FileTreeNode) {
+    if (disabled) return;
     switch (event.key) {
       case "ArrowDown": {
         event.preventDefault();
@@ -328,7 +347,7 @@ export function FileTree({
         toggleNode(node);
         break;
       case " ":
-        if (showCheckboxes && onToggleCheck) {
+        if (showCheckboxes && onToggleCheck && getCheckboxState?.(node) !== null) {
           event.preventDefault();
           onToggleCheck(node.path, node.kind);
         }
@@ -378,7 +397,7 @@ export function FileTree({
     );
   }
 
-  if (nodes.length === 0) {
+  if (visibleNodes.length === 0) {
     return (
       <div aria-label={ariaLabel} role="tree" className="p-3">
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
@@ -395,7 +414,11 @@ export function FileTree({
     <div aria-label={ariaLabel} role="tree">
       {visibleNodes.map(({ node, depth }, index) => {
         const expanded = node.kind === "dir" && expandedDirs.has(node.path);
-        const { allChecked, someChecked } = checkboxState(node, effectiveCheckedFiles);
+        const customCheck = getCheckboxState?.(node);
+        const hasCheckbox = showCheckboxes && customCheck !== null;
+        const { allChecked, someChecked } = customCheck === undefined || customCheck === null
+          ? checkboxState(node, effectiveCheckedFiles)
+          : { allChecked: customCheck === 'checked', someChecked: customCheck === 'mixed' };
         const badge = fileBadges?.[node.path];
         const tone = fileTones?.[node.path] ?? "default";
         const extraClassName = node.kind === "file" ? fileRowClassName?.(node, allChecked) : undefined;
@@ -413,41 +436,54 @@ export function FileTree({
             aria-level={depth + 1}
             aria-expanded={node.kind === "dir" ? expanded : undefined}
             aria-selected={node.kind === "file" ? isSelected : undefined}
-            aria-checked={showCheckboxes ? (someChecked ? "mixed" : allChecked) : undefined}
-            tabIndex={(focusedPath ?? visibleNodes[0]?.node.path) === node.path ? 0 : -1}
+            aria-checked={hasCheckbox ? (someChecked ? "mixed" : allChecked) : undefined}
+            aria-disabled={disabled || undefined}
+            tabIndex={tabStop === node.path ? 0 : -1}
             className={cn(
-              node.kind === "dir"
+              layout === "explorer"
+                ? "group flex w-full items-center gap-2 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 cursor-pointer"
+                : node.kind === "dir"
                 ? showCheckboxes
                   ? "group grid w-full grid-cols-(--gtc-2) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground"
                   : "group grid w-full grid-cols-(--gtc-3) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground max-[480px]:grid-cols-(--gtc-4)"
                 : "group flex w-full items-center gap-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground cursor-pointer",
-              TREE_ROW_HEIGHT_CLASS,
+              layout === "explorer" ? "h-8" : TREE_ROW_HEIGHT_CLASS,
+              layout === "explorer" && "file-tree-row-explorer",
               isSelected && "text-foreground bg-accent/20",
               fileTreeToneClass[tone],
               extraClassName,
+              disabled && "opacity-50",
+              "file-tree-row",
               "outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset",
             )}
-            style={{
-              paddingInlineStart: `${TREE_BASE_INDENT + depth * TREE_STEP_INDENT - 8}px`,
-            }}
+            style={{ "--file-tree-depth": depth } as CSSProperties}
             onFocus={() => setFocusedPath(node.path)}
             onClick={() => toggleNode(node)}
             onKeyDown={(event) => handleRowKeyDown(event, index, node)}
             data-file-tree-path={node.path}
           >
-            {showCheckboxes && (
-              <label className="flex items-center pl-2" onClick={(event) => event.stopPropagation()}>
+            {layout === "explorer" && (node.kind === "dir" ? (
+              <button type="button" disabled={disabled} className="flex size-4 shrink-0 items-center justify-center rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                onClick={event => { event.stopPropagation(); onToggleDir(node.path); }}
+                aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}>
+                {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+            ) : <span className="size-4 shrink-0" aria-hidden="true" />)}
+            {hasCheckbox ? (
+              <label className={cn("flex items-center", layout === "explorer" ? "size-4 shrink-0 justify-center" : "pl-2")} onClick={(event) => event.stopPropagation()}>
                 <input
                   type="checkbox"
+                  aria-label={checkboxLabel?.(node) ?? `Select ${node.path}`}
+                  disabled={disabled}
                   checked={allChecked}
                   ref={(element) => {
                     if (element) element.indeterminate = someChecked;
                   }}
                   onChange={() => onToggleCheck?.(node.path, node.kind)}
-                  className="mr-2 accent-foreground"
+                  className={layout === "explorer" ? "size-3.5 shrink-0 accent-foreground" : "mr-2 accent-foreground"}
                 />
               </label>
-            )}
+            ) : showCheckboxes && layout === "explorer" ? <span className="size-4 shrink-0" aria-hidden="true" /> : null}
             <span className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
               <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                 {node.kind === "dir" ? (
@@ -460,8 +496,8 @@ export function FileTree({
                   <FileIcon className="h-3.5 w-3.5" />
                 ) : null}
               </span>
-              <span className={cn("min-w-0", wrapLabels ? "break-all leading-4" : "truncate")}>
-                {node.name}
+              <span className={cn("min-w-0", layout === "explorer" && "flex-1", wrapLabels ? "break-all leading-4" : "truncate")}>
+                {renderLabel ? renderLabel(node) : node.name}
               </span>
             </span>
             {badge && (
@@ -475,10 +511,12 @@ export function FileTree({
                 {badge.label}
               </Badge>
             )}
+            {renderNodeExtra?.(node)}
             {node.kind === "file" && renderFileExtra?.(node, allChecked)}
-            {node.kind === "dir" && (
+            {node.kind === "dir" && layout === "default" && (
               <button
                 type="button"
+                disabled={disabled}
                 className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 max-[480px]:hidden"
                 onClick={(event) => {
                   event.stopPropagation();

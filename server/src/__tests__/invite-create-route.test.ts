@@ -3,12 +3,18 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const logActivityMock = vi.fn();
+const canUserMock = vi.fn();
+const insertMock = vi.fn();
 
 function registerModuleMocks() {
+  vi.doMock("../services/agent-lifecycle.js", () => ({
+    createAgentLifecycle: () => ({}),
+    AgentLifecycleConflict: class extends Error {},
+  }));
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       isInstanceAdmin: vi.fn(),
-      canUser: vi.fn(),
+      canUser: (...args: unknown[]) => canUserMock(...args),
       hasPermission: vi.fn(),
     }),
     agentService: () => ({
@@ -44,6 +50,7 @@ function createDbStub() {
 
   return {
     insert() {
+      insertMock();
       return {
         values() {
           return {
@@ -64,7 +71,6 @@ function createDbStub() {
             where() {
               return Promise.resolve([{
                 name: "Acme Robotics",
-                brandColor: "#114488",
                 logoAssetId: "logo-1",
               }]);
             },
@@ -76,7 +82,7 @@ function createDbStub() {
   };
 }
 
-async function createApp() {
+async function createApp(source: "local_implicit" | "session" = "local_implicit") {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
@@ -86,9 +92,10 @@ async function createApp() {
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
-      source: "local_implicit",
-      userId: null,
+      source,
+      userId: source === "session" ? "inviter-1" : null,
       companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
     };
     next();
   });
@@ -115,6 +122,9 @@ describe("POST /companies/:companyId/invites", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     logActivityMock.mockReset();
+    canUserMock.mockReset();
+    insertMock.mockReset();
+    canUserMock.mockImplementation(async (_companyId, _userId, permissionKey) => permissionKey === "users:invite");
   });
 
   it("returns an absolute invite URL using the request base URL", async () => {
@@ -133,5 +143,68 @@ describe("POST /companies/:companyId/invites", () => {
     expect(res.body.companyName).toBe("Acme Robotics");
     expect(res.body.invitePath).toMatch(/^\/invite\/pcp_invite_/);
     expect(res.body.inviteUrl).toMatch(/^https:\/\/paperclip\.example\/invite\/pcp_invite_/);
+  });
+
+  it.each(["operator", "viewer"])("allows Operators to invite %s members", async (humanRole) => {
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "human", humanRole });
+
+    expect(res.status).toBe(201);
+    expect(insertMock).toHaveBeenCalledOnce();
+  });
+
+  it("allows the default Operator role for mixed human and agent invitations", async () => {
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "both" });
+
+    expect(res.status).toBe(201);
+    expect(canUserMock).not.toHaveBeenCalledWith("company-1", "inviter-1", "joins:approve");
+    expect(canUserMock).not.toHaveBeenCalledWith("company-1", "inviter-1", "users:manage_permissions");
+  });
+
+  it("does not require human membership permissions for agent-only invitations", async () => {
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "agent", humanRole: "owner" });
+
+    expect(res.status).toBe(201);
+    expect(canUserMock).not.toHaveBeenCalledWith("company-1", "inviter-1", "joins:approve");
+    expect(canUserMock).not.toHaveBeenCalledWith("company-1", "inviter-1", "users:manage_permissions");
+  });
+
+  it.each(["admin", "owner"])("prevents Operators from inviting %s members", async (humanRole) => {
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "human", humanRole });
+
+    expect(res.status).toBe(403);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("requires member-permission management to invite Owners even when join approval is allowed", async () => {
+    canUserMock.mockImplementation(async (_companyId, _userId, permissionKey) =>
+      permissionKey === "users:invite" || permissionKey === "joins:approve",
+    );
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "human", humanRole: "owner" });
+
+    expect(res.status).toBe(403);
+    expect(canUserMock).toHaveBeenCalledWith("company-1", "inviter-1", "users:manage_permissions");
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it("allows Owner invitations when both membership permissions are granted", async () => {
+    canUserMock.mockResolvedValue(true);
+    const res = await request(await createApp("session"))
+      .post("/api/companies/company-1/invites")
+      .send({ allowedJoinTypes: "human", humanRole: "owner" });
+
+    expect(res.status).toBe(201);
+    expect(canUserMock).toHaveBeenCalledWith("company-1", "inviter-1", "joins:approve");
+    expect(canUserMock).toHaveBeenCalledWith("company-1", "inviter-1", "users:manage_permissions");
   });
 });

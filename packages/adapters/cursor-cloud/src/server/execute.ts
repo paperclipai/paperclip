@@ -12,16 +12,20 @@ import {
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   asBoolean,
   asString,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
+  isForbiddenConfigEnvKey,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
+  selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
-  stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 
 type CursorCloudSession = {
@@ -56,6 +60,7 @@ function asStringEnvMap(value: unknown): Record<string, string> {
   const parsed = parseObject(value);
   const env: Record<string, string> = {};
   for (const [key, entry] of Object.entries(parsed)) {
+    if (isForbiddenConfigEnvKey(key)) continue;
     if (typeof entry === "string") {
       env[key] = entry;
     } else if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
@@ -105,12 +110,17 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const { runId, agent, context, authToken } = ctx;
   const env: Record<string, string> = {
     ...configEnv,
-    ...buildPaperclipEnv(agent),
+    // The selected managed cloud host is trusted with this persistent identity,
+    // just like a managed local host (see doc/AGENT-IDENTITY.md).
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
   delete env.PAPERCLIP_API_KEY;
+  // Wake context travels in the prompt; a configured copy can exceed spawn limits.
+  delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
 
   const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
   const wakeReason = trimNullable(context.wakeReason);
@@ -120,7 +130,6 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
@@ -129,10 +138,23 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  // cursor_cloud runs remotely in Cursor's cloud and is intentionally not
+  // issued a Paperclip run JWT (registry: supportsLocalAgentJwt=false).
+  // buildPaperclipEnv always sets PAPERCLIP_API_URL, defaulting to the local
+  // runtime host — which a remote worker can neither reach nor authenticate
+  // against, so any agent-initiated Paperclip API call would fail with a 401
+  // (or be unreachable) and add noise. When there is no usable key, drop the
+  // callback wiring so cloud-side Paperclip tools degrade to a clean no-op.
+  // Run results are delivered server-side via the Cursor Agent SDK (getRun /
+  // wait), not through this callback, so nothing is lost.
+  if (!trimNullable(env.PAPERCLIP_API_KEY)) {
+    delete env.PAPERCLIP_API_URL;
+    delete env.PAPERCLIP_API_BRIDGE_MODE;
   }
 
   const workspace = parseObject(context.paperclipWorkspace);
@@ -152,7 +174,10 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   }
 
   delete env.CURSOR_API_KEY;
-  return env;
+  // Cursor rejects the entire request when any envVars value is empty.
+  // Paperclip may use empty values to unset optional host credentials; remote
+  // workers do not inherit those host variables, so omit the empty entries.
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value.length > 0));
 }
 
 async function buildInstructionsPrefix(
@@ -323,7 +348,7 @@ async function getAttachedRun(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onDispatch } = ctx;
   const envConfig = asStringEnvMap(config.env);
   const apiKey = asString(envConfig.CURSOR_API_KEY, "").trim();
   if (!apiKey) {
@@ -381,7 +406,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     : null);
   const canReuseSession = sessionMatches(session, envType, envName, repos);
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = asString(config.promptTemplate, context.conversationMode === true
+    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+    : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
@@ -393,7 +420,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: canReuseSession });
+  const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+    resumedSession: canReuseSession,
+    includeCommunicationGuidance: false,
+  });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -404,14 +435,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : renderTemplate(promptTemplate, templateData).trim();
   const paperclipEnvNote = renderPaperclipEnvNote(remoteEnv);
   const prompt = joinPromptSections([
+    selectInitialCommunicationGuidance(context, { resumedSession: canReuseSession }),
     instructions.prefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    taskContextNote,
     paperclipEnvNote,
     renderedPrompt,
   ]);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const finalPrompt = joinPromptSections([prompt, sessionHandoffNote]);
+  const promptMetrics = {
+    promptChars: finalPrompt.length,
+    instructionsChars: instructions.chars,
+    bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
+    taskContextChars: taskContextNote.length,
+    heartbeatPromptChars: renderedPrompt.length,
+  };
 
   const agentOptions = buildAgentOptions({
     apiKey,
@@ -441,13 +482,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command: "@cursor/sdk",
       commandNotes,
       prompt: finalPrompt,
-      promptMetrics: {
-        promptChars: finalPrompt.length,
-        instructionsChars: instructions.chars,
-        bootstrapPromptChars: renderedBootstrapPrompt.length,
-        wakePromptChars: wakePrompt.length,
-        heartbeatPromptChars: renderedPrompt.length,
-      },
+      promptMetrics,
       context: {
         cursorCloud: {
           envType,
@@ -466,6 +501,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let run: Run | null = null;
   let streamError: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first SDK
+    // request is its dispatch boundary. Report it before any potentially
+    // long-running remote reattach/create/send operation.
+    onDispatch?.();
     const attachedRun = canReuseSession
       ? await getAttachedRun({ apiKey, session })
       : null;
@@ -571,7 +610,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSession: false,
     };
   } catch (err) {
-    const reason = formatRunError(err);
+    const error = formatRunError(err);
+    const reason = !model && error.includes("[invalid_model]")
+      ? `${error} Cursor rejected its configured default model. Choose an available default at https://cursor.com/dashboard/cloud-agents or set this agent's model explicitly.`
+      : error.includes("Failed to determine repository default branch")
+        ? `${error} Verify that Cursor's GitHub integration can access ${repoUrl} at https://cursor.com/dashboard/cloud-agents. If the repository has no default branch, configure a starting branch for this agent.`
+        : error;
     if (run) {
       await onLog("stdout", eventLine({
         type: "cursor_cloud.result",

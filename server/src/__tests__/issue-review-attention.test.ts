@@ -138,6 +138,7 @@ describeEmbeddedPostgres("issue review attention", () => {
   it("reports every healthy review path as covered", async () => {
     const { companyId, agentId } = await seed();
     const interactionIssueId = await insertReview({ companyId, agentId, identifier: "RVA-2" });
+    const humanOnlyInteractionIssueId = await insertReview({ companyId, agentId, identifier: "RVA-2H" });
     const approvalIssueId = await insertReview({ companyId, agentId, identifier: "RVA-3" });
     const monitorIssueId = await insertReview({
       companyId,
@@ -168,6 +169,18 @@ describeEmbeddedPostgres("issue review attention", () => {
       status: "pending",
       continuationPolicy: "wake_assignee",
       payload: { version: 1, prompt: "Approve?" },
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: humanOnlyInteractionIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      payload: { version: 1, prompt: "Human review?" },
     });
     const approvalId = randomUUID();
     await db.insert(approvals).values({
@@ -201,6 +214,7 @@ describeEmbeddedPostgres("issue review attention", () => {
     const byId = new Map(rows.map((row) => [row.id, row.reviewAttention]));
     const expectedKinds = new Map([
       [interactionIssueId, "interaction"],
+      [humanOnlyInteractionIssueId, "interaction"],
       [approvalIssueId, "approval"],
       [monitorIssueId, "monitor"],
       [humanIssueId, "human_reviewer"],
@@ -215,6 +229,12 @@ describeEmbeddedPostgres("issue review attention", () => {
         paths: expect.arrayContaining([expect.objectContaining({ kind })]),
       });
     }
+    expect(byId.get(interactionIssueId)?.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "interaction", responder: "Review Agent" }),
+    ]));
+    expect(byId.get(humanOnlyInteractionIssueId)?.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "interaction", responder: "Board" }),
+    ]));
   });
 
   it("does not let a transiently skipped recovery consume its fingerprint", async () => {

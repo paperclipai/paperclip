@@ -79,7 +79,7 @@ function SiblingLink({
           "flex min-w-0 items-center gap-1.5 text-xs font-mono text-muted-foreground transition-colors group-hover:text-foreground",
           direction === "next" && "sm:justify-end",
         )}>
-          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
           <span className="shrink-0">{identifier}</span>
         </div>
         <div className="truncate text-sm text-foreground">

@@ -355,7 +355,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
         code: "review_policy_denied",
         policy: "human_only",
         allowedActor: "authenticated_user_with_issue_write_access",
-        remediation: expect.stringContaining("authenticated user"),
+        remediation: "Have an authenticated user with issue write access submit the verdict.",
       },
     });
 
@@ -366,7 +366,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(userVerdict.body).toMatchObject({ id: issueId, status: "cancelled" });
   });
 
-  it("allows an agent writer to relax reviewPolicy in the verdict patch", async () => {
+  it("does not let an agent bypass human_only by relaxing reviewPolicy in the verdict patch", async () => {
     const seeded = await seedCompany("RLP");
     const issueId = await seedReview({
       companyId: seeded.companyId,
@@ -380,8 +380,87 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "done", reviewPolicy: "anyone" });
 
-    expect(verdict.status, JSON.stringify(verdict.body)).toBe(200);
-    expect(verdict.body).toMatchObject({ id: issueId, status: "done", reviewPolicy: "anyone" });
+    expect(verdict.status).toBe(403);
+    expect(verdict.body).toMatchObject({
+      details: {
+        code: "review_policy_denied",
+        policy: "human_only",
+        allowedActor: "authenticated_user_with_issue_write_access",
+        remediation: "Have an authenticated user with issue write access submit the verdict.",
+      },
+    });
+    const [persisted] = await db.select({
+      status: issues.status,
+      reviewPolicy: issues.reviewPolicy,
+    }).from(issues).where(eq(issues.id, issueId));
+    expect(persisted).toEqual({ status: "in_review", reviewPolicy: "human_only" });
+  });
+
+  it("does not let the review requester bypass not_creator by relaxing reviewPolicy in the verdict patch", async () => {
+    const seeded = await seedCompany("RNC");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "RNC-1",
+      reviewPolicy: "not_creator",
+    });
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.assigneeAgentId,
+      agentId: seeded.assigneeAgentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+    const runId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
+
+    const verdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, runId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", reviewPolicy: "anyone" });
+
+    expect(verdict.status).toBe(403);
+    expect(verdict.body).toMatchObject({
+      details: {
+        code: "review_policy_denied",
+        policy: "not_creator",
+        allowedActor: "writer_other_than_review_requester",
+        remediation: "Have another writer with issue write access submit the verdict.",
+      },
+    });
+    const [persisted] = await db.select({
+      status: issues.status,
+      reviewPolicy: issues.reviewPolicy,
+    }).from(issues).where(eq(issues.id, issueId));
+    expect(persisted).toEqual({ status: "in_review", reviewPolicy: "not_creator" });
+  });
+
+  it("does not let an excluded actor relax an existing review policy in a separate patch", async () => {
+    const seeded = await seedCompany("RSP");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "RSP-1",
+      reviewPolicy: "human_only",
+    });
+    const runId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
+
+    const relaxation = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, runId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ reviewPolicy: "anyone" });
+
+    expect(relaxation.status).toBe(403);
+    expect(relaxation.body).toMatchObject({
+      details: {
+        code: "review_policy_denied",
+        policy: "human_only",
+      },
+    });
+    const [persisted] = await db.select({ reviewPolicy: issues.reviewPolicy })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(persisted).toEqual({ reviewPolicy: "human_only" });
   });
 
   it("enforces not_creator when accepting or rejecting pending review interactions", async () => {

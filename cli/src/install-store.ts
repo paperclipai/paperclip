@@ -380,13 +380,17 @@ function shellQuote(value: string): string {
 
 function isManagedShimContents(contents: string): boolean {
   const lines = contents.split("\n");
+  // Accept the original pinned-runtime shim so upgrades can replace it.
+  const withRuntimePath = lines.length === 6;
+  const execIndex = withRuntimePath ? 4 : 3;
   return (
-    lines.length === 5 &&
+    (lines.length === 5 || withRuntimePath) &&
     lines[0] === "#!/bin/sh" &&
     lines[1] === `# ${MANAGED_SHIM_MARKER}` &&
     lines[2] === "set -eu" &&
-    /^exec '(?:[^']|'"'"')+' '(?:[^']|'"'"')+' "\$@"$/.test(lines[3]) &&
-    lines[4] === ""
+    (!withRuntimePath || /^export PATH='(?:[^']|'"'"')+':"\$\{PATH:-\/usr\/local\/bin:\/usr\/bin:\/bin\}"$/.test(lines[3])) &&
+    /^exec '(?:[^']|'"'"')+' '(?:[^']|'"'"')+' "\$@"$/.test(lines[execIndex]) &&
+    lines[execIndex + 1] === ""
   );
 }
 
@@ -399,7 +403,9 @@ export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true, mode: 0o755 });
   assertManagedShimWritable(paths);
   const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
-  const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;
+  // ACP servers and package-manager shims use /usr/bin/env node. Pin their
+  // runtime too, even when systemd/launchd supplies a different PATH.
+  const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexport PATH=${shellQuote(path.dirname(process.execPath))}:"\${PATH:-/usr/local/bin:/usr/bin:/bin}"\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;
   writeFileAtomic(paths.shimPath, contents, 0o755);
 }
 

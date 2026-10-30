@@ -22,6 +22,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, 
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
+import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -31,11 +32,10 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
-function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
+function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
   const context = contextSnapshot as Record<string, unknown>;
-  return context.modelProfile === "cheap" &&
-    context.recoveryIntent === "status_only" &&
+  return context.recoveryIntent === "status_only" &&
     context.allowDeliverableWork === false &&
     context.allowDocumentUpdates === false &&
     context.resumeRequiresNormalModel === true;
@@ -46,6 +46,15 @@ export function approvalRoutes(
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
   const router = Router();
+  router.param("id", async (req, res, next, id) => {
+    try {
+      if (!(await canActorReadApproval(db, req.actor, id))) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      next();
+    } catch (error) { next(error); }
+  });
   const svc = approvalService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
@@ -189,14 +198,13 @@ export function approvalRoutes(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+    if (!isStatusOnlyRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
-      error: "Cheap status-only recovery runs cannot create or modify approvals",
+      error: "Status-only recovery runs cannot create or modify approvals",
       details: {
         companyId,
         runId: run.id,
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         resumeRequiresNormalModel: true,
       },
@@ -209,7 +217,7 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    const result = await svc.list(companyId, status, await approvalReadSqlCondition(db, req.actor));
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 

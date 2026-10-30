@@ -7,6 +7,7 @@ import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
+import { InlineBanner } from "@/components/InlineBanner";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
 
@@ -31,6 +32,14 @@ export function IssueScheduledRetryCard({
 
   if (!scheduledRetry || !issueId) return null;
   if (scheduledRetry.status !== "scheduled_retry") return null;
+
+  if (scheduledRetry.scheduledRetryReason === "workspace_busy") {
+    return (
+      <InlineBanner tone="info" icon={Clock} title="Waiting for workspace" className="mb-3">
+        Another task is using this workspace. Work starts automatically when it is available.
+      </InlineBanner>
+    );
+  }
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
   const dueAtIso = scheduledRetry.scheduledRetryAt
@@ -106,7 +115,7 @@ export function IssueScheduledRetryCard({
           ) : null}
           {scheduledRetry.error ? (
             <div className="mt-1 text-xs text-muted-foreground">
-              Last attempt failed: {scheduledRetry.error}. Paperclip will retry automatically.
+              Last attempt failed: {scheduledRetry.error}{/[.!?]$/.test(scheduledRetry.error.trim()) ? "" : "."} Paperclip will retry automatically.
             </div>
           ) : null}
           {isError ? (
@@ -153,7 +162,9 @@ export function IssueScheduledRetryCard({
                 ? retryNow.data?.outcome === "already_promoted"
                   ? "Already promoted — run starting"
                   : "Promoted — run starting"
-                : helperIdle}
+                : retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
+                  ? retryNow.data.message
+                  : helperIdle}
           </span>
         </div>
       </div>

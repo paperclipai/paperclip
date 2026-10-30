@@ -8,7 +8,7 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=oauth.net&sz=128"
+    "logoUrl": "/brands/apps/oauth-generic.svg"
   },
   "urlPatterns": [],
   "methods": [

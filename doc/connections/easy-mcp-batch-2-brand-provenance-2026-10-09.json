@@ -1,0 +1,38 @@
+{
+  "reviewedAt": "2026-10-09",
+  "providers": [
+    {
+      "slug": "monday",
+      "provider": "monday.com",
+      "localAsset": "/brands/apps/monday.png",
+      "sourceUrl": "https://monday.com/p/wp-content/uploads/2024/03/monday.com_-1.png",
+      "sourceContext": "https://monday.com/p/news/press-kit/ (official press kit; complete monday.com wordmark)",
+      "sha256": "08d1592465b32f1cc6b6d2efd2da64f22496d4d3a887f6506e083dceceb390e2",
+      "darkAsset": "/brands/apps/monday-dark.png",
+      "darkSourceUrl": "https://monday.com/p/wp-content/uploads/2024/03/White-logo.png",
+      "darkSha256": "a5e8e4984f7a79c5e9d7de8b94d6c229d98c54ed2863eca6d2a080ad17d8510a",
+      "retrievedAt": "2026-10-09",
+      "note": "Unmodified official press-kit full wordmark variants. The provider's press-kit guidance asks for the complete monday.com text and the colored mark; white wordmark variant is used on dark surfaces."
+    },
+    {
+      "slug": "clickup",
+      "provider": "ClickUp",
+      "file": "ui/public/brands/apps/clickup.png",
+      "sourceUrl": "https://clickup.com/favicons/apple-touch-icon.png",
+      "linkedFrom": "https://clickup.com/",
+      "retrievedAt": "2026-10-09",
+      "sha256": "fb45023441f0794d1ece6ef59542d360c8bf4f4c3bde2c84c4d546ae8019ed72",
+      "note": "Official ClickUp touch icon, retained without modification."
+    },
+    {
+      "slug": "klaviyo",
+      "provider": "Klaviyo",
+      "file": "ui/public/brands/apps/klaviyo.png",
+      "sourceUrl": "https://www.klaviyo.com/icons/icon-144x144.png",
+      "linkedFrom": "https://www.klaviyo.com/",
+      "retrievedAt": "2026-10-09",
+      "sha256": "61a5bd241fb300f51f6bce5c71887e3795e91c64ca9e62d676e0ed9eae6e8796",
+      "note": "Official Klaviyo site icon; retained at native 144x144 pixels without modification."
+    }
+  ]
+}

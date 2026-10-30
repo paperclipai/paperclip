@@ -1,6 +1,8 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { pipeline } from "node:stream/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { addAbortSignal } from "node:stream";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
@@ -11,11 +13,15 @@ export type RunLogStoreType = "local_file";
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
+  attemptId?: string;
 }
 
 export interface RunLogReadOptions {
   offset?: number;
   limitBytes?: number;
+  /** Include the start of the first NDJSON record when reading a log tail. */
+  alignStartToRecord?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface RunLogReadResult {
@@ -23,14 +29,31 @@ export interface RunLogReadResult {
   nextOffset?: number;
 }
 
+interface RunLogByteRange {
+  bytes: Buffer;
+  nextOffset?: number;
+}
+
 export interface RunLogFinalizeSummary {
-  bytes: number;
-  sha256?: string;
+  // Null means a stalled write prevented a verified final snapshot. Callers
+  // can still settle the run without recording a false byte count or hash.
+  bytes: number | null;
+  sha256?: string | null;
   compressed: boolean;
 }
 
+export interface RunLogBeginInput {
+  companyId: string;
+  agentId: string;
+  runId: string;
+  // Set only when persisted run lifecycle state proves no earlier attempt
+  // began this log, so no durable prefix can exist to restore. Omitted means
+  // the run may be a retry or recovery and the durable mirror is checked.
+  newRun?: boolean;
+}
+
 export interface RunLogStore {
-  begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
+  begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
@@ -100,6 +123,13 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
   const s3 = options.s3;
   const s3Prefix = normalizeKeyPrefix(s3?.keyPrefix);
   const inflightMirrorMs = s3?.inflightMirrorMs && s3.inflightMirrorMs > 0 ? s3.inflightMirrorMs : 0;
+  // A run owns the write handle returned by begin(). Diagnostics can be
+  // dispatched without awaiting the rest of onLog (DB progress/live events),
+  // but finalize must include every file append already accepted on that handle.
+  // Weak collections let completed handles disappear with their owning runs.
+  const pendingAppends = new WeakMap<RunLogHandle, Set<Promise<void>>>();
+  const closingHandles = new WeakSet<RunLogHandle>();
+  const abandonedHandles = new WeakSet<RunLogHandle>();
 
   function s3Key(logRef: string): string {
     return s3Prefix ? `${s3Prefix}/${logRef}` : logRef;
@@ -159,6 +189,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
   }
 
   function scheduleInflightMirror(logRef: string, entry: InflightMirrorEntry): void {
+    if (inflightMirrors.get(logRef) !== entry) return;
     if (entry.timer || entry.upload) return;
     const delay = Math.max(0, inflightMirrorMs - (Date.now() - entry.lastMirrorAt));
     entry.timer = setTimeout(() => {
@@ -205,57 +236,62 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     filePath: string,
     offset: number,
     limitBytes: number,
-  ): Promise<RunLogReadResult | null> {
-    const stat = await fs.stat(filePath).catch(() => null);
-    if (!stat) return null;
-    const start = Math.max(0, Math.min(offset, stat.size));
-    const end = Math.max(start, Math.min(start + limitBytes - 1, stat.size - 1));
-    if (start > end) return { content: "", nextOffset: start };
-
+    signal?: AbortSignal,
+  ): Promise<RunLogByteRange | null> {
+    signal?.throwIfAborted();
+    const start = Math.max(0, offset);
+    // Read one extra byte to discover whether another page exists. A single
+    // abortable stream avoids an uncancellable stat before opening the file.
     const chunks: Buffer[] = [];
     try {
-      await new Promise<void>((resolve, reject) => {
-        const stream = createReadStream(filePath, { start, end });
-        stream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-        stream.on("error", reject);
-        stream.on("end", () => resolve());
-      });
+      const stream = createReadStream(filePath, { start, end: start + limitBytes, signal });
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
     } catch (err) {
-      // File deleted between stat() and open (pod-roll cleanup racing a read):
-      // treat as missing so the caller falls through to the S3 mirror instead
-      // of surfacing the very "Run log not found" this store exists to prevent.
+      signal?.throwIfAborted();
+      // A missing file, including deletion before open, falls back to S3.
       if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
       throw err;
     }
-    const content = Buffer.concat(chunks).toString("utf8");
-    const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
-    return { content, nextOffset };
+    signal?.throwIfAborted();
+    const bytes = Buffer.concat(chunks);
+    const nextOffset = bytes.length > limitBytes ? start + limitBytes : undefined;
+    return { bytes: bytes.subarray(0, limitBytes), nextOffset };
   }
 
   async function readS3Range(
     logRef: string,
     offset: number,
     limitBytes: number,
-  ): Promise<RunLogReadResult> {
+    signal?: AbortSignal,
+  ): Promise<RunLogByteRange> {
+    signal?.throwIfAborted();
     if (!s3) throw notFound("Run log not found");
     const key = s3Key(logRef);
-    const head = await s3.provider.headObject({ objectKey: key });
+    const head = await s3.provider.headObject({ objectKey: key, signal });
+    signal?.throwIfAborted();
     if (!head.exists) throw notFound("Run log not found");
     const total = head.contentLength ?? 0;
     const start = Math.max(0, Math.min(offset, total));
-    const end = Math.max(start, Math.min(start + limitBytes - 1, total - 1));
-    if (start > end || total === 0) return { content: "", nextOffset: start < total ? start : undefined };
+    // Unlike local file streams, S3 rejects a range that starts at or past
+    // EOF with 416 InvalidRange, so a caught-up reader (offset === total)
+    // must short-circuit to an empty read instead of clamping end up to
+    // start and requesting `bytes=total-total`.
+    const end = Math.min(start + limitBytes - 1, total - 1);
+    if (total === 0 || start > end) return { bytes: Buffer.alloc(0), nextOffset: start < total ? start : undefined };
 
-    const result = await s3.provider.getObject({ objectKey: key, range: { start, end } });
+    const result = await s3.provider.getObject({ objectKey: key, range: { start, end }, signal });
+    // Destroy a body that stalls after headers arrive, including a body
+    // returned just after the caller cancelled the request.
+    if (signal) addAbortSignal(signal, result.stream);
     const chunks: Buffer[] = [];
-    await new Promise<void>((resolve, reject) => {
-      result.stream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      result.stream.on("error", reject);
-      result.stream.on("end", () => resolve());
-    });
-    const content = Buffer.concat(chunks).toString("utf8");
+    for await (const chunk of result.stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    signal?.throwIfAborted();
     const nextOffset = end + 1 < total ? end + 1 : undefined;
-    return { content, nextOffset };
+    return { bytes: Buffer.concat(chunks), nextOffset };
   }
 
   async function sha256File(filePath: string): Promise<string> {
@@ -276,16 +312,46 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const relPath = path.join(relDir, `${runId}.ndjson`);
       await ensureDir(relDir);
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
       await retireInflightMirror(relPath);
-      return { store: "local_file", logRef: relPath };
+      // Retries share a run ID. Never truncate their earlier evidence. On a
+      // new pod, restore the durable prefix before opening another attempt.
+      // A proven-new run has no prefix, so skip the remote round trip.
+      const exists = await fs.stat(absPath).then(() => true, (error) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      if (!exists && s3 && input.newRun !== true) {
+        const key = s3Key(relPath);
+        const head = await s3.provider.headObject({ objectKey: key });
+        if (head.exists) {
+          const temporary = `${absPath}.${randomUUID()}.restore`;
+          try {
+            const object = await s3.provider.getObject({ objectKey: key });
+            await pipeline(object.stream, createWriteStream(temporary, { flags: "wx", mode: 0o600 }));
+            if (typeof head.contentLength === "number" && (await fs.stat(temporary)).size !== head.contentLength) {
+              throw new Error("Durable run log restore returned an incomplete prefix");
+            }
+            // Publish the complete prefix without replacing a file another
+            // attempt has already restored and started appending to.
+            await fs.link(temporary, absPath).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "EEXIST") throw error;
+            });
+          } finally {
+            await fs.rm(temporary, { force: true });
+          }
+        }
+      }
+      const file = await fs.open(absPath, "a", 0o600);
+      await file.close();
+      return { store: "local_file", logRef: relPath, attemptId: randomUUID() };
     },
 
     async append(handle, event) {
-      if (handle.store !== "local_file") return 0;
+      if (handle.store !== "local_file" || closingHandles.has(handle)) return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
+        ...(handle.attemptId ? { attemptId: handle.attemptId } : {}),
         stream: event.stream,
         chunk: event.chunk,
         // Monotonic per-run sequence so readers can dedupe and order records
@@ -294,13 +360,47 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
-      noteInflightAppend(handle.logRef);
+      let pending = pendingAppends.get(handle);
+      if (!pending) {
+        pending = new Set();
+        pendingAppends.set(handle, pending);
+      }
+      const write = fs.appendFile(absPath, persisted, "utf8").then(() => {
+        if (!closingHandles.has(handle)) noteInflightAppend(handle.logRef);
+      });
+      pending.add(write);
+      try {
+        await write;
+      } finally {
+        pending.delete(write);
+      }
       return Buffer.byteLength(persisted, "utf8");
     },
 
     async finalize(handle) {
       if (handle.store !== "local_file") return { bytes: 0, compressed: false };
+      if (abandonedHandles.has(handle)) return { bytes: null, sha256: null, compressed: false };
+      // Close admission before the first await. Drain file writes only, not
+      // heartbeat's later DB/live-event persistence, then freeze one consistent
+      // byte count, hash, and durable copy. Late diagnostics cannot mutate it.
+      closingHandles.add(handle);
+      let drainTimer: NodeJS.Timeout | undefined;
+      const drained = await Promise.race([
+        Promise.allSettled(pendingAppends.get(handle) ?? []).then(() => true),
+        new Promise<boolean>((resolve) => {
+          drainTimer = setTimeout(() => resolve(false), 3_000);
+          drainTimer.unref?.();
+        }),
+      ]).finally(() => clearTimeout(drainTimer));
+      if (!drained) {
+        // An in-flight fs append cannot be cancelled safely. Do not hash or
+        // mirror a file it may still change, and never re-arm mirroring when
+        // that write eventually finishes. Terminal run status can still settle.
+        abandonedHandles.add(handle);
+        void retireInflightMirror(handle.logRef).catch(() => undefined);
+        console.warn("[run-log-store] Pending log writes did not settle within 3000ms; final log size and hash are unknown.");
+        return { bytes: null, sha256: null, compressed: false };
+      }
       await retireInflightMirror(handle.logRef);
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
@@ -337,14 +437,36 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     },
 
     async read(handle, opts) {
+      opts?.signal?.throwIfAborted();
       if (handle.store !== "local_file") throw notFound("Run log not found");
       const absPath = resolveWithin(basePath, handle.logRef);
-      const offset = opts?.offset ?? 0;
+      const offset = Math.max(0, opts?.offset ?? 0);
       const limitBytes = opts?.limitBytes ?? 256_000;
-      const local = await readLocalRange(absPath, offset, limitBytes);
-      if (local) return local;
-      // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
-      return readS3Range(handle.logRef, offset, limitBytes);
+      const readRange = async (start: number, length: number) =>
+        await readLocalRange(absPath, start, length, opts?.signal)
+        // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
+        ?? await readS3Range(handle.logRef, start, length, opts?.signal);
+      const result = await readRange(offset, limitBytes);
+      if (!opts?.alignStartToRecord || offset === 0 || result.bytes.length === 0) {
+        return { content: result.bytes.toString("utf8"), nextOffset: result.nextOffset };
+      }
+      // Walk back only to the preceding record boundary. Keep bytes intact
+      // until decoding so a tail beginning inside UTF-8 text is not corrupted.
+      const parts = [result.bytes];
+      let before = offset;
+      while (before > 0) {
+        const start = Math.max(0, before - 32_000);
+        const prefix = await readRange(start, before - start);
+        if (prefix.bytes.length !== before - start) throw new Error("Run log changed while reading its tail");
+        const boundary = prefix.bytes.lastIndexOf(10);
+        parts.unshift(prefix.bytes.subarray(boundary + 1));
+        if (boundary >= 0) break;
+        before = start;
+      }
+      return {
+        content: Buffer.concat(parts).toString("utf8"),
+        nextOffset: result.nextOffset ?? offset + result.bytes.length,
+      };
     },
 
     async flushInflightMirrors() {

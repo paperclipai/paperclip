@@ -59,14 +59,14 @@ export interface SkillDenial {
 }
 
 const DEFAULT_POLICY_REMEDIATION =
-  "A company administrator can change the skill policy to allow this.";
+  "An organization administrator can change the skill policy to allow this.";
 const DEFAULT_ADMIN_REMEDIATION =
-  "This requires company administration access. Ask an administrator to make this change.";
+  "This requires organization administration access. Ask an administrator to make this change.";
 
 /** Human-readable titles for the platform-invariant codes (State C). */
 const PLATFORM_TITLES: Record<string, string> = {
   skill_authentication_required: "Sign in to manage skills.",
-  skill_company_boundary_denied: "This skill belongs to another company.",
+  skill_company_boundary_denied: "This skill belongs to another organization.",
   skill_workspace_boundary_denied: "This skill source is outside an allowed workspace.",
   skill_source_validation_failed: "This skill source failed validation.",
   skill_unsafe_content_blocked: "This skill contains unsafe content.",
@@ -77,9 +77,9 @@ const PLATFORM_TITLES: Record<string, string> = {
 /** Default remediation copy per platform-invariant code — framed as a fix, never a grant. */
 const PLATFORM_REMEDIATIONS: Record<string, string> = {
   skill_authentication_required: "Sign in and try again.",
-  skill_company_boundary_denied: "Open the skill from the company that owns it.",
+  skill_company_boundary_denied: "Open the skill from the organization that owns it.",
   skill_workspace_boundary_denied:
-    "Import from a configured Paperclip workspace or the company managed-skill directory.",
+    "Import from a configured Paperclip workspace or the organization managed-skill directory.",
   skill_source_validation_failed: "Fix the flagged source and retry.",
   skill_unsafe_content_blocked:
     "Remove the fetch-and-execute or unsafe pattern before saving.",
@@ -119,8 +119,8 @@ export function classifySkillDenial(
     || reason === "policy_default";
   if (isPolicyDenial) {
     const title = actionLabel
-      ? `${actionLabel} is restricted by your company policy.`
-      : "This action is restricted by your company policy.";
+      ? `${actionLabel} is restricted by your organization policy.`
+      : "This action is restricted by your organization policy.";
     return {
       state: "policy",
       code,

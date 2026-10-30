@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { patchRunStatusInList, removeRunFromList } from "./live-runs-cache";
+import { liveRunRefetchInterval, patchRunStatusInList, removeRunFromList } from "./live-runs-cache";
 
 function run(id: string, status: string): LiveRunForIssue {
   return {
@@ -60,5 +60,21 @@ describe("patchRunStatusInList", () => {
     const { next, present } = patchRunStatusInList(undefined, "a", "running");
     expect(present).toBe(false);
     expect(next).toBeUndefined();
+  });
+});
+
+describe("liveRunRefetchInterval", () => {
+  it.each(["pending", "error"] as const)("keeps polling %s queries with retained empty data", (status) => {
+    expect(liveRunRefetchInterval(true, { status, data: [] }, 1000)).toBe(1000);
+    expect(liveRunRefetchInterval(true, { status, data: null }, 3000)).toBe(3000);
+  });
+  it.each([null, []])("stops known-empty polling with a connected company for %j", (data) => {
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 1000)).toBe(false);
+    expect(liveRunRefetchInterval(false, { status: "success", data }, 1000)).toBe(1000);
+  });
+
+  it.each([undefined, {}, [run("active", "running")], "invalid", 0])("preserves polling for unknown or active data %j", (data) => {
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 3000)).toBe(3000);
+    expect(liveRunRefetchInterval(false, { status: "success", data }, 3000)).toBe(3000);
   });
 });

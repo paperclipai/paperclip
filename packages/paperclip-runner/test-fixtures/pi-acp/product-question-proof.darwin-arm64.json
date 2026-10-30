@@ -1,0 +1,196 @@
+{
+  "schema": "paperclip.pi-product-question-proof.v1",
+  "attemptId": "pi-product-question-01",
+  "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+  "runtimeCodeRevision": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+  "repositoryRevision": "9cd42f6df9356cb673cd12accd94dc3e171dc13d",
+  "profileVersion": 3,
+  "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+  "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+  "runnerdDigest": "sha256:2c8efdc99f988b1c8ab0e270677a3321af0fd6d5789dbf1b671faa921031b42f",
+  "executionTrees": {
+    "packages/paperclip-runner/src": "7df6b47574e6838e63a7d13c403c615a749702db",
+    "packages/paperclip-runner/scripts": "f845a2dd5b1ac2f1a4ef8d95db8fba2daea9999f",
+    "packages/paperclip-runner/runner": "9c595f7eae18197bb5cfd61c1af463df0a8741cd",
+    "packages/paperclip-runner/protocol": "1d50458fb572d0c75f9a398f419209c52c23ba6f",
+    "patches": "784152935b091eed6ea1795d39c23cfbbd154ab7",
+    "server/src": "b267adc1e0ad36955b68314829cfd4256ab88d37",
+    "tests/runner-e2e": "5ff4b8a85a14e3e005e3e240c145899c0bc742b5"
+  },
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local"
+  },
+  "result": {
+    "status": "passed",
+    "durationMs": 158388,
+    "supervisorDurationSeconds": 175.689,
+    "matcherResults": [
+      {
+        "matcher": {
+          "kind": "message_exact",
+          "expected": "PC_Q_C_05746e362d67-1"
+        },
+        "passed": true,
+        "detail": "matched"
+      },
+      {
+        "matcher": {
+          "kind": "message_occurrences",
+          "expected": "PC_Q_C_05746e362d67-1",
+          "count": 1
+        },
+        "passed": true,
+        "detail": "matched"
+      },
+      {
+        "matcher": {
+          "kind": "issue_status",
+          "expected": "done"
+        },
+        "passed": true,
+        "detail": "matched"
+      },
+      {
+        "matcher": {
+          "kind": "run_status",
+          "expected": "succeeded"
+        },
+        "passed": true,
+        "detail": "matched"
+      },
+      {
+        "matcher": {
+          "kind": "runtime_mode",
+          "expected": "native"
+        },
+        "passed": true,
+        "detail": "matched"
+      },
+      {
+        "matcher": {
+          "kind": "environment",
+          "expected": "local"
+        },
+        "passed": true,
+        "detail": "matched"
+      }
+    ],
+    "cleanup": "passed"
+  },
+  "interaction": {
+    "kind": "ask_user_questions",
+    "title": "Verification word",
+    "initialStatus": "pending",
+    "resolvedStatus": "answered",
+    "continuationPolicy": "wake_assignee",
+    "questions": [
+      {
+        "id": "verification-word",
+        "prompt": "Choose the verification word.",
+        "selectionMode": "single",
+        "required": true,
+        "options": [
+          {
+            "id": "cobalt",
+            "label": "Cobalt"
+          },
+          {
+            "id": "amber",
+            "label": "Amber"
+          }
+        ]
+      }
+    ],
+    "result": {
+      "version": 1,
+      "answers": [
+        {
+          "questionId": "verification-word",
+          "optionIds": [
+            "cobalt"
+          ]
+        }
+      ],
+      "summaryMarkdown": null
+    },
+    "requestIdentityPreserved": true,
+    "distinctContinuationRun": true,
+    "serverRestartedBeforeAnswer": false
+  },
+  "usage": {
+    "runCount": 2,
+    "byRun": [
+      null,
+      {
+        "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+        "biller": "openrouter",
+        "provider": "openrouter",
+        "costStatus": "unpriced",
+        "billingType": "unknown",
+        "inputTokens": 17894,
+        "outputTokens": 1891,
+        "cachedInputTokens": 19200,
+        "usageSource": "per_run",
+        "sessionReused": true
+      }
+    ],
+    "coverage": "partial: waiting run receipt unavailable; resumed run receipt retained"
+  },
+  "cost": {
+    "providerReportedUsd": null,
+    "costStatus": "unpriced",
+    "billingComplete": false,
+    "exclusiveKeyDeltaUsd": 0.001413697,
+    "measurement": "Exclusive key baseline and two spaced post-attempt observations; separate from missing terminal usage."
+  },
+  "screenshot": {
+    "sha256": "35138e6ef99fe566c2aadce7594f1e582b00b71207214d6d576633e33f1741ee",
+    "visuallyInspected": true,
+    "observed": [
+      "Done status",
+      "Questions answered",
+      "Cobalt answer bubble",
+      "one completion marker"
+    ],
+    "imageRetainedPrivately": true
+  },
+  "supervision": {
+    "reservationUsd": 2,
+    "billingWatchdogUsd": 0.5,
+    "activeTimeoutSeconds": 120,
+    "outerTimeoutSeconds": 300,
+    "sleepAssertion": "caffeinate -i",
+    "deadlineClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "automaticRetries": 0
+  },
+  "cleanup": {
+    "canonicalCleanupPassed": true,
+    "fixtureRootRemoved": true,
+    "residualAttemptProcesses": 0
+  },
+  "qualificationStatus": "pending",
+  "publicationBoundary": {
+    "credentialsIncluded": false,
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false
+  },
+  "pendingScreenshot": {
+    "sha256": "7e94f6db31750b64c5d7a9e60c6ab22364f8af627738db3a7a21cffbb9a85a1b",
+    "visuallyInspected": true,
+    "observed": [
+      "In Review status",
+      "Verification word form",
+      "Cobalt and Amber choices plus freeform Other",
+      "Submit answers disabled until required selection",
+      "Cancel action visible"
+    ],
+    "imageRetainedPrivately": true
+  }
+}

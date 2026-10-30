@@ -50,8 +50,15 @@ function compareWorkspaceLastUsedDesc(a: ReusableExecutionWorkspaceLike, b: Reus
   return compareWorkspaceNames(a, b);
 }
 
+/**
+ * The option subtitle. It used to fall back to the workspace working directory,
+ * a path on the execution host, which the reuse-existing picker then rendered
+ * next to a label that no longer shows one. The fallback is now the short id,
+ * so the picker never renders a host path. `workspaceSearchText` still indexes
+ * the working directory, so a user who already knows a path can search by it.
+ */
 function workspaceDescription(workspace: ReusableExecutionWorkspaceLike) {
-  return workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8);
+  return workspace.branchName ?? workspace.id.slice(0, 8);
 }
 
 function workspaceSearchText(workspace: ReusableExecutionWorkspaceLike) {

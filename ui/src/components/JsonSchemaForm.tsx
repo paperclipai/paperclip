@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -164,7 +164,19 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
     case "object": {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
+      const requiredProperties = new Set(schema.required ?? []);
       for (const [key, propSchema] of Object.entries(schema.properties)) {
+        // An optional object with no explicit default must stay absent until
+        // the user supplies a value. Materializing `{}` here makes recursive
+        // validation require all of its children even when the object was
+        // never touched.
+        if (
+          resolveType(propSchema) === "object" &&
+          !requiredProperties.has(key) &&
+          propSchema.default === undefined
+        ) {
+          continue;
+        }
         const def = getDefaultForSchema(propSchema);
         if (def !== undefined) obj[key] = def;
       }
@@ -196,6 +208,9 @@ export function validateField(
   }
   if (type === "secret-ref" && typeof value === "object") {
     return "Invalid secret reference";
+  }
+  if (type === "object" && (typeof value !== "object" || Array.isArray(value))) {
+    return "Enter a valid JSON object";
   }
 
   if (type === "string" || type === "secret-ref") {
@@ -283,7 +298,12 @@ export function validateJsonSchemaForm(
     }
 
     // Recurse into objects
-    if (type === "object" && propSchema.properties && typeof value === "object" && value !== null) {
+    if (
+      type === "object" &&
+      propSchema.properties &&
+      typeof value === "object" &&
+      value !== null
+    ) {
       Object.assign(
         errors,
         validateJsonSchemaForm(propSchema, value as Record<string, unknown>, fieldPath),
@@ -325,8 +345,16 @@ export function validateJsonSchemaForm(
 export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const properties = schema.properties ?? {};
+  const requiredProperties = new Set(schema.required ?? []);
 
   for (const [key, propSchema] of Object.entries(properties)) {
+    if (
+      resolveType(propSchema) === "object" &&
+      !requiredProperties.has(key) &&
+      propSchema.default === undefined
+    ) {
+      continue;
+    }
     const def = getDefaultForSchema(propSchema);
     if (def !== undefined) {
       result[key] = def;
@@ -524,7 +552,7 @@ const EnumField = React.memo(({
         onValueChange={handleChange}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full" aria-label={label} aria-required={isRequired}>
           <SelectValue placeholder="Select an option" />
         </SelectTrigger>
         <SelectContent>
@@ -620,6 +648,8 @@ const SecretField = React.memo(({
     <div className="relative">
       {isVisible ? (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           value={stringValue}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
@@ -629,6 +659,8 @@ const SecretField = React.memo(({
         />
       ) : (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           // Render a placeholder summary instead of the secret content while
           // hidden. This avoids exposing multi-line secrets (e.g. SSH
           // private keys) on screen-shares; clicking the eye toggle reveals
@@ -666,6 +698,8 @@ const SecretField = React.memo(({
   ) : (
     <div className="relative">
       <Input
+        aria-label={label}
+        aria-required={isRequired}
         type={isVisible ? "text" : "password"}
         value={stringValue}
         onChange={(e) => onChange(e.target.value)}
@@ -699,7 +733,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
+        "Pick an existing organization secret, or paste a raw value (Paperclip will store it as a secret on save)."
       }
       required={isRequired}
       error={error}
@@ -795,6 +829,8 @@ const NumberField = React.memo(({
       disabled={disabled}
     >
       <Input
+        aria-label={label}
+        aria-required={isRequired}
         type="number"
         step={type === "integer" ? "1" : "any"}
         min={minimum}
@@ -860,6 +896,8 @@ const StringField = React.memo(({
     >
       {isTextArea ? (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
@@ -869,6 +907,8 @@ const StringField = React.memo(({
         />
       ) : (
         <Input
+          aria-label={label}
+          aria-required={isRequired}
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -999,6 +1039,34 @@ const ArrayField = React.memo(({
 
 ArrayField.displayName = "ArrayField";
 
+/** MCP execution tools often accept an arbitrary object rather than fixed fields. */
+function JsonObjectField({ value, onChange, disabled, label, error }: {
+  value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string;
+}) {
+  const format = (next: unknown) => typeof next === "string" ? next : JSON.stringify(next ?? {}, null, 2);
+  const [text, setText] = useState(() => format(value));
+  const emitted = useRef(value);
+  useEffect(() => {
+    if (value !== emitted.current) setText(format(value));
+    emitted.current = value;
+  }, [value]);
+  const change = (text: string) => {
+    setText(text);
+    let next: unknown = text.trim() ? text : undefined;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) next = parsed;
+    } catch { /* Preserve invalid input so validation prevents submitting stale arguments. */ }
+    emitted.current = next;
+    onChange(next);
+  };
+  return <div className="space-y-2">
+    <Textarea aria-label={`${label} JSON`} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
+    <p className="text-xs text-muted-foreground">Enter a JSON object using the action's argument names.</p>
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </div>;
+}
+
 /**
  * Specialized field for object values, handling recursive rendering of nested properties.
  */
@@ -1050,7 +1118,9 @@ const ObjectField = React.memo(({
 
       {!isCollapsed && (
         <div className="pt-2">
-          <JsonSchemaForm
+          {Object.keys(propSchema.properties ?? {}).length === 0 && propSchema.additionalProperties !== false
+            ? <JsonObjectField value={value} onChange={onChange} disabled={disabled} label={label} error={errors[path]} />
+            : <JsonSchemaForm
             schema={propSchema}
             values={(value as Record<string, unknown>) ?? {}}
             onChange={handleObjectChange}
@@ -1060,7 +1130,7 @@ const ObjectField = React.memo(({
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
                 .map(([errPath, err]) => [errPath.replace(path, ""), err]),
             )}
-          />
+          />}
         </div>
       )}
     </div>

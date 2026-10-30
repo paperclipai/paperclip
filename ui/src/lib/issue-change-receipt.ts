@@ -1,4 +1,5 @@
 import type { IssueChangeReceiptEntry } from "@paperclipai/shared";
+import { formatReviewPolicyValue } from "./review-policy";
 
 /**
  * Read + format the field-level change receipts carried on an `issue.updated`
@@ -25,6 +26,7 @@ const FIELD_LABELS: Record<string, string> = {
   projectId: "Project",
   goalId: "Goal",
   workMode: "Work mode",
+  reviewPolicy: "Who can approve",
   billingCode: "Billing code",
   checkoutRunId: "Checkout run",
   executionRunId: "Execution run",
@@ -64,6 +66,9 @@ export function formatIssueChangeValue(
     resolveUserLabel?: (id: string) => string | null | undefined;
     field?: string } = {},
 ): string {
+  // `reviewPolicy` is nullable-by-default: a cleared column means "anyone can
+  // approve", not "no value" (PAP-16506), so it resolves before the null branch.
+  if (options.field === "reviewPolicy") return formatReviewPolicyValue(value);
   if (value === null || value === undefined || value === "") return "none";
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "number") return String(value);

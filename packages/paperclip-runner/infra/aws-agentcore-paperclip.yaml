@@ -1,0 +1,569 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Paperclip proof-of-concept Amazon Bedrock AgentCore Harness and least-privilege invocation roles.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: development
+    AllowedPattern: "^[a-z][a-z0-9-]{1,20}$"
+  DeploymentMode:
+    Type: String
+    Default: development
+    AllowedValues: [development, private]
+  TrustedRunnerPrincipalArn:
+    Type: String
+    Description: Stable IAM user or role ARN allowed to assume the Paperclip invocation role.
+    AllowedPattern: "^arn:aws(-[^:]+)?:iam::[0-9]{12}:(role|user)/.+$"
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: Optional account-local GitHub Actions OIDC provider for hosted Runner evals.
+    AllowedPattern: "^$|^arn:aws(-[^:]+)?:iam::[0-9]{12}:oidc-provider/token[.]actions[.]githubusercontent[.]com$"
+  GitHubRepository:
+    Type: String
+    Default: paperclipai/paperclip
+    AllowedPattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  GitHubEnvironment:
+    Type: String
+    Default: runner-e2e-paid
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+  BedrockModelId:
+    Type: String
+    Default: global.anthropic.claude-sonnet-4-6
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be a Bedrock-native model ID without ARN, path, glob, or wildcard syntax.
+  BedrockModelResourceArn:
+    Type: String
+    Description: Exact application/system inference-profile ARN for the selected model.
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn|aws-iso|aws-iso-b):bedrock:[a-z0-9-]+:[0-9]{12}:(inference-profile|application-inference-profile)/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be one exact Bedrock inference-profile ARN without path, glob, or wildcard syntax.
+  BedrockFoundationModelResourceArn:
+    Type: String
+    Description: Selected foundation-model ARN; the region segment may be * for cross-region inference.
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn|aws-iso|aws-iso-b):bedrock:([a-z0-9-]+|[*])::foundation-model/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    ConstraintDescription: Must be one exact Bedrock foundation-model ARN; only the cross-region region segment may be a wildcard.
+  BedrockMarketplaceProductId:
+    Type: String
+    Description: Exact AWS Marketplace product ID for the selected third-party model.
+    AllowedPattern: "^prod-[a-z0-9]+$"
+  HarnessName:
+    Type: String
+    Default: PaperclipAgentCoreHarness
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+  HarnessEndpointName:
+    Type: String
+    Default: paperclip
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
+  MemoryName:
+    Type: String
+    Default: PaperclipAgentCoreMemory
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,47}$"
+  ContextPrefix:
+    Type: String
+    Default: paperclip/agentcore/development
+    Description: Dedicated S3 key prefix for immutable AgentCore runtime-context assets.
+    AllowedPattern: "^[a-z0-9][a-z0-9/_-]{1,127}$"
+
+Conditions:
+  IsPrivate: !Equals [!Ref DeploymentMode, private]
+  HasGitHubOidcTrust: !Not [!Equals [!Ref GitHubOidcProviderArn, ""]]
+
+Resources:
+  ContextEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub Paperclip AgentCore runtime-context assets (${EnvironmentName})
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountOwnsAndDelegatesKey
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+      Tags:
+        - Key: paperclip:owned
+          Value: "true"
+        - Key: paperclip:environment
+          Value: !Ref EnvironmentName
+
+  ContextEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/paperclip-agentcore-context-${EnvironmentName}-${AWS::Region}
+      TargetKeyId: !Ref ContextEncryptionKey
+
+  ContextBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt ContextEncryptionKey.Arn
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: paperclip:owned
+          Value: "true"
+        - Key: paperclip:environment
+          Value: !Ref EnvironmentName
+        - Key: paperclip:cost-center
+          Value: runner-lab
+
+  ContextBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContextBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ContextBucket.Arn
+              - !Sub ${ContextBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyUnencryptedContextUploads
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyContextUploadsWithAnotherKey
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt ContextEncryptionKey.Arn
+
+  AgentMemory:
+    Type: AWS::BedrockAgentCore::Memory
+    Properties:
+      Name: !Ref MemoryName
+      Description: Short-term Paperclip Runner chat continuity; no long-term strategies.
+      EventExpiryDuration: 90
+      Tags:
+        paperclip:owned: "true"
+        paperclip:environment: !Ref EnvironmentName
+        paperclip:cost-center: runner-lab
+
+  HarnessExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub paperclip-agentcore-harness-${EnvironmentName}-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: BedrockModelAndMemory
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokePinnedBedrockModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Ref BedrockModelResourceArn
+                  - !Ref BedrockFoundationModelResourceArn
+              - Sid: ViewMarketplaceSubscriptionsForModelAccess
+                Effect: Allow
+                Action: aws-marketplace:ViewSubscriptions
+                Resource: "*"
+              - Sid: SubscribePinnedMarketplaceModel
+                Effect: Allow
+                Action: aws-marketplace:Subscribe
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws-marketplace:ProductId: !Ref BedrockMarketplaceProductId
+              - Sid: ShortTermMemory
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateEvent
+                  - bedrock-agentcore:GetEvent
+                  - bedrock-agentcore:ListEvents
+                Resource: !GetAtt AgentMemory.MemoryArn
+              - Sid: ReadPinnedRuntimeContext
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+              - Sid: EnumeratePinnedRuntimeContext
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ContextBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: !Sub ${ContextPrefix}/assets/*
+              - Sid: DecryptPinnedRuntimeContext
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt ContextEncryptionKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+                  StringLike:
+                    kms:EncryptionContext:aws:s3:arn: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+              - !If
+                - IsPrivate
+                - Sid: PullManagedHarnessImage
+                  Effect: Allow
+                  Action: ecr:GetAuthorizationToken
+                  Resource: "*"
+                  Condition:
+                    StringEquals:
+                      aws:RequestedRegion: !Ref AWS::Region
+                - !Ref AWS::NoValue
+              - !If
+                - IsPrivate
+                - Sid: PullManagedHarnessLayers
+                  Effect: Allow
+                  Action:
+                    - ecr:BatchCheckLayerAvailability
+                    - ecr:GetDownloadUrlForLayer
+                    - ecr:BatchGetImage
+                  Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:*:repository/*
+                - !Ref AWS::NoValue
+              - Sid: NeverOpenRuntimeCommandChannel
+                Effect: Deny
+                Action: bedrock-agentcore:InvokeAgentRuntimeCommand
+                Resource: "*"
+      Tags:
+        - Key: paperclip:owned
+          Value: "true"
+        - Key: paperclip:environment
+          Value: !Ref EnvironmentName
+
+  AgentHarness:
+    Type: AWS::BedrockAgentCore::Harness
+    Properties:
+      HarnessName: !Ref HarnessName
+      ExecutionRoleArn: !GetAtt HarnessExecutionRole.Arn
+      Model:
+        BedrockModelConfig:
+          ModelId: !Ref BedrockModelId
+          ApiFormat: converse_stream
+          MaxTokens: 4096
+      SystemPrompt:
+        - Text: >-
+            You are a Paperclip-governed remote agent. Use only caller-supplied inline
+            functions. Never claim access to Paperclip, a local workspace, shell,
+            filesystem, browser, network, MCP, skills, or other agents. Follow the
+            current turn's completion contract and use its finish or block function.
+      Memory:
+        AgentCoreMemoryConfiguration:
+          Arn: !GetAtt AgentMemory.MemoryArn
+          MessagesCount: 100
+      MaxIterations: 8
+      MaxTokens: 4096
+      TimeoutSeconds: 300
+      AllowedTools:
+        - "@*/pc_*"
+      Tools: []
+      Skills: []
+      EnvironmentVariables: {}
+      Environment:
+        AgentCoreRuntimeEnvironment:
+          LifecycleConfiguration:
+            IdleRuntimeSessionTimeout: 300
+            MaxLifetime: 28800
+          NetworkConfiguration:
+            NetworkMode: !If [IsPrivate, VPC, PUBLIC]
+            NetworkModeConfig: !If
+              - IsPrivate
+              - SecurityGroups: [!Ref HarnessSecurityGroup]
+                Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+              - !Ref AWS::NoValue
+      Tags:
+        - Key: paperclip:owned
+          Value: "true"
+        - Key: paperclip:environment
+          Value: !Ref EnvironmentName
+        - Key: paperclip:cost-center
+          Value: runner-lab
+
+  RunnerInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub paperclip-agentcore-runner-${EnvironmentName}-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedRunnerPrincipalArn
+            Action: sts:AssumeRole
+          - !If
+            - HasGitHubOidcTrust
+            - Effect: Allow
+              Principal:
+                Federated: !Ref GitHubOidcProviderArn
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                  "token.actions.githubusercontent.com:sub": !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+            - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: InvokeAndOperatePinnedHarness
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokePinnedHarnessAndRuntime
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeHarness
+                  - bedrock-agentcore:InvokeAgentRuntime
+                  - bedrock-agentcore:StopRuntimeSession
+                Resource:
+                  - !GetAtt AgentHarness.Arn
+                  - !Sub ${AgentHarness.Arn}/harness-endpoint/${HarnessEndpointName}
+                  - !Sub ${AgentHarness.Arn}/runtime-endpoint/${HarnessEndpointName}
+                  - !GetAtt AgentHarness.Environment.AgentCoreRuntimeEnvironment.AgentRuntimeArn
+              - Sid: ReadPinnedHarness
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetHarness
+                  - bedrock-agentcore:GetHarnessEndpoint
+                  - bedrock-agentcore:ListHarnessEndpoints
+                Resource:
+                  - !GetAtt AgentHarness.Arn
+                  - !Sub ${AgentHarness.Arn}/harness-endpoint/${HarnessEndpointName}
+              - Sid: ReadAndPurgeSessionMemory
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetMemory
+                  - bedrock-agentcore:GetEvent
+                  - bedrock-agentcore:ListEvents
+                  - bedrock-agentcore:DeleteEvent
+                Resource: !GetAtt AgentMemory.MemoryArn
+              - Sid: WriteAndVerifyPinnedRuntimeContext
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+              - Sid: EnumeratePinnedRuntimeContextForTeardown
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ContextBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: !Sub ${ContextPrefix}/assets/*
+              - Sid: EncryptPinnedRuntimeContext
+                Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ContextEncryptionKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+                  StringLike:
+                    kms:EncryptionContext:aws:s3:arn: !Sub ${ContextBucket.Arn}/${ContextPrefix}/assets/*
+              - Sid: DiscoverBedrockModels
+                Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                Resource: "*"
+              - Sid: NeverOpenRuntimeCommandChannel
+                Effect: Deny
+                Action: bedrock-agentcore:InvokeAgentRuntimeCommand
+                Resource: "*"
+      Tags:
+        - Key: paperclip:owned
+          Value: "true"
+        - Key: paperclip:environment
+          Value: !Ref EnvironmentName
+
+  PrivateVpc:
+    Type: AWS::EC2::VPC
+    Condition: IsPrivate
+    Properties:
+      CidrBlock: 10.87.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub paperclip-agentcore-${EnvironmentName}
+        - Key: paperclip:owned
+          Value: "true"
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      CidrBlock: 10.87.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      CidrBlock: 10.87.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+
+  PrivateSubnetRouteA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: IsPrivate
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetA
+
+  PrivateSubnetRouteB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: IsPrivate
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetB
+
+  HarnessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsPrivate
+    Properties:
+      GroupDescription: AgentCore Harness egress only to VPC endpoints
+      VpcId: !Ref PrivateVpc
+      SecurityGroupEgress: []
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsPrivate
+    Properties:
+      GroupDescription: HTTPS from the AgentCore Harness security group
+      VpcId: !Ref PrivateVpc
+      SecurityGroupIngress: []
+
+  HarnessToEndpointsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: IsPrivate
+    Properties:
+      GroupId: !Ref HarnessSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !Ref EndpointSecurityGroup
+
+  EndpointsFromHarnessIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: IsPrivate
+    Properties:
+      GroupId: !Ref EndpointSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref HarnessSecurityGroup
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  BedrockRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.bedrock-runtime
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivate
+    Properties:
+      VpcId: !Ref PrivateVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref PrivateRouteTable]
+
+Outputs:
+  AccountId:
+    Value: !Ref AWS::AccountId
+  Region:
+    Value: !Ref AWS::Region
+  DeploymentMode:
+    Value: !Ref DeploymentMode
+  BedrockModelId:
+    Value: !Ref BedrockModelId
+  MemoryArn:
+    Value: !GetAtt AgentMemory.MemoryArn
+  MemoryId:
+    Value: !GetAtt AgentMemory.MemoryId
+  MemoryEventExpiryDays:
+    Value: "90"
+  HarnessArn:
+    Value: !GetAtt AgentHarness.Arn
+  HarnessId:
+    Value: !GetAtt AgentHarness.HarnessId
+  HarnessVersion:
+    Value: !GetAtt AgentHarness.Version
+  AgentRuntimeArn:
+    Value: !GetAtt AgentHarness.Environment.AgentCoreRuntimeEnvironment.AgentRuntimeArn
+  AgentRuntimeId:
+    Value: !GetAtt AgentHarness.Environment.AgentCoreRuntimeEnvironment.AgentRuntimeId
+  RunnerInvocationRoleArn:
+    Value: !GetAtt RunnerInvocationRole.Arn
+  ContextBucketName:
+    Value: !Ref ContextBucket
+  ContextPrefix:
+    Value: !Ref ContextPrefix
+  ContextKmsKeyArn:
+    Value: !GetAtt ContextEncryptionKey.Arn
+  QualificationRevision:
+    Value: aws-agentcore-harness-context-v2

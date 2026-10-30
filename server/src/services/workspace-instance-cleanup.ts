@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +26,27 @@ export function deriveWorktreeInstanceId(workspacePath: string): string {
   const prefix = (normalized || "worktree").slice(0, 48);
   const pathHash = createHash("sha256").update(resolvedWorkspacePath).digest("hex").slice(0, 12);
   return `${prefix}-${pathHash}`;
+}
+
+/**
+ * The instance id a seeded worktree actually runs as, read from the pointer the
+ * guest process itself loads.
+ *
+ * Synchronous and null-on-anything-unexpected by design: callers use it to
+ * decide whether they can prove workspace identity at all, and an unsafe or
+ * unreadable pointer must fail closed rather than fall back to a guess.
+ */
+export function readWorktreeInstanceId(workspacePath: string): string | null {
+  const envPath = path.join(path.resolve(workspacePath), ".paperclip", ".env");
+  let contents: string;
+  try {
+    contents = readFileSync(envPath, "utf8");
+  } catch {
+    return null;
+  }
+  const instanceId = parseEnvContents(contents).PAPERCLIP_INSTANCE_ID?.trim();
+  if (!instanceId || !INSTANCE_ID_RE.test(instanceId)) return null;
+  return instanceId;
 }
 
 export type WorktreeInstancePointer = {
@@ -289,9 +311,12 @@ export async function cleanupWorktreeInstanceArtifacts(input: {
     return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
   }
 
-  const expectedInstanceRoot = input.expectedInstanceRoot
-    ? path.resolve(input.expectedInstanceRoot)
-    : null;
+  const expectedInstanceRoot = input.expectedInstanceRoot ? path.resolve(input.expectedInstanceRoot) : null;
+  if (!expectedInstanceRoot) {
+    warning = `Refusing to remove instance directory "${configuredInstanceRoot}" because execution workspace ${input.workspaceId} has no persisted instance root.`;
+    await recordRefusal({ refusalReason: "persisted_instance_root_missing" });
+    return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
+  }
   if (expectedInstanceRoot && configuredInstanceRoot !== expectedInstanceRoot) {
     warning = `Refusing to remove instance directory "${configuredInstanceRoot}" because it does not match execution workspace ${input.workspaceId}'s persisted instance root "${expectedInstanceRoot}".`;
     await recordRefusal({

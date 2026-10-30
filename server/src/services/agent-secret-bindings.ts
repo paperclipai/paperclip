@@ -41,7 +41,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function collectSecretRefs(adapterConfig: unknown): Array<{
+export function collectSecretRefs(adapterConfig: unknown): Array<{
   secretId: string;
   configPath: string;
   versionSelector?: SecretVersionSelector;
@@ -91,7 +91,7 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
   return refs;
 }
 
-function collectUserSecretRefs(adapterConfig: unknown): Array<{
+export function collectUserSecretRefs(adapterConfig: unknown): Array<{
   definitionKey: string;
   configPath: string;
   envKey: string;

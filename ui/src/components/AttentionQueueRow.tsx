@@ -18,6 +18,8 @@ import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
+import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
   attentionDetailImages,
   attentionDetailLine,
@@ -30,6 +32,7 @@ import {
 } from "../lib/attention";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
+import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
@@ -47,6 +50,7 @@ import {
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
 import { StalledReviewActions } from "./StalledReviewActions";
+import { readIssueReviewPolicyMetadata } from "../lib/review-policy";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -155,6 +159,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
   const compactActions = !isHidden ? collectCompactActions(item) : [];
+  // Who the server will let resolve this interaction. A collapsed row offers
+  // Accept/Reject before anything fetches the interaction, so the audience
+  // travels with the feed item; null for every non-interaction source and for a
+  // feed built before the metadata existed (PAP-17287).
+  const audience = describeAttentionResolverAudience(item);
   const showOpen = !inline && !!href;
   const showRestore = isHidden && !!onRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
@@ -195,7 +204,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
         <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
           {showCompact && (
-            <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />
+            <CompactDecisionActions
+              item={item}
+              companyId={companyId}
+              audience={audience}
+              onOpen={() => onToggleExpand(item)}
+            />
           )}
 
           {showOpen && (
@@ -352,6 +366,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           <CollapsibleContent data-decision-disclosure className="-mt-4">
             <div className="flex flex-col gap-4 pt-4">
               {hasImages && <ThumbnailStack images={images} />}
+              {/* The audience reads *before* the verbs it qualifies: a compact
+                  Accept sitting alone asks for a decision without saying whose
+                  it is (PAP-17287). */}
+              {audience && <InteractionAudienceLine audience={audience} variant="compact" />}
               {inline && renderFooter({ compact: true })}
             </div>
           </CollapsibleContent>
@@ -457,10 +475,13 @@ function collectCompactActions(item: AttentionItem): CompactAction[] {
 function CompactDecisionActions({
   item,
   companyId,
+  audience,
   onOpen,
 }: {
   item: AttentionItem;
   companyId: string;
+  /** Effective resolver audience, so a denial can name who *can* respond. */
+  audience: InteractionAudienceDescription | null;
   onOpen: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -500,9 +521,11 @@ function CompactDecisionActions({
       });
     },
     onError: (error, action) => {
+      // A policy denial is permanent, so it keeps the server's reason and names
+      // the real responder instead of asking for a retry that will fail again.
       pushToast({
         title: `Could not ${decisionLabel(action)}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: interactionResolutionErrorMessage(error, audience),
         tone: "error",
       });
     },
@@ -787,6 +810,7 @@ function InlineResolver({
         issueId={item.subject.id}
         companyId={companyId}
         footerSlot={toggle}
+        reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)}
       />
     );
   }

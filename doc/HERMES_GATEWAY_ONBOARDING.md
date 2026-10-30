@@ -53,6 +53,15 @@ Paperclip can usually store `http://127.0.0.1:8642` as the gateway URL. For
 Docker, LAN, tailnet, or reverse-proxy setups, use a URL reachable by the
 Paperclip server process.
 
+If a run reports a loopback connection refusal, check the listener from the
+Paperclip server's host or container. Its loopback address does not refer to
+your browser's machine or an agent sandbox. `hermes_gateway` does not start
+Hermes: start the API server at the configured address, or set `apiBaseUrl`
+to its reachable address. Choose `hermes_local` when Paperclip should launch
+the Hermes CLI itself. Connection guidance does not prove whether a remote
+run was accepted before a redirect failed; the task remains failed and the
+normal failure reporting and retry rules still apply.
+
 Plain HTTP is accepted for loopback. Non-loopback HTTP is denied by default in
 the join flow; use HTTPS for real remote gateways. For private local
 development only, the join payload can set
@@ -79,9 +88,9 @@ The UI prompt points Hermes at the same machine-readable onboarding endpoints:
 For CLI-driven setup, create and inspect the invite directly:
 
 ```sh
-pnpm paperclipai invite create --company-id <company-id> --payload-json '{"requestType":"agent"}'
-pnpm paperclipai invite show <token>
-pnpm paperclipai invite onboarding:text <token>
+npx paperclipai invite create --company-id <company-id> --payload-json '{"requestType":"agent"}'
+npx paperclipai invite show <token>
+npx paperclipai invite onboarding:text <token>
 ```
 
 Hermes should submit a join request with `requestType: "agent"` and
@@ -119,14 +128,14 @@ After Hermes submits the join request:
 2. Approve it from the board UI, or use:
 
    ```sh
-   pnpm paperclipai join list --company-id <company-id> --status pending_approval
-   pnpm paperclipai join approve <request-id> --company-id <company-id>
+   npx paperclipai join list --company-id <company-id> --status pending_approval
+   npx paperclipai join approve <request-id> --company-id <company-id>
    ```
 
 3. Hermes claims the one-time agent API key:
 
    ```sh
-   pnpm paperclipai join claim-key <request-id> --claim-secret <secret>
+   npx paperclipai join claim-key <request-id> --claim-secret <secret>
    ```
 
 4. Store the claimed Paperclip key in Hermes runtime state or secrets. The claim
@@ -182,7 +191,7 @@ Use these entry points depending on who is driving setup:
   onboarding prompt.
 - Invite API: `GET /api/invites/:token/onboarding.txt` for the generated
   llm.txt-style setup instructions.
-- CLI invite flow: `pnpm paperclipai invite create`, `invite show`,
+- CLI invite flow: `npx paperclipai invite create`, `invite show`,
   `invite onboarding:text`, `join approve`, and `join claim-key`.
 - Smoke helpers: `pnpm smoke:hermes-gateway-e2e` for fresh-state Docker
   verification and `pnpm smoke:hermes-gateway-join` for an already-running

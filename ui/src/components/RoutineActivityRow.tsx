@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 export type RoutineActivityEvent = Pick<ActivityEvent, "id" | "action" | "details" | "createdAt">;
@@ -14,11 +13,17 @@ function formatTime(value: string | Date): string {
   }
 }
 
-function summarizeDetails(details: Record<string, unknown> | null | undefined): string {
+function summarizeEvent(event: RoutineActivityEvent): string {
+  const details = event.details;
+  if (event.action === "routine.webhook_test_received") return "Connection working · No run or task created";
+  if (event.action === "routine.webhook_test_rejected") return "Update the key in your app and resend";
+  if (event.action === "routine.webhook_received") return "Authentication passed";
+  if (event.action === "routine.webhook_rejected") return "Check the key in your sending app";
   if (!details) return "";
-  const entries = Object.entries(details).slice(0, 3);
-  return entries
-    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${formatDetailValue(value)}`)
+  if (typeof details.changeSummary === "string") return details.changeSummary;
+  if (event.action === "routine.run_triggered") return `${details.source === "webhook" ? "Webhook" : details.source === "schedule" ? "Schedule" : "Manual"} · ${details.status === "issue_created" ? "Task created" : String(details.status ?? "").replaceAll("_", " ")}`;
+  return Object.entries(details).filter(([key]) => !/id$/i.test(key)).slice(0, 3)
+    .map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").toLowerCase()}: ${formatDetailValue(value)}`)
     .join(" · ");
 }
 
@@ -34,6 +39,20 @@ function formatDetailValue(value: unknown): string {
   }
 }
 
+const actionLabels: Record<string, string> = {
+  "routine.webhook_test_received": "Connection test passed",
+  "routine.webhook_test_rejected": "Connection test rejected",
+  "routine.webhook_received": "Webhook event received",
+  "routine.webhook_rejected": "Webhook authentication failed",
+  "routine.created": "Routine created", "routine.updated": "Routine updated",
+  "routine.trigger_created": "Trigger added", "routine.trigger_updated": "Trigger updated",
+  "routine.trigger_deleted": "Trigger removed", "routine.trigger_removed": "Trigger removed", "routine.trigger_restored": "Trigger restored", "routine.trigger_setup_finished": "Webhook setup finished", "routine.trigger_secret_rotated": "Webhook key replaced",
+  "routine.run_triggered": "Routine started", "routine.run_created": "Run created",
+};
+function actionLabel(action: string) {
+  return actionLabels[action] ?? action.replace(/^routine[._]/, "").replaceAll("_", " ").replaceAll(".", " ").replace(/^./, (char) => char.toUpperCase());
+}
+
 /** Activity log row with an expandable JSON payload (§3.7). */
 export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
   const [expanded, setExpanded] = useState(false);
@@ -44,20 +63,21 @@ export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
       <button
         type="button"
         disabled={!hasPayload}
+        aria-expanded={hasPayload ? expanded : undefined}
         onClick={() => setExpanded((value) => !value)}
         className={cn(
-          "flex w-full items-center gap-3 px-1 py-2 text-left text-xs",
+          "flex min-w-0 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs whitespace-nowrap",
           hasPayload ? "hover:bg-accent/30" : "cursor-default",
         )}
       >
-        <span className="w-12 shrink-0 font-mono text-muted-foreground/70">
+        <span className="w-16 shrink-0 whitespace-nowrap font-mono tabular-nums text-muted-foreground">
           {formatTime(event.createdAt)}
         </span>
-        <Badge variant="outline" className="shrink-0 font-mono">
-          {event.action}
-        </Badge>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground">
-          {summarizeDetails(event.details)}
+        <span title={event.action} className="min-w-0 max-w-1/2 shrink-0 truncate font-medium text-foreground">
+          {actionLabel(event.action)}
+        </span>
+        <span title={summarizeEvent(event)} className="min-w-0 flex-1 truncate text-muted-foreground">
+          {summarizeEvent(event)}
         </span>
         {hasPayload ? (
           <ChevronRight
@@ -69,7 +89,7 @@ export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
         ) : null}
       </button>
       {expanded && hasPayload ? (
-        <pre className="mx-1 mb-2 overflow-x-auto rounded-md bg-neutral-950 p-3 font-mono text-xs text-neutral-200">
+        <pre className="mx-2 mb-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
           {JSON.stringify(event.details, null, 2)}
         </pre>
       ) : null}

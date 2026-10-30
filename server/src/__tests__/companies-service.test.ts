@@ -1,12 +1,15 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  applyPendingMigrations,
   activityLog,
   agentConfigRevisions,
   agents,
   agentWakeupRequests,
   builtInManagedResources,
+  cases,
   companies,
   companySkillVersions,
   companySkills,
@@ -14,6 +17,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -22,11 +26,25 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+// Observe the Cloud lifecycle doorbell without any network: the real
+// implementation is env-gated (a no-op off Cloud), so these tests assert
+// WHEN the service rings it, not what the ring does.
+const notifyCloudSpy = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../services/cloud-lifecycle-sync.js", () => ({
+  isCloudPinnedPrimaryCompany: () => false,
+  notifyCloudOfPrimaryCompanyLifecycleChange: notifyCloudSpy,
+}));
+
+import { startAgentLifecycle } from "../services/agent-lifecycle.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
+import { reserveRunBudget } from "../services/budget-reservations.js";
 import { companyService } from "../services/companies.js";
-import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPANIES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -37,14 +55,29 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("companyService", () => {
   let db!: ReturnType<typeof createDb>;
+  let lifecycleWorker: ReturnType<typeof startAgentLifecycle>;
+  beforeEach(() => {
+    lifecycleWorker = startAgentLifecycle(db, { ...createLifecycleDriver(db, {} as never),
+      requiredPluginIds: async () => [], runPlugin: async () => "complete" }, () => true);
+  });
+  async function insertAgents(input: typeof agents.$inferInsert | Array<typeof agents.$inferInsert>) {
+    const rows = Array.isArray(input) ? input : [input];
+    await db.insert(agents).values(rows.map(row => ({ ...row,
+      lifecycleState: ["paused", "pending_approval", "terminated"].includes(row.status ?? "") ? row.status! : "ready",
+      lifecycleHolds: row.status === "paused" ? [row.pauseReason ?? "manual"] : [],
+    })));
+  }
+
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-service-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
+    await lifecycleWorker.stop();
     await db.delete(routineTriggers);
     await db.delete(routines);
     await db.delete(builtInManagedResources);
@@ -58,10 +91,13 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(cases);
+    await db.delete(issues);
     await db.delete(companies);
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -79,6 +115,17 @@ describeEmbeddedPostgres("companyService", () => {
 
     const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
+  });
+
+  it("leaves unrelated company-hold projection out of name edits", async () => {
+    const [company] = await db.insert(companies).values({ name: "Rename only", issuePrefix: "REN" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Unrelated agent",
+      status: "paused", lifecycleState: "paused", lifecycleHolds: ["manual", "company_paused"], pauseReason: "manual" }).returning();
+    await companyService(db).update(company.id, { description: "Updated description" });
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0].lifecycleHolds)
+      .toEqual(["manual", "company_paused"]);
+    await lifecycleWorker.sweep();
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0].lifecycleHolds).toEqual(["manual"]);
   });
 
   it("does not auto-provision bundled built-in agents for a freshly created company", async () => {
@@ -151,7 +198,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values([
+    await insertAgents([
       {
         id: runningAgentId,
         companyId,
@@ -247,6 +294,10 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     expect(archived?.status).toBe("archived");
+    // The request commits the admission block; stopping providers is owed work.
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("running");
+    expect(await lifecycleWorker.hasPending()).toBe(true);
+    await lifecycleWorker.sweep();
 
     const archiveActivity = await db
       .select({
@@ -263,7 +314,7 @@ describeEmbeddedPostgres("companyService", () => {
     expect(archiveActivity[0]).toMatchObject({
       actorType: "user",
       actorId: "test-user",
-      details: { agentsPaused: 3, runsCancelled: 1 },
+      details: { agentsPauseRequested: 3, runsCancellationRequested: 1 },
     });
 
     const rows = await db
@@ -307,6 +358,27 @@ describeEmbeddedPostgres("companyService", () => {
     });
   });
 
+  it.each(["archive", "pause"] as const)("preserves owed stops across immediate %s and reactivation", async action => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rapid lifecycle", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await insertAgents({ id: agentId, companyId, name: "Running target", adapterType: "process", status: "running" });
+    const [original] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "on_demand" }).returning();
+    const service = companyService(db);
+    if (action === "archive") await service.archive(companyId);
+    else await service.update(companyId, { status: "paused" });
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]).toMatchObject({ lifecycleState: "pausing", status: "paused" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original.id)))[0].status).toBe("running");
+    await service.update(companyId, { status: "active" });
+    const [waiting] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "on_demand" }).returning();
+    await expect(reserveRunBudget(db, companyId, waiting.id, null)).rejects.toThrow(/paused|not ready/);
+    await lifecycleWorker.sweep();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original.id)))[0].status).toBe("cancelled");
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    const [fresh] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "on_demand" }).returning();
+    await expect(reserveRunBudget(db, companyId, fresh.id, null)).resolves.toMatchObject({ runId: fresh.id, reused: false });
+  });
+
   it("reactivates only agents paused because the company was archived", async () => {
     const companyId = randomUUID();
     const archivedPausedAgentId = randomUUID();
@@ -321,7 +393,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values([
+    await insertAgents([
       {
         id: archivedPausedAgentId,
         companyId,
@@ -368,6 +440,7 @@ describeEmbeddedPostgres("companyService", () => {
     );
 
     expect(reactivated?.status).toBe("active");
+    await lifecycleWorker.sweep();
 
     const reactivateActivity = await db
       .select({
@@ -427,7 +500,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values([
+    await insertAgents([
       {
         id: runningAgentId,
         companyId,
@@ -487,6 +560,7 @@ describeEmbeddedPostgres("companyService", () => {
     );
 
     expect(archived?.status).toBe("archived");
+    await lifecycleWorker.sweep();
 
     const rows = await db
       .select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason })
@@ -520,7 +594,7 @@ describeEmbeddedPostgres("companyService", () => {
     expect(archiveActivity[0]).toMatchObject({
       actorType: "user",
       actorId: "test-user",
-      details: { agentsPaused: 2, runsCancelled: 1 },
+      details: { agentsPauseRequested: 2, runsCancellationRequested: 1 },
     });
   });
 
@@ -537,7 +611,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values([
+    await insertAgents([
       {
         id: archivedPausedAgentId,
         companyId,
@@ -573,6 +647,7 @@ describeEmbeddedPostgres("companyService", () => {
     );
 
     expect(reactivated?.status).toBe("active");
+    await lifecycleWorker.sweep();
 
     const rows = await db
       .select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason })
@@ -604,7 +679,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
+    await insertAgents({
       id: terminatedAgentId,
       companyId,
       name: "Terminated Agent",
@@ -647,7 +722,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
+    await insertAgents({
       id: manualPausedAgentId,
       companyId,
       name: "Manual Paused Agent",
@@ -699,7 +774,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
+    await insertAgents({
       id: agentId,
       companyId,
       name: "Idle Agent",
@@ -744,6 +819,7 @@ describeEmbeddedPostgres("companyService", () => {
       runId: null,
     });
     expect(archived?.status).toBe("archived");
+    await lifecycleWorker.sweep();
 
     const wakeups = await db
       .select({
@@ -774,7 +850,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
+    await insertAgents({
       id: agentId,
       companyId,
       name: "Idle Agent",
@@ -801,7 +877,39 @@ describeEmbeddedPostgres("companyService", () => {
         eq(activityLog.action, "company.archived"),
       ));
     expect(archiveActivity).toHaveLength(1);
-    expect(archiveActivity[0]).toMatchObject({ details: { agentsPaused: 1, runsCancelled: 0 } });
+    expect(archiveActivity[0]).toMatchObject({ details: { agentsPauseRequested: 1, runsCancellationRequested: 0 } });
+  });
+
+  it("rings the Cloud lifecycle doorbell exactly on archived-boundary transitions", async () => {
+    notifyCloudSpy.mockClear();
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Doorbell Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const svc = companyService(db);
+    const actor = { actorType: "user" as const, actorId: "test-user", agentId: null, runId: null };
+
+    // A plain edit never rings.
+    await svc.update(companyId, { name: "Doorbell Test Co (renamed)" }, actor);
+    expect(notifyCloudSpy).not.toHaveBeenCalled();
+
+    // archive() rings once; re-archiving (no transition) does not.
+    await svc.archive(companyId, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(1);
+    expect(notifyCloudSpy).toHaveBeenLastCalledWith(companyId);
+    await svc.archive(companyId, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(1);
+
+    // Unarchiving through update() rings again.
+    await svc.update(companyId, { status: "active" }, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(2);
+
+    // update() into archived rings too (the status-patch archive path).
+    await svc.update(companyId, { status: "archived" }, actor);
+    expect(notifyCloudSpy).toHaveBeenCalledTimes(3);
   });
 
   it("runs the archive cascade when update() transitions a paused company to archived", async () => {
@@ -817,7 +925,7 @@ describeEmbeddedPostgres("companyService", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values({
+    await insertAgents({
       id: idleAgentId,
       companyId,
       name: "Idle Agent",
@@ -844,6 +952,7 @@ describeEmbeddedPostgres("companyService", () => {
     );
 
     expect(archived?.status).toBe("archived");
+    await lifecycleWorker.sweep();
 
     const agent = await db
       .select({ status: agents.status, pauseReason: agents.pauseReason })
@@ -866,7 +975,7 @@ describeEmbeddedPostgres("companyService", () => {
       ));
     expect(archiveActivity).toHaveLength(1);
     expect(archiveActivity[0]).toMatchObject({
-      details: { agentsPaused: 1, runsCancelled: 1 },
+      details: { agentsPauseRequested: 1, runsCancellationRequested: 1 },
     });
   });
 
@@ -875,6 +984,231 @@ describeEmbeddedPostgres("companyService", () => {
     await expect(svc.getById("tumbly-haus-creative")).resolves.toBeNull();
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
     await expect(svc.getById("")).resolves.toBeNull();
+  });
+
+  describe("issue prefix re-derivation on rename", () => {
+    const TEST_ACTOR = {
+      actorType: "user" as const,
+      actorId: "test-user",
+      agentId: null,
+      runId: null,
+    };
+
+    beforeEach(() => {
+      // The tenant server token is the managed-instance signal the prefix
+      // re-derivation gates on.
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    async function seedCompanyWithWork(name: string, issuePrefix: string) {
+      const [company] = await db
+        .insert(companies)
+        .values({ name, issuePrefix })
+        .returning({ id: companies.id });
+      const companyId = company!.id;
+      await db.insert(issues).values([
+        { companyId, title: "First", issueNumber: 1, identifier: `${issuePrefix}-1` },
+        { companyId, title: "Second", issueNumber: 12, identifier: `${issuePrefix}-12` },
+        // A pre-identifier issue must survive the re-key untouched.
+        { companyId, title: "Unnumbered", issueNumber: null, identifier: null },
+      ]);
+      await db.insert(cases).values({
+        companyId,
+        caseNumber: 3,
+        identifier: `${issuePrefix}-C3`,
+        caseType: "decision",
+        title: "A case",
+      });
+      return companyId;
+    }
+
+    // Nulls last, so an issue that never got an identifier stays visible in
+    // the assertion instead of sorting unpredictably.
+    function sortIdentifiers(values: (string | null)[]) {
+      return [...values].sort((a, b) => {
+        if (a === null) return b === null ? 0 : 1;
+        if (b === null) return -1;
+        return a.localeCompare(b);
+      });
+    }
+
+    async function readIdentifiers(companyId: string) {
+      const issueRows = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(eq(issues.companyId, companyId));
+      const caseRows = await db
+        .select({ identifier: cases.identifier })
+        .from(cases)
+        .where(eq(cases.companyId, companyId));
+      return {
+        issues: sortIdentifiers(issueRows.map((row) => row.identifier)),
+        cases: sortIdentifiers(caseRows.map((row) => row.identifier)),
+      };
+    }
+
+    it("re-derives the prefix and re-keys both identifier tables on a managed instance", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated).toMatchObject({ name: "Northwind Traders", issuePrefix: "NOR" });
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["NOR-1", "NOR-12", null],
+        cases: ["NOR-C3"],
+      });
+
+      const logged = await db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "company.updated"),
+        ));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toMatchObject({
+        details: {
+          source: "company_rename",
+          reason: "issue_prefix_rederived",
+          previousIssuePrefix: "ACM",
+          issuePrefix: "NOR",
+          issuesRekeyed: 2,
+          casesRekeyed: 1,
+        },
+      });
+    });
+
+    it("suffixes the candidate when another company already holds the derived base", async () => {
+      await db.insert(companies).values({ name: "Northwind Holdings", issuePrefix: "NOR" });
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated?.issuePrefix).toBe("NORA");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["NORA-1", "NORA-12", null],
+        cases: ["NORA-C3"],
+      });
+    });
+
+    it("keeps the prefix when the rename derives the same base", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACMA");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Acme Robotics International" },
+        TEST_ACTOR,
+      );
+
+      // The suffixed prefix is kept: the base did not move, so nothing needs
+      // to be re-keyed and no disambiguating suffix is lost.
+      expect(updated?.issuePrefix).toBe("ACMA");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACMA-1", "ACMA-12", null],
+        cases: ["ACMA-C3"],
+      });
+      const logged = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(eq(activityLog.companyId, companyId));
+      expect(logged).toHaveLength(0);
+    });
+
+    it("keeps identifiers and the company prefix together under concurrent renames", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // Both renames read the company before either commits. Without a row
+      // lock the loser re-keys from the prefix it read, finds nothing left to
+      // move, and strands the identifiers on the winner's prefix while the
+      // company row carries its own.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Zenith Freight" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      const prefix = company!.issuePrefix;
+      expect(["NOR", "ZEN"]).toContain(prefix);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${prefix}-1`, `${prefix}-12`, null],
+        cases: [`${prefix}-C3`],
+      });
+    });
+
+    it("keeps the prefix consistent when a stale form resubmits the old name during a rename", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // The second caller submits the name it loaded before the rename. Judged
+      // against its own stale read that name looks unchanged, so a pre-lock
+      // comparison would skip re-derivation and restore "Acme Robotics" on top
+      // of the rename's prefix.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Acme Robotics" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ name: companies.name, issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      // Whichever update commits last, the prefix derives from the name that
+      // survived, and the identifiers sit on that prefix.
+      expect(company!.issuePrefix.startsWith(deriveIssuePrefixBase(company!.name))).toBe(true);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${company!.issuePrefix}-1`, `${company!.issuePrefix}-12`, null],
+        cases: [`${company!.issuePrefix}-C3`],
+      });
+    });
+
+    it("leaves the prefix alone when only non-name fields change", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { description: "Now with rockets" },
+        TEST_ACTOR,
+      );
+
+      expect(updated?.issuePrefix).toBe("ACM");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACM-1", "ACM-12", null],
+        cases: ["ACM-C3"],
+      });
+    });
+
+    it("never touches the prefix on a self-hosted instance", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated).toMatchObject({ name: "Northwind Traders", issuePrefix: "ACM" });
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACM-1", "ACM-12", null],
+        cases: ["ACM-C3"],
+      });
+    });
   });
 
 });

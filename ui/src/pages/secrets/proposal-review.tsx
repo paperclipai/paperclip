@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
@@ -6,7 +7,6 @@ import type {
   SecretProposalAgentRef,
   SecretProposalView,
 } from "@paperclipai/shared";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -126,7 +126,7 @@ export function AgentRefChip({
 }) {
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1", className)}>
-      <AgentIcon icon={agent.icon ?? null} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
       <span className="min-w-0 truncate">{agent.name}</span>
     </span>
   );

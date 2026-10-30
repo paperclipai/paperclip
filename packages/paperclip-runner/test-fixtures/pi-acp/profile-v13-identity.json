@@ -1,0 +1,43 @@
+{
+  "commandDigest": "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "pi",
+    "agentProfileVersion": 13,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "0.0.33",
+    "agentRuntimeVersion": "1.0.0",
+    "nodeVersion": "24.21.0",
+    "closure": {
+      "darwin-arm64": "f6538a35e08f1c1816e738277a1843acfa1ce4522bbaa3340dbddd859dc7dd04",
+      "darwin-x64": "4728e5a4e7fc1ba602c3e219824fb84884b05a06cdd19dd3e521ee312e1b373a",
+      "linux-x64": "2957c0ec20ca1ace64d1a2b10c4a99f47f59e0c5c33a89161c1d5b48341c2b25"
+    },
+    "wrapperSha256": "8ef777e9e6a3cef37775bab2b800e4931330c23a0b151ce07fdc5b943f28435d",
+    "helperSha256": "2191b1e5f281d24508ec7eaff39011ee863a8a70bf54f4aa0490ad0172b323da",
+    "extensionSha256": "8f9b538dbe924a314099f9597ee3876f7ccd88211c4f4b2e52f46b6c7ffa76ba",
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "nativeQuestions": "select-confirm-input-editor-v2",
+    "pathPolicy": "sdk-normalization-v1",
+    "mcpToolNames": "provider-safe-exact-source-v1",
+    "acpxPatchSha256": "bd5393058a218040d217fa85449d59a6f30507de54cd645bf0ef21422823f85e",
+    "nativeAssistantMessages": "pi1-rpc-deltas-v3-bound-message-and-tool-receipts",
+    "nativeNotices": "session-extension-v2-bounded-runtime-failure",
+    "messageProjectionSha256": "17d1e91b948dfa6a56e1905645add52b502041ad843c8d50a13b07956f22aadd",
+    "noticeProjectionSha256": "014485adc690998e395d334ea3ae67f72be6060a2fc78a1185df7b8d1da28fbf",
+    "sharedRuntimeContract": "paperclip.acpx-runtime-contract.v1",
+    "nativeInputDisposition": "queued-only-v1",
+    "cacheWarming": "disabled-owned-decision-v1",
+    "thinkingLevel": {
+      "supported": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ],
+      "newConfigurationDefault": "low",
+      "admission": "explicit-native-effective-before-prompt-v1",
+      "recovery": "mode-bound-v1"
+    }
+  }
+}

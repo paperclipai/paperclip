@@ -11,7 +11,7 @@ import {
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -144,7 +144,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     assertCompanyAccess(req, companyId);
     await assertStatusCardsEnabled();
     const query = listStatusCardsQuerySchema.parse(req.query);
-    res.json(await service.list(companyId, query.archived));
+    res.json(await service.list(companyId, query.archived, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    }));
   });
 
   router.post("/companies/:companyId/status-cards", validate(createStatusCardSchema), async (req, res) => {
@@ -171,7 +173,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    res.json(await service.hydrate(card));
+    res.json(await service.hydrate(card, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    }));
   });
 
   router.patch("/status-cards/:id", validate(patchStatusCardSchema), async (req, res) => {
@@ -260,11 +264,12 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     if (!decision.allowed) {
       throw forbidden("Status-card dry-run is outside this actor's low-trust authorization boundary", authorizationDeniedDetails(decision));
     }
+    const issueReadCondition = await issueReadSqlCondition(db, req.actor);
     res.json({
       cardId: card.id,
       queryVersion: card.queryVersion,
-      queries: await service.dryRun(card),
-      mentionedIssues: await service.listMentionedIssues(card),
+      queries: await service.dryRun(card, { issueReadCondition }),
+      mentionedIssues: await service.listMentionedIssues(card, { issueReadCondition }),
     });
   });
 

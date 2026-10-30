@@ -1,3 +1,6 @@
+import { probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
+import { HttpError } from "../errors.js";
+import { probeAcpxClaudeInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } from "../vendor/paperclip-runner/live/index.js";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -7,7 +10,6 @@ import {
   findActiveServerAdapter,
   findServerAdapter,
   listAdapterModels,
-  listAdapterModelProfiles,
   registerServerAdapter,
   requireServerAdapter,
   unregisterServerAdapter,
@@ -15,7 +17,29 @@ import {
 import {
   resolveExternalAdapterRegistration,
   setOverridePaused,
+  hasActiveAdapterOverride,
 } from "../adapters/registry.js";
+
+const nativeSetup = vi.hoisted(() => ({ authenticate: vi.fn() }));
+vi.mock("../services/native-runtime/setup-readiness.js", () => ({
+  testNativeRunnerAuthentication: nativeSetup.authenticate,
+}));
+vi.mock("../services/copilot-connection-probe.js",()=>({probeCopilotExecutionTarget:vi.fn(async()=>({status:"verified",models:[{id:"gpt-5.6-luna"}]}))}));
+
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxPiInstallation: vi.fn(async () => undefined),
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
+}));
+
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -59,31 +83,6 @@ describe("server adapter registry", () => {
     expect(requireServerAdapter("external_test")).toBe(externalAdapter);
     expect(await listAdapterModels("external_test")).toEqual([
       { id: "external-model", label: "External Model" },
-    ]);
-  });
-
-  it("exposes adapter model profiles when adapters declare them", async () => {
-    const adapterWithProfiles: ServerAdapterModule = {
-      ...externalAdapter,
-      modelProfiles: [
-        {
-          key: "cheap",
-          label: "Cheap",
-          adapterConfig: { model: "external-mini" },
-          source: "adapter_default",
-        },
-      ],
-    };
-
-    registerServerAdapter(adapterWithProfiles);
-
-    expect(await listAdapterModelProfiles("external_test")).toEqual([
-      {
-        key: "cheap",
-        label: "Cheap",
-        adapterConfig: { model: "external-mini" },
-        source: "adapter_default",
-      },
     ]);
   });
 
@@ -257,50 +256,158 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
-  it("built-in local adapters declare cheap model profile defaults where supported", async () => {
-    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: {},
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  it("rejects an incomplete managed runner provider before probing Codex", async () => {
+    const adapter = requireServerAdapter("paperclip_runner");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    const result = await adapter.testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "claude_managed" },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "fail",
+      checks: [{
+        code: "paperclip_runner_claude_managed_profile_required",
+        level: "error",
+      }],
+    });
   });
 
+  it.each(["pass", "fail"] as const)("uses the selected native Codex runtime for setup (%s)", async status => {
+    nativeSetup.authenticate.mockReset().mockResolvedValue({ adapterType: "paperclip_runner", status, testedAt: "", checks: [{ code: `codex_hello_probe_${status === "pass" ? "passed" : "auth_required"}`, level: status === "pass" ? "info" : "error", message: "Selected native account" }] });
+    const context = { companyId: "company-1", adapterType: "paperclip_runner", config: { provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high", env: { OPENAI_API_KEY: "selected-key" } } };
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment(context);
+    expect(result.status).toBe(status);
+    expect(nativeSetup.authenticate).toHaveBeenCalledWith(context, "codex", "gpt-5.6-sol");
+  });
+
+  it("identifies only active external overrides for automatic runner selection", () => {
+    try {
+      expect(hasActiveAdapterOverride("codex_local")).toBe(false);
+      registerServerAdapter({ ...externalAdapter, type: "codex_local" });
+      expect(hasActiveAdapterOverride("codex_local")).toBe(true);
+      setOverridePaused("codex_local", true);
+      expect(hasActiveAdapterOverride("codex_local")).toBe(false);
+      setOverridePaused("codex_local", false);
+      expect(hasActiveAdapterOverride("codex_local")).toBe(true);
+    } finally { unregisterServerAdapter("codex_local"); }
+  });
+
+  it.each([
+    ["claude_managed", {
+      managedProfileId: "managed-primary",
+      managedAgentsRetentionAcknowledged: true,
+    }, "claude_managed_profile_selected"],
+    ["aws_agentcore", {
+      agentCoreProfileId: "agentcore-primary",
+      agentCoreRetentionAcknowledged: true,
+    }, "aws_agentcore_profile_selected"],
+  ] as const)("accepts a complete %s profile selection", async (provider, config, code) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider, ...config },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: expect.arrayContaining([expect.objectContaining({ code, level: "info" })]),
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"],
+  ] as const)("does not claim runtime readiness from the remote ACPX %s platform alone", async (acpxAgent, model) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent, model },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        providerKey: "test-provider",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" }],
+    });
+  });
+
+  it.each([true, false])("checks actual local ACPX installation readiness (%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxClaudeInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Runtime package integrity verification failed"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "claude", model: "custom-claude-model" },
+    });
+    expect(probe).toHaveBeenLastCalledWith("custom-claude-model");
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
+    });
+  });
+
+  it.each([true, false])("probes the exact Pi installation without qualification opt-in (ready=%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxPiInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Pi closure unavailable"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: {
+        provider: "acpx",
+        acpxAgent: "pi",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [{ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" }],
+    });
+    expect(probe).toHaveBeenLastCalledWith("openrouter/deepseek/deepseek-v4-flash-0731");
+  });
+  it("requires a saved Copilot token rather than ambient authentication",async()=>{
+    const prior=process.env.COPILOT_GITHUB_TOKEN;process.env.COPILOT_GITHUB_TOKEN="ambient-not-authority";
+    const probe=vi.mocked(probeCopilotExecutionTarget);probe.mockClear();
+    try{
+      const result=await requireServerAdapter("paperclip_runner").testEnvironment({companyId:"company-1",adapterType:"paperclip_runner",config:{provider:"acpx",acpxAgent:"copilot",model:"gpt-5.6-luna"}});
+      expect(result).toMatchObject({status:"fail",checks:[{code:"COPILOT_AUTH_REQUIRED"}]});expect(probe).not.toHaveBeenCalled();
+    }finally{if(prior===undefined)delete process.env.COPILOT_GITHUB_TOKEN;else process.env.COPILOT_GITHUB_TOKEN=prior;}
+  });
+  it.each([undefined,{kind:"remote",remoteCwd:"/workspace"}])("verifies the selected Copilot runtime and model without a prompt",async(executionTarget)=>{
+    const result=await requireServerAdapter("paperclip_runner").testEnvironment({companyId:"company-1",adapterType:"paperclip_runner",config:{provider:"acpx",acpxAgent:"copilot",model:"gpt-5.6-luna",env:{COPILOT_GITHUB_TOKEN:"fixture-token"}},executionTarget} as any);
+    expect(probeCopilotExecutionTarget).toHaveBeenLastCalledWith("fixture-token",executionTarget,"gpt-5.6-luna");
+    expect(result).toMatchObject({status:"pass",checks:[{code:"copilot_metadata_verified"}]});
+  });
+  it.each(["COPILOT_AUTH_REQUIRED","COPILOT_ENTITLEMENT_DENIED","COPILOT_MODEL_UNAVAILABLE","COPILOT_INSTALLATION_INVALID","COPILOT_REQUEST_FAILED"])("reports distinct Copilot failure %s",async code=>{
+    vi.mocked(probeCopilotExecutionTarget).mockRejectedValueOnce(new HttpError(422,"Fixture metadata failure",{code}));
+    const result=await requireServerAdapter("paperclip_runner").testEnvironment({companyId:"company-1",adapterType:"paperclip_runner",config:{provider:"acpx",acpxAgent:"copilot",model:"gpt-5.6-luna",env:{COPILOT_GITHUB_TOKEN:"fixture-token"}}});
+    expect(result).toMatchObject({status:"fail",checks:[{code}]});
+  });
+  it("sanitizes unexpected Copilot metadata failures",async()=>{
+    vi.mocked(probeCopilotExecutionTarget).mockRejectedValueOnce(new Error("fixture private implementation detail"));
+    const result=await requireServerAdapter("paperclip_runner").testEnvironment({companyId:"company-1",adapterType:"paperclip_runner",config:{provider:"acpx",acpxAgent:"copilot",model:"gpt-5.6-luna",env:{COPILOT_GITHUB_TOKEN:"fixture-token"}}});
+    expect(result).toMatchObject({status:"fail",checks:[{code:"COPILOT_REQUEST_FAILED",message:"Copilot metadata verification failed."}]});
+    expect(JSON.stringify(result)).not.toContain("private implementation detail");
+  });
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
     const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.160.0")}; fi`;
+    const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.34")}; fi`;
 
     expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
       command: "claude",
@@ -321,6 +428,21 @@ describe("server adapter registry", () => {
       command: "opencode",
       detectCommand: "opencode",
       installCommand: expectedOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "codex" })).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedRunnerCodexInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "opencode" })).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedRunnerOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "acpx" })).toEqual({
+      command: "paperclip-runnerd",
+      detectCommand: null,
+      installCommand: null,
     });
   });
 

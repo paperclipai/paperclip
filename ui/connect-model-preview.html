@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" style="color-scheme: dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#18181b" />
+    <title>Connect a model — Paperclip onboarding</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--
+      No theme bootstrap script, unlike the app's index.html: this page is the
+      dark design and has no theme switch, so `dark` is simply set above rather
+      than resolved from localStorage.
+    -->
+    <style>
+      /*
+        Unlayered on purpose. index.css pins `html, body { height: 100% }` with
+        `body { overflow: hidden }` inside @layer base — correct for the real
+        shell, which scrolls inside its own panes, but this page has no inner
+        scroll container, so on a short viewport it would clip the step's footer
+        with no way to reach it. Unlayered CSS wins over @layer regardless of
+        load order, and living in this entry keeps the app untouched.
+      */
+      html,
+      body {
+        height: auto;
+        min-height: 100%;
+        overflow-y: auto;
+      }
+      /*
+        No height is imposed on #root: the centring wrapper measures the
+        viewport directly with `min-h-dvh`, so handing it a percentage height to
+        inherit would only give it a second, weaker mechanism to disagree with.
+      */
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/connect-model-preview-main.tsx"></script>
+  </body>
+</html>

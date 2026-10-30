@@ -1,8 +1,8 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { agentsApi } from "@/api/agents";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import { isAgentTaskTarget } from "@/lib/company-members";
 import { queryKeys } from "@/lib/queryKeys";
@@ -48,7 +48,7 @@ export function SummarizerAgentSelect({
     const agent = option.id.startsWith("agent:") ? agentById.get(option.id.slice("agent:".length)) : null;
     return (
       <>
-        {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+        {agent ? <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/> : null}
         <span className="truncate">{option.label}</span>
       </>
     );

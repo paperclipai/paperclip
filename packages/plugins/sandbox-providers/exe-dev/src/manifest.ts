@@ -31,7 +31,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Paste your exe.dev API token, or pick a saved Paperclip secret. Create one at exe.dev → Settings → API tokens with `/exec` scope (`new`, `ls`, `rm`).",
+              "Paste your exe.dev API token, or pick a saved Paperclip secret. Create one at exe.dev → Settings → API tokens with `/exec` scope (`new`, `ls`, `rm`, plus `cp` if you use Source VM).",
           },
           sshPrivateKey: {
             type: "string",
@@ -99,6 +99,14 @@ const manifest: PaperclipPluginManifestV1 = {
             "x-paperclip-group": "VM resources",
           },
           // ---- Advanced: VM creation ----
+          sourceVm: {
+            type: "string",
+            title: "Source VM",
+            description:
+              "Name of an existing exe.dev VM to copy for each run with `exe.dev cp`, disk and config included. Leave blank to create a fresh VM with `exe.dev new`. Your API token must allow `cp`: tokens list their permitted commands, and one without `cp` fails with a 403. When set, leave image, command, env, integrations, tags, setup script, prompt, and comment empty: `cp` cannot apply them, and saving fails until they are cleared.",
+            "x-paperclip-advanced": true,
+            "x-paperclip-group": "VM creation",
+          },
           command: {
             type: "string",
             description: "Optional container command passed to `exe.dev new --command`.",

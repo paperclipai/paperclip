@@ -128,6 +128,18 @@ describe("AgentMultiSelect", () => {
     expect(document.body.querySelector('input[placeholder="Filter agents"]')).toBeNull();
   });
 
+  it("uses the same agent avatar in the selected value and every option", async () => {
+    const agents = [{ id: "agent-1", name: "Ralph" }, { id: "agent-2", name: "Support" }];
+    root = createRoot(container);
+    act(() => root?.render(<AgentSelect agents={agents} value="agent-1" onChange={vi.fn()} />));
+    const selected = container.querySelector('[data-slot="agent-avatar"] img')?.getAttribute("src");
+    expect(selected).toBeTruthy();
+    act(() => container.querySelector("button")?.click());
+    await flush();
+    expect(document.querySelector('[aria-label="Select Ralph"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toBe(selected);
+    expect(document.querySelector('[aria-label="Select Support"] [data-slot="agent-avatar"] img')).not.toBeNull();
+  });
+
   it("previews selected agents and stages changes until save", async () => {
     const onSave = vi.fn();
     const agents = Array.from({ length: 6 }, (_, index) => ({

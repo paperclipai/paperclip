@@ -1,5 +1,5 @@
 import type { IssueAttachment, IssueDocumentSummary, IssueWorkProduct } from "@paperclipai/shared";
-import { getPromotedOutputAttachmentIds } from "./issue-output";
+import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
 
 /**
  * Selectors for the properties pane's Artifacts tab (PAP-491): which
@@ -20,6 +20,23 @@ export function isAgentAttachment(
 }
 
 /**
+ * Attachment ids owned by valid attachment-backed Paperclip work products.
+ * Unlike `getPromotedOutputAttachmentIds`, this includes document-like content
+ * types (e.g. Markdown) that the binary Output surface intentionally excludes,
+ * so it is the right dedupe set for the Artifacts tab's Files section.
+ */
+export function getAttachmentBackedWorkProductAttachmentIds(
+  workProducts: IssueWorkProduct[] | null | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const workProduct of workProducts ?? []) {
+    const metadata = getAttachmentArtifactWorkProductMetadata(workProduct);
+    if (metadata) ids.add(metadata.attachmentId);
+  }
+  return ids;
+}
+
+/**
  * Agent-authored attachments minus the ones already promoted to
  * attachment-backed work products (`metadata.attachmentId`), so the Artifacts
  * tab lists each file once.
@@ -28,10 +45,19 @@ export function selectAgentArtifactAttachments(
   attachments: IssueAttachment[] | null | undefined,
   workProducts: IssueWorkProduct[] | null | undefined,
 ): IssueAttachment[] {
-  const promoted = getPromotedOutputAttachmentIds(workProducts);
+  const promoted = getAttachmentBackedWorkProductAttachmentIds(workProducts);
   return (attachments ?? []).filter(
     (attachment) => isAgentAttachment(attachment) && !promoted.has(attachment.id),
   );
+}
+
+/** All task files, regardless of author, with promoted work products deduped. */
+export function selectArtifactAttachments(
+  attachments: IssueAttachment[] | null | undefined,
+  workProducts: IssueWorkProduct[] | null | undefined,
+): IssueAttachment[] {
+  const promoted = getAttachmentBackedWorkProductAttachmentIds(workProducts);
+  return (attachments ?? []).filter(attachment => !promoted.has(attachment.id));
 }
 
 /**

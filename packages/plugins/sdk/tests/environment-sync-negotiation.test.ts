@@ -249,3 +249,29 @@ describe("environment sync verb negotiation", () => {
     }
   });
 });
+
+
+describe("environment stop-and-retain negotiation", () => {
+  it.each([false, true])("dispatches only an explicitly advertised stop hook: %s", async supported => {
+    let releases = 0;
+    const worker = startTestWorker(definePlugin({
+      async setup() {},
+      async onEnvironmentReleaseLease() { releases += 1; },
+      ...(supported ? { async onEnvironmentStopLease(params: { providerLeaseId: string | null }) {
+        return { providerLeaseId: params.providerLeaseId!, state: "stopped" as const };
+      } } : {}),
+    }));
+    try {
+      const result = await worker.callWorker<{ supportedMethods: string[] }>("initialize", {
+        manifest: MANIFEST, config: {}, databaseNamespace: null,
+      });
+      expect(result.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const call = worker.callWorker("environmentStopLease", {
+        driverKey: "daytona", companyId: "company", environmentId: "env", config: {}, providerLeaseId: "lease-1",
+      });
+      if (supported) await expect(call).resolves.toEqual({ providerLeaseId: "lease-1", state: "stopped" });
+      else await expect(call).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
+});

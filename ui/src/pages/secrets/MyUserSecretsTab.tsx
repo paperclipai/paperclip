@@ -53,7 +53,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
   ).length;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+    <div className="flex flex-col gap-3">
       <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
         <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
         <p>
@@ -69,7 +69,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div>
         {mySecretsQuery.isError ? (
           <div className="flex items-center gap-2 py-4 text-sm text-destructive">
             <AlertCircle className="h-4 w-4" /> Failed to load your secrets:{" "}
@@ -81,7 +81,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
         ) : entries.length === 0 && !mySecretsQuery.isPending ? (
           <EmptyState
             icon={KeyRound}
-            message="No user secrets are defined for this company yet. An admin defines which credentials each member supplies."
+            message="No user secrets are defined for this organization yet. An admin defines which credentials each member supplies."
           />
         ) : (
           <ul className="space-y-2">

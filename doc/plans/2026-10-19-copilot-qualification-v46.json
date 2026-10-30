@@ -1,0 +1,376 @@
+{
+  "schema": "paperclip.copilot.production-qualification.v1",
+  "recordedAt": "2026-10-19",
+  "productionReady": false,
+  "merged": false,
+  "deployed": false,
+  "runtimeSource": "e6b9cbdee04de8d33857c1709da877369bfd9497",
+  "runtimeVersion": "1.0.88",
+  "profile": 46,
+  "profileDigest": "sha256:b93823e6fa44a9f9a8ed1b03f371d15db54ee4c4f3b1d2bbfeea97a634c23e91",
+  "model": "gpt-5.6-luna",
+  "product": {
+    "schema": "paperclip.copilot.frozen-product-qualification/v1",
+    "sourceRevision": "e6b9cbdee04de8d33857c1709da877369bfd9497",
+    "profile": 46,
+    "profileDigest": "sha256:b93823e6fa44a9f9a8ed1b03f371d15db54ee4c4f3b1d2bbfeea97a634c23e91",
+    "runtimeVersion": "1.0.88",
+    "model": "gpt-5.6-luna",
+    "status": "passed",
+    "cellsPassed": 20,
+    "cellsRequired": 20,
+    "environments": {
+      "local": 10,
+      "daytona": 10
+    },
+    "assertionsPassed": 154,
+    "automaticRetries": 0,
+    "behaviorFailures": 0,
+    "qualificationOverrides": false,
+    "installation": "normal cloud-produced public CLI/server archives and separately installed packaged Daytona plugin",
+    "image": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:2dae5d07e522b4ea937f7681d8689a4e392feaa1a53f75bed9a8df53d7e6e927",
+    "nativeUsd": null,
+    "billingProvider": "github",
+    "includedCreditsAreNotMeasuredUsd": true,
+    "results": [
+      {
+        "executionId": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+        "environment": "local",
+        "suiteDefinitionHash": "00557e886d2e8cac1166de0869c446bf8df0add2f5d9f903329e998754e65139",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 11,
+        "durationMs": 62651,
+        "nativeRunRecords": 1,
+        "resultSha256": "f49d069585d73efb892c9b5b8d8707dde7f93ddec621f0dbc046ea858920d807"
+      },
+      {
+        "executionId": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+        "environment": "daytona",
+        "suiteDefinitionHash": "00557e886d2e8cac1166de0869c446bf8df0add2f5d9f903329e998754e65139",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 12,
+        "durationMs": 160722,
+        "nativeRunRecords": 1,
+        "resultSha256": "90c5b2d38349b7aaca88b237cb079993e3fd4d67739248e3bf63bbd6e480bbcb"
+      },
+      {
+        "executionId": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+        "environment": "local",
+        "suiteDefinitionHash": "00557e886d2e8cac1166de0869c446bf8df0add2f5d9f903329e998754e65139",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 10,
+        "durationMs": 40471,
+        "nativeRunRecords": 1,
+        "resultSha256": "ba81c32a7fdaabb5b41bb4d62e4eb7862ed29d88c3d9c2066984b74cb60ce380"
+      },
+      {
+        "executionId": "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+        "environment": "daytona",
+        "suiteDefinitionHash": "00557e886d2e8cac1166de0869c446bf8df0add2f5d9f903329e998754e65139",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 11,
+        "durationMs": 75902,
+        "nativeRunRecords": 1,
+        "resultSha256": "73e02727d6044f8eaf7d74c925556381f33afa1a09cca86a11b7686249518e78"
+      },
+      {
+        "executionId": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+        "environment": "local",
+        "suiteDefinitionHash": "4654a2169bff96cf8377fdd62441f5cabea5c613f447e518830f6b1efd82c051",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 8,
+        "durationMs": 58477,
+        "nativeRunRecords": 1,
+        "resultSha256": "d0131ebe7c33754fe8b46b9901fbe39b026d2fe1ab0635a472523c28a2ae86ba"
+      },
+      {
+        "executionId": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+        "environment": "daytona",
+        "suiteDefinitionHash": "4654a2169bff96cf8377fdd62441f5cabea5c613f447e518830f6b1efd82c051",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 95388,
+        "nativeRunRecords": 1,
+        "resultSha256": "08aa9acd8079bb921cb48a668e20a7ed7941dcc9377b04f72d599f93693c2014"
+      },
+      {
+        "executionId": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+        "environment": "local",
+        "suiteDefinitionHash": "f21b45952e1fe3598e7db1434cfd4b688dbd0632565a78ecc63b72757a4f7b38",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 8,
+        "durationMs": 88778,
+        "nativeRunRecords": 1,
+        "resultSha256": "c3a51bd08e63b70c83417818ce1177fa841d61350b9a22cec401767003e87862"
+      },
+      {
+        "executionId": "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+        "environment": "daytona",
+        "suiteDefinitionHash": "f21b45952e1fe3598e7db1434cfd4b688dbd0632565a78ecc63b72757a4f7b38",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 91731,
+        "nativeRunRecords": 1,
+        "resultSha256": "94ccb22b0e564df26332963b5493b7c851160e7f0f11ecec8aeec313939ae742"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+        "environment": "local",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 50823,
+        "nativeRunRecords": 1,
+        "resultSha256": "91aab11a671b9c83aa2664ba5a8a7f32dc40fc9eee31ee9d89a4a104e173e325"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+        "environment": "daytona",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 76455,
+        "nativeRunRecords": 1,
+        "resultSha256": "d0313c509cc0a4cfda14605b7e217c5ac76eb9a4dbfa78fc6705d470ce56418a"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+        "environment": "local",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 8,
+        "durationMs": 71939,
+        "nativeRunRecords": 1,
+        "resultSha256": "91cfd3e7744ca09b6003723c3bc6ec744da4e1db44e4650806033949c314d7d0"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate",
+        "environment": "daytona",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 8,
+        "durationMs": 108277,
+        "nativeRunRecords": 1,
+        "resultSha256": "621a757697e3ca0a29368fa4960de17a73ee066908afb4d106a0a6562a596509"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+        "environment": "local",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 74099,
+        "nativeRunRecords": 2,
+        "resultSha256": "843bc228a07d50c4b3dd08bf580e77f44528118ef18e595712b2e53a3b98c935"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete",
+        "environment": "daytona",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 138843,
+        "nativeRunRecords": 2,
+        "resultSha256": "ce7629ebab2facb4520a06f242ee7ee010a2ffb3cedd50963cec8c835dc03ea9"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+        "environment": "local",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 82100,
+        "nativeRunRecords": 2,
+        "resultSha256": "1f1765072229c9faf7cbf0e490f6c1490173a2e26d513b5819893f4d3468a938"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete",
+        "environment": "daytona",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 151324,
+        "nativeRunRecords": 2,
+        "resultSha256": "6079523413f92782227754c69e8addd146d55a5605139c5a29d59ec3e487ebfa"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume",
+        "environment": "local",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 65070,
+        "nativeRunRecords": 2,
+        "resultSha256": "b072c1cc275beb26205d1638bee9909e855aea584086cfecaa78088d362e58ed"
+      },
+      {
+        "executionId": "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume",
+        "environment": "daytona",
+        "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 6,
+        "durationMs": 177284,
+        "nativeRunRecords": 2,
+        "resultSha256": "40cf89350fe703853af2f302507647b19516dddc32258342e815d59a6addc2a9"
+      },
+      {
+        "executionId": "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn",
+        "environment": "local",
+        "suiteDefinitionHash": "7e8a0012f2f67fba03cd94403b096a07cfc95cdb7aa568b4c3fd18b852d735f3",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 9,
+        "durationMs": 134534,
+        "nativeRunRecords": 3,
+        "resultSha256": "07a4bafc27334d909d4897cfa9be59f7836c63adbfcdfd9835747e7e94df0d72"
+      },
+      {
+        "executionId": "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn",
+        "environment": "daytona",
+        "suiteDefinitionHash": "7e8a0012f2f67fba03cd94403b096a07cfc95cdb7aa568b4c3fd18b852d735f3",
+        "status": "passed",
+        "cleanup": "passed",
+        "assertionsPassed": 9,
+        "durationMs": 163653,
+        "nativeRunRecords": 3,
+        "resultSha256": "ace855f0251563c8aa1da804edd29b6569f4a299f4a885b219bd4e607e766b3f"
+      }
+    ]
+  },
+  "protocol": {
+    "passed": 7,
+    "required": 7,
+    "assertionsPassed": 46,
+    "definitionRevision": "36aeac86b4975af7edd34717d396e7a692bffd38",
+    "automaticRetries": 0,
+    "cases": [
+      "context-before-action",
+      "get-task-context",
+      "create-task-document",
+      "finish-task",
+      "request-human-confirmation",
+      "workflow-context-document-progress",
+      "workflow-governed-wait"
+    ]
+  },
+  "ordinaryInstalledCanaries": {
+    "passed": 2,
+    "qualificationOverrides": false,
+    "local": {
+      "taskSucceeded": true,
+      "artifactExactBytes": 62,
+      "oneAcceptedResult": true,
+      "nativeProcessRetirementConfirmed": true
+    },
+    "daytona": {
+      "taskSucceeded": true,
+      "artifactExactBytes": 77,
+      "artifactSha256": "21f8e3b02c3af899dc315c84507a08e1e23877e9573588e5327eee233c944ea3",
+      "oneAcceptedResult": true,
+      "ownedCanaryAndProbeSandboxesDeleted": 6
+    },
+    "uiCoverage": "Local onboarding, authenticated model choices, save/reopen, metadata Test, task creation and browser downloads. Existing token was saved through the normal encrypted connection API. Remote configuration/save and task creation used the normal API/installed CLI after browser input stopped changing visible state.",
+    "unverifiedUiInteractions": [
+      "raw token paste",
+      "remote environment edit through the browser"
+    ]
+  },
+  "platforms": {
+    "darwin-arm64": "actual normal-installed Product native startup, completion and cleanup",
+    "darwin-x64": "actual installed CLI1.0.88 version/ACP smoke under Rosetta, no model prompt",
+    "linux-x64": "actual normal-installed Daytona Product native startup, completion and cleanup"
+  },
+  "cloudBuilds": {
+    "image": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:2dae5d07e522b4ea937f7681d8689a4e392feaa1a53f75bed9a8df53d7e6e927",
+    "imagePublication": "https://github.com/paperclipai/paperclip/actions/runs/39289860734",
+    "normalPackages": "https://github.com/paperclipai/paperclip/actions/runs/39284194338",
+    "selectedCredentialScanFindings": 0,
+    "scanLayers": 42,
+    "scanRegularFiles": 247824,
+    "anonymousDigestVerified": true,
+    "imageBuild": "https://github.com/paperclipai/paperclip/actions/runs/39284189969"
+  },
+  "onboardingReconnectRepair": {
+    "source": "ec68f27b33208ce34319f3299770abf45e772e1b",
+    "productionFilesChanged": [
+      "ui/src/components/OnboardingWizard.tsx"
+    ],
+    "failingRegressionStates": [
+      "cached model choices",
+      "cached authentication error"
+    ],
+    "affectedOnboardingTestsPassed": 137,
+    "tokenGates": "passed",
+    "runtimeAndBackendUnchanged": true,
+    "profileIdentityCheck": "passed unchanged",
+    "packagingAndFinalSetupProof": "passed on source f1e4d852d32a7756ece224bfafc9b2b40a6e2056: normal installed startup, ordinary browser onboarding/save/reopen/metadata Test, exact 51-byte downloaded artifact; raw token paste not exercised"
+  },
+  "billing": {
+    "provider": "github",
+    "nativeUsd": null,
+    "includedCreditsAreMeasuredUsd": false,
+    "billingSettingsChanged": false
+  },
+  "retainedFailures": [
+    "startup structural root assertion; portal-aware fixture treatment passes without changing visible UX, zero-company or cleanup assertions",
+    "two Intel test preparation attempts executed no tests; actual ARM reconnect baseline fails both required states",
+    "original CI runner shutdown failures retained; only failed jobs retried",
+    "one archived canary metadata-probe sandbox was explicitly deleted; all six owned IDs independently return404",
+    "Idle authenticated model discovery created 122 disposable leases; all exact owned IDs independently return404. Failing idle-discovery regression retained; 375 affected component tests pass after Copilot-only query repair."
+  ],
+  "remainingGates": [
+    "Normal package and matching image for the UI-only passive-discovery repair; installed idle/open/reconnect proof and final ordinary remote canary",
+    "Fresh current-head CI and review for changed setup/qualification PRs",
+    "Independent required code-owner approval and protected merge",
+    "Named shipped canary and verification before broader rollout"
+  ],
+  "pullRequests": [
+    "https://github.com/paperclipai/paperclip/pull/15701",
+    "https://github.com/paperclipai/paperclip/pull/15703",
+    "https://github.com/paperclipai/paperclip/pull/15705",
+    "https://github.com/paperclipai/paperclip/pull/15706"
+  ],
+  "supersededWork": "https://github.com/paperclipai/paperclip/pull/14434",
+  "deferred": [
+    "native steering",
+    "native plan mode",
+    "detached work",
+    "additional native event presentation"
+  ],
+  "passiveModelDiscoveryRepair": {
+    "observedFailure": "Active-query reconciliation repeatedly performed remote Copilot model discovery while the user was idle, creating 122 disposable environment leases",
+    "scope": "Copilot-only static authenticated catalog queries; task selectors discover on opening; explicit account/environment/open/reconnect refresh remains supported",
+    "failingBaselineRetained": true,
+    "affectedComponentTestsPassed": 375,
+    "uiTypecheck": "passed",
+    "tokenGates": "passed",
+    "runtimeProfileIdentity": "passed unchanged",
+    "runtimeAndBackendChanged": false,
+    "ownedSandboxAudit": {
+      "checked": 122,
+      "absent": 122,
+      "present": 0,
+      "errors": 0
+    },
+    "finalInstalledUiAndRemoteCanary": "pending",
+    "infrastructureUsd": null
+  }
+}

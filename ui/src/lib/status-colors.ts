@@ -252,6 +252,7 @@ export const agentStatusVarDefault = "--status-agent-idle";
 
 /** Task/issue status → base-hue CSS var (drives both the chip and the icon). */
 export const taskStatusVar: Record<string, string> = {
+  idle: "--status-task-backlog",
   backlog: "--status-task-backlog",
   todo: "--status-task-todo",
   in_progress: "--status-task-in_progress",
@@ -270,6 +271,7 @@ export const taskStatusVarDefault = "--status-task-backlog";
  * shape recoloured blue, so it maps to its own var.
  */
 export const taskStatusIconVar: Record<string, string> = {
+  idle: "--status-task-icon-backlog",
   backlog: "--status-task-icon-backlog",
   todo: "--status-task-icon-todo",
   in_progress: "--status-task-icon-in_progress",
@@ -342,6 +344,7 @@ export const externalObjectStatusIcon: Record<string, string> = {
   closed: "text-neutral-500 border-neutral-500",
   archived: "text-neutral-500 border-neutral-500",
   auth_required: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  rate_limited: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
   unreachable: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
 };
 
@@ -358,6 +361,7 @@ export const externalObjectStatusBadge: Record<string, string> = {
   closed: "bg-muted text-muted-foreground",
   archived: "bg-muted text-muted-foreground",
   auth_required: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  rate_limited: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   unreachable: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 };
 
@@ -376,6 +380,7 @@ export const externalObjectLivenessOverlay: Record<string, string> = {
   fresh: "",
   stale: "opacity-70 [border-style:dashed]",
   auth_required: "[border-style:dashed]",
+  rate_limited: "[border-style:dashed]",
   unreachable: "[border-style:dashed]",
 };
 

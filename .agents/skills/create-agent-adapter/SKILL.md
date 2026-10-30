@@ -156,7 +156,7 @@ Guidelines:
 - Use `info` for successful checks and context.
 
 Severity policy is product-critical: warnings are not save blockers.  
-Example: for `claude_local`, detected `ANTHROPIC_API_KEY` must be a `warn`, not an `error`, because Claude can still run (it just uses API-key auth instead of subscription auth).
+Example: for `claude_local`, an explicitly configured `ANTHROPIC_API_KEY` or selected managed API connection is `info`: the user chose that authentication. An ambient server key overriding subscription login remains `warn`, not `error`.
 
 ---
 

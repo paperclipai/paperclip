@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
+import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -20,6 +19,11 @@ import type {
   WorkspaceFileWorkspaceKind,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
+import {
+  isWorkspaceGitScanError,
+  WORKSPACE_GIT_SCAN_ERROR_CODES,
+  workspaceGitOperationScheduler,
+} from "./workspace-git-operation-scheduler.js";
 
 export const WORKSPACE_FILE_TEXT_MAX_BYTES = 512 * 1024;
 export const WORKSPACE_FILE_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
@@ -31,8 +35,12 @@ const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
 const GIT_STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
-const execFileAsync = promisify(execFile);
 const LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES = new Set(["local_path", "non_git_path", "git_repo", "git_worktree"]);
+
+export interface WorkspaceFileScanContext {
+  signal?: AbortSignal;
+  fairnessKeys?: readonly string[];
+}
 
 const DENIED_SEGMENTS = new Set([
   ".git",
@@ -105,6 +113,7 @@ type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 
 type WorkspaceCandidate = {
+  companyId: string;
   workspaceKind: WorkspaceFileWorkspaceKind;
   workspaceId: string;
   projectId?: string | null;
@@ -326,6 +335,11 @@ function throwIfDenied(segments: string[]) {
   }
 }
 
+/** Apply the existing file-path policy to other read-only file surfaces. */
+export function assertWorkspaceFilePathAllowed(relativePath: string): void {
+  throwIfDenied(normalizeWorkspaceRelativePath(relativePath).segments);
+}
+
 function shouldPruneSegments(segments: string[]) {
   return denyReasonForPathSegments(segments) != null;
 }
@@ -346,7 +360,8 @@ function previewKindForKnownContentType(contentType: string | null): WorkspaceFi
   if (contentType.startsWith("image/") && contentType !== "image/svg+xml") return "image";
   if (contentType.startsWith("video/")) return "video";
   if (contentType === "application/pdf") return "pdf";
-  if (contentType === "text/html") return "unsupported";
+  // HTML is returned as bounded UTF-8 in the JSON content response. The UI
+  // renders it only in its opaque-origin sandbox; downloads stay attachments.
   if (contentType === "image/svg+xml" || contentType.startsWith("text/")) return "text";
   return "unsupported";
 }
@@ -460,6 +475,7 @@ function candidateFromExecutionWorkspace(row: ExecutionWorkspaceRow): WorkspaceC
   const rootPath = row.cwd || row.providerRef || null;
   const remote = !["local_fs", "git_worktree"].includes(provider) || !rootPath || row.status !== "active" || row.closedAt != null;
   return {
+    companyId: row.companyId,
     workspaceKind: "execution_workspace",
     workspaceId: row.id,
     provider,
@@ -477,6 +493,7 @@ function candidateFromProjectWorkspace(
   const rootPath = row.cwd ?? null;
   const remote = !LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(row.sourceType) || !rootPath;
   return {
+    companyId: row.companyId,
     workspaceKind: "project_workspace",
     workspaceId: row.id,
     projectId: project?.id ?? row.projectId,
@@ -976,16 +993,29 @@ async function listChangedWorkspaceFiles(input: {
   normalizedQuery: string | null;
   limit: number;
   offset: number;
+  scanContext?: WorkspaceFileScanContext;
 }) {
   let stdout: string;
   try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", input.rootReal, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { maxBuffer: GIT_STATUS_MAX_BUFFER_BYTES },
-    );
+    const result = await workspaceGitOperationScheduler.run({
+      workspacePath: input.rootReal,
+      args: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      operation: "workspace_file_browser.changed_files",
+      fairnessKeys: input.scanContext?.fairnessKeys,
+      signal: input.scanContext?.signal,
+      maxStdoutBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      maxStderrBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      // The shared scheduler defaults this to ten seconds. This deliberately
+      // trades a few seconds of freshness for protection from tab/refetch bursts.
+    });
     stdout = result.stdout;
-  } catch {
+  } catch (error) {
+    if (
+      isWorkspaceGitScanError(error) &&
+      error.code !== WORKSPACE_GIT_SCAN_ERROR_CODES.failed
+    ) {
+      throw error;
+    }
     return { unavailableReason: "changed_unavailable" as const };
   }
 
@@ -1011,9 +1041,53 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
+  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false, task?: IssueRow) {
+    if (!actor) return candidates;
+    const visible: WorkspaceCandidate[] = [];
+    for (const candidate of candidates) {
+      const rows = candidate.workspaceKind === "execution_workspace"
+        ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, candidate.companyId)))
+        : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+          .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
+      if (!rows.length) continue;
+      if (candidate.workspaceKind === "execution_workspace") {
+        // A task-bound root grants file navigation, never disclosure of the workspace record.
+        if (!task || task.companyId !== candidate.companyId) continue;
+        if (task.executionWorkspaceId !== candidate.workspaceId) {
+          const [owner] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, task.companyId)));
+          if (owner?.sourceIssueId !== task.id) {
+            if (!task.parentId || owner?.sourceIssueId !== task.parentId) continue;
+            const [parent] = await db.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, task.parentId), eq(issues.companyId, task.companyId), await issueReadSqlCondition(db, actor)));
+            if (!parent) continue;
+          }
+        }
+        candidate.label = "Task workspace";
+      }
+      if (candidate.rootPath && (!candidate.remote || candidate.provider === "local_fs" || LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(candidate.provider))) {
+        try {
+          const canonicalCwd = await fs.realpath(candidate.rootPath);
+
+          candidate.rootPath = canonicalCwd;
+        } catch (error) {
+          if (isHttpStatus(error, 403) || isHttpStatus(error, 404)
+            || ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+            if (skipDeniedSources) continue;
+            throw notFound("Workspace file not found");
+          }
+          throw error;
+        }
+      }
+      visible.push(candidate);
+    }
+    return visible;
+  }
   async function getIssue(issueId: string): Promise<IssueRow> {
-    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId)).limit(1);
+    const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), actor ? await issueReadSqlCondition(db, actor) : undefined)).limit(1);
     if (!issue) throw notFound("Issue not found");
     return issue;
   }
@@ -1039,7 +1113,9 @@ export function workspaceFileResourceService(db: Db) {
       throw unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" });
     }
 
-    return candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name });
+    const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+    if (!candidate) throw notFound("Project workspace not found");
+    return candidate;
   }
 
   async function listCandidates(
@@ -1051,7 +1127,7 @@ export function workspaceFileResourceService(db: Db) {
     if (explicitTarget) return [explicitTarget];
 
     const candidates: WorkspaceCandidate[] = [];
-    if ((selector === "auto" || selector === "execution") && issue.projectId) {
+    if (selector === "auto" || selector === "execution") {
       const executionIds = [issue.executionWorkspaceId].filter((id): id is string => Boolean(id));
       let executionRows: ExecutionWorkspaceRow[] = [];
       if (executionIds.length > 0) {
@@ -1067,7 +1143,6 @@ export function workspaceFileResourceService(db: Db) {
         const activeRows = await db.select().from(executionWorkspaces).where(
           and(
             eq(executionWorkspaces.companyId, issue.companyId),
-            eq(executionWorkspaces.projectId, issue.projectId),
             inArray(executionWorkspaces.sourceIssueId, sourceIssueIds),
             eq(executionWorkspaces.status, "active"),
             isNull(executionWorkspaces.closedAt),
@@ -1083,30 +1158,29 @@ export function workspaceFileResourceService(db: Db) {
       }
     }
 
-    if ((selector === "auto" || selector === "project") && issue.projectId) {
+    if ((selector === "auto" || selector === "project") && (issue.projectId || issue.projectWorkspaceId)) {
       if (issue.projectWorkspaceId) {
         const rows = await db.select().from(projectWorkspaces).where(
           and(
             eq(projectWorkspaces.companyId, issue.companyId),
-            eq(projectWorkspaces.projectId, issue.projectId),
             eq(projectWorkspaces.id, issue.projectWorkspaceId),
           ),
         ).limit(1);
         if (rows[0]) candidates.push(candidateFromProjectWorkspace(rows[0]));
       }
-      const primaryRows = await db.select().from(projectWorkspaces).where(
+      const primaryRows = issue.projectId ? await db.select().from(projectWorkspaces).where(
         and(
           eq(projectWorkspaces.companyId, issue.companyId),
           eq(projectWorkspaces.projectId, issue.projectId),
           eq(projectWorkspaces.isPrimary, true),
         ),
-      ).limit(1);
+      ).limit(1) : [];
       if (primaryRows[0] && !candidates.some((candidate) => candidate.workspaceId === primaryRows[0]!.id)) {
         candidates.push(candidateFromProjectWorkspace(primaryRows[0]));
       }
     }
 
-    return candidates;
+    return visibleCandidates(candidates, selector === "auto", issue);
   }
 
   async function loadAvailabilityTargets(
@@ -1146,9 +1220,13 @@ export function workspaceFileResourceService(db: Db) {
           error: unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" }),
         });
       } else {
-        targets.set(targetKey, {
-          candidate: candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name }),
-        });
+        try {
+          const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+          targets.set(targetKey, candidate ? { candidate } : { error: notFound("Project workspace not found") });
+        } catch (error) {
+          if (!(error instanceof HttpError) || !expectedAvailabilityReason(error)) throw error;
+          targets.set(targetKey, { error });
+        }
       }
     }
     return targets;
@@ -1180,7 +1258,7 @@ export function workspaceFileResourceService(db: Db) {
       seen.add(row.workspace.id);
       candidates.push(candidateFromProjectWorkspace(row.workspace, row.project));
     }
-    return candidates;
+    return visibleCandidates(candidates, true);
   }
 
   async function discoverUniqueProjectWorkspaceMatch<T>(
@@ -1228,7 +1306,17 @@ export function workspaceFileResourceService(db: Db) {
     const untargetedQueries = queries.filter(
       (item) => !item.unavailableReason && !item.query.projectId && !item.query.workspaceId,
     );
-    const initialCandidates = untargetedQueries.length > 0 ? await listCandidates(issue, "auto") : [];
+    const candidatesBySelector = new Map<WorkspaceFileSelector, WorkspaceCandidate[]>();
+    const selectorErrors = new Map<WorkspaceFileSelector, unknown>();
+    for (const selector of new Set(untargetedQueries.map(item => item.query.workspace))) {
+      try {
+        candidatesBySelector.set(selector, await listCandidates(issue, selector));
+      } catch (error) {
+        if (!expectedAvailabilityReason(error)) throw error;
+        selectorErrors.set(selector, error);
+      }
+    }
+    const initialCandidates = candidatesBySelector.get("auto") ?? [];
     const needsDiscovery = initialCandidates.some((candidate) => !candidate.remote)
       && untargetedQueries.some((item) => item.query.workspace === "auto");
     const discoveryCandidates = needsDiscovery
@@ -1249,13 +1337,10 @@ export function workspaceFileResourceService(db: Db) {
             : null;
           if (explicitTarget?.error) throw explicitTarget.error;
 
+          if (!explicitTarget && selectorErrors.has(item.query.workspace)) throw selectorErrors.get(item.query.workspace);
           const candidates = explicitTarget?.candidate
             ? [explicitTarget.candidate]
-            : initialCandidates.filter((candidate) => {
-                if (item.query.workspace === "execution") return candidate.workspaceKind === "execution_workspace";
-                if (item.query.workspace === "project") return candidate.workspaceKind === "project_workspace";
-                return true;
-              });
+            : candidatesBySelector.get(item.query.workspace) ?? [];
           if (candidates.length === 0) {
             throw unprocessable("No workspace is available for this issue", { code: "no_workspace" });
           }
@@ -1367,7 +1452,7 @@ export function workspaceFileResourceService(db: Db) {
   async function list(
     issueId: string,
     input: WorkspaceFileListQueryInput = {},
-    opts: { issue?: IssueRow } = {},
+    opts: { issue?: IssueRow; scanContext?: WorkspaceFileScanContext } = {},
   ): Promise<WorkspaceFileListResponse> {
     const issue = opts.issue ?? await getIssue(issueId);
     const selector = input.workspace ?? "auto";
@@ -1442,7 +1527,14 @@ export function workspaceFileResourceService(db: Db) {
       }
 
       if (mode === "changed") {
-        const changed = await listChangedWorkspaceFiles({ candidate, rootReal, normalizedQuery, limit, offset });
+        const changed = await listChangedWorkspaceFiles({
+          candidate,
+          rootReal,
+          normalizedQuery,
+          limit,
+          offset,
+          scanContext: opts.scanContext,
+        });
         if ("unavailableReason" in changed) {
           const reason = changed.unavailableReason ?? "changed_unavailable";
           firstUnavailable ??= { candidate, reason };

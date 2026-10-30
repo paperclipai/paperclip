@@ -6,7 +6,7 @@ import type {
   WorkspaceFileListResponse,
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export interface FileResourceQuery {
   path: string;
@@ -50,11 +50,16 @@ export function buildFileResourceDownloadUrl(issueId: string, query: FileResourc
 }
 
 export const fileResourcesApi = {
-  list(issueId: string, query: FileResourceListQuery = {}): Promise<WorkspaceFileListResponse> {
+  list(
+    issueId: string,
+    query: FileResourceListQuery = {},
+    options?: RequestOptions,
+  ): Promise<WorkspaceFileListResponse> {
     const search = buildQuery(query);
     const suffix = search ? `?${search}` : "";
     return api.get<WorkspaceFileListResponse>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/list${suffix}`,
+      options,
     );
   },
 

@@ -1,0 +1,123 @@
+{
+  "schema": "paperclip.pi-product-plan-failure.v1",
+  "attemptId": "pi-product-plan-01",
+  "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+  "runtimeCodeRevision": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+  "repositoryRevision": "9cd42f6df9356cb673cd12accd94dc3e171dc13d",
+  "profileVersion": 3,
+  "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+  "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+  "runnerdDigest": "sha256:2c8efdc99f988b1c8ab0e270677a3321af0fd6d5789dbf1b671faa921031b42f",
+  "executionTrees": {
+    "packages/paperclip-runner/src": "7df6b47574e6838e63a7d13c403c615a749702db",
+    "packages/paperclip-runner/scripts": "f845a2dd5b1ac2f1a4ef8d95db8fba2daea9999f",
+    "packages/paperclip-runner/runner": "9c595f7eae18197bb5cfd61c1af463df0a8741cd",
+    "packages/paperclip-runner/protocol": "1d50458fb572d0c75f9a398f419209c52c23ba6f",
+    "patches": "784152935b091eed6ea1795d39c23cfbbd154ab7",
+    "server/src": "b267adc1e0ad36955b68314829cfd4256ab88d37",
+    "tests/runner-e2e": "5ff4b8a85a14e3e005e3e240c145899c0bc742b5"
+  },
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local"
+  },
+  "result": {
+    "status": "failed",
+    "failureClass": "candidate_failure",
+    "durationMs": 119553,
+    "supervisorDurationSeconds": 139.067,
+    "failedBoundary": "Native saved Plan did not appear at its canonical write_document boundary within30s.",
+    "matcherResults": [],
+    "cleanup": "passed"
+  },
+  "semanticState": {
+    "runStatus": "succeeded",
+    "nativePhase": "committed",
+    "issueStatus": "in_review",
+    "plan": {
+      "key": "plan",
+      "revision": 1,
+      "body": "# OpenRouter breadth plan bed573ffa86f-1\n\n1. Define the OpenRouter breadth scope and success criteria, and record the ready marker PC_P_READY_bed573ffa86f-1 in this canonical Plan.\n2. Submit this Plan for approval via a confirmation request bound to this exact Plan revision; do not implement anything before that revision is accepted.",
+      "revisionIdSha256": "a0b4b8055d87bf25d8e44aedab42b4439416dfd5e13af8d6e0e34d600412dccf"
+    },
+    "interaction": {
+      "kind": "request_confirmation",
+      "status": "pending",
+      "targetType": "issue_document",
+      "targetKey": "plan",
+      "targetRevisionMatchesWriteReceipt": true,
+      "decisionSubmitted": false
+    }
+  },
+  "canonicalToolEvent": {
+    "name": "mcp__paperclip__write_document",
+    "status": "completed",
+    "transport": "builtin",
+    "namespace": null,
+    "outputDigest": "sha256:1bf0af100a60fbf97b9e97e4e946be3ae2ff1dc0ff56e9f69e0a0d96a30d9425"
+  },
+  "retainedDom": {
+    "matchingSnapshots": 4,
+    "planTestId": "task-chat-plan-preview-fallback",
+    "ariaLabel": "Open Plan revision 1",
+    "ancestorTurnTestId": "task-chat-turn",
+    "ancestorSettled": "true",
+    "expectedPlanTestId": "task-chat-plan-preview",
+    "oracleRemainsUnchanged": true
+  },
+  "diagnosis": {
+    "cause": "Rust ACPX projection hardcodes builtin transport and null namespace while preserving mcp__paperclip__write_document as the name; UI exact write_document matching therefore creates a fallback Plan.",
+    "productionSeam": "packages/paperclip-runner/runner/crates/runner-core/src/provider_events.rs:normalize_acpx_tool_call",
+    "presentationSeam": "ui/src/components/task-chat/transcript-adapter.ts:embedPlanDocumentAtWriteBoundary",
+    "selectorDefect": false,
+    "followupFix": {
+      "commit": "5aa02662b34fc70f5fe9ffd5ac8f7ae81b5fe3bd",
+      "scope": "shared Rust MCP identity normalization plus negative/positive settled UI boundary regression",
+      "verification": "43 ACP boundary tests, 12 provider units and 158 TaskChatThread tests reported by owning agent",
+      "liveRetry": "pending; no new prompt"
+    }
+  },
+  "usage": null,
+  "cost": {
+    "providerReportedUsd": null,
+    "terminalUsageAvailable": false,
+    "exclusiveKeyDeltaUsd": 0.003090504,
+    "measurement": "Exclusive key baseline and two spaced post-attempt observations; not inferred from the missing usage receipt."
+  },
+  "screenshot": {
+    "sha256": "9d1e8b5892f620f0ff94895eefba22c2d3cc57ff5ec5a79d20c419ebbef38e13",
+    "visuallyInspected": true,
+    "observed": [
+      "Plan card visible",
+      "Complete two-step Plan visible in side pane",
+      "Pending Confirm and Request changes controls"
+    ],
+    "imageRetainedPrivately": true
+  },
+  "supervision": {
+    "reservationUsd": 2,
+    "billingWatchdogUsd": 0.5,
+    "activeTimeoutSeconds": 120,
+    "outerTimeoutSeconds": 300,
+    "sleepAssertion": "caffeinate -i",
+    "deadlineClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "automaticRetries": 0
+  },
+  "cleanup": {
+    "canonicalCleanupPassed": true,
+    "fixtureRootRemoved": true,
+    "residualAttemptProcesses": 0
+  },
+  "qualificationStatus": "pending",
+  "publicationBoundary": {
+    "credentialsIncluded": false,
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false
+  }
+}

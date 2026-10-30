@@ -46,9 +46,3 @@ export function useSecondTick(active: boolean): number {
   }, [active]);
   return tick;
 }
-
-/** Test-only hook to observe the shared ticker's internal state. */
-export const __secondTickInternals = {
-  subscriberCount: () => subscribers.size,
-  isRunning: () => intervalId !== null,
-};

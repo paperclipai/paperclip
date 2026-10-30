@@ -147,7 +147,7 @@ async function main() {
     const p = scenario.uiEntryPath;
     if (p === "advanced") await page.goto(`${BASE}/${prefix}/apps/advanced`, { waitUntil: "networkidle" });
     else if (p === "review") await page.goto(`${BASE}/${prefix}/apps/${connId}/review`, { waitUntil: "networkidle" });
-    else if (p === "activity") await page.goto(`${BASE}/${prefix}/apps/${connId}/activity`, { waitUntil: "networkidle" });
+    else if (p === "activity") await page.goto(`${BASE}/${prefix}/activity?action=tool_`, { waitUntil: "networkidle" });
     else if (p === "attention") await page.goto(`${BASE}/${prefix}/apps/attention`, { waitUntil: "networkidle" });
     else await page.goto(`${BASE}/${prefix}/apps/${connId}`, { waitUntil: "networkidle" });
   };
@@ -216,7 +216,7 @@ async function main() {
       assert(read.decision === "allowed", `allowed-read decision=${read.decision}`);
       assert(!read.error, "allowed-read no error");
       await auditHit(conn.id, scenario.lifecycle.allowedRead.name);
-      await page.goto(`${BASE}/${prefix}/apps/${conn.id}/activity`, { waitUntil: "networkidle" });
+      await page.goto(`${BASE}/${prefix}/activity?action=tool_`, { waitUntil: "networkidle" });
       return `Allowed read ${scenario.lifecycle.allowedRead.name}`;
     });
 
@@ -264,7 +264,7 @@ async function main() {
     // schema-change-quarantine
     await doStep(scenario, "schema-change-quarantine", async () => {
       if (conn.transport !== "mcp_remote") {
-        await page.goto(`${BASE}/${prefix}/apps/${conn.id}/activity`, { waitUntil: "networkidle" });
+        await page.goto(`${BASE}/${prefix}/activity?action=tool_`, { waitUntil: "networkidle" });
         return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
       }
       await api("PATCH", `/api/tool-connections/${conn.id}`, { config: { ...(conn.config ?? {}), quarantineNewEntries: true } });
@@ -292,7 +292,7 @@ async function main() {
         await api("POST", `/api/tool-gateway/sessions/${session.sessionId}/revoke`, { companyId });
         const after = await fetch(`${BASE}${new URL(session.toolsUrl, BASE).pathname}`, { headers: { "x-paperclip-tool-gateway-token": session.token } });
         assert(after.status === 401, `revoked token cut off (got ${after.status})`);
-        await page.goto(`${BASE}/${prefix}/apps/${conn.id}/activity`, { waitUntil: "networkidle" });
+        await page.goto(`${BASE}/${prefix}/activity?action=tool_`, { waitUntil: "networkidle" });
         return scenario.lifecycle.revoke;
       }
       const disabled = await api("PATCH", `/api/tool-connections/${conn.id}`, { enabled: false });
@@ -305,7 +305,7 @@ async function main() {
     // audit-evidence
     await doStep(scenario, "audit-evidence", async () => {
       await auditHit(conn.id, scenario.lifecycle.allowedRead.name);
-      await page.goto(`${BASE}/${prefix}/apps/${conn.id}/activity`, { waitUntil: "networkidle" });
+      await page.goto(`${BASE}/${prefix}/activity?action=tool_`, { waitUntil: "networkidle" });
       return scenario.lifecycle.auditEvidence;
     });
   }

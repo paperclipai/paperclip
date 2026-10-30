@@ -10,7 +10,10 @@ The release model is now commit-driven:
 3. Betas are manual, human-approved promotions of a chosen nightly.
 4. Stable releases promote a beta that has soaked for at least 3 days
    (bypass requires a written justification).
-5. Stable release notes live in `releases/vYYYY.MDD.P.md`.
+5. Stable release notes live in `releases/vYYYY.MDD.P.md`. They are
+   drafted automatically when a beta is published (as
+   `releases/beta/v<beta-version>.md` on `master`), edited during the
+   soak, and moved to the versioned name after the stable ships.
 6. Only stable releases get GitHub Releases.
 
 The user-facing guide to the channels is [`CHANNELS.md`](CHANNELS.md).
@@ -61,6 +64,10 @@ internal traceability tag.
 ## Core Invariants
 
 - canaries publish from `master`
+- the canary publisher checks out the exact master push SHA. It verifies the
+  repository, event, branch, and checked-out commit before attaching local
+  `master` at that same SHA. It never switches to a newer branch tip. The local
+  release script still rejects detached or non-master checkouts.
 - nightlies republish a commit that already shipped a canary (the commit must
   carry a `canary/v*` tag), and only after the release smoke suite passes
   against that exact published canary
@@ -71,7 +78,12 @@ internal traceability tag.
   shipped as a beta at least 3 days earlier unless a written justification
   is provided
 - tags point at the original source commit, not a generated release commit
-- stable notes are always `releases/vYYYY.MDD.P.md`
+- stable notes are always `releases/vYYYY.MDD.P.md` in the end state: a
+  promoted beta's notes are drafted and edited at
+  `releases/beta/v<beta-version>.md` on `master` during the soak (the
+  promoted commit cannot carry a file named for a promotion date that was
+  unknown when it was created), and a post-stable canonicalization PR
+  moves them to the versioned name
 - canaries, nightlies, and betas never create GitHub Releases
 - canaries, nightlies, and betas never require changelog generation
 - Docker `:latest` moves only on stable releases; master builds publish
@@ -92,8 +104,38 @@ It:
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
 - installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; npm `ETARGET` and verified canary tarball availability failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
+
+After publication, the onboarding smoke checks out the same source SHA and
+installs its test dependencies from the publisher's resolved lockfile with
+`--frozen-lockfile`. The same-run artifact is captured before tracked files are
+restored or release versions are rewritten. This lets a source commit use its
+current patches and manifests while the separate lockfile-refresh PR is still
+pending, without resolving new dependencies in the smoke job. The smoke still installs and tests
+the exact published canary version, not a workspace build.
+
+The tarball retry applies only to an unambiguous npm `E404` for a canonical
+public-registry tarball of a CI-published Paperclip package at that exact canary
+version. The helper queries npm's effective global and applicable scoped registry
+in the failed install's prefix, working directory, and environment. A custom or
+unknown effective registry fails. Configuration output stays private in memory.
+Fresh primary-registry metadata must match the package, version, and tarball URL
+and announce a valid SHA512 integrity value. This establishes the announced
+artifact identity; it does not download the tarball or independently verify its
+contents. The actual npm install still checks tarball integrity.
+
+Configuration and metadata checks share a five-second deadline, including the
+response body, within the same two-minute acquisition budget. Metadata is limited
+to 64 KiB. Redirects, authentication errors, missing metadata, conflicting npm
+errors, and other artifacts fail. A persistent promised-tarball failure also
+fails after three installs. Onboarding errors never restart acquisition or
+repeat onboarding.
+
+The lockfile artifact is retained for 14 days. A publisher-job rerun replaces its
+source-named artifact; a smoke-only rerun uses the existing artifact. A missing
+artifact fails the job rather than falling back to a different dependency set.
 
 Users install canaries with:
 
@@ -157,6 +199,13 @@ Betas are manual promotions. Dispatch
   dispatched at that tag to publish the `:beta` images
 - after publishing, the release smoke suite runs against the exact published
   beta version as verification
+- a `draft_stable_notes` job also generates the eventual stable's notes
+  skeleton — `releases/beta/v<beta-version>.md`, grouped from
+  `git log <last-stable-tag>..<source-commit>` — and force-pushes it to the
+  machine-owned `release-notes/v<beta-version>` branch. Open the PR from
+  the job-summary link (a human opens it so CI runs) and edit the notes
+  during the soak; the stable promotion reads the merged file from
+  `master`
 - `dry_run: true` previews the publish and skips the tag push, Docker
   dispatch, and post-publish smoke
 
@@ -228,7 +277,11 @@ Before running stable:
 1. pick the beta you are promoting (its source commit is the `source_ref`)
 2. confirm the beta has soaked for 3 days with no open blockers
 3. resolve the target stable version with `./scripts/release.sh stable --date "$(date +%F)" --print-version`
-4. create or update `releases/vYYYY.MDD.P.md` on that source ref
+4. make sure the notes PR from the beta's draft branch
+   (`release-notes/v<beta-version>`, adding
+   `releases/beta/v<beta-version>.md`) is merged on `master` — or, for
+   candidate builds, that the candidate branch itself carries
+   `releases/vYYYY.MDD.P.md`
 5. run the stable workflow from that source ref
 
 Example:
@@ -241,11 +294,19 @@ The workflow:
 
 - re-verifies the exact source ref
 - computes the next stable patch slot for the chosen UTC date
+- resolves the release notes in preflight: `releases/vYYYY.MDD.P.md` at
+  the source commit (the candidate fix path) takes precedence, otherwise
+  `releases/beta/v<beta-version>.md` on `master` (a promoted beta). When
+  neither exists the run fails before the `npm-stable` approval gate with
+  the missing path named
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
 - dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
   publish `:latest` and the versioned stable images
-- creates or updates the GitHub Release from `releases/vYYYY.MDD.P.md`
+- creates or updates the GitHub Release from the resolved notes file
+- for master-side beta notes, pushes a `release-notes/v<version>-canonicalize`
+  branch that `git mv`s them to `releases/vYYYY.MDD.P.md` — open and merge
+  its PR to restore the canonical layout
 
 ## Docker Image Tags
 
@@ -263,6 +324,20 @@ Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
 suppresses push-triggered workflow runs for those pushes. The release jobs
 therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
 mapping keys off `github.ref` either way.
+
+The Docker build matrix and the release preview image builder configure
+BuildKit to check `mirror.gcr.io` for Docker Hub images first. This covers
+both the Dockerfile frontend and base images. BuildKit keeps Docker Hub as
+the fallback when the cache has no usable copy. The image references,
+build arguments, GHCR publication, and release gates stay the same.
+
+This is an availability improvement, not an outage guarantee. Google can
+evict cached images, and mutable tags can lag upstream changes or deletions.
+Matching manifests at one point does not guarantee later tag freshness or
+blob availability. The initial `moby/buildkit` bootstrap still uses the host
+Docker daemon and can fail on Docker Hub before this configuration takes
+effect. See the [BuildKit mirror configuration](https://docs.docker.com/build/ci/github-actions/configure-builder/#registry-mirror)
+and [Google cache limits](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images).
 
 ## Local Commands
 
@@ -313,6 +388,12 @@ Stable changelog files live at:
 - `releases/vYYYY.MDD.P.md`
 
 Canaries do not get changelog files.
+
+The `draft_stable_notes` job seeds a deterministic skeleton (grouped
+commit subjects) on the `release-notes/v<beta-version>` branch at beta
+publish; the flows below turn that skeleton into narrative release notes
+during the soak. Run them against the draft branch's
+`releases/beta/v<beta-version>.md` and push to the notes PR.
 
 Recommended local generation flow:
 

@@ -171,10 +171,12 @@ describe("worktree config repair", () => {
     expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
     expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
     expect(repairedEnv).toContain("PAPERCLIP_AGENT_JWT_SECRET=shared-secret");
+    expect(repairedEnv).toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=");
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
     expect(process.env.PORT).toBe("3101");
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
     expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
+    expect(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET).toHaveLength(64);
   });
 
   it("disables backups in an otherwise isolated existing worktree config", async () => {
@@ -388,29 +390,19 @@ describe("worktree config repair", () => {
       ].join("\n"),
       "utf8",
     );
+    const siblingConfig = buildLegacyConfig(siblingInstanceRoot);
     await fs.writeFile(
       path.join(siblingInstanceRoot, "config.json"),
       JSON.stringify(
         {
-          ...buildLegacyConfig(siblingInstanceRoot),
+          ...siblingConfig,
           database: {
-            mode: "embedded-postgres",
-            embeddedPostgresDataDir: path.join(siblingInstanceRoot, "db"),
+            ...siblingConfig.database,
             embeddedPostgresPort: 54330,
-            backup: {
-              enabled: true,
-              intervalMinutes: 60,
-              retentionDays: 30,
-              dir: path.join(siblingInstanceRoot, "data", "backups"),
-            },
           },
           server: {
-            deploymentMode: "local_trusted",
-            exposure: "private",
-            host: "127.0.0.1",
+            ...siblingConfig.server,
             port: 3101,
-            allowedHostnames: [],
-            serveUi: true,
           },
         },
         null,
@@ -444,13 +436,27 @@ describe("worktree config repair", () => {
     const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
     const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
 
-    const writeWorktree = async (worktreeRoot: string, name: string) => {
+    const writeWorktree = async (
+      worktreeRoot: string,
+      name: string,
+      databaseMode: "embedded-postgres" | "postgres" = "embedded-postgres",
+    ) => {
       const paperclipDir = path.join(worktreeRoot, ".paperclip");
       const instanceRoot = path.join(isolatedHome, "instances", name.toLowerCase());
+      const config = buildIsolatedConfig(instanceRoot, 45439, 55439);
       await fs.mkdir(paperclipDir, { recursive: true });
       await fs.writeFile(
         path.join(paperclipDir, "config.json"),
-        `${JSON.stringify(buildIsolatedConfig(instanceRoot, 45439, 55439), null, 2)}\n`,
+        `${JSON.stringify({
+          ...config,
+          database: {
+            ...config.database,
+            mode: databaseMode,
+            ...(databaseMode === "postgres"
+              ? { connectionString: "postgres://paperclip:paperclip@127.0.0.1:55439/paperclip" }
+              : {}),
+          },
+        }, null, 2)}\n`,
         "utf8",
       );
       await fs.writeFile(
@@ -480,7 +486,7 @@ describe("worktree config repair", () => {
       delete process.env.DATABASE_URL;
     };
 
-    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills", "postgres");
     await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
     const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
     await fs.mkdir(staleLockPath, { recursive: true });
@@ -691,52 +697,19 @@ describe("worktree config repair", () => {
 
     await fs.mkdir(paperclipDir, { recursive: true });
     await fs.mkdir(path.dirname(siblingConfigPath), { recursive: true });
+    const currentConfig = buildLegacyConfig(currentInstanceRoot);
     await fs.writeFile(
       configPath,
       JSON.stringify(
         {
-          ...buildLegacyConfig(currentInstanceRoot),
+          ...currentConfig,
           database: {
-            mode: "embedded-postgres",
-            embeddedPostgresDataDir: path.join(currentInstanceRoot, "db"),
+            ...currentConfig.database,
             embeddedPostgresPort: 54330,
-            backup: {
-              enabled: true,
-              intervalMinutes: 60,
-              retentionDays: 30,
-              dir: path.join(currentInstanceRoot, "data", "backups"),
-            },
-          },
-          logging: {
-            mode: "file",
-            logDir: path.join(currentInstanceRoot, "logs"),
           },
           server: {
-            deploymentMode: "local_trusted",
-            exposure: "private",
-            host: "127.0.0.1",
+            ...currentConfig.server,
             port: 3101,
-            allowedHostnames: [],
-            serveUi: true,
-          },
-          storage: {
-            provider: "local_disk",
-            localDisk: {
-              baseDir: path.join(currentInstanceRoot, "data", "storage"),
-            },
-            s3: {
-              bucket: "paperclip",
-              region: "us-east-1",
-              prefix: "",
-              forcePathStyle: false,
-            },
-          },
-          secrets: {
-            provider: "local_encrypted",
-            strictMode: false,
-            localEncrypted: {
-              keyFilePath: path.join(currentInstanceRoot, "secrets", "master.key"),
-            },
           },
         },
         null,
@@ -754,29 +727,19 @@ describe("worktree config repair", () => {
       ].join("\n"),
       "utf8",
     );
+    const siblingConfig = buildLegacyConfig(siblingInstanceRoot);
     await fs.writeFile(
       siblingConfigPath,
       JSON.stringify(
         {
-          ...buildLegacyConfig(siblingInstanceRoot),
+          ...siblingConfig,
           database: {
-            mode: "embedded-postgres",
-            embeddedPostgresDataDir: path.join(siblingInstanceRoot, "db"),
+            ...siblingConfig.database,
             embeddedPostgresPort: 54330,
-            backup: {
-              enabled: true,
-              intervalMinutes: 60,
-              retentionDays: 30,
-              dir: path.join(siblingInstanceRoot, "data", "backups"),
-            },
           },
           server: {
-            deploymentMode: "local_trusted",
-            exposure: "private",
-            host: "127.0.0.1",
+            ...siblingConfig.server,
             port: 3101,
-            allowedHostnames: [],
-            serveUi: true,
           },
         },
         null,
@@ -811,52 +774,19 @@ describe("worktree config repair", () => {
     const instanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
 
     await fs.mkdir(paperclipDir, { recursive: true });
+    const config = buildLegacyConfig(instanceRoot, "http://my-host.ts.net:3100");
     await fs.writeFile(
       configPath,
       JSON.stringify(
         {
-          ...buildLegacyConfig(instanceRoot, "http://my-host.ts.net:3100"),
+          ...config,
           database: {
-            mode: "embedded-postgres",
-            embeddedPostgresDataDir: path.join(instanceRoot, "db"),
+            ...config.database,
             embeddedPostgresPort: 54331,
-            backup: {
-              enabled: true,
-              intervalMinutes: 60,
-              retentionDays: 30,
-              dir: path.join(instanceRoot, "data", "backups"),
-            },
-          },
-          logging: {
-            mode: "file",
-            logDir: path.join(instanceRoot, "logs"),
           },
           server: {
-            deploymentMode: "local_trusted",
-            exposure: "private",
-            host: "127.0.0.1",
+            ...config.server,
             port: 3101,
-            allowedHostnames: [],
-            serveUi: true,
-          },
-          storage: {
-            provider: "local_disk",
-            localDisk: {
-              baseDir: path.join(instanceRoot, "data", "storage"),
-            },
-            s3: {
-              bucket: "paperclip",
-              region: "us-east-1",
-              prefix: "",
-              forcePathStyle: false,
-            },
-          },
-          secrets: {
-            provider: "local_encrypted",
-            strictMode: false,
-            localEncrypted: {
-              keyFilePath: path.join(instanceRoot, "secrets", "master.key"),
-            },
           },
         },
         null,
@@ -901,52 +831,19 @@ describe("worktree config repair", () => {
     const instanceRoot = path.join(isolatedHome, "instances", "pap-125-public-base-url");
 
     await fs.mkdir(paperclipDir, { recursive: true });
+    const config = buildLegacyConfig(instanceRoot, "https://paperclip.example");
     await fs.writeFile(
       configPath,
       JSON.stringify(
         {
-          ...buildLegacyConfig(instanceRoot, "https://paperclip.example"),
+          ...config,
           database: {
-            mode: "embedded-postgres",
-            embeddedPostgresDataDir: path.join(instanceRoot, "db"),
+            ...config.database,
             embeddedPostgresPort: 54331,
-            backup: {
-              enabled: true,
-              intervalMinutes: 60,
-              retentionDays: 30,
-              dir: path.join(instanceRoot, "data", "backups"),
-            },
-          },
-          logging: {
-            mode: "file",
-            logDir: path.join(instanceRoot, "logs"),
           },
           server: {
-            deploymentMode: "local_trusted",
-            exposure: "private",
-            host: "127.0.0.1",
+            ...config.server,
             port: 3101,
-            allowedHostnames: [],
-            serveUi: true,
-          },
-          storage: {
-            provider: "local_disk",
-            localDisk: {
-              baseDir: path.join(instanceRoot, "data", "storage"),
-            },
-            s3: {
-              bucket: "paperclip",
-              region: "us-east-1",
-              prefix: "",
-              forcePathStyle: false,
-            },
-          },
-          secrets: {
-            provider: "local_encrypted",
-            strictMode: false,
-            localEncrypted: {
-              keyFilePath: path.join(instanceRoot, "secrets", "master.key"),
-            },
           },
         },
         null,

@@ -8,7 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=notion.so&sz=128"
+    "logoUrl": "/brands/apps/notion.svg"
   },
   "urlPatterns": [
     "https://mcp.notion.com/*"
@@ -24,7 +24,10 @@
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
-        "serverUrl": "https://mcp.notion.com/mcp"
+        "serverUrl": "https://mcp.notion.com/mcp",
+        "scopesHint": [
+          "default"
+        ]
       },
       "guidanceMd": "Connect Notion for workspace content. Share only the pages and databases agents should use.",
       "riskTier": "S3",
@@ -32,8 +35,26 @@
         "workspace",
         "page",
         "database"
-      ]
+      ],
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "notion"
+          ],
+          "principalModes": [
+            "user"
+          ],
+          "scopes": [
+            "*"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
+      }
     }
   ],
-  "redirectConstraints": "https-or-loopback-http"
+  "redirectConstraints": "https-or-loopback-http",
+  "docsUrl": "https://developers.notion.com/guides/mcp/build-mcp-client"
 }

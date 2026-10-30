@@ -63,10 +63,10 @@ its contents require. The level is **derived from the files**, not self-declared
 | `assets` | Markdown plus images/PDFs/other static files | No executable code |
 | `scripts_executables` | Any script (`.sh`, `.js`, `.py`, `.ts`, …) | Highest scrutiny |
 
-Trust level gates what can be imported. A skill that carries executable scripts **cannot
-be imported from an external source** (GitHub, `skills.sh`, or a raw URL) — only
-first-party bundled catalog skills are allowed to ship scripts. This keeps untrusted
-remote code out of your agents' hands.
+GitHub sources support scripts after the existing content audit passes. Importing
+never executes scripts, hooks, dependency installers, or builds. Raw URL and
+`skills.sh` imports retain their existing script restrictions. Unsafe content,
+secrets, invalid paths, and oversized files are still rejected.
 
 ## Where skills come from (source types)
 
@@ -81,10 +81,9 @@ A skill in your company library records where it originated. The Store shows thi
 | `url` | URL | Imported from a raw markdown URL |
 | `local_path` | Local | Created in-app or scanned from a project workspace on disk |
 
-External imports (`github`, `skills_sh`, `url`) are held to two rules: they must be
-`markdown_only` or `assets` (no scripts), and Git-backed sources **must resolve to a
-pinned 40-character commit SHA** before import, so a moving branch can never silently
-change what your agents run.
+Git-backed sources **must resolve to a pinned 40-character commit SHA** before
+import. A moving branch cannot change what agents run until you refresh its source.
+GitHub originals are read-only; use **Make a copy** to edit an independent local skill.
 
 ### Thin wrappers for external live playbooks
 
@@ -118,6 +117,170 @@ upstream catalog skill has changed.
 - API: `POST /companies/:companyId/skills/install-catalog`
 - Re-installing an already-installed catalog skill updates it in place rather than
   creating a duplicate.
+
+### Sync skills from GitHub
+
+Open **Skills → Sources → Import from GitHub** (also in the **New** menu), choose a connected repository or
+click **… or add public repo by URL** to paste a GitHub.com repository URL, then choose **Find skills**. The searchable list
+combines repositories from all GitHub connections you can access, with duplicates
+removed. Paperclip automatically uses an authorized connection for the chosen
+repository. Pasted URLs also use your authorized connections when available,
+including public repositories outside the list. Public repositories can use
+anonymous access when no connection succeeds; private repositories require access.
+
+A repository URL uses the default branch. Paste a branch URL such as
+`https://github.com/owner/repo/tree/feature/new-skills` to track another branch,
+including branches whose names contain slashes. **Add repos**
+opens the standard setup in Apps. Completing or cancelling setup returns you to
+the importer with your draft retained; the repository list refreshes automatically.
+Use the refresh button beside the repository count to reload accessible repositories.
+
+New imports keep repository files together. **View files** opens the included
+repository inventory. The skill tree stays open, with every discovered skill
+selected. Containing folders start expanded; individual package files start
+collapsed. Folder checkboxes select descendant skills. Uncheck skills that should
+not appear in the library; their files still accompany the selected skills as
+repository support content. Supporting files cannot be deselected individually.
+Existing sources retain their saved import mode.
+
+Use the inspection button or click an included file to open a read-only preview.
+The inspector shows the repository path, scanned commit, byte sizes, executable
+flags, and any `compatibility` requirements declared by the author. Text previews
+show up to 64 KiB; binary assets show metadata and a link to GitHub for viewing or
+download. Preview reads use the current caller's GitHub access and re-audit the
+package at that exact commit. Preview failures do not alter selection or installed
+content. Existing sources gain inspection metadata on their next successful refresh.
+
+Shared files present in the repository are included automatically. Missing
+references, omitted files, and setup problems appear in one expandable warnings
+list. The same warnings remain on the saved source after import and refresh.
+Reference detection is a best-effort check, not a complete dependency analysis.
+Declared runtime requirements appear in the file inspector.
+
+Warnings do not require a repair choice or confirmation. Import saves available
+content and registers usable selected skills. A malformed entrypoint stays
+selected with a **Needs setup** warning; its supported original files remain
+repository content. Unsupported links, oversized files, and files rejected by
+execution or secret-disclosure checks are omitted with path-specific warnings.
+Importing never runs scripts, hooks, dependency installation, or builds.
+
+Scans support up to 1,000 skill packages and 10,000 package files, counting repeated
+file copies, with a 100 MiB scan budget. The repository path index supports up to
+100,000 paths, each at most 4,096 characters and 64 levels deep. Discovery returns
+manifests without retaining every package's content.
+
+### Keep repository files together
+
+This is the default for new imports, including skills that share agents, scripts,
+policies, or sibling skills.
+Paperclip saves supported repository files at the scanned commit. The skill checkboxes
+control which entrypoints appear in the company library; unselected helper skills
+remain available as supporting files. Add the imported skills to an agent to use
+that repository in its runtime. **View files** shows exactly what
+will be copied, including root license and credit files.
+
+Repository packages support regular files up to 1 MiB each, 9,990 files, and
+61 MiB of content. Omitted files produce warnings; they do not block the remaining
+repository. Source-access or download failures retain
+all previously installed versions. Changes to shared files create a new version
+for each selected entrypoint; pinned versions retain their original repository.
+
+Authors can optionally add `paperclip.skills.json` at the repository root:
+
+```json
+{
+  "version": 1,
+  "skills": ["skills/review/SKILL.md", "skills/research/SKILL.md"],
+  "requirements": "Requires Python 3.11, Git, and GitHub access for code reviews."
+}
+```
+
+The listed paths must identify existing skill entrypoints. They do not change the
+all-selected import default, remove other files, or prevent users from selecting
+other entrypoints. The manifest only supplies
+declarative metadata: it never runs setup commands. Dependencies, credentials,
+subagent tools, and scheduled jobs still need to be configured in the agent's environment.
+
+At runtime, each selected skill contains a generated discovery `SKILL.md` that
+points to the untouched original in `.paperclip-repository/`. Relative references
+resolve from that original directory. Original file bytes and executable flags
+are preserved; discovery policy in `agents/openai.yaml` is also copied beside the
+entrypoint. Existing adapters copy this self-contained package to their runtime.
+Multiple enabled entrypoints currently repeat the repository files in the runtime,
+while the company database stores each immutable repository snapshot once.
+
+Repeated scans resolve the branch's current commit and reuse the caller's cached
+snapshot when it is unchanged. Each server process allows one active scan per
+caller and two per company. Per minute, callers can open 30 snapshots and download
+6 repositories; companies can open 60 snapshots and download 12 repositories.
+Cached scans do not consume the download quota. A limit returns a retry message;
+installed skills remain available.
+
+**Skills → Sources** shows repositories, installed skill links, and connection errors.
+Click a repository title to open it on GitHub. Its three-dot menu contains
+**Refresh**, **Select skills**, and **Disconnect source**. **Refresh** applies valid
+updates immediately. New skills wait for
+**Select skills → Save selection** before import. Previously declined skills stay
+unchecked, including additions beneath excluded folders.
+
+Unchecking an installed skill stops future syncing and keeps its content and agent
+assignments. **Disconnect source** does the same for the whole repository. Remove
+an installed skill separately if you want it gone from the library. Upstream deletion
+shows **Removed from source** and retains the installed version; a moved path is a
+new skill, not an inferred rename.
+
+Installed content is stored locally, so viewing, testing, and agent execution work
+without GitHub access. Updates preserve skill identity, organization, assignments,
+and history. New versions are created only when package bytes or executable modes
+change; active runs and pinned versions keep their existing content. Skill Studio
+can view and test originals. **Make a copy** creates an independent editable skill.
+
+Older imports with no saved tracking branch resolve the repository’s default branch
+on their first successful refresh. If an explicit source already tracks that branch,
+the adopted source keeps a **Default branch** alias so both sets of installed skill
+identities and selections remain intact. Explicit branch and commit pins are preserved.
+
+Recognizable older GitHub imports are adopted into Sources without refetching or
+changing content; the first successful refresh completes their local snapshots.
+Bundled/catalog, project/local, unsupported-host, and `skills.sh` imports keep their
+existing behavior. Sync is manual and GitHub.com-only; upstream editing and pull
+requests are not part of this milestone.
+
+While finding skills, the dialog shows the scan stages, the current file, and
+recently checked skills as their local packages are validated. Large repositories show real
+package and file counts; you can cancel and retry without importing partial
+results. Selection opens only after the full scan completes. Importing displays
+an animated saving state while complete local packages are prepared. Animations
+respect reduced-motion preferences.
+
+Paperclip fetches one shallow Git snapshot, preserving committed bytes and executable
+permissions without checking out or running repository code. Download progress shows
+Git's measured receiving and preparing percentages before discovery begins. The server
+requires Git. Downloads are limited to 128 MiB and three minutes; at most two downloads
+run concurrently. Up to four temporary snapshots (including active downloads) are kept
+for ten minutes, scoped to the company and caller's authorization. Preview and import
+can reuse the exact scanned commit after checking access again. Installed skills remain
+local and independent of this temporary cache. GitHub's API is still used for repository
+identity and the connection picker, so metadata requests can still encounter rate limits.
+
+The discovery API keeps its normal JSON response. Clients requesting
+`Accept: application/x-ndjson` receive `progress` and `candidate` events followed
+by `complete` (containing the discovery response), or a terminal `error`. A stream
+ending without `complete` is unsuccessful; partial candidates are not importable.
+Progress contains metadata only, never package file contents.
+
+Source APIs live beneath `/api/companies/:companyId/skill-sources`:
+
+| Method/path | Purpose |
+|---|---|
+| `GET /` and `GET /:sourceId` | List sources and entries |
+| `GET /repositories` | Browse repositories through existing GitHub grants |
+| `POST /discover` | Discover and validate packages at one commit |
+| `POST /preview` | Preview an audited package file at an immutable commit using current caller access |
+| `POST /` | Import selected packages at the discovered commit |
+| `PATCH /:sourceId` | Save selection/exclusions and optional connection, with revision check |
+| `POST /:sourceId/refresh` | Refresh selected skills; discover new ones for review |
+| `DELETE /:sourceId` | Disconnect while retaining installed skills |
 
 ### Import from an external source
 

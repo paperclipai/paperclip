@@ -40,7 +40,7 @@ Or run the source directly during development:
 
 ```sh
 cd packages/kv-demo-mcp-server
-node --experimental-strip-types src/main.ts   # Node 22+/24
+node --experimental-strip-types src/main.ts   # Node 24+
 ```
 
 By default it listens on `http://127.0.0.1:8848` and prints three URLs to

@@ -1,0 +1,69 @@
+name: Incremental CI qualification
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - turbo.json
+      - .github/ci-task-matrix.json
+      - .github/scripts/ci-plan.mjs
+      - .github/scripts/tests/ci-plan.test.mjs
+      - .github/actions/run-ci-task/**
+      - .github/workflows/ci-routing.yml
+      - .github/workflows/pr-trusted.yml
+      - .github/workflows/ci-incremental-qualification.yml
+      - scripts/ci/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incremental-ci-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install isolated qualification tools
+        run: npm install --prefix "$RUNNER_TEMP/ci-tools" --no-audit --no-fund turbo@2.11.10
+      - name: Prove planning and required checks
+        run: node --test .github/scripts/tests/ci-plan.test.mjs .github/scripts/tests/ci-routing.test.mjs
+      - name: Prove real cache reuse and invalidation
+        env:
+          PAPERCLIP_CI_TEST_TURBO: ${{ runner.temp }}/ci-tools/node_modules/.bin/turbo
+        run: node --test scripts/ci/cache.integration.test.mjs
+      - name: Check the real repository task graph
+        env:
+          CI_TURBO_BIN: ${{ runner.temp }}/ci-tools/node_modules/.bin/turbo
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import assert from 'node:assert/strict';
+          import { executionPlan } from './scripts/ci/execution-plan.mjs';
+          const config = JSON.parse(readFileSync('turbo.json', 'utf8'));
+          for (const task of ['ci:server', 'ci:db', 'ci:runner-rust']) {
+            const plan = executionPlan(config, task, []);
+            const file = process.env.RUNNER_TEMP + '/ci-task-config.json';
+            writeFileSync(file, JSON.stringify(plan.config));
+            const result = execFileSync(process.env.CI_TURBO_BIN, ['run', plan.target, '--root-turbo-json', file,
+              '--dry=json', '--cache-dir=.turbo/cache', '--', ...plan.args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+            assert.ok(JSON.parse(result).tasks.some((task) => task.taskId === plan.target));
+          }
+          NODE
+      - name: Explain this pull request's plan
+        env:
+          CI_INCREMENTAL_MODE: shadow
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_SHA: ${{ github.sha }}
+        run: node .github/scripts/ci-plan.mjs "$BASE_SHA" "$MERGE_SHA"

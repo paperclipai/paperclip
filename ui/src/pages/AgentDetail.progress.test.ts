@@ -3,12 +3,64 @@ import { describe, expect, it, vi } from "vitest";
 
 import { queryKeys } from "../lib/queryKeys";
 import {
+  AGENT_DETAIL_TABS,
+  DISCARD_AGENT_CONFIG_CHANGES_MESSAGE,
+  agentConfigHistoryRestoreDelta,
   buildHeartbeatProgressLogLine,
+  confirmAgentConfigNavigation,
   heartbeatProgressLogLineKey,
+  parseAgentDetailView,
+  restoreAgentConfigHistoryEntry,
   runDetailRefetchIntervalMs,
   shouldPollRunShellLog,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
+
+describe("agent detail tabs", () => {
+  it("exposes Secrets as its own route-backed tab", () => {
+    expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets");
+    expect(parseAgentDetailView("secrets")).toBe("secrets");
+  });
+
+  it("requires confirmation before navigation can discard unsaved configuration", () => {
+    const confirm = vi.fn().mockReturnValue(false);
+
+    expect(confirmAgentConfigNavigation(true, confirm)).toBe(false);
+    expect(confirm).toHaveBeenCalledWith(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
+
+    confirm.mockReturnValue(true);
+    expect(confirmAgentConfigNavigation(true, confirm)).toBe(true);
+    expect(confirmAgentConfigNavigation(false, confirm)).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the prior history entry when Back or Forward navigation is rejected", () => {
+    expect(agentConfigHistoryRestoreDelta(4, 2)).toBe(2);
+    expect(agentConfigHistoryRestoreDelta(2, 4)).toBe(-2);
+    expect(agentConfigHistoryRestoreDelta(2, 2)).toBeNull();
+    expect(agentConfigHistoryRestoreDelta(undefined, 1)).toBeNull();
+  });
+
+  it("restores the guarded URL when React Router history indexes are unavailable", () => {
+    const history = {
+      go: vi.fn(),
+      pushState: vi.fn(),
+    };
+    const currentState = { key: "agent-config" };
+
+    expect(restoreAgentConfigHistoryEntry(history, {
+      index: undefined,
+      state: currentState,
+      url: "https://paperclip.test/agents/eng/secrets",
+    }, undefined)).toBe(false);
+    expect(history.pushState).toHaveBeenCalledWith(
+      currentState,
+      "",
+      "https://paperclip.test/agents/eng/secrets",
+    );
+    expect(history.go).not.toHaveBeenCalled();
+  });
+});
 
 describe("buildHeartbeatProgressLogLine", () => {
   it("renders progress messages with phase prefixes as system log lines", () => {

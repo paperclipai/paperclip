@@ -596,6 +596,7 @@ describe("codex-auth-merge-decision predicate (source/destination)", () => {
 
   const KEEP_DESTINATION = 20;
   const USE_SOURCE = 10;
+  const IMPLAUSIBLE_LAST_REFRESH = 22;
 
   function subscriptionAuth(input: {
     accountId: string;
@@ -737,6 +738,18 @@ describe("codex-auth-merge-decision predicate (source/destination)", () => {
       destinationAuth: "{not valid json",
       expected: KEEP_DESTINATION,
     },
+    {
+      // 400 days ahead is comfortably beyond the 5-minute skew allowance and
+      // any subprocess-spawn scheduling delay, so this integration-level
+      // check never depends on millisecond timing.
+      name: "source last_refresh implausibly far in the future → keep destination",
+      sourceAuth: subscriptionAuth({
+        accountId: "acct",
+        lastRefresh: new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString(),
+      }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: IMPLAUSIBLE_LAST_REFRESH,
+    },
   ];
 
   for (const entry of cases) {
@@ -759,6 +772,19 @@ describe("codex-auth-merge-decision predicate (source/destination)", () => {
       destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
     });
     expect(result.code).toBe(USE_SOURCE);
+    expect(result.output).not.toContain("SENTINEL");
+  });
+
+  it("never emits source token bytes for an implausibly-future last_refresh", async () => {
+    const result = await runDecision({
+      sourceAuth: subscriptionAuth({
+        accountId: "acct",
+        lastRefresh: new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString(),
+        marker: "SECRET-SENTINEL",
+      }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+    });
+    expect(result.code).toBe(IMPLAUSIBLE_LAST_REFRESH);
     expect(result.output).not.toContain("SENTINEL");
   });
 });

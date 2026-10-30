@@ -34,6 +34,7 @@ vi.mock("@/context/ToastContext", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
+  useCaseHref: () => (...segments: string[]) => `/CAS/${["cases", ...segments].join("/")}`,
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
       {children}
@@ -109,8 +110,17 @@ describe("AuditFeed", () => {
     props: {
       companyId?: string;
       lockedAgentId?: string;
+      lockedRunId?: string;
+      lockedEntity?: { type: string; id: string; label?: string };
       mode?: "all" | "agents";
       onModeChange?: (mode: "all" | "agents") => void;
+      actionDomain?: string;
+      onActionDomainChange?: (actionDomain: string) => void;
+      entityType?: string;
+      onEntityTypeChange?: (entityType: string) => void;
+      entityId?: string;
+      onEntityIdChange?: (entityId: string) => void;
+      onClearFilters?: () => void;
     } = {},
   ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -121,8 +131,17 @@ describe("AuditFeed", () => {
           <AuditFeed
             companyId={props.companyId ?? "company-1"}
             lockedAgentId={props.lockedAgentId}
+            lockedRunId={props.lockedRunId}
+            lockedEntity={props.lockedEntity}
             mode={props.mode}
             onModeChange={props.onModeChange}
+            actionDomain={props.actionDomain}
+            onActionDomainChange={props.onActionDomainChange}
+            entityType={props.entityType}
+            onEntityTypeChange={props.onEntityTypeChange}
+            entityId={props.entityId}
+            onEntityIdChange={props.onEntityIdChange}
+            onClearFilters={props.onClearFilters}
           />
         </QueryClientProvider>,
       );
@@ -198,6 +217,94 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("Recorded by Paperclip");
   });
 
+  it("filters and renders connection tests in the same audit row shape", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({
+        actorType: "user",
+        actorId: "user-1",
+        action: "tool_gateway.call_completed",
+        entityType: "agent",
+        entityId: "agent-1",
+        agentId: "agent-1",
+        runId: null,
+        responsibleUserId: null,
+        details: { source: "test", tool: "get_repository", connectionId: "conn-1" },
+        entity: { issue: null, comment: null, document: null },
+      })],
+      nextCursor: null,
+      accessTier: "full",
+    });
+
+    await render({ actionDomain: "tool_" });
+
+    expect(listAgentActionsMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ action: "tool_" }),
+    );
+    expect(container.textContent).toContain("tested get repository on");
+    expect(container.querySelector('a[href="/apps/conn-1/permissions"]')).toBeTruthy();
+    expect(container.textContent).toContain("tool_gateway.call_completed");
+  });
+
+  it("shows case history with case links and the acting agent's avatar", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({
+        action: "case.fields_changed", entityType: "case", entityId: "case-1",
+        entity: { case: { id: "case-1", identifier: "CAS-C1", title: "Morning coffee" }, issue: null, comment: null, document: null },
+      })],
+      nextCursor: null, accessTier: "full",
+    });
+    await render({ lockedEntity: { type: "case", id: "case-1" } });
+    expect(listAgentActionsMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ entityType: "case", entityId: "case-1" }));
+    expect(container.textContent).toContain("updated details on");
+    const caseLinks = container.querySelectorAll('a[href="/CAS/cases/CAS-C1"]');
+    expect(caseLinks).toHaveLength(2);
+    expect(caseLinks[0]?.textContent).toBe("CAS-C1 · Morning coffee");
+    const avatar = container.querySelector('[data-slot="agent-avatar"]');
+    expect(avatar?.querySelector("img")).toBeTruthy();
+    expect(avatar?.classList.contains("size-5")).toBe(true);
+  });
+
+  it("keeps the Cases filter in the query for an ordinary company reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [], nextCursor: null, accessTier: "basic" });
+    await render({ entityType: "case" });
+    expect(listAgentActionsMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ entityType: "case" }));
+    expect(container.textContent).toContain("Case");
+    expect(container.textContent).toContain("No actions match these filters");
+  });
+
+  it("applies a human case identifier from the Case search field", async () => {
+    const onEntityIdChange = vi.fn();
+    await render({ entityType: "case", entityId: "", onEntityIdChange });
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Case ID or identifier"]');
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "CAS-C1");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onEntityIdChange).toHaveBeenCalledWith("CAS-C1");
+  });
+
+  it("clears a scoped case with one atomic URL reset instead of competing setters", async () => {
+    const onClearFilters = vi.fn();
+    const onActionDomainChange = vi.fn();
+    const onEntityTypeChange = vi.fn();
+    const onEntityIdChange = vi.fn();
+    await render({
+      actionDomain: "case.", entityType: "case", entityId: "case-1",
+      lockedEntity: { type: "case", id: "case-1" },
+      onClearFilters, onActionDomainChange, onEntityTypeChange, onEntityIdChange,
+    });
+    await clickButton("Clear filters");
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+    expect(onActionDomainChange).not.toHaveBeenCalled();
+    expect(onEntityTypeChange).not.toHaveBeenCalled();
+    expect(onEntityIdChange).not.toHaveBeenCalled();
+  });
+
   it("shows the permission-denied upsell when the feed 403s", async () => {
     listAgentActionsMock.mockRejectedValue(
       new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
@@ -218,12 +325,16 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("All responsible users");
     expect(container.textContent).not.toContain("Export CSV");
+    expect(container.textContent).toContain("Action");
+    expect(container.textContent).toContain("Entity");
+    expect(container.textContent).toContain("From");
+    expect(container.textContent).toContain("To");
   });
 
   it("clears privileged filters and recovers the basic feed after an access downgrade", async () => {
     let permissionRevoked = false;
-    listAgentActionsMock.mockImplementation((_companyId: string, filters: { from?: string }) => {
-      if (permissionRevoked && filters.from) {
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { agentId?: string }) => {
+      if (permissionRevoked && filters.agentId) {
         return Promise.reject(
           new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
         );
@@ -236,35 +347,27 @@ describe("AuditFeed", () => {
     });
     await render();
 
-    const fromDate = container.querySelector<HTMLInputElement>('input[aria-label="From date"]');
-    expect(fromDate).toBeTruthy();
-    const setInputValue = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    expect(setInputValue).toBeTruthy();
+    permissionRevoked = true;
+    await clickButton("All agents");
+    const fableOption = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((option) => option.textContent?.trim() === "Fable");
+    expect(fableOption).toBeTruthy();
     await act(async () => {
-      permissionRevoked = true;
-      setInputValue!.call(fromDate, "2026-08-01");
-      fromDate!.dispatchEvent(new Event("input", { bubbles: true }));
+      fableOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    // The recovery settles across the 403, the filter reset, and the basic-tier
-    // refetch. The privileged filter fires first (from set), then the recovery
-    // refetch clears it (from undefined). Wait for that recovery refetch and the
-    // dropped filter chrome instead of a fixed flush count.
     await waitForCondition(
       () =>
-        listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)
-        && listAgentActionsMock.mock.calls.at(-1)?.[1]?.from === undefined
+        listAgentActionsMock.mock.calls.some(([, filters]) => filters.agentId)
+        && listAgentActionsMock.mock.calls.at(-1)?.[1]?.agentId === undefined
         && !container.textContent?.includes("All agents"),
       "the basic feed after the access downgrade",
       20_000,
     );
 
-    expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
+    expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.agentId)).toBe(true);
     await vi.waitFor(() => {
       expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
-        expect.objectContaining({ actorScope: "all", from: undefined }),
+        expect.objectContaining({ actorScope: "all", agentId: undefined }),
       );
       expect(container.textContent).toContain("commented on");
       expect(container.textContent).not.toContain("Paperclip Enterprise view");
@@ -431,13 +534,13 @@ describe("AuditFeed", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("All activity");
-    expect(container.textContent).toContain("Agent actions");
+    expect(container.textContent).toContain("Activity");
+    expect(container.textContent).toContain("Agent Actions");
     expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({ actorScope: "all" }),
     );
 
-    await clickTab("Agent actions");
+    await clickTab("Agent Actions");
     await flushReact();
 
     expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
@@ -479,8 +582,9 @@ describe("AuditFeed", () => {
     listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
     await render({ mode: "all", onModeChange: vi.fn() });
 
-    expect(container.querySelector('[role="tab"]')).toBeFalsy();
-    expect(container.textContent).not.toContain("Agent actions");
+    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Activity", "Agent Actions"]);
+    expect(tabs.find((tab) => tab.textContent?.trim() === "Agent Actions")?.disabled).toBe(true);
     // The basic feed itself still renders.
     expect(container.textContent).toContain("commented on");
   });
@@ -504,6 +608,33 @@ describe("AuditFeed", () => {
     await render({ mode: "agents" });
 
     expect(container.textContent).toContain("Paperclip Enterprise view");
+  });
+
+  it("renders a flat activity list with clearly labeled filters", async () => {
+    await render();
+
+    const list = container.querySelector('ul[aria-label="Audit activity"]');
+    expect(list).toBeTruthy();
+    expect(list?.closest('[data-slot="card"]')).toBeFalsy();
+    expect(container.textContent).toContain("Agent");
+    expect(container.textContent).toContain("Responsible user");
+    expect(container.textContent).toContain("Action");
+    expect(container.textContent).toContain("Entity");
+  });
+
+  it("pins run and entity scopes into distinct audit requests", async () => {
+    await render({ lockedRunId: "run-42" });
+    expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "agents", runId: "run-42" }),
+    );
+    expect(container.textContent).toContain("Scoped to run run-42");
+
+    flushSync(() => root.unmount());
+    await render({ lockedEntity: { type: "routine", id: "routine-7", label: "Nightly triage" } });
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ entityType: "routine", entityId: "routine-7" }),
+    );
+    expect(container.textContent).toContain("Scoped to Nightly triage");
   });
 
   it("only offers action domains present in the agent-action feed", async () => {

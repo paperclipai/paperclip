@@ -2,9 +2,14 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./IssueColumns";
+import {
+  InboxIssueMetaLeading,
+  InboxIssueTrailingColumns,
+  IssueColumnPicker,
+  issueColumnDescription,
+} from "./IssueColumns";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,7 +47,42 @@ function renderLeading(element: React.ReactElement): string {
   return container.textContent ?? "";
 }
 
+describe("IssueColumnPicker presentation options", () => {
+  it("offers date group separators as a toggle in the Columns menu", () => {
+    const onToggleDateGroupSeparators = vi.fn();
+    renderLeading(
+      <IssueColumnPicker
+        availableColumns={["status", "id", "updated"]}
+        visibleColumnSet={new Set(["status", "id", "updated"] as const)}
+        onToggleColumn={() => undefined}
+        showDateGroupSeparators
+        onToggleDateGroupSeparators={onToggleDateGroupSeparators}
+        onResetColumns={() => undefined}
+        title="Choose which task columns stay visible"
+        iconOnly
+        rowPresentation="task"
+      />,
+    );
+
+    const columnsButton = container?.querySelector<HTMLButtonElement>('button[title="Columns"]');
+    expect(columnsButton).not.toBeNull();
+    act(() => columnsButton?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+
+    const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]'))
+      .find((item) => item.textContent?.includes("Date group separators"));
+    expect(option?.getAttribute("aria-checked")).toBe("true");
+
+    act(() => option?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleDateGroupSeparators).toHaveBeenCalledWith(false);
+  });
+});
+
 describe("InboxIssueMetaLeading live state", () => {
+  it("describes the canonical identifier at the trailing edge", () => {
+    expect(issueColumnDescription("id", "task")).toContain("trailing edge");
+    expect(issueColumnDescription("id", "legacy")).not.toContain("trailing edge");
+  });
+
   it("shows the own Live chip for a running issue and never the subtree chip", () => {
     const text = renderLeading(
       <InboxIssueMetaLeading
@@ -94,7 +134,7 @@ describe("InboxIssueMetaLeading live state", () => {
 });
 
 describe("InboxIssueTrailingColumns attribution", () => {
-  it("renders a kicked off by column for agent creators with square identity", () => {
+  it("renders a kicked off by column for agent creators with a character identity", () => {
     const text = renderLeading(
       <InboxIssueTrailingColumns
         issue={makeIssue({
@@ -115,7 +155,7 @@ describe("InboxIssueTrailingColumns attribution", () => {
     );
 
     expect(text).toContain("CodexCoder");
-    expect(container?.querySelector('[data-shape="square"]')).not.toBeNull();
+    expect(container?.querySelector('[data-slot="agent-avatar"]')).not.toBeNull();
   });
 
   it("renders a kicked off by column for user creators", () => {
@@ -168,7 +208,7 @@ describe("InboxIssueTrailingColumns attribution", () => {
     // The responsible user wins over the creating agent.
     expect(text).toContain("Morgan Product");
     expect(container?.querySelector('[data-shape="circle"]')).not.toBeNull();
-    expect(container?.querySelector('[data-shape="square"]')).toBeNull();
+    expect(container?.querySelector('[data-slot="agent-avatar"]')).toBeNull();
   });
 
   it("surfaces the responsible user for a routine execution with no creator", () => {

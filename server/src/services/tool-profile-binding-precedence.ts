@@ -3,8 +3,15 @@ import type { ToolProfileBindingTargetType } from "@paperclipai/shared";
 type BindingLike = {
   profileId: string;
   targetType: ToolProfileBindingTargetType;
+  targetId: string;
   priority: number;
   createdAt: Date | string;
+};
+
+type ProfileLike = {
+  id: string;
+  profileKey: string;
+  metadata: unknown;
 };
 
 const TOOL_PROFILE_SCOPE_PRECEDENCE: Record<ToolProfileBindingTargetType, number> = {
@@ -47,4 +54,52 @@ export function profileIdsInBindingOrder<T extends Pick<BindingLike, "profileId"
     ordered.push(binding.profileId);
   }
   return ordered;
+}
+
+function isWizardAppProfile(profile: ProfileLike, connectionId?: string | null): boolean {
+  if (!profile.metadata || typeof profile.metadata !== "object" || Array.isArray(profile.metadata)) return false;
+  const metadata = profile.metadata as Record<string, unknown>;
+  if (metadata.source === "connection_intent" && typeof metadata.connectionId === "string" && typeof metadata.agentId === "string") {
+    return profile.profileKey === `connection-intent:${metadata.connectionId}:${metadata.agentId}`
+      && (connectionId == null || metadata.connectionId === connectionId);
+  }
+  if (metadata.source !== "app_gallery_finish" || typeof metadata.connectionId !== "string") return false;
+  if (profile.profileKey !== `app:${metadata.connectionId}`) return false;
+  return connectionId === undefined || connectionId === null || metadata.connectionId === connectionId;
+}
+
+/**
+ * App-wizard assignments are additive capabilities: choosing an app for all
+ * agents (or for one agent) must not disappear merely because that agent also
+ * has a narrower general-purpose profile. Ordinary profiles still use the
+ * narrowest-scope rule; only the profile managed by the app wizard is carried
+ * alongside that winning tier.
+ */
+export function effectiveToolProfileBindings<T extends BindingLike>(
+  bindings: T[],
+  profiles: ProfileLike[],
+  connectionId?: string | null,
+  options?: { includeAdditiveAppProfiles?: boolean },
+): T[] {
+  if (options?.includeAdditiveAppProfiles === false) {
+    return narrowestScopeBindings(bindings);
+  }
+  const appProfileIds = new Set(
+    profiles.filter((profile) => isWizardAppProfile(profile, connectionId)).map((profile) => profile.id),
+  );
+  const accessProfileIds = new Set(profiles.filter(profile => {
+    const metadata = profile.metadata as Record<string, unknown> | null;
+    return metadata?.source === "connection_intent";
+  }).map(profile => profile.id));
+  const selected = [
+    ...narrowestScopeBindings(bindings.filter(binding => !accessProfileIds.has(binding.profileId))),
+    ...bindings.filter((binding) => appProfileIds.has(binding.profileId)),
+  ];
+  const seen = new Set<string>();
+  return selected.filter((binding) => {
+    const key = `${binding.targetType}:${binding.targetId}:${binding.profileId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

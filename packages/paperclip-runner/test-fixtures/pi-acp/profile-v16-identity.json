@@ -1,0 +1,48 @@
+{
+  "commandDigest": "sha256:28eefeccb2556d2668e20aee2f12a90d1fef50b9be954d5f6dd97c757e2e945e",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "pi",
+    "agentProfileVersion": 16,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "0.0.33",
+    "agentRuntimeVersion": "1.0.0",
+    "nodeVersion": "24.21.0",
+    "closure": {
+      "darwin-arm64": "729947513854dadc2d596a34186f7f19beaffead0fc97698d8eeac96b8479533",
+      "darwin-x64": "80de2913634f83e958792ddebc17e94f6dbbe5aa9aed3cea3ff5b40f44c90a59",
+      "linux-x64": "5fedea5f04f4f76d0e2ead0637b00322583d6c859f9df4f4dc8b332aca416eda"
+    },
+    "wrapperSha256": "8ef777e9e6a3cef37775bab2b800e4931330c23a0b151ce07fdc5b943f28435d",
+    "helperSha256": "2191b1e5f281d24508ec7eaff39011ee863a8a70bf54f4aa0490ad0172b323da",
+    "extensionSha256": "71a85bf2e736d4108ea88a4aed01df3f547e8e4ccdeadea8251220e40cb05394",
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "nativeQuestions": "select-confirm-input-editor-v3-method-specific-fields",
+    "pathPolicy": "sdk-normalization-v1",
+    "mcpToolNames": "provider-safe-exact-source-v1",
+    "acpxPatchSha256": "00d6af17216cb0cad902b48633eb19bf0ec6b05837a984cb24661fca593f09c1",
+    "nativeAssistantMessages": "pi1-rpc-deltas-v3-bound-message-and-tool-receipts",
+    "nativeNotices": "session-extension-v2-bounded-runtime-failure",
+    "messageProjectionSha256": "17d1e91b948dfa6a56e1905645add52b502041ad843c8d50a13b07956f22aadd",
+    "noticeProjectionSha256": "014485adc690998e395d334ea3ae67f72be6060a2fc78a1185df7b8d1da28fbf",
+    "sharedRuntimeContract": "paperclip.acpx-runtime-contract.v1",
+    "nativeInputDisposition": "queued-only-v1",
+    "cacheWarming": "disabled-owned-decision-v1",
+    "thinkingLevel": {
+      "supported": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ],
+      "newConfigurationDefault": "low",
+      "admission": "explicit-native-effective-before-prompt-v1",
+      "recovery": "mode-bound-v1"
+    },
+    "modelSelection": "caller-selected-native-verified-v1",
+    "providerConfigurationSourceSha256": "e04480cc8d1272a3421313ddf9f973325e8c5c83bd29b84cff589fd734e780c2",
+    "credentialEnvironmentSourceSha256": "4ee0e9ac56fab8889a4d06b98634bb1797aeda64fcb31e0a404829018c7a12cb",
+    "runtimeSandboxSourceSha256": "21e1ed2d132886260cf17f956dc21824948bd428b8a0aa05518c508017e66213",
+    "recoveryIdentitySourceSha256": "f333a24b19ef1b5b5d23ea9778e753f7051690e835ef9e4476a962d8a231c375"
+  }
+}

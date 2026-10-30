@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CHAT_WEBHOOK_BODY_LIMIT,
+  CHAT_WEBHOOK_BODY_LIMIT_BYTES,
   DEFAULT_JSON_BODY_LIMIT,
   PORTABLE_JSON_BODY_LIMIT,
   PORTABLE_JSON_BODY_LIMIT_BYTES,
@@ -17,6 +19,11 @@ describe("HTTP body limits", () => {
     expect(DEFAULT_JSON_BODY_LIMIT).toBe("10mb");
   });
 
+  it("gives provider webhooks a dedicated bounded raw-body limit", () => {
+    expect(CHAT_WEBHOOK_BODY_LIMIT).toBe("1mb");
+    expect(CHAT_WEBHOOK_BODY_LIMIT_BYTES).toBe(1024 * 1024);
+  });
+
   it("allows PAP-scale portable import JSON payloads", () => {
     expect(PORTABLE_JSON_BODY_LIMIT).toBe("64mb");
     expect(PORTABLE_JSON_BODY_LIMIT_BYTES).toBe(64 * 1024 * 1024);
@@ -28,10 +35,15 @@ describe("HTTP body limits", () => {
   });
 
   it("lets operators override the zip upload cap via PAPERCLIP_IMPORT_ZIP_MAX_BYTES", async () => {
-    vi.stubEnv("PAPERCLIP_IMPORT_ZIP_MAX_BYTES", String(2 * 1024 * 1024 * 1024));
+    vi.stubEnv(
+      "PAPERCLIP_IMPORT_ZIP_MAX_BYTES",
+      String(2 * 1024 * 1024 * 1024),
+    );
     vi.resetModules();
     const reloaded = await import("../http/body-limits.js");
-    expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES).toBe(2 * 1024 * 1024 * 1024);
+    expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES).toBe(
+      2 * 1024 * 1024 * 1024,
+    );
   });
 
   it("falls back to the default when the env override is not a usable number", async () => {
@@ -39,9 +51,10 @@ describe("HTTP body limits", () => {
       vi.stubEnv("PAPERCLIP_IMPORT_ZIP_MAX_BYTES", raw);
       vi.resetModules();
       const reloaded = await import("../http/body-limits.js");
-      expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, `override ${JSON.stringify(raw)}`).toBe(
-        1024 * 1024 * 1024,
-      );
+      expect(
+        reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
+        `override ${JSON.stringify(raw)}`,
+      ).toBe(1024 * 1024 * 1024);
     }
   });
 
@@ -49,7 +62,11 @@ describe("HTTP body limits", () => {
     vi.stubEnv("PAPERCLIP_IMPORT_ZIP_MAX_BYTES", String(Number.MAX_VALUE));
     vi.resetModules();
     const reloaded = await import("../http/body-limits.js");
-    expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES).toBe(64 * 1024 * 1024 * 1024);
-    expect(Number.isSafeInteger(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES * 4)).toBe(true);
+    expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES).toBe(
+      64 * 1024 * 1024 * 1024,
+    );
+    expect(
+      Number.isSafeInteger(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES * 4),
+    ).toBe(true);
   });
 });

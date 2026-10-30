@@ -4,21 +4,25 @@ import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import {
   clearLocalInboxArchive,
   getLocalInboxArchiveIssueIds,
 } from "../lib/inboxArchiveCache";
+import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
 }));
+const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" as string | null }));
 
 const externalObjectMocks = vi.hoisted(() => ({
   summaries: new Map(),
+  error: null as Error | null,
+  retry: vi.fn(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -31,6 +35,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  retryTask: vi.fn(),
   archiveFromInbox: vi.fn(),
   unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
@@ -73,6 +78,7 @@ vi.mock("../api/issues", () => ({
     listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
+    retryTask: apiMocks.retryTask,
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: apiMocks.archiveFromInbox,
@@ -100,11 +106,15 @@ vi.mock("../api/projects", () => ({
 }));
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1" }),
+  useCompany: () => companyState,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
@@ -113,11 +123,6 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
-}));
-
-const generalSettingsMock = { keyboardShortcutsEnabled: false };
-vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => generalSettingsMock,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -134,7 +139,9 @@ vi.mock("../hooks/useIssueExternalObjects", () => ({
   useIssueExternalObjectSummaries: () => ({
     summaries: externalObjectMocks.summaries,
     isLoading: false,
-    isReady: true,
+    isReady: !externalObjectMocks.error,
+    error: externalObjectMocks.error,
+    refetch: externalObjectMocks.retry,
   }),
 }));
 
@@ -148,8 +155,8 @@ import {
 } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({ children, className, to, ...props }: ComponentProps<"a"> & { to?: string }) => (
+    <a className={className} href={to} {...props}>{children}</a>
   ),
   useLocation: () => routerMock.location,
   useNavigate: () => routerMock.navigate,
@@ -266,9 +273,81 @@ function createJoinRequest(
   };
 }
 
+function createApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "approval-1",
+    companyId: "company-1",
+    type: "hire_agent",
+    requestedByAgentId: null,
+    requestedByUserId: "local-board",
+    status: "pending",
+    payload: { name: "New teammate" },
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  return {
+    id: "run-1",
+    issueId: null,
+    scopeKind: "company",
+    companyId: "company-1",
+    agentId: "agent-1",
+    responsibleUserId: null,
+    invocationSource: "assignment",
+    triggerDetail: null,
+    status: "failed",
+    error: "boom",
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processGroupId: null,
+    processStartedAt: null,
+    lastOutputAt: null,
+    lastOutputSeq: 0,
+    lastOutputStream: null,
+    lastOutputBytes: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
+    contextSnapshot: null,
+    startedAt: new Date("2026-03-11T00:00:00.000Z"),
+    finishedAt: new Date("2026-03-11T00:01:00.000Z"),
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:01:00.000Z"),
+    ...overrides,
+  };
+}
+
 function resetInboxApiMocks() {
+  companyState.selectedCompanyId = "company-1";
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
+  externalObjectMocks.error = null;
+  externalObjectMocks.retry.mockReset();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -288,12 +367,16 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.retryTask.mockReset().mockResolvedValue({ accepted: true, requestId: "retry-intent", presentation: null });
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
-  apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  apiMocks.experimentalSettings.mockResolvedValue({
+    enableIsolatedWorkspaces: false,
+    enableStreamlinedUi: true,
+  });
   apiMocks.projectsList.mockResolvedValue([]);
 }
 
@@ -301,6 +384,7 @@ describe("Inbox toolbar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    localStorage.clear();
     resetInboxApiMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -311,6 +395,90 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it.each([
+    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
+    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
+    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
+    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },
+  ].flatMap((scenario) => [true, false].map((streamlined) => ({ ...scenario, streamlined }))))(
+    "scopes failed runs on $tab for $userId (streamlined=$streamlined)",
+    async ({ tab, userId, visible, hidden, streamlined }) => {
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+      routerMock.location.pathname = `/inbox/${tab}`;
+      apiMocks.authSession.mockResolvedValue(userId ? { user: { id: userId }, session: { userId } } : null);
+      apiMocks.heartbeatRunsList.mockResolvedValue([
+        createFailedRun({ id: "own-failure", agentId: "agent-1", responsibleUserId: "user-1" }),
+        createFailedRun({ id: "other-failure", agentId: "agent-2", responsibleUserId: "user-2", status: "timed_out" }),
+        createFailedRun({ id: "unowned-failure", agentId: "agent-3" }),
+      ]);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      try {
+        await act(async () => {
+          root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+        });
+        await vi.waitFor(() => {
+          expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
+          expect(queryClient.isFetching()).toBe(0);
+          for (const id of visible) expect(container.querySelector(`a[href$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[href$="/runs/${id}"]`)).toBeNull();
+        });
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
+
+  it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedUi: false,
+    });
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "legacy-row", identifier: "PAP-1904", title: "Legacy inbox task" }),
+    ]);
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: {},
+        columns: [],
+      }),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Legacy inbox task"));
+
+    expect(container.querySelector('[data-slot="collection-toolbar"]')).toBeNull();
+    expect(container.querySelector('[role="toolbar"][aria-label="Inbox controls"]')).toBeNull();
+    expect(container.textContent).toContain("Mine");
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+    const issueLink = container.querySelector('[data-inbox-issue-link]');
+    // Production reads the legacy Inbox column key and must ignore the
+    // Streamlined collection envelope above when the experiment is disabled.
+    expect(issueLink?.parentElement?.textContent).toContain("PAP-1904");
+
+    act(() => root.unmount());
   });
 
   it("does not render external-object summaries in inbox rows", async () => {
@@ -345,6 +513,59 @@ describe("Inbox toolbar", () => {
     act(() => root.unmount());
   });
 
+  it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.approvalsList.mockResolvedValue([createApproval()]);
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Hire Agent: New teammate");
+      expect(container.textContent).toContain("Failed run");
+      expect(container.textContent).toContain("Jordan Example");
+    });
+
+    const rowFor = (text: string) =>
+      [...container.querySelectorAll("[data-inbox-item]")]
+        .find((row) => row.textContent?.includes(text));
+
+    for (const text of ["Hire Agent: New teammate", "Failed run", "Jordan Example"]) {
+      const row = rowFor(text);
+      expect(row, `missing inbox row for ${text}`).toBeDefined();
+      expect(row?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+      const archiveButton = row?.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      expect(archiveButton?.className).toContain("opacity-0");
+      expect(archiveButton?.className).toContain("group-hover:opacity-100");
+      expect(row?.querySelector("[data-inbox-row-surface]")).not.toBeNull();
+    }
+
+    const approvalRow = rowFor("Hire Agent: New teammate");
+    const approvalActions = [...(approvalRow?.querySelectorAll("button") ?? [])]
+      .filter((button) => button.textContent === "Approve" || button.textContent === "Reject");
+    expect(approvalActions.length).toBeGreaterThanOrEqual(2);
+    approvalActions.forEach((button) => {
+      expect(button.className).toContain("h-8");
+      expect(button.className).toContain("min-w-(--sz-64px)");
+      expect(button.className).toContain("justify-center");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("restores folded and unfolded sub-tasks across remounts", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const storageKey = "paperclip:inbox:collapsed-parents:company-1";
@@ -361,7 +582,13 @@ describe("Inbox toolbar", () => {
       parentId: parent.id,
       title: "Nested inbox task",
     });
-    apiMocks.issuesList.mockResolvedValue([parent, child]);
+    const grandchild = createIssue({
+      id: "grandchild-issue",
+      identifier: "PAP-1003",
+      parentId: child.id,
+      title: "Deeply nested inbox task",
+    });
+    apiMocks.issuesList.mockResolvedValue([parent, child, grandchild]);
 
     const mountInbox = async () => {
       const queryClient = new QueryClient({
@@ -389,12 +616,23 @@ describe("Inbox toolbar", () => {
     let root = await mountInbox();
     try {
       expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
+      const taskRowFor = (title: string) =>
+        Array.from(container.querySelectorAll('[data-slot="task-row"]'))
+          .find((row) => row.textContent?.includes(title));
+      const childTaskRow = taskRowFor(child.title);
+      const grandchildTaskRow = taskRowFor(grandchild.title);
+      expect(childTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(1);
+      expect(childTaskRow?.querySelector('button[aria-label="Collapse sub-tasks"]')).not.toBeNull();
+      expect(grandchildTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(2);
+      expect(grandchildTaskRow?.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
 
       await act(async () => {
         parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await vi.waitFor(() => {
         expect(container.textContent).not.toContain(child.title);
+        expect(container.textContent).not.toContain(grandchild.title);
       });
       expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([parent.id]);
 
@@ -407,12 +645,14 @@ describe("Inbox toolbar", () => {
       });
       await vi.waitFor(() => {
         expect(container.textContent).toContain(child.title);
+        expect(container.textContent).toContain(grandchild.title);
       });
       expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([]);
 
       act(() => root.unmount());
       root = await mountInbox();
       expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
     } finally {
       localStorage.removeItem(storageKey);
       act(() => root.unmount());
@@ -448,6 +688,194 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("keeps Mine, Recent, Unread, Blocked, and All in the shared toolbar geometry", async () => {
+    for (const tab of ["mine", "recent", "unread", "blocked", "all"] as const) {
+      routerMock.location.pathname = `/inbox/${tab}`;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+
+      const toolbar = container.querySelector('[data-slot="collection-toolbar"]');
+      expect(toolbar?.getAttribute("aria-label")).toBe("Inbox controls");
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-context"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-search"] input[placeholder="Search inbox…"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-controls"]')).not.toBeNull();
+      expect(container.querySelectorAll('input[placeholder="Search inbox…"]')).toHaveLength(1);
+
+      act(() => root.unmount());
+      container.replaceChildren();
+    }
+  });
+
+  it("explains that live-run filtering is different from active task statuses", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+      allCategoryFilter: "everything",
+      allApprovalFilter: "all",
+      issueFilters: { liveOnly: true },
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="inbox-filter-scope-feedback"]')?.textContent)
+      .toBe("Live runs only — tasks currently connected to an agent run.");
+    const migrated = JSON.parse(
+      localStorage.getItem("paperclip:task-collection:v1:company-1:inbox") ?? "null",
+    ) as { companyId?: string; collectionKey?: string } | null;
+    expect(migrated).toMatchObject({ companyId: "company-1", collectionKey: "inbox" });
+
+    act(() => root.unmount());
+  });
+
+  it("groups ungrouped attention items by Today, Yesterday, and Earlier", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "yesterday", title: "Yesterday task", lastActivityAt: localNoon(1) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    const separators = [...container.querySelectorAll('[data-testid="inbox-date-group"]')];
+    expect(separators.map((node) => node.textContent?.trim()))
+      .toEqual(["Today", "Yesterday", "Earlier"]);
+    expect(separators.every((separator) => (
+      separator.querySelectorAll("[data-date-group-rule]").length === 2
+    ))).toBe(true);
+    expect(separators.every((separator) => (
+      separator.querySelector("[data-date-group-label]")?.classList.contains("text-muted-foreground/70")
+    ))).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("honors the saved Columns option for hiding date group separators", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({
+        companyId: "company-1",
+        collectionKey: "inbox",
+      }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: { showDateGroupSeparators: false },
+        columns: ["status", "id", "updated"],
+      }),
+    );
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    expect(container.querySelector('[data-testid="inbox-date-group"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows the resolved isolated workspace name in canonical task metadata", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
+      id: "execution-workspace-1",
+      name: "Workspace Aurora",
+      mode: "isolated_workspace",
+      projectWorkspaceId: "project-workspace-1",
+    }]);
+    apiMocks.projectsList.mockResolvedValue([{
+      id: "project-1",
+      name: "Launch",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Main" }],
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+      primaryWorkspace: null,
+    }]);
+    apiMocks.issuesList.mockResolvedValue([createIssue({
+      projectId: "project-1",
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Workspace-aware task",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    // Workspace metadata resolves independently of the task list.
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+    });
+
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
+    expect(taskRow?.textContent).toContain("Workspace Aurora");
+    expect(identifier?.textContent).toBe("PAP-904");
+    expect(timestamp).not.toBeNull();
+    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
+  });
+
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
@@ -480,6 +908,135 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("waits for the task index before revealing faster failed-run rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let release: (rows: Issue[]) => void = () => undefined;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { release = resolve; }) : Promise.resolve([]));
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(apiMocks.heartbeatRunsList).toHaveBeenCalled());
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    expect(container.querySelector('[data-inbox-item]')).toBeNull();
+    await act(async () => release([createIssue({ title: "Delayed task index row" })]));
+    await vi.waitFor(() => expect(container.textContent).toContain("Delayed task index row"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("can select a company after a cold inbox mount", async () => {
+    companyState.selectedCompanyId = null;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain("Select an organization"));
+    companyState.selectedCompanyId = "company-1";
+    apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain("Cold company task"));
+    act(() => root.unmount());
+  });
+
+  it("keeps more than 25 description-only matches in Mine with archive actions", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const rows = Array.from({ length: 30 }, (_, index) => createIssue({ id: `source-${index}`, title: `Source task ${index}`, identifier: `PAP-${index}`, listProjection: "index" }));
+    apiMocks.issuesList.mockImplementation((_company, filters) => Promise.resolve(filters.q && !filters.ids ? [] : rows));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    await act(() => {
+      const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "only-in-description");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ q: "only-in-description", ids: expect.arrayContaining(rows.map((row) => row.id)), projection: "index", limit: 100 }), expect.anything()));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    expect(container.querySelectorAll('button[aria-label="Archive"]')).toHaveLength(30);
+    expect(container.textContent).not.toContain("Other matching tasks");
+    act(() => root.unmount());
+  });
+
+  it("keeps rows readable and offers retry when optional details fail", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let failDetails = true;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "rows" && failDetails
+      ? Promise.reject(new Error("Details unavailable")) : Promise.resolve([createIssue({ title: "Readable task" })]));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
+    failDetails = false;
+    await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry details")!.click());
+    await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
+    act(() => root.unmount());
+  });
+
+  it("refreshes diagnostics when a visible index row changes without changing its ID", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const row = createIssue({ title: "Live task", listProjection: "index" });
+    apiMocks.issuesList.mockResolvedValue([row]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    const detailsReads = () => apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.projection === "rows").length;
+    await vi.waitFor(() => expect(detailsReads()).toBe(1));
+    const updated = { ...row, updatedAt: new Date(new Date(row.updatedAt).getTime() + 1000) };
+    apiMocks.issuesList.mockResolvedValue([updated]);
+    await act(() => {
+      queryClient.setQueriesData({ predicate: (query) => query.queryKey.includes("index") }, [updated]);
+    });
+    await vi.waitFor(() => expect(detailsReads()).toBe(2));
+    expect(container.textContent).toContain("Live task");
+    act(() => root.unmount());
+  });
+
+  it.each(["approvalsList", "joinRequestsList", "heartbeatRunsList"] as const)(
+    "keeps available tasks visible when %s fails and during retry", async (source) => {
+      routerMock.location.pathname = "/inbox/mine";
+      apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Available task" })]);
+      apiMocks[source].mockRejectedValue(new Error("Optional source unavailable"));
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Available task"));
+      expect(document.body.textContent).toContain("Some inbox items couldn’t load.");
+      let resolveRetry: (rows: []) => void = () => undefined;
+      apiMocks[source].mockImplementation(() => new Promise((resolve) => { resolveRetry = resolve; }));
+      await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry missing items")!.click());
+      await vi.waitFor(() => expect(apiMocks[source]).toHaveBeenCalledTimes(2));
+      expect(container.textContent).toContain("Available task");
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      await act(() => resolveRetry([]));
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some inbox items couldn’t load."));
+      act(() => root.unmount());
+    },
+  );
+
+  it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }), JSON.stringify({
+      version: 1, companyId: "company-1", collectionKey: "inbox", columns: [],
+      viewState: { issueFilters: { externalObjectStatuses: ["failed"] } },
+    }));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    apiMocks.issuesList.mockResolvedValue([createIssue()]);
+    externalObjectMocks.error = new Error("External statuses unavailable");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.textContent).toContain("External statuses unavailable"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry")!.click());
+    expect(externalObjectMocks.retry).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
   it("requests live descendant summaries for issue rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
 
@@ -496,20 +1053,11 @@ describe("Inbox toolbar", () => {
       );
     });
 
-    await vi.waitFor(() => {
-      expect(apiMocks.issuesList).toHaveBeenCalledTimes(3);
-    });
-
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.includeLiveDescendantSummary)).toEqual([
-      true,
-      true,
-      true,
-    ]);
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
-      500,
-      500,
-      500,
-    ]);
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledTimes(1));
+    expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      touchedByUserId: "me", inboxArchivedByUserId: "me", projection: "index",
+      includeLiveDescendantSummary: true, limit: 100, sortField: "updated", sortDir: "desc",
+    }));
 
     act(() => {
       root.unmount();
@@ -553,8 +1101,7 @@ describe("Inbox toolbar", () => {
     // state-selected band (which would swap to hover:bg-transparent). Coupling
     // hover to React state was the per-hover re-render storm behind the lag;
     // scrubbing the list must not touch selection state. (Keyboard nav that
-    // continues from the hovered row is exercised in live/e2e verification —
-    // this unit mocks keyboardShortcutsEnabled off.)
+    // continues from the hovered row is exercised in live/e2e verification.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
@@ -568,7 +1115,7 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not indent unread rows: the mark-read dot sits in a reserved leading slot present on every row", async () => {
+  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -606,29 +1153,25 @@ describe("Inbox toolbar", () => {
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
-    // The empty spacer that reserves the chevron column on every leaf row.
-    // Excludes the tree-guide span (`.self-stretch`), which only renders on
-    // nested rows.
+    // The canonical spacer reserves the disclosure column on every leaf row.
     const hasLeadingSpacer = (row: Element) =>
-      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
-    // The reserved leading dot slot, present on read AND unread rows.
+      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
+    // The overlay anchor is present on read AND unread Inbox rows without
+    // consuming a layout column.
     const dotSlot = (row: Element) =>
       row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
 
-    // The dot lives in a fixed leading slot that is reserved on every inbox row
-    // (in flow, NOT an absolute overlay). Because read and unread rows both
-    // reserve it — and both keep the chevron spacer — their status icon + title
-    // land at the same x (the bug this fix addresses: an unread-only dot column
-    // used to push unread rows right).
+    // Both rows share the canonical task-row geometry. The dot is absolutely
+    // positioned in the row gutter, so Inbox does not gain a column that Tasks
+    // lacks and unread state cannot shift status/title alignment.
     const unreadSlot = dotSlot(unreadRow);
     const readSlot = dotSlot(readRow);
     expect(unreadSlot).not.toBeNull();
     expect(readSlot).not.toBeNull();
-    // In flow, not an absolute overlay.
-    expect(unreadSlot?.className).not.toContain("absolute");
+    expect(unreadSlot?.className).toContain("absolute");
     // Only the unread row carries the dot button; the read slot is empty.
     expect(markReadButton(unreadSlot!)).not.toBeNull();
     expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
@@ -644,7 +1187,6 @@ describe("Inbox toolbar", () => {
 
   it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-2001", title: "Sync row A" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-2002", title: "Sync row B" });
     const issueC = createIssue({ id: "issue-c", identifier: "PAP-2003", title: "Sync row C" });
@@ -655,13 +1197,13 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    // The keyboard-selected row swaps to `hover:bg-transparent` on its root
-    // band (the overlay link's parent, where the wash now lives); find its index.
+    // Canonical task rows put the selected wash on the root band (the overlay
+    // link's parent); find the row with the standalone selected utility.
     const bandOf = (row: Element): HTMLElement | null =>
       row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
     const selectedRowIndex = () =>
       [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
-        bandOf(row)?.className.includes("hover:bg-transparent"),
+        bandOf(row)?.className.split(/\s+/).includes("bg-accent/50"),
       );
 
     try {
@@ -702,7 +1244,6 @@ describe("Inbox toolbar", () => {
       });
       expect(selectedRowIndex()).toBe(2);
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => {
         root.unmount();
       });
@@ -926,7 +1467,6 @@ describe("Inbox toolbar", () => {
   });
 
   it("restores a locally hidden archive when undo is pressed", async () => {
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     routerMock.location.pathname = "/inbox/mine";
     const archivedIssue = createIssue({
       id: "issue-a",
@@ -970,7 +1510,6 @@ describe("Inbox toolbar", () => {
         expect(container.textContent).toContain("Undoable inbox row");
       });
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => root.unmount());
     }
   });
@@ -988,53 +1527,23 @@ describe("FailedRunInboxRow", () => {
     container.remove();
   });
 
+  it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {
+    const root = createRoot(container);
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state: "failed",
+      nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id, error: "Internal process identity missing" })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
+    expect(container.textContent).not.toContain("Internal process identity missing");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`/issues/${issue.id}`);
+    expect(container.textContent).toContain("Retry");
+    act(() => root.unmount());
+  });
+
   it("suppresses accent hover styling when selected", () => {
     const root = createRoot(container);
-    const run = {
-      id: "run-1",
-      companyId: "company-1",
-      agentId: "agent-1",
-      responsibleUserId: null,
-      invocationSource: "assignment",
-      triggerDetail: null,
-      status: "failed",
-      error: "boom",
-      wakeupRequestId: null,
-      exitCode: null,
-      signal: null,
-      usageJson: null,
-      resultJson: null,
-      sessionIdBefore: null,
-      sessionIdAfter: null,
-      logStore: null,
-      logRef: null,
-      logBytes: null,
-      logSha256: null,
-      logCompressed: false,
-      lastOutputAt: null,
-      lastOutputSeq: 0,
-      lastOutputStream: null,
-      lastOutputBytes: null,
-      errorCode: null,
-      externalRunId: null,
-      processPid: null,
-      processGroupId: null,
-      processStartedAt: null,
-      retryOfRunId: null,
-      processLossRetryCount: 0,
-      livenessState: null,
-      livenessReason: null,
-      continuationAttempt: 0,
-      lastUsefulActionAt: null,
-      nextAction: null,
-      stdoutExcerpt: null,
-      stderrExcerpt: null,
-      contextSnapshot: null,
-      startedAt: new Date("2026-03-11T00:00:00.000Z"),
-      finishedAt: null,
-      createdAt: new Date("2026-03-11T00:00:00.000Z"),
-      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
-    } as const;
+    const run = createFailedRun();
 
     act(() => {
       root.render(

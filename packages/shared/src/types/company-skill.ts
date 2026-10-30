@@ -29,6 +29,8 @@ export interface CompanySkillFileInventoryEntry {
 
 export interface CompanySkillVersionFileInventoryEntry extends CompanySkillFileInventoryEntry {
   content: string;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
 }
 
 export interface CompanySkill {
@@ -53,6 +55,7 @@ export interface CompanySkill {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;
@@ -87,6 +90,7 @@ export interface CompanySkillListItem {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;
@@ -134,7 +138,7 @@ export interface CompanySkillDetail extends CompanySkill {
   sourceLabel: string | null;
   sourceBadge: CompanySkillSourceBadge;
   sourcePath: string | null;
-  currentVersion: CompanySkillVersion | null;
+  currentVersion: CompanySkillVersionSummary | null;
   starredByCurrentActor: boolean;
 }
 
@@ -154,6 +158,8 @@ export interface CompanySkillCategoryCount {
 }
 
 export interface CompanySkillVersion {
+  repositorySnapshotId?: string | null;
+  repositorySkillPath?: string | null;
   id: string;
   companyId: string;
   companySkillId: string;
@@ -167,6 +173,11 @@ export interface CompanySkillVersion {
   authorUserId: string | null;
   createdAt: Date;
 }
+
+/** Version listings carry file names/kinds; fetch one version to read its bytes. */
+export type CompanySkillVersionSummary = Omit<CompanySkillVersion, "fileInventory"> & {
+  fileInventory: CompanySkillFileInventoryEntry[];
+};
 
 export interface CompanySkillVersionCreateRequest {
   label?: string | null;
@@ -419,6 +430,7 @@ export interface CompanySkillProjectScanResult {
 }
 
 export interface CompanySkillCreateRequest {
+  idempotencyKey?: string;
   folderId?: string | null;
   name: string;
   slug?: string | null;
@@ -435,6 +447,8 @@ export interface CompanySkillCreateRequest {
 }
 
 export interface CompanySkillFileDetail {
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
   skillId: string;
   path: string;
   kind: CompanySkillFileInventoryEntry["kind"];
@@ -445,6 +459,8 @@ export interface CompanySkillFileDetail {
 }
 
 export interface CompanySkillFileUpdateRequest {
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
   path: string;
   content: string;
 }
@@ -597,7 +613,7 @@ export interface CompanySkillTestRunHarnessContent {
 }
 
 export interface CompanySkillTestRunDetail extends CompanySkillTestRun {
-  skillVersion: CompanySkillVersion;
+  skillVersion: CompanySkillVersionSummary;
   outputBody: string;
   harnessContent: CompanySkillTestRunHarnessContent;
   harnessIssue: {

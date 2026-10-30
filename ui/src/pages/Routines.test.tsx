@@ -29,6 +29,7 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
 const inlineEntitySelectorRenderMock = vi.fn((props: { options?: Array<{ id: string }> }) => props);
 
 vi.mock("@/lib/router", () => ({
+  Navigate: ({ to }: { to: string }) => <a data-redirect href={to}>Redirect</a>,
   Link: ({ to, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
       {children}
@@ -677,8 +678,7 @@ describe("Routines page", () => {
       });
     }
 
-    const sectionLabels = Array.from(container.querySelectorAll("span"))
-      .filter((element) => element.className.includes("uppercase") && element.className.includes("tracking-wide"))
+    const sectionLabels = Array.from(container.querySelectorAll("[data-routine-section-label]"))
       .map((element) => element.textContent);
     expect(sectionLabels).toEqual(["RPI", "Test", "Unfiled"]);
 
@@ -871,9 +871,59 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text).toContain("1 routine");
     expect(text).toContain("Morning sync");
     expect(text).not.toContain("Archived cleanup");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("searches routine titles and descriptions and restores results when cleared", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
+      createRoutine({ id: "routine-2", title: "Weekly digest", description: "Review company activity", status: "active" }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search routines"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    async function search(value: string) {
+      await act(async () => {
+        setValue.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await search("company review");
+    expect(container.textContent).toContain("Weekly digest");
+    expect(container.textContent).not.toContain("Morning sync");
+    await search("missing");
+    expect(container.textContent).toContain("No routines match your search.");
+    await search("");
+    expect(container.textContent).toContain("Weekly digest");
+    expect(container.textContent).toContain("Morning sync");
 
     await act(async () => {
       root.unmount();
@@ -1034,13 +1084,9 @@ describe("Routines page", () => {
     });
   });
 
-  it("shows recent runs through the issues list scoped to routine execution issues", async () => {
+  it("keeps the list focused on routines and links run history to Audit", async () => {
     currentSearch = "tab=runs";
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1" })]);
-    issuesListMock.mockResolvedValue([
-      createIssue({ id: "issue-1", title: "Routine execution A" }),
-      createIssue({ id: "issue-2", title: "Routine execution B", identifier: "PAP-1001", issueNumber: 1001 }),
-    ]);
 
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -1058,13 +1104,9 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && issuesListMock.mock.calls.length === 0; attempts += 1) {
-      await act(async () => {
-        await flush();
-      });
-    }
-
-    expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+    expect(container.querySelector('a[data-redirect][href="/activity/runs"]'))
+      .not.toBeNull();
+    expect(issuesListMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

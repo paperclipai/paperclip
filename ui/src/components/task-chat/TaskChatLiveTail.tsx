@@ -1,51 +1,64 @@
 import type { ReactElement } from "react";
 import { MarkdownBody } from "@/components/MarkdownBody";
-import type { TaskChatItem } from "./task-chat-model";
+import type { TaskChatItem, TaskChatRuntimeRequestDecision, TaskChatRuntimeRequestItem } from "./task-chat-model";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
-import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
-import { buildActivityPhases } from "./transcript-adapter";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
+import { TaskChatThinking } from "./TaskChatThinking";
+import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
+import { buildTurnTimelineRows } from "./transcript-adapter";
+import { visibleTranscriptPlaceholder } from "./TaskChatShimmer";
 
 /**
- * Live-tail body for the experimental chat-style view (PAP-463, Workstream C1
- * of PAP-458).
+ * Live body for legacy runner transcripts. The adapter drops debug plumbing;
+ * the same activity group as the native runner shows one rolling current row
+ * with friendly tool labels and explicitly expandable history. The status pill
+ * above this body (`TaskChatLiveRunPill`) owns the run-status affordance.
  *
- * Renders the in-flight run's streaming transcript as the SAME clean rows the
- * settled thread uses — tool cards (with diffs) and the streamed reply markdown
- * — instead of the verbatim `RunTranscriptView` debug viewer that the live tail
- * used since `e4f3d7733`. The items come from `transcriptToTaskChatItems`, which
- * already drops the debug plumbing (init / stdout / stderr / system / user /
- * result), so none of `RunTranscriptView`'s noise can reach the thread: no INIT
- * row, no "N LOG LINES" / "N SYSTEM MESSAGES" banners, no raw stdout/JSON dumps,
- * no "Streaming" chip, no uppercase "USED TERMINAL" cards. The status pill above
- * this body (`TaskChatLiveRunPill`) owns the run-status affordance.
- *
- * Stable assistant boundaries compact the rows into activity phases. The
- * trailing streaming assistant chunk stays in the status pill's self-talk
- * slot, while historical interstitials remain readable above their summaries.
+ * Stable assistant and runtime-request boundaries compact the rows into an
+ * ordered turn timeline. Commentary remains readable above the activity group
+ * it introduced, and resolved request receipts keep their original slot.
  */
 export function TaskChatLiveTail({
   items,
   emptyMessage,
+  excludeFinal = false,
+  onRuntimeRequestDecision,
 }: {
   items: readonly TaskChatItem[];
   /** Shown when nothing renderable has streamed yet (queued / pre-first-token). */
   emptyMessage?: string;
+  /** New-runner turn renders final-answer messages in its dedicated response slot. */
+  excludeFinal?: boolean;
+  onRuntimeRequestDecision?: (
+    item: TaskChatRuntimeRequestItem,
+    decision: TaskChatRuntimeRequestDecision,
+  ) => void | Promise<void>;
 }) {
-  const rows = buildActivityPhases(items, true)
-    .map((item) => renderTailRow(item))
+  const visibleItems = excludeFinal
+    ? items.filter((item) => item.kind !== "message" || item.interstitial)
+    : items;
+  const rows = buildTurnTimelineRows(visibleItems, true)
+    .map((item) => renderTailRow(item, onRuntimeRequestDecision))
     .filter((row): row is ReactElement => row != null);
 
   if (rows.length === 0) {
-    return emptyMessage ? (
-      <div className="px-1 py-1 text-xs text-muted-foreground/70">{emptyMessage}</div>
+    const placeholder = visibleTranscriptPlaceholder(emptyMessage);
+    return placeholder ? (
+      <div className="px-1 py-1 text-xs text-muted-foreground/70">{placeholder}</div>
     ) : null;
   }
 
   return <div className="flex flex-col gap-2">{rows}</div>;
 }
 
-function renderTailRow(item: TaskChatItem): ReactElement | null {
+function renderTailRow(
+  item: TaskChatItem,
+  onRuntimeRequestDecision?: (
+    item: TaskChatRuntimeRequestItem,
+    decision: TaskChatRuntimeRequestDecision,
+  ) => void | Promise<void>,
+): ReactElement | null {
   switch (item.kind) {
     case "message": {
       // Streamed reply text (always interstitial from the transcript adapter).
@@ -58,6 +71,7 @@ function renderTailRow(item: TaskChatItem): ReactElement | null {
           key={item.id}
           className="px-1 text-sm text-foreground/90"
           data-testid="task-chat-live-text"
+          data-conversation-text={item.channel === "final" ? "final" : "progress"}
         >
           <MarkdownBody softBreaks linkIssueReferences>
             {item.text}
@@ -77,18 +91,19 @@ function renderTailRow(item: TaskChatItem): ReactElement | null {
           <TaskChatUsageReadout item={item} />
         </div>
       );
+    case "thinking":
+      return <TaskChatThinking key={item.id} item={item} />;
     case "activity_phase":
       return (
-        <TaskChatActivityPhase
+        <TaskChatRunnerActivityGroup
           key={item.id}
           item={item}
-          renderChild={(child) => child.kind === "tool" ? <TaskChatToolCard item={child} /> : <TaskChatUsageReadout item={child} />}
         />
       );
-    // Thinking never renders as a row (PAP-361): its live signal is the status
-    // pill, and the text stays in the run log / classic transcript. Every other
-    // kind (markers, interactions, briefs, statuses, turns, and the dropped
-    // debug kinds) cannot appear in a parsed live transcript.
+    case "protocol":
+      return <TaskChatProtocolCard key={item.id} item={item} onRuntimeRequestDecision={onRuntimeRequestDecision} />;
+    // Markers, interactions, briefs, statuses, turns, and dropped debug kinds
+    // cannot appear as direct live-tail rows.
     default:
       return null;
   }

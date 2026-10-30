@@ -1,0 +1,63 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Slack app manifest > uses identical manual and automatic configuration except the OAuth redirect 1`] = `
+[
+  "app_mentions:read",
+  "assistant:write",
+  "channels:history",
+  "channels:read",
+  "chat:write",
+  "commands",
+  "files:read",
+  "files:write",
+  "groups:history",
+  "groups:read",
+  "im:history",
+  "im:read",
+  "mpim:history",
+  "mpim:read",
+  "reactions:read",
+  "reactions:write",
+  "users:read",
+  "im:write",
+  "emoji:read",
+  "pins:read",
+  "pins:write",
+  "bookmarks:read",
+  "bookmarks:write",
+  "channels:manage",
+  "channels:write.topic",
+  "groups:write",
+  "groups:write.topic",
+  "canvases:read",
+  "canvases:write",
+  "lists:read",
+  "lists:write",
+]
+`;
+
+exports[`Slack app manifest > uses identical manual and automatic configuration except the OAuth redirect 2`] = `
+[
+  "agent_session_stopped",
+  "app_mention",
+  "message.channels",
+  "message.groups",
+  "message.im",
+  "message.mpim",
+  "member_joined_channel",
+  "member_left_channel",
+  "channel_left",
+  "group_left",
+  "reaction_added",
+  "reaction_removed",
+  "channel_archive",
+  "group_archive",
+  "channel_unarchive",
+  "group_unarchive",
+  "channel_deleted",
+  "channel_rename",
+  "group_rename",
+  "app_uninstalled",
+  "tokens_revoked",
+]
+`;
