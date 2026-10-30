@@ -369,15 +369,83 @@ const CLI_SECRET_FLAG_RE = new RegExp(
   "i",
 );
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))(?:\\[\s\S]|[^"'` +
     "`" +
-    String.raw`\r\n]+((?:"|'))`,
+    String.raw`\\\r\n])+(?:\\)?((?:"|'))(?=[,}\]\s;:)>!?.]|$|,\s*["'][^"'\r\n]*["']\s*[:,}\]]|,\s*[}\]])`,
   "gi",
 );
-const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+const ESCAPED_SECRET_FIELD_PREFIX_RE = new RegExp(
+  String.raw`(?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\")`,
   "gi",
 );
+
+function escapedFieldValueEnd(input: string, valueStart: number): number | null {
+  let index = valueStart;
+  let escaped = false;
+  let consumed = false;
+  while (index < input.length) {
+    const ch = input[index];
+    if (ch === "\\" && index + 1 < input.length) {
+      const next = input[index + 1];
+      if (next === '"') {
+        if (!escaped) {
+          return consumed ? index + 2 : null;
+        }
+        escaped = false;
+      } else if (next === "\\") {
+        escaped = !escaped;
+      } else {
+        escaped = false;
+      }
+      consumed = true;
+      index += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "\r" || ch === "\n") {
+      return null;
+    }
+    if (escaped) {
+      escaped = false;
+    }
+    consumed = true;
+    index += 1;
+  }
+  return null;
+}
+
+function redactEscapedJsonSecretFields(input: string): string {
+  ESCAPED_SECRET_FIELD_PREFIX_RE.lastIndex = 0;
+  let result = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ESCAPED_SECRET_FIELD_PREFIX_RE.exec(input)) !== null) {
+    const prefixStart = match.index;
+    const valueStart = prefixStart + match[0].length;
+    const closingEnd = escapedFieldValueEnd(input, valueStart);
+    if (closingEnd === null) {
+      ESCAPED_SECRET_FIELD_PREFIX_RE.lastIndex = prefixStart + 1;
+      continue;
+    }
+    const after = input[closingEnd];
+    if (
+      after !== undefined &&
+      after !== "," &&
+      after !== "}" &&
+      after !== "]" &&
+      !/\s/.test(after)
+    ) {
+      ESCAPED_SECRET_FIELD_PREFIX_RE.lastIndex = prefixStart + 1;
+      continue;
+    }
+    result += input.slice(cursor, valueStart);
+    result += REDACTED_EVENT_VALUE;
+    result += input.slice(closingEnd - 2, closingEnd);
+    cursor = closingEnd;
+    ESCAPED_SECRET_FIELD_PREFIX_RE.lastIndex = closingEnd;
+  }
+  result += input.slice(cursor);
+  return result;
+}
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -1012,12 +1080,12 @@ export function redactAgentAdapterConfig(
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(
-    redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
-      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(
-        ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
+    redactEscapedJsonSecretFields(
+      redactStandaloneBearerCredentials(redactAuthorizationCredentials(input)).replace(
+        JSON_SECRET_FIELD_TEXT_RE,
         `$1${REDACTED_EVENT_VALUE}$2`,
       ),
+    ),
     REDACTED_EVENT_VALUE,
   );
 }
