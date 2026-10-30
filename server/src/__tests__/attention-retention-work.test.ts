@@ -15,7 +15,7 @@ import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "../serv
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
-import { issueService } from "../services/issues.js";
+import { BLOCKER_ATTENTION_MAX_DEPTH, BLOCKER_ATTENTION_MAX_NODES, issueService } from "../services/issues.js";
 import { notifyAttentionRetentionWork } from "../services/retention-work-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -254,6 +254,61 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect((await service.load(scope)).complete).toBe(true);
     const refreshed = await service.load(scope);
     expect(refreshed.rows!.some(entry => entry.sourceId === terminals[99].id)).toBe(false);
+  });
+
+  it.each(["depth", "nodes"] as const)("preserves shallow terminal selection when an unrelated graph hits its %s limit", async limit => {
+    const root = await insertIssue("blocked", { updatedAt: new Date() });
+    const middle = await insertIssue("todo", { updatedAt: new Date() });
+    const terminal = await insertIssue("backlog", { assigneeAgentId: agentId });
+    const heavy = await insertIssue("blocked", { updatedAt: new Date() });
+    const count = limit === "depth" ? BLOCKER_ATTENTION_MAX_DEPTH + 1 : BLOCKER_ATTENTION_MAX_NODES;
+    const heavyNodes = await db.insert(issues).values(Array.from({ length: count }, () => ({ companyId,
+      title: randomUUID(), status: "todo", updatedAt: new Date() }))).returning();
+    await db.insert(issueRelations).values([
+      { companyId, issueId: middle.id, relatedIssueId: root.id, type: "blocks" },
+      { companyId, issueId: terminal.id, relatedIssueId: middle.id, type: "blocks" },
+      ...heavyNodes.map((node, index) => ({ companyId, issueId: node.id,
+        relatedIssueId: limit === "nodes" || index === 0 ? heavy.id : heavyNodes[index - 1].id, type: "blocks" })),
+    ]);
+    const owner = issueService(db);
+    const expected = (await owner.listBlockerAttention(companyId, [root])).get(root.id)!;
+    const limited = (await owner.listBlockerAttention(companyId, [heavy])).get(heavy.id)!;
+    expect(expected.terminalBlockerIssueId).toBe(terminal.id);
+    expect(limited.terminalBlockerIssueId).toBe(limited.directBlockerIssueId);
+    for (const input of [[root, heavy], [heavy, root]]) {
+      const batch = await owner.listBlockerAttention(companyId, input);
+      expect(batch.get(root.id)).toEqual(expected); expect(batch.get(heavy.id)).toEqual(limited);
+    }
+    const page = await attentionRetentionService(db).load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(item => item.rootId === root.id && item.variant === "terminal")!;
+    expect(entry.sourceId).toBe(terminal.id); expect(entry.dueAt).toBeLessThan(Date.now());
+    await attentionRetentionService(db).check(entry);
+    expect((await state("blocker_attention", terminal.id))?.archivedAt).toBeInstanceOf(Date);
+    expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, terminal.id))).toHaveLength(1);
+  });
+
+  it("keeps root-specific reachability and cycle budgets when another root explores farther", async () => {
+    const root = await insertIssue("blocked");
+    const chain = await db.insert(issues).values(Array.from({ length: BLOCKER_ATTENTION_MAX_DEPTH + 1 }, (_, index) => ({
+      companyId, title: randomUUID(), status: index === BLOCKER_ATTENTION_MAX_DEPTH ? "in_progress"
+        : index === BLOCKER_ATTENTION_MAX_DEPTH - 2 ? "blocked" : "todo", updatedAt: old() }))).returning();
+    const overlapping = chain[BLOCKER_ATTENTION_MAX_DEPTH - 2];
+    const cycle = await insertIssue("blocked");
+    const leaf = await insertIssue("backlog", { assigneeAgentId: agentId });
+    await db.insert(issueRelations).values([
+      ...chain.map((node, index) => ({ companyId, issueId: node.id, relatedIssueId: index ? chain[index - 1].id : root.id, type: "blocks" })),
+      { companyId, issueId: leaf.id, relatedIssueId: cycle.id, type: "blocks" },
+      { companyId, issueId: cycle.id, relatedIssueId: leaf.id, type: "blocks" },
+    ]);
+    const owner = issueService(db), roots = [root, overlapping, cycle];
+    const singles = new Map();
+    for (const item of roots) singles.set(item.id, (await owner.listBlockerAttention(companyId, [item])).get(item.id));
+    expect(singles.get(root.id).blockingTreeLive).toBe(false);
+    expect(singles.get(overlapping.id).blockingTreeLive).toBe(true);
+    for (const input of [roots, [...roots].reverse()]) {
+      const batch = await owner.listBlockerAttention(companyId, input);
+      for (const item of roots) expect(batch.get(item.id)).toEqual(singles.get(item.id));
+    }
   });
 
   it("scopes ordinary execution-control writes to their company", async () => {
