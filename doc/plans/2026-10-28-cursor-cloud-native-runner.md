@@ -22,9 +22,14 @@ commands; Paperclip runs only its qualified API client and bounded private artif
 stager. This placement has no Paperclip Computer, lease, task checkout or host
 provisioning command. It is derived from the validated native Cursor profile and
 persisted with the admitted run; recovery retains that backend and placement.
+Earlier Cursor profiles retain their admitted workspace binding as identity;
+recovery does not reopen that workspace or allocate a Computer. Known backend
+and driver contradictions fail closed, while historical missing driver values
+remain recoverable.
 The generic managed-sandbox-only policy and local Computer denial stay intact.
-Kubernetes-only execution remains unsupported. Legacy direct agents retain their
-existing selection and execution behavior.
+Kubernetes-only execution remains unsupported in save, Test, inventory and run
+admission. An unavailable Computer does not advertise local Legacy execution.
+Legacy direct agents retain their existing selection and execution behavior.
 
 Ordinary native setup clears the Computer binding and explains Cursor's hosted
 environment. Save/reopen and Test use the same account/configuration contract as

@@ -316,6 +316,21 @@ describe("agent test-environment route", () => {
     } finally { unregisterServerAdapter("paperclip_runner"); if (previous) registerServerAdapter(previous); }
   });
 
+  it.each([
+    { patch: { model: "" }, code: "paperclip_runner_cursor_cloud_model_required" },
+    { patch: { command: "untrusted" }, code: "paperclip_runner_cursor_cloud_config_invalid" },
+  ])("returns a useful validation error before Computer or credential work for invalid native Cursor input ($code)", async ({ patch, code }) => {
+    const app = await createApp();
+    const response = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({
+      adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification", ...patch },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details?.code).toBe(code);
+    expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntime.realizeWorkspace).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.findManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
   it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     mockInstanceSettingsService.getExperimental.mockResolvedValue({

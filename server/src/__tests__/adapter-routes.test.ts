@@ -265,12 +265,23 @@ describe("adapter routes", () => {
     const app = createApp({}, { resolveRunnerTarget: async () => { throw unavailable; } });
     const response = await request(app).get("/api/adapters?companyId=company-1");
     expect(response.status).toBe(200);
-    expect(response.body.find((adapter: any) => adapter.type === "cursor_cloud").supportedRunners).toContain("paperclip");
-    expect(response.body.find((adapter: any) => adapter.type === "codex_local").supportedRunners).toEqual(["legacy"]);
+    expect(response.body.find((adapter: any) => adapter.type === "cursor_cloud")).toMatchObject({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local").supportedRunners).toEqual([]);
     const explicit = await request(app).get("/api/adapters?companyId=company-1&environmentId=selected");
     expect(explicit.status).toBe(422);
     const foreign = await request(createApp({}, { resolveRunnerTarget: async () => { throw forbidden("Foreign Computer", { code: "environment_company_mismatch" }); } })).get("/api/adapters?companyId=company-1");
     expect(foreign.status).toBe(403);
+  });
+
+  it("does not offer Cursor execution under Kubernetes-only policy, including the unavailable managed Computer fallback", async () => {
+    for (const resolveRunnerTarget of [
+      async () => ({ driver: "sandbox", executionMode: "kubernetes" as const }),
+      async () => { throw unprocessable("Managed Computer unavailable", { code: "managed_sandbox_unavailable", executionMode: "kubernetes" }); },
+    ]) {
+      const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1");
+      expect(response.status).toBe(200);
+      expect(response.body.find((adapter: any) => adapter.type === "cursor_cloud").supportedRunners).toEqual([]);
+    }
   });
 
   it.each(["environmentId=selected", "companyId=", "companyId=one&companyId=two", "companyId=one&environmentId="])("rejects malformed discovery scope before resolution (%s)", async query => {

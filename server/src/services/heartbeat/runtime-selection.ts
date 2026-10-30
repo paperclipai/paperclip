@@ -277,7 +277,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       throw new Error("native_runtime_ineligible: issue is required");
     }
     const nativeExecutionWorkspaceId =
-      persistedExecutionWorkspace?.id ?? run.id;
+      persistedNativeExecutionInput?.provider.kind === "cursor_cloud"
+        // Older Cursor runs keep their admitted binding identity. Their task
+        // files and Computer are not part of the recovered API controller.
+        ? persistedNativeExecutionInput.binding.executionWorkspaceId
+        : persistedExecutionWorkspace?.id ?? run.id;
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const nativeReview = nativeReviewContext ? await measureRunPhase("runtime_selection.review", () => getNativeReviewAssignment(db, {
       companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,

@@ -303,7 +303,8 @@ export function adapterRoutes(options: {
         // grants no local execution support to any workspace harness.
         if (environmentId !== undefined || !(error instanceof HttpError) || error.status !== 422
           || (error.details as { code?: unknown } | undefined)?.code !== "managed_sandbox_unavailable") throw error;
-        target = { driver: "unavailable" };
+        target = { driver: "unavailable", ...((error.details as { executionMode?: unknown }).executionMode === "kubernetes"
+          ? { executionMode: "kubernetes" as const } : {}) };
       }
     }
     await waitForExternalAdapters();

@@ -903,7 +903,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       input.effects.onWorkspaceRestoreFailure(requiredWorkspaceRestoreEvidence);
       // Retention is the fallback even if recording this receipt fails.
       input.effects.onProviderResourceDisposition("stop_and_retain");
-      if (!workspaceRestoreSource) throw new Error("legacy_workspace_restore_source_unavailable");
+      if (workspaceRestoreSource === null) throw new Error("legacy_workspace_restore_source_unavailable");
       await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence, workspaceRestoreSource);
     }
     for (const stream of ["stdout", "stderr"] as const) {

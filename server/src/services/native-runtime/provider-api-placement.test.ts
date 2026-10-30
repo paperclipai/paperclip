@@ -44,4 +44,13 @@ describe("provider API controller placement", () => {
     expect(() => resolveProviderApiPlacement({ agent, run: { ...run, runnerProfileJson: { ...run.runnerProfileJson, nativeExecutionInput: execution("codex") } } })).toThrow("binding_mismatch");
     expect(resolveProviderApiPlacement({ agent, run: { runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: execution("codex") } } })).toBeNull();
   });
+  it("binds historical Cursor input to its backend and recorded driver before granting API placement", () => {
+    const nativeExecutionInput = execution("cursor_cloud");
+    const run = { runtimeMode: "native", driverKind: "cursor_cloud_api", runnerProfileJson: { backend: "cursor_cloud_api", nativeExecutionInput } };
+    expect(resolveProviderApiPlacement({ agent, run })).toEqual(placement);
+    expect(resolveProviderApiPlacement({ agent, run: { ...run, driverKind: null } })).toEqual(placement);
+    expect(resolveProviderApiPlacement({ agent, run: { ...run, driverKind: null, runnerProfileJson: { nativeExecutionInput } } })).toEqual(placement);
+    expect(() => resolveProviderApiPlacement({ agent, run: { ...run, runnerProfileJson: { ...run.runnerProfileJson, backend: "codex_app_server" } } })).toThrow("binding_mismatch");
+    expect(() => resolveProviderApiPlacement({ agent, run: { ...run, driverKind: "codex_app_server" } })).toThrow("binding_mismatch");
+  });
 });

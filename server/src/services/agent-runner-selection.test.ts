@@ -33,6 +33,10 @@ describe("server-owned Codex runner selection", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature", runtimeEnvType: "cloud", env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } }, instructionsFilePath: "/assigned/AGENTS.md", autoCreatePR: false };
     expect(agentRunnerAvailability("cursor_cloud", target)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
     expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+    for (const runner of [undefined, "auto"] as const) {
+      expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner, target: { driver: "unavailable" } }))
+        .toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+    }
     const converted = resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target });
     expect(converted).toEqual({ adapterType: "paperclip_runner", adapterConfig: { model: config.model, repoUrl: config.repoUrl, repoRef: "feature", cloudEnvType: "cloud", env: config.env, instructionsFilePath: config.instructionsFilePath, autoCreatePR: false, provider: "cursor_cloud", lifecycleMode: "per_turn" } });
     expect(resolveNewAgentRunner({ ...converted, runner: "legacy", target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
@@ -43,7 +47,7 @@ describe("server-owned Codex runner selection", () => {
       expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: { ...config, ...patch }, runner: "paperclip", target })).toThrow();
     }
     expect(config).toEqual({ model: "caller-model", repoUrl: "https://github.com/acme/repo" });
-    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
+    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
     expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "cursor_cloud" } });
   });
   it("saves native Cursor Cloud without probing or binding a managed Computer", async () => {
@@ -56,6 +60,16 @@ describe("server-owned Codex runner selection", () => {
     expect(state.getEnvironment).not.toHaveBeenCalled();
     expect(state.ssh).not.toHaveBeenCalled();
     expect(state.sandboxQualification).not.toHaveBeenCalled();
+  });
+  it("refuses native Cursor save and availability under Kubernetes-only policy without provisioning", async () => {
+    state.settings = { general: { executionMode: "kubernetes" } };
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "cursor_cloud", runner: "paperclip",
+      adapterConfig: { model: "caller-model", repoUrl: "https://github.com/acme/repo" } }))
+      .rejects.toMatchObject({ status: 422, details: { code: "provider_api_kubernetes_execution_unsupported" } });
+    const selected = await resolveAgentRunnerTargetForCompany({} as never, "company");
+    expect(agentRunnerAvailability("cursor_cloud", selected).supportedRunners).toEqual([]);
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+    expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();
   });
   it("keeps legacy Cursor Cloud environment bindings and rejects their unsupported native conversion", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo",
@@ -387,7 +401,7 @@ describe("server-owned Codex runner selection", () => {
   it("advertises Legacy for a forced Kubernetes target before lazy environment creation", async () => {
     state.settings = { general: { executionMode: "kubernetes" } };
     const selected = await resolveAgentRunnerTargetForCompany({} as never, "company");
-    expect(selected).toEqual({ driver: "sandbox" });
+    expect(selected).toEqual({ driver: "sandbox", executionMode: "kubernetes" });
     expect(agentRunnerAvailability("codex_local", selected)).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
     expect(state.kubernetesEnvironment).toHaveBeenCalledWith("company");
     expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();

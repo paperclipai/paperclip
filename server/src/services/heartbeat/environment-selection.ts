@@ -1,4 +1,4 @@
-import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
+import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
@@ -223,7 +223,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   };
   const executionForcedToKubernetes =
     isExecutionForcedToKubernetes(executionPolicy);
-  if (providerApiPlacement && executionForcedToKubernetes) throw new Error("provider_api_kubernetes_execution_unsupported");
+  if (providerApiPlacement) assertProviderApiPlacementPolicy(executionPolicy);
   let selectedEnvironmentId = environmentResolution.environmentId;
   if (executionForcedToKubernetes && !providerApiPlacement) {
     let kubernetesEnvironment =

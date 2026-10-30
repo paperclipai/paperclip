@@ -1,4 +1,4 @@
-import { resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
@@ -3275,14 +3275,18 @@ export function agentRoutes(
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
       const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
-      const providerApiTest = resolveProviderApiPlacement({ agent: {
-        adapterType: type === "cursor_cloud" && req.body.runner === "paperclip" ? "paperclip_runner" : type,
-        adapterConfig: type === "cursor_cloud" && req.body.runner === "paperclip"
-          ? { ...inputAdapterConfig, provider: "cursor_cloud" } : inputAdapterConfig,
-      } });
-      if (providerApiTest && (await instanceSettings.getGeneral()).executionMode === "kubernetes") {
-        throw unprocessable("Cursor Cloud API execution is unavailable under the Kubernetes-only policy.", { code: "provider_api_kubernetes_execution_unsupported" });
+      let providerApiTest;
+      try {
+        providerApiTest = resolveProviderApiPlacement({ agent: {
+          adapterType: type === "cursor_cloud" && req.body.runner === "paperclip" ? "paperclip_runner" : type,
+          adapterConfig: type === "cursor_cloud" && req.body.runner === "paperclip"
+            ? { ...inputAdapterConfig, provider: "cursor_cloud" } : inputAdapterConfig,
+        } });
+      } catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) throw unprocessable(error.message, { code: error.code });
+        throw error;
       }
+      if (providerApiTest) assertProviderApiPlacementPolicy(await instanceSettings.getGeneral());
       const requestedEnvironmentId = providerApiTest ? null : await resolveAdapterTestEnvironmentId(
         companyId,
         // Omission tests the saved selection. Explicit null tests a prospective
