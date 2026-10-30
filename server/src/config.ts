@@ -149,7 +149,8 @@ function detectTailnetBindHost(): string | undefined {
 }
 
 export function loadConfig(): Config {
-  const fileConfig = readConfigFile();
+  const configFile = readConfigFile({ includeProvenance: true });
+  const fileConfig = configFile?.config ?? null;
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
@@ -180,8 +181,9 @@ export function loadConfig(): Config {
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
   );
-  const configuredStorageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket;
-  const storageS3Bucket = configuredStorageS3Bucket ?? "paperclip";
+  const configuredStorageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET
+    ?? (configFile?.explicitStorageS3Bucket ? fileStorage?.s3?.bucket : undefined);
+  const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
   const storageS3Endpoint = process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
   const storageS3Prefix = process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";

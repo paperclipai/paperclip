@@ -18,7 +18,14 @@ function formatConfigValidationError(error: ZodError): string {
     .join("; ");
 }
 
-export function readConfigFile(): PaperclipConfig | null {
+interface ConfigFileWithProvenance {
+  config: PaperclipConfig;
+  explicitStorageS3Bucket: boolean;
+}
+
+export function readConfigFile(options: { includeProvenance: true }): ConfigFileWithProvenance | null;
+export function readConfigFile(): PaperclipConfig | null;
+export function readConfigFile(options?: { includeProvenance: true }): PaperclipConfig | ConfigFileWithProvenance | null {
   const configPath = resolvePaperclipConfigPath();
 
   if (!fs.existsSync(configPath)) return null;
@@ -37,6 +44,12 @@ export function readConfigFile(): PaperclipConfig | null {
       console.warn(
         `Unknown config key ${warning.path}; did you mean ${warning.suggestion}? It will be preserved.`,
       );
+    }
+    if (options?.includeProvenance) {
+      // Schema validation above establishes the input shape, but fills omitted
+      // buckets with a default. Keep only that provenance at the file boundary.
+      const input = raw as Partial<PaperclipConfig>;
+      return { config, explicitStorageS3Bucket: input.storage?.s3?.bucket !== undefined };
     }
     return config;
   } catch (error) {

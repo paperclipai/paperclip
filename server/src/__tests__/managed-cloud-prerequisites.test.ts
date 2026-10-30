@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createStorageProviderFromConfig } from "../storage/provider-registry.js";
@@ -5,18 +8,15 @@ import { createLocalEncryptedCipher } from "../secrets/local-encrypted-provider.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { readConfigFile } from "../config-file.js";
-import { paperclipConfigSchema } from "@paperclipai/shared";
-
-vi.mock("../config-file.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../config-file.js")>(),
-  readConfigFile: vi.fn(() => null),
-}));
-
 const managed = JSON.stringify({
   v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] },
 });
 
+let configDir: string;
+
 beforeEach(() => {
+  configDir = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-config-"));
+  vi.stubEnv("PAPERCLIP_CONFIG", path.join(configDir, "config.json"));
   vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", managed);
   vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
   vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", "test-bucket");
@@ -24,9 +24,21 @@ beforeEach(() => {
   vi.stubEnv("PAPERCLIP_STORAGE_S3_ENDPOINT", undefined);
   vi.stubEnv("DATABASE_URL", "postgresql://user:private@db.example.test/paperclip");
   vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
-  vi.mocked(readConfigFile).mockReturnValue(null);
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(configDir, { recursive: true, force: true });
+});
+
+function writeConfig(storage: Record<string, unknown>) {
+  writeFileSync(path.join(configDir, "config.json"), JSON.stringify({
+    $meta: { version: 1, updatedAt: "2026-10-30T00:00:00.000Z", source: "configure" },
+    logging: { mode: "file" },
+    server: {},
+    storage,
+    database: { mode: "postgres", connectionString: "postgres://db.example.test/paperclip" },
+  }));
+}
 
 describe("managed cloud configuration boundary", () => {
   it("accepts configured S3, external PostgreSQL, and the existing master-key formats", () => {
@@ -77,16 +89,35 @@ describe("managed cloud configuration boundary", () => {
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", undefined);
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
     vi.stubEnv("DATABASE_URL", undefined);
-    vi.mocked(readConfigFile).mockReturnValue(paperclipConfigSchema.parse({
-      $meta: { version: 1, updatedAt: "2026-10-30T00:00:00.000Z", source: "configure" },
-      logging: { mode: "file" },
-      server: {},
-      storage: { provider: "s3", s3: { bucket: "file-bucket", region: "eu-west-1" } },
-      database: { mode: "postgres", connectionString: "postgres://db.example.test/paperclip" },
-    }));
+    writeConfig({ provider: "s3", s3: { bucket: "file-bucket", region: "eu-west-1" } });
     expect(loadConfig()).toMatchObject({ storageProvider: "s3", storageS3Bucket: "file-bucket", storageS3Region: "eu-west-1" });
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "typo");
     expect(() => loadConfig()).toThrow(/PAPERCLIP_STORAGE_PROVIDER=s3/);
+  });
+
+  it.each([{ provider: "s3" }, { provider: "s3", s3: { region: "us-east-1" } }])("rejects a real config file with an omitted bucket (%j)", storage => {
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
+    writeConfig(storage);
+    // Existing readers still receive the schema default; it is not explicit.
+    expect(readConfigFile()?.storage.s3.bucket).toBe("paperclip");
+    expect(() => loadConfig()).toThrow(/PAPERCLIP_STORAGE_S3_BUCKET/);
+  });
+
+  it.each(["", "   "])("rejects an explicitly blank bucket in a real file (%j)", bucket => {
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
+    writeConfig({ provider: "s3", s3: { bucket } });
+    expect(() => loadConfig()).toThrow();
+  });
+
+  it("accepts an explicitly supplied default bucket name in a real file", () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
+    writeConfig({ provider: "s3", s3: { bucket: "paperclip" } });
+    expect(loadConfig().storageS3Bucket).toBe("paperclip");
+  });
+
+  it("accepts an environment bucket when the real file omits it", () => {
+    writeConfig({ provider: "s3" });
+    expect(loadConfig().storageS3Bucket).toBe("test-bucket");
   });
 
   it("preserves ordinary self-hosted defaults, including key-file use", () => {
