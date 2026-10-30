@@ -7773,6 +7773,51 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     expect(result.errorMessage).not.toContain("close boom");
   });
 
+  it("test_thrown_turn_error_uses_classify_turn_error_text_hook", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    stubBridges();
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      createRuntime: () =>
+        ({
+          ensureSession: async () => okHandle,
+          startTurn: () => ({
+            events: (async function* () {
+              throw new Error("Internal error: You've hit your session limit · resets 5:10pm (Europe/Amsterdam)");
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+      classifyTurnErrorText: ({ message }) =>
+        message.includes("session limit")
+          ? {
+              errorCode: "provider_quota",
+              errorFamily: "provider_quota",
+              retryNotBefore: "2026-10-10T15:10:00.000Z",
+            }
+          : null,
+    });
+
+    const result = await execute({
+      runId: "turn-error-text-hook",
+      ...remoteArgs(stateDir, localCwd, executionTarget),
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBe("2026-10-10T15:10:00.000Z");
+    expect(result.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      retryNotBefore: "2026-10-10T15:10:00.000Z",
+      providerQuotaRetryNotBefore: "2026-10-10T15:10:00.000Z",
+    });
+  });
+
   it("test_flush_child_stderr_runs_on_every_exit_path", async () => {
     const writes: string[] = [];
     const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
