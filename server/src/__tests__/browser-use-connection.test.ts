@@ -462,7 +462,9 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         const catalogReads = recorded.statements.flatMap((query, index) =>
           query.includes('from "tool_catalog_entries"') && query.includes('inner join "tool_connections"') ? [recorded.statementParams[index]] : []);
         expect(catalogReads).toHaveLength(1);
-        expect(catalogReads[0]).toContain(f.connection.connectionId);
+        const prefix = f.connection.connectionId.replaceAll("-", "").slice(0, 8);
+        expect(catalogReads[0]).toContain(`${prefix}-0000-0000-0000-000000000000`);
+        expect(catalogReads[0]).toContain(`${prefix}-ffff-ffff-ffff-ffffffffffff`);
         expect(catalogReads[0]).not.toContain(connection.id);
         expect(recorded.statements.some(query => query.includes('from "chat_endpoints"'))).toBe(false);
       } finally {
