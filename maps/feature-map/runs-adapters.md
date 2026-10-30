@@ -170,6 +170,15 @@ controls do not establish live provider acceptance.
 
 ### `adapter-setup`
 
+Cloud-managed instances load adapters from the release image. Saved external
+registrations cannot replace built-ins or supply UI parser code. Install,
+reinstall, reload, remove, and override operations remain platform-managed.
+The [fixture loader controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+exercise real packages, import side effects, both managed-instance signals and
+self-hosted compatibility. The [route authorization controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+check managed denials before package or registration access. These are local
+controls, not live Cloud provider qualification.
+
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
 Claude native setup uses the existing Anthropic API-key or subscription connection
@@ -339,7 +348,7 @@ revised-source live onboarding and follow-up proof.
   `/company/settings/connections` configures decision/fast-response models,
   not the general model-account library.
 
-- The run log is instance database data; it is not the opt-out first-party Telemetry system or operator-configured OpenTelemetry tracing.
+- Structured run events stay in the instance database. Optional stdout/stderr and raw trace payload storage can use S3; see [run evidence storage](../../doc/run-evidence-storage.md). Both are separate from first-party Telemetry and operator OpenTelemetry export.
 - Authentication/model discovery does not establish tool, image, steering, or resumption capability parity.
 - Use [recovery](./recovery.md) for interrupted runs and [execution environments](./execution-environments.md) for local/SSH/sandbox differences.
 

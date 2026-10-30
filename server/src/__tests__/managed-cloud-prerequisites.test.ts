@@ -8,6 +8,8 @@ import { createLocalEncryptedCipher } from "../secrets/local-encrypted-provider.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { readConfigFile } from "../config-file.js";
+import { readLegacyCloudRuntimeConfig } from "../services/cloud-runtime-config.js";
+import { setCloudRuntimeConfigSnapshot } from "../services/cloud-runtime-config-snapshot.js";
 const managed = JSON.stringify({
   v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] },
 });
@@ -15,6 +17,7 @@ const managed = JSON.stringify({
 let configDir: string;
 
 beforeEach(() => {
+  setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: null });
   configDir = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-config-"));
   vi.stubEnv("PAPERCLIP_CONFIG", path.join(configDir, "config.json"));
   vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", managed);
@@ -26,6 +29,7 @@ beforeEach(() => {
   vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
 });
 afterEach(() => {
+  setCloudRuntimeConfigSnapshot(null);
   vi.unstubAllEnvs();
   rmSync(configDir, { recursive: true, force: true });
 });
@@ -85,37 +89,40 @@ describe("managed cloud configuration boundary", () => {
     expect(() => loadConfig()).toThrow(/PAPERCLIP_MANAGED_CONFIG/);
   });
 
-  it("accepts explicit config-file storage and database values", () => {
+  it("accepts imported explicit file storage with an environment-owned database", async () => {
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", undefined);
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
-    vi.stubEnv("DATABASE_URL", undefined);
     writeConfig({ provider: "s3", s3: { bucket: "file-bucket", region: "eu-west-1" } });
+    setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: await readLegacyCloudRuntimeConfig() });
     expect(loadConfig()).toMatchObject({ storageProvider: "s3", storageS3Bucket: "file-bucket", storageS3Region: "eu-west-1" });
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "typo");
     expect(() => loadConfig()).toThrow(/PAPERCLIP_STORAGE_PROVIDER=s3/);
   });
 
-  it.each([{ provider: "s3" }, { provider: "s3", s3: { region: "us-east-1" } }])("rejects a real config file with an omitted bucket (%j)", storage => {
+  it.each([{ provider: "s3" }, { provider: "s3", s3: { region: "us-east-1" } }])("rejects a real config file with an omitted bucket before import (%j)", async storage => {
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
     writeConfig(storage);
-    // Existing readers still receive the schema default; it is not explicit.
-    expect(readConfigFile()?.storage.s3.bucket).toBe("paperclip");
-    expect(() => loadConfig()).toThrow(/PAPERCLIP_STORAGE_S3_BUCKET/);
+    // Self-hosted readers still expose their default and raw-file provenance.
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+    expect(readConfigFile({ includeProvenance: true })).toMatchObject({ config: { storage: { s3: { bucket: "paperclip" } } }, explicitStorageS3Bucket: false });
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", managed);
+    await expect(readLegacyCloudRuntimeConfig()).rejects.toThrow(/storage.s3.bucket/);
   });
 
-  it.each(["", "   "])("rejects an explicitly blank bucket in a real file (%j)", bucket => {
+  it.each(["", "   "])("rejects an explicitly blank bucket in a real file (%j)", async bucket => {
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
     writeConfig({ provider: "s3", s3: { bucket } });
-    expect(() => loadConfig()).toThrow();
+    await expect(readLegacyCloudRuntimeConfig()).rejects.toThrow(/storage.s3.bucket/);
   });
 
-  it("accepts an explicitly supplied default bucket name in a real file", () => {
+  it("accepts an explicitly supplied default bucket name in a real file", async () => {
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
     writeConfig({ provider: "s3", s3: { bucket: "paperclip" } });
+    setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: await readLegacyCloudRuntimeConfig() });
     expect(loadConfig().storageS3Bucket).toBe("paperclip");
   });
 
-  it("accepts an environment bucket when the real file omits it", () => {
+  it("accepts an environment bucket with an authoritative absent-file snapshot", () => {
     writeConfig({ provider: "s3" });
     expect(loadConfig().storageS3Bucket).toBe("test-bucket");
   });

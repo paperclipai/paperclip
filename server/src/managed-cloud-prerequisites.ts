@@ -1,10 +1,11 @@
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
 import { parseManagedConfigEnv, type ManagedConfigEnv } from "./services/managed-config.js";
 import { isValidLocalEncryptedMasterKey } from "./secrets/local-encrypted-provider.js";
 import type { StorageProvider } from "@paperclipai/shared";
 
 interface ManagedCloudPrerequisites {
   storageProvider: StorageProvider;
-  /** The explicit env/file value, before the self-hosted bucket default. */
+  /** The canonical DB/config value or explicit env/file value, before defaults. */
   storageS3Bucket: string | undefined;
   storageS3Region: string;
   storageS3Endpoint: string | undefined;
@@ -16,7 +17,8 @@ export function validateManagedCloudPrerequisites(
   config: ManagedCloudPrerequisites,
   env: ManagedConfigEnv,
 ): void {
-  if (!parseManagedConfigEnv(env)) return;
+  if (!isCloudManagedInstance(env)) return;
+  parseManagedConfigEnv(env);
 
   const refuse = (message: string): never => {
     throw new Error(`Managed cloud configuration: ${message}; refusing to start`);
@@ -41,13 +43,25 @@ export function validateManagedCloudPrerequisites(
     } catch { /* The diagnostic must not include a possibly secret URL. */ }
     if (!validEndpoint) refuse("PAPERCLIP_STORAGE_S3_ENDPOINT must be an HTTP(S) URL without credentials");
   }
+  validateManagedCloudBootstrapPrerequisites(config, env);
+}
+
+/** Environment-owned prerequisites needed before opening the Cloud database. */
+export function validateManagedCloudBootstrapPrerequisites(
+  config: { databaseUrl: string | undefined }, env: ManagedConfigEnv,
+): void {
+  if (!isCloudManagedInstance(env)) return;
+  parseManagedConfigEnv(env);
+  const refuse = (message: string): never => {
+    throw new Error(`Managed cloud configuration: ${message}; refusing to start`);
+  };
   let validDatabase = false;
   try {
     const url = new URL(config.databaseUrl ?? "");
     validDatabase = (url.protocol === "postgres:" || url.protocol === "postgresql:") && !!url.hostname;
   } catch { /* The diagnostic must not include database credentials. */ }
   if (!validDatabase) {
-    refuse("set DATABASE_URL or database.connectionString to an external PostgreSQL URL");
+    refuse("set DATABASE_URL to an external PostgreSQL URL");
   }
   if (!isValidLocalEncryptedMasterKey(env.PAPERCLIP_SECRETS_MASTER_KEY ?? "")) {
     refuse("set a stable PAPERCLIP_SECRETS_MASTER_KEY (32-byte base64, 64-char hex, or raw 32-char string); key files alone are not supported");

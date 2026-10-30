@@ -20,7 +20,7 @@ import {
 import { deriveBundleState } from "./agent-instructions.js";
 import { readInstructionBytes } from "./agent-instruction-files.js";
 import { skillPackageStore } from "./skill-package-store.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 
 // This is a reviewed catalog of readers, not a proxy for existing GET routes.
 // Select credentials out of queries; never load encrypted identity records.
@@ -311,9 +311,9 @@ export async function readCustomerSuccessResource(
       }
       if (q.operation === "runs.log") {
         const run = await ownRow(tx, schema.heartbeatRuns, q.companyId!, q.resourceId!);
-        if (!run.logRef || run.logStore !== "local_file") return unavailable("run_log_unavailable");
+        if (!run.logRef || !isRunLogStoreType(run.logStore)) return unavailable("run_log_unavailable");
         const result = await getRunLogStore().read(
-          { store: "local_file", logRef: String(run.logRef) },
+          { store: run.logStore, logRef: String(run.logRef) },
           {
             offset: q.range?.start ?? q.offset ?? 0,
             limitBytes: q.range ? q.range.end - q.range.start + 1 : 256000,

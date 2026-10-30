@@ -249,8 +249,8 @@ vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
   return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
     constructor(...args: ConstructorParameters<typeof original.PaperclipControlPlanePort>) {
       super(...args);
-      accountingEvents.committed = args[2]?.onCommittedEvent;
-      accountingEvents.duplicate = args[2]?.onDuplicateEvent;
+      accountingEvents.committed = args[2]?.onCommittedEvent ? event => args[2]!.onCommittedEvent!(event, 1) : undefined;
+      accountingEvents.duplicate = args[2]?.onDuplicateEvent ? event => args[2]!.onDuplicateEvent!(event, 1) : undefined;
     }
   } };
 });

@@ -41,6 +41,10 @@ For `server/src/services/chat-channels.ts` and everything under
 For `server/src/services/heartbeat.ts`, `server/src/services/heartbeat/`,
 heartbeat-prefixed sibling services, and heartbeat regression tests, read
 [`rules/heartbeat-execution-boundaries.mdc`](rules/heartbeat-execution-boundaries.mdc).
+For ACPX provider profiles, their release attestations and pins, the provider-pack
+contract registry, and ACPX driver and provider code under
+`packages/paperclip-runner/`, read
+[`rules/acpx-profile-identity.mdc`](rules/acpx-profile-identity.mdc).
 See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 
 ## 3. Repo Map

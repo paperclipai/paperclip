@@ -8,6 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { ZodError } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { getCloudRuntimeConfigSnapshot, toPaperclipConfig } from "./services/cloud-runtime-config-snapshot.js";
 
 function formatConfigValidationError(error: ZodError): string {
   return error.issues
@@ -26,6 +28,14 @@ interface ConfigFileWithProvenance {
 export function readConfigFile(options: { includeProvenance: true }): ConfigFileWithProvenance | null;
 export function readConfigFile(): PaperclipConfig | null;
 export function readConfigFile(options?: { includeProvenance: true }): PaperclipConfig | ConfigFileWithProvenance | null {
+  if (isCloudManagedInstance()) {
+    const saved = getCloudRuntimeConfigSnapshot().config;
+    const config = toPaperclipConfig(saved);
+    // A stored snapshot is canonical configuration, including its bucket.
+    // It must not inherit local-file provenance or inspect an old home.
+    return config && options?.includeProvenance ? { config, explicitStorageS3Bucket: true } : config;
+  }
+
   const configPath = resolvePaperclipConfigPath();
 
   if (!fs.existsSync(configPath)) return null;
