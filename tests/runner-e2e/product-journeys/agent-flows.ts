@@ -22,6 +22,14 @@ interface TaskState { currentIssue: Row & { id: string; status: string }; taskRu
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 const active = (run: Row) => ["queued", "running"].includes(run.status);
 
+/** These fixture replies are plain text. The rich editor escapes underscores in
+ * its persisted Markdown; compare the intended text while retaining exact count
+ * and author checks. Do not strip arbitrary markup or accept partial messages. */
+export function fixtureReplyStoredOnce(before: Row[], after: Row[], userId: string, message: string) {
+  const added = after.filter(row => row.authorUserId === userId && !before.some(old => old.id === row.id));
+  return added.length === 1 && typeof added[0].body === "string" && added[0].body.replaceAll("\\_", "_") === message;
+}
+
 /** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
 export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = []) {
   const agent = context.agent!;
@@ -91,7 +99,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const after = await waitFor(Math.min(options.deadlineAt, Date.now() + 30_000), () => read(issue), state =>
       state.comments.some(row => row.authorUserId === context.user.id && !before.some(old => old.id === row.id)), "reply_not_persisted");
     const added = after.comments.filter(row => row.authorUserId === context.user.id && !before.some(old => old.id === row.id));
-    check("user-reply-stored-once", added.length === 1 && added[0].body === message);
+    check("user-reply-stored-once", fixtureReplyStoredOnce(before, after.comments, context.user.id, message));
     return added[0];
   };
   const download = async (issue: Row, state: TaskState, phase: string, mode: "base" | "separator", preserved: string[] = []) => {

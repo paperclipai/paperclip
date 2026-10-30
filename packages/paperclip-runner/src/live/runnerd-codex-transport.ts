@@ -97,7 +97,7 @@ import {
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
 import { resolvePackagedRunnerBinary } from "./runner-binary.js";
-import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
+import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -6697,6 +6697,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (fromDeferredQueue) this.#deferredTurnStartEvents.shift();
       else this.#eventSourceSeq = event.sourceSeq;
       if (event.eventType === "auth.credentials.updated" && this.options.onCredentialsUpdated) continue;
+      if (event.eventType === "runtime.activity.recorded") {
+        this.#queue.push({ method: "paperclip/runtimeActivityRecorded", params: {
+          [RUNNERD_RUNTIME_ACTIVITY]: true,
+          runId: event.envelope.runId,
+          payload: eventPayload,
+        } });
+        continue;
+      }
       if (
         event.eventType === "harness.ready" ||
         event.eventType === "session.started" ||

@@ -710,6 +710,22 @@ The directory merge still preserves host-only
 file changes under its existing rules. A changed host branch requires recovery.
 An intentional reset to an ancestor exports a full Git bundle so restore keeps
 the actual sandbox tip; an empty delta is reserved for an unchanged tip.
+A full Git bundle from a shallow repository still omits history before its
+shallow boundaries. When a delta import cannot satisfy its history, sandbox
+restore exports those boundaries with the full bundle. The host unpacks it in
+a temporary bare repository and uses Git's shallow fetch protocol to import it.
+This preserves existing host ancestry and connectivity checks. File restore and
+the normal concurrent-work merge must still finish before run finalization.
+The boundary metadata has a 64 KiB transfer/read budget and at most 256 unique
+commits. Duplicate entries do not repeat host Git probes. Boundary inspection
+has a separate 15-second budget; cloning, unpacking and import share 60 seconds
+without charging probe time. Oversized or malformed metadata fails before import
+with a distinct non-retryable metadata classification. It requires file recovery
+and never uses the unsafe-archive omission path to complete an accepted result.
+The sandbox producer uses a dedicated exit status which the command client retains
+and the export owner converts back to the typed metadata error. Bounded API
+projections and cancelled-preservation selection use the shared failure allowlist;
+task chat retains its recovery notice without offering another provider turn.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the
@@ -1576,6 +1592,13 @@ and obtains a fresh stop receipt. An interrupted legacy run does not need an
 accepted native result. A successful `workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+A reusable lease can also owe native copyback: the export-repair action must
+select its exact immutable descriptor and the finalizer's accepted successful
+result under the same company, task, run and completion contract. Lease reuse
+policy alone does not discharge that persistence obligation. Ordinary reusable
+sources without this proof remain ineligible. The preservation owner still
+requires an independently stopped, exclusively bound allocation and no host writer;
+it saves files and resumes the existing finalizer without another provider turn.
 
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery

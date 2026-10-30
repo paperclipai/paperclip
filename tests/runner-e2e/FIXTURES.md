@@ -18,6 +18,17 @@ See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
 
+[Antigravity additional-agent setup](ANTIGRAVITY-AGENT-JOURNEY.md) instead reuses
+an existing same-user personal default Google subscription on an attached local
+macOS ARM64 candidate. That prerequisite does not seed the measured new agent or
+task: both are created through ordinary visible controls. The attempt journals
+owned resources before task dispatch, preserves the supplied company/account/grant,
+and exposes bounded read-only preflight and ownership-checked recovery. Native
+Test is prompt-free; exactly two work turns are admitted. Independent actual
+downloaded bytes, effective model/conversation, accepted/committed Done lineage
+and local physical retirement determine the outcome. No fresh OAuth or
+managed-local bootstrap is claimed.
+
 The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
 authenticated browser session. `RunnerApi.setBrowserSession` binds that session
 to API calls, including encrypted secret provisioning via Node fetch. OAuth

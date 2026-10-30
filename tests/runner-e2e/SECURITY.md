@@ -40,9 +40,27 @@ does not attribute a product cause or authorize acceptance.
 
 ## Attended connection authentication
 
+The [Antigravity saved-subscription journey](ANTIGRAVITY-AGENT-JOURNEY.md) attaches
+only to its declared same-host loopback macOS ARM64 test target. Configured pins
+assert the trusted startup candidate authority; they cannot create it. The
+signed-in browser user must own the exact pre-existing personal default Google
+grant. No provider secret or OAuth code enters test configuration or prompts,
+and no MCP connection is required. Ownership receipts, actual authenticated
+screenshots and concrete account/session bindings stay private and receive no
+public-fixture marker. Recovery validates target/company/execution and immutable
+owned resources, stops only owned work and retains the supplied Google account
+and default grant. It neither resets the attached instance nor clears accounting
+holds. Two work turns, finite deadlines and zero automatic retries bound the
+selected cell; unknown subscription prices remain unknown.
+
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+`ConnectionApi.postSensitive` keeps credential bodies outside Playwright traces.
+Adapters must preserve this transport when wrapping APIs. Its optional abort
+signal and bounded timeout stop the actual HTTP request; setup cleanup must
+wait for that request to retire before it certifies resource absence.
 
 Provider-connection results may retain closed diagnostic codes and terminal run
 status before managed-instance teardown. Only error records and failed tool

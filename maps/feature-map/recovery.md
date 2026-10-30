@@ -399,7 +399,18 @@ For a source with a retained-file protection marker, exercise recovery through
 the assembled environment runtime. Its exact preservation owner may reopen the
 stopped allocation to read saved files; ordinary resume stays blocked. Reject a
 changed claim, missing stop intent, wrong lease or wrong environment before a
-provider call. Verify saved and newer local files, one preservation receipt, and
+provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
+the exact accepted result and completion contract; reject a rejected or unselected
+result, another allocation owner, and an active host writer. Verify no provider
+turn or wake is created, then finalize the original result once. Reject malformed
+or oversized Git metadata through native finalization: the run must fail and
+retain its file-recovery barrier, rather than successfully omitting the export.
+Exercise both an oversized sender file and an oversized transfer report. Verify
+one rejected export, no payload read after rejection, and unchanged host files.
+Reload a large-result run and its activity: the failure code and task recovery
+notice remain visible, and metadata repair offers no new provider turn. These database
+and filesystem controls do not qualify a deployed provider.
+Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
 

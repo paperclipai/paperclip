@@ -2,6 +2,7 @@ import { agentJourneyRuns, journeyRequiredChecks } from "./product-journeys/succ
 import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";
+import { gradeAntigravityJourney, validateAntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 import { DEPENDABLE_CELLS } from "./dependable-qualification.js";
@@ -397,6 +398,7 @@ const fields = {
     scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),
     inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string),
   })),
+  antigravityJourney: optional((value, at) => { try { validateAntigravityJourneyEvidence(value); } catch { invalid(at); } }),
   githubReviewJourney: optional(closedShape({ version: integer, outcome: oneOf("running", "passed", "failed", "awaiting_user", "missing_credential", "blocked_target"),
     phase: string, setupId: string, hosting: oneOf("self-hosted", "paperclip-cloud"), targetCommit: nullable(string), assisted: boolean,
     dependencies: array(closedShape({ alias: string, consumer: oneOf("harness", "browser", "product-agent"), status: oneOf("ready", "unverified", "created-in-journey"), source: oneOf("onepassword", "environment", "browser-session", "product-connection") })),
@@ -439,4 +441,13 @@ export function validateRetainedRunnerResult(
   }
   if (checked.suiteId === "provider-connections" && checked.status === "passed" && (!checked.providerConnection || !connectionEvidencePasses(checked.providerConnection))) invalid("result.providerConnection");
   if (checked.suiteId === "github-review-journey" && checked.status === "passed" && (!checked.githubReviewJourney || checked.githubReviewJourney.outcome !== "passed" || !checked.githubReviewJourney.targetCommit || !gradeGitHubReviewJourney(checked.githubReviewJourney).every(check => check.passed))) invalid("result.githubReviewJourney");
+  if (checked.suiteId === "antigravity-agent-journey" && checked.status === "passed") {
+    const evidence = checked.antigravityJourney;
+    if (!evidence || evidence.outcome !== "passed" || evidence.assisted || !evidence.targetCommit || !gradeAntigravityJourney(evidence).every(check => check.passed)
+      || checked.cleanup !== "passed" || checked.runtimeMode !== "native" || checked.model !== evidence.model || checked.provider !== "acpx"
+      || checked.runIds?.length !== 2 || !evidence.turnEvidence.every(turn => checked.runIds!.includes(turn.runId))
+      || !evidence.companyId || !evidence.agentId || !evidence.connectionId || !checked.issueId
+      || !evidence.turnEvidence.every(turn => turn.companyId === evidence.companyId && turn.agentId === evidence.agentId && turn.connectionId === evidence.connectionId && turn.issueId === checked.issueId)
+      || !checked.screenshots?.some(shot => shot.id === "persisted" && /^[a-f0-9]{64}$/u.test(shot.sha256 ?? ""))) invalid("result.antigravityJourney");
+  }
 }

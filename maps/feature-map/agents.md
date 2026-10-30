@@ -64,6 +64,16 @@ Test verifies native account/model admission and cleanup without a model turn.
 Other companies, remote targets, expired authority and other models stay blocked.
 Verify this scoped path separately from production qualification and real task acceptance.
 
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+protects the ordinary roster/picker path, saved personal Google subscription,
+native Test, actual ready handoff, Instructions-only file marker, task and
+same-task follow-up. Its fixed driver starts from the dashboard and creates the
+new agent through visible controls. The current runnable cell attaches to a
+self-hosted target with the admitted local macOS ARM64 candidate and exact low
+model. Saved-account reuse does not qualify fresh OAuth, other platforms or
+global provider release; registration and synthetic controls are separate from
+the retained exploratory and fresh fixed-driver results.
+
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
 setup hold until hiring finishes. Changing environments keeps the selected

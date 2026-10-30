@@ -111,6 +111,13 @@ Scoped Evidence: `source-only` — [creation policy](../../server/src/services/a
 and [same-harness import preservation](../../server/src/services/company-portability.ts)
 at the scoped commit. No permitted-agent journey was executed for this map update.
 
+The board-driven [Antigravity setup/task eval](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+creates its measured agent through the ordinary wizard and reuses only the
+signed-in owner's existing personal default Google grant. Its observer may read
+the owned records; it cannot seed the hire or manufacture readiness. This case
+does not qualify agent-authored hiring, credential administration or a broader
+agent permission boundary.
+
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.
 Assert the relevant denied actor, owner, company or mode from Policy. Review the

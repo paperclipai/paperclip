@@ -93,6 +93,8 @@ describe("Antigravity setup-only Google authentication", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  // The login predicate keeps its five-second bound. Allow ten more seconds
+  // for fixture startup and the durable mocked credential checks on a busy CI worker.
   it("performs native authenticate, retires it, verifies identity, and preserves refresh rotation without repeated status network calls", async () => {
     const home = await fixture(), fetch = googleIdentity(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
@@ -114,7 +116,7 @@ describe("Antigravity setup-only Google authentication", () => {
     await verifyAntigravityCredential(home);
     await verifyAntigravityCredential(home);
     expect(fetch).toHaveBeenCalledTimes(6);
-  });
+  }, 15_000);
 
   it.each(["error", "bad-url"])("rejects %s without leaking provider text or calling Google", async mode => {
     const home = await fixture(mode), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);

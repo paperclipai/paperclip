@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateAgentTaskState } from "./agent-flows.js";
+import { fixtureReplyStoredOnce, validateAgentTaskState } from "./agent-flows.js";
+import { SLUGIFY_REVISION } from "../everyday-cases.js";
 import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { parseTargetConfig } from "./catalog.js";
 import type { JourneyContext } from "./types.js";
@@ -8,6 +9,16 @@ import { agentJourneyRuns, journeyRequiredChecks } from "./success-contract.js";
 
 const context = { company: { id: "qa-company" }, environmentId: "qa-daytona",
   agent: { id: "owned-agent", provider: "opencode", model: "qa-model", runtimeMode: "native" } } as JourneyContext;
+
+it("accepts the QA editor's escaped underscore while rejecting lost, duplicate, foreign or changed replies", () => {
+  const before = [{ id: "old", authorUserId: "user", body: SLUGIFY_REVISION }];
+  const reply = { id: "new", authorUserId: "user", body: SLUGIFY_REVISION.replaceAll("_", "\\_") };
+  expect(fixtureReplyStoredOnce(before, [...before, reply], "user", SLUGIFY_REVISION)).toBe(true);
+  for (const after of [before, [...before, reply, { ...reply, id: "duplicate" }], [...before, { ...reply, authorUserId: "other" }],
+    [...before, { ...reply, body: reply.body.replace("optional", "required") }], [...before, { ...reply, body: reply.body + " extra" }]]) {
+    expect(fixtureReplyStoredOnce(before, after, "user", SLUGIFY_REVISION)).toBe(false);
+  }
+});
 function state() {
   return { currentIssue: { id: "owned-task", companyId: "qa-company", assigneeAgentId: "owned-agent", status: "done" },
     taskRuns: [{ id: "run", issueId: "owned-task", companyId: "qa-company", agentId: "owned-agent", status: "succeeded", runtimeMode: "native",

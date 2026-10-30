@@ -16297,7 +16297,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
           generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
         expect(f.requests).toEqual([]);
-        expect(coordinator.nextWakeAt()!).toBeLessThan(Date.now() + 90_000);
+        // The checkpoint commits before this coordinator pass rearms its deadline.
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return next !== null && next < Date.now() + 90_000;
+        }, { timeout: 5000 }).toBe(true);
       } finally { release?.(); await pending; await coordinator.stop(); }
     });
 

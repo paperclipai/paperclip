@@ -123,6 +123,12 @@ Policy: Environment tests follow agent creation/configuration authority. Support
 managed-account login initiation follows `model-accounts` below; human codes and
 consent, raw host login and adapter installation retain their specific gates.
 
+The board-driven [Antigravity saved-subscription journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+uses this ordinary environment Test after selecting the same signed-in owner's
+saved personal Google grant. It also verifies actual task outputs and native
+settlement independently. This does not establish agent-authored environment
+validation, fresh provider consent or access under another owner's grant.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
 
@@ -298,6 +304,13 @@ renewal before coordinator release, while real ownership loss retains the detach
 guard. This changes no actor permission or session-reset authority. Follow the
 [session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
 ordinary turns; deterministic runner checks do not establish live provider access.
+
+Sandbox export carries shallow Git boundaries through the full-bundle fallback
+and uses normal Git fetch connectivity checks. Existing host ancestry and merge
+guards remain effective. This grants no task retry or operator recovery authority;
+the saved-result export API still requires board runtime management permission.
+Follow the [session recipe](../feature-map/runs-adapters.md#session) for separately
+fetched shallow history; filesystem controls do not establish live recovery.
 
 Plugin suspension receipts remain required through recovery and admission, then
 are removed when the admitted session becomes live. A later warm run therefore

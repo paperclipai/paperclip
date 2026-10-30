@@ -14,6 +14,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   buildRemoteGitDeltaBundleScript,
+  GIT_SHALLOW_METADATA_EXIT_CODE,
+  GIT_SHALLOW_MAX_BYTES,
+  GitShallowMetadataError,
   isMissingGitPrerequisiteError,
   createImportedGitRef,
   createRemoteGitExportRef,
@@ -2052,6 +2055,8 @@ export async function prepareSandboxManagedRuntime(input: {
                   const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
                   const exportRef = createRemoteGitExportRef("sandbox");
                   const localBundlePath = path.join(tempDir, "git-delta.bundle");
+                  const remoteShallowPath = path.posix.join(runtimeRootDir, "git-shallow.txt");
+                  const localShallowPath = path.join(tempDir, "git-shallow.txt");
 
                   // Export the sandbox history and import it into the host workspace.
                   // The delta bundle assumes the host holds the bundle's boundary
@@ -2060,17 +2065,28 @@ export async function prepareSandboxManagedRuntime(input: {
                   // a full, self-contained bundle from the still-live sandbox rather
                   // than discard the completed run.
                   const exportAndImport = async (forceFullBundle: boolean): Promise<string> => withWorkspaceRestoreStep("git_export", async () => {
-                    await input.client.run(
-                      `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
-                        remoteDir: workspaceRemoteDir,
-                        baseSha: gitSnapshot.headCommit,
-                        exportRef,
-                        bundlePath: remoteGitBundle,
-                        statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
-                        forceFullBundle,
-                      }))}`,
-                      { timeoutMs: input.spec.timeoutMs },
-                    );
+                    try {
+                      await input.client.run(
+                        `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
+                          remoteDir: workspaceRemoteDir,
+                          baseSha: gitSnapshot.headCommit,
+                          exportRef,
+                          bundlePath: remoteGitBundle,
+                          statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
+                          forceFullBundle,
+                          shallowPath: forceFullBundle ? remoteShallowPath : undefined,
+                        }))}`,
+                        { timeoutMs: input.spec.timeoutMs },
+                      );
+                    } catch (error) {
+                      // Restore the owned producer refusal across clients that
+                      // expose process status rather than the typed host error.
+                      const status = error as { exitCode?: unknown; code?: unknown; timedOut?: unknown } | null;
+                      if (status?.timedOut !== true && (status?.exitCode === GIT_SHALLOW_METADATA_EXIT_CODE
+                        || status?.code === GIT_SHALLOW_METADATA_EXIT_CODE))
+                        throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (> ${GIT_SHALLOW_MAX_BYTES})`);
+                      throw error;
+                    }
                     const gitExport = makeTransferProgress(
                       restoreSink,
                       "Exporting git history",
@@ -2110,6 +2126,18 @@ export async function prepareSandboxManagedRuntime(input: {
                       await fs.writeFile(localBundlePath, bundleBuffer);
                     }
                     await input.client.remove(remoteGitBundle).catch(() => undefined);
+                    if (forceFullBundle) {
+                      const shallow = toBuffer(await input.client.readFile(remoteShallowPath, {
+                        onProgress: (transferred, total) => {
+                          if (transferred > GIT_SHALLOW_MAX_BYTES || (total !== null && total > GIT_SHALLOW_MAX_BYTES)) {
+                            throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${Math.max(transferred, total ?? 0)} > ${GIT_SHALLOW_MAX_BYTES})`);
+                          }
+                        },
+                      }));
+                      if (shallow.byteLength > GIT_SHALLOW_MAX_BYTES) throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallow.byteLength} > ${GIT_SHALLOW_MAX_BYTES})`);
+                      await fs.writeFile(localShallowPath, shallow);
+                      await input.client.remove(remoteShallowPath).catch(() => undefined);
+                    }
                     if (!forceFullBundle) {
                       remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
                         .then((bytes) => toBuffer(bytes).toString("utf8").trim())
@@ -2123,6 +2151,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       exportRef,
                       importedRef: importedRef!,
                       baseSha: gitSnapshot.headCommit,
+                      shallowPath: forceFullBundle ? localShallowPath : undefined,
                     }));
                   });
 

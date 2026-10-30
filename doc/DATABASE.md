@@ -49,6 +49,11 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+The cancelled workspace-preservation partial index and bounded run/activity
+projections share the restore-failure allowlist. Changing those failure codes
+also changes the index predicate; use the normal migration-generation workflow.
+A required metadata repair is excluded from ordinary cancelled preservation work.
+
 Native session resume selects its newest progress barrier within the existing
 32-run task/session window in one SQL snapshot. Only the chosen checkpoint source
 returns its saved native input, checkpoint, tool fingerprint, wake envelope, and
