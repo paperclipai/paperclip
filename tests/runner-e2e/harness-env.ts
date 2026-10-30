@@ -7,7 +7,7 @@ import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
 
-const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL"] as const;
+const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL"] as const;
 const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_AGENT_API_KEY",

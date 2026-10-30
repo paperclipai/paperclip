@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +14,12 @@ import {
 } from "@paperclipai/shared";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { getStorageService, type StorageService } from "../storage/index.js";
+import { loadConfig } from "../config.js";
 import { conflict, forbidden } from "../errors.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
-import { assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
+import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
@@ -27,9 +30,14 @@ import {
 } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
+import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
+import { provisionRemoteWorkspace } from "./remote-workspace-provisioning.js";
+import { createRemoteWorkspaceGitAuth } from "./remote-workspace-git-auth.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 
 export { readRemoteWorkspaceAuthority, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 export { remoteWorkspaceRepositoryPath } from "./remote-workspace-transport.js";
+export { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-locations.js";
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "metadata" | "sourceIssueId" | "projectId" | "projectWorkspaceId">;
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -44,11 +52,16 @@ export function shouldUseRemoteWorkspaces(input: {
   return enrolled || (input.experimentalEnabled && input.adapterType === "paperclip_runner" && input.environmentDriver === "sandbox");
 }
 
-function requireExternalPersistence(storage: StorageService) {
-  if (storage.provider !== "s3" || !process.env.DATABASE_URL?.trim() || !process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()) {
+export function assertRemoteWorkspacePersistence(storage: StorageService = getStorageService()) {
+  const config = loadConfig();
+  const databaseUrl = config.databaseUrl?.trim();
+  const keyFilePath = process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim() ? null : config.secretsMasterKeyFilePath;
+  if (storage.provider !== "s3" || !databaseUrl || !/^postgres(?:ql)?:\/\//.test(databaseUrl)
+    || (keyFilePath !== null && !existsSync(keyFilePath))) {
     throw conflict("Remote workspace storage requires external Postgres, object storage, and a stable configured encryption key.",
       { code: "remote_workspace_persistence_unavailable" });
   }
+  return { databaseUrl, keyFilePath };
 }
 
 function reference(workspaceId: string, authority: RemoteWorkspaceAuthority, state: "prepared" | "saved"): RemoteWorkspaceRunReference {
@@ -73,7 +86,7 @@ export async function reserveRemoteWorkspace(input: {
   fresh?: { attemptId: string; previousWorkspaceId: string | null; expectedBindingRevision: number };
   recoverySourceRunIds?: string[];
 }) {
-  requireExternalPersistence(input.storage ?? getStorageService());
+  assertRemoteWorkspacePersistence(input.storage ?? getStorageService());
   const source = remoteWorkspaceSourceSchema.parse(input.source);
   return input.db.transaction(async tx => {
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
@@ -83,6 +96,7 @@ export async function reserveRemoteWorkspace(input: {
     if (input.fresh && (issue.executionWorkspaceId !== input.fresh.previousWorkspaceId
       || issue.workspaceBindingRevision !== input.fresh.expectedBindingRevision)) throw conflict("The task workspace selection changed.");
     let selected = input.fresh ? input.fresh.attemptId : input.existingWorkspaceId ?? issue.executionWorkspaceId;
+    let selectedSharedSource = false;
     if (!selected && input.mode === "shared_workspace" && input.projectWorkspaceId) {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`remote-shared-workspace:${input.companyId}:${input.projectWorkspaceId}`}, 0))`);
       const [shared] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
@@ -91,6 +105,7 @@ export async function reserveRemoteWorkspace(input: {
         sql`${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema' = 'paperclip.remote-workspace.v1'`,
       )).limit(1);
       selected = shared?.id ?? null;
+      selectedSharedSource = selected !== null;
     }
     const [selectedRow] = selected ? await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, selected))).for("update") : [];
     const existing = selectedRow ?? null;
@@ -99,12 +114,29 @@ export async function reserveRemoteWorkspace(input: {
     if (existing && !authority) throw conflict("Import this existing workspace before enabling remote storage.", { code: "remote_workspace_migration_required" });
     if (existing && authority) {
       if ((existing.sourceIssueId !== input.issueId && existing.mode !== "shared_workspace") || ["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
-      if (existing.sourceIssueId !== input.issueId) await assertTaskWorkspaceExecutionAccess(tx, {
-        type: "agent", source: "agent_jwt", companyId: input.companyId, agentId: input.agentId, runId: input.runId,
-        onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId,
-      }, input.companyId, { issueId: input.issueId, workspaceId: existing.id });
+      if (existing.sourceIssueId !== input.issueId) {
+        const actor = { type: "agent", source: "agent_jwt", companyId: input.companyId,
+          agentId: input.agentId, runId: input.runId,
+          onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId } as const;
+        await assertTaskWorkspaceExecutionAccess(tx, actor, input.companyId, selectedSharedSource
+          ? { issueId: input.issueId, projectWorkspaceId: input.projectWorkspaceId }
+          : { issueId: input.issueId, workspaceId: existing.id });
+        await assertExecutionWorkspaceRecordAccess(tx, actor, input.companyId, existing.id);
+      }
+      const [uncertain] = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, existing.id),
+        eq(workspaceOperations.phase, "remote_workspace_provision"), sql`${workspaceOperations.metadata}->>'uncertain' = 'true'`,
+        sql`${workspaceOperations.heartbeatRunId} is distinct from ${input.runId}::uuid`,
+      )).limit(1);
+      if (uncertain) throw conflict("The prior provisioning operation needs verification before this workspace can run again.", { code: "remote_workspace_provision_unverified" });
       if (authority.writerRunId && authority.writerRunId !== input.runId) {
-        throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+        const [prior] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, authority.writerRunId)));
+        const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+          eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
+        const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
+          && leases.every(hasRemoteTerminationReceipt);
+        if (!unusedReservation) throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
       }
       if (authority.writerRunId === input.runId) return existing;
       const next: RemoteWorkspaceAuthority = { ...authority, source, epoch: authority.epoch + 1, writerRunId: input.runId };
@@ -152,6 +184,10 @@ export async function prepareRemoteWorkspace(input: {
 }) {
   const target = requireRemoteWorkspaceTarget(input.target);
   const initial = readRemoteWorkspaceAuthority(input.workspace.metadata);
+  if ((input.source ?? initial?.source)?.repositories?.some(repository => repository.readOnly)) {
+    throw conflict("The selected native sandbox cannot enforce read-only referenced project roots.",
+      { code: "remote_workspace_readonly_sources_unsupported" });
+  }
   if (!initial || initial.writerRunId !== input.runId || !input.lease.environmentId || !input.lease.providerLeaseId
     || input.lease.companyId !== input.workspace.companyId) throw new Error("remote_workspace_binding_mismatch");
   await input.assertOwned?.();
@@ -159,6 +195,8 @@ export async function prepareRemoteWorkspace(input: {
     && initial.location?.environmentId === input.lease.environmentId;
   if (initial.location && !sameAllocation && initial.dirty) throw conflict("The prior workspace has unsaved work; recover it before replacing its allocation.");
   const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces", input.workspace.id);
+  const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
+    input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   if (!sameAllocation) {
     if (initial.snapshotId) {
       const snapshot = await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id, snapshotId: initial.snapshotId });
@@ -167,26 +205,20 @@ export async function prepareRemoteWorkspace(input: {
       try {
         const archivePath = path.join(scratch, "workspace.pcws");
         await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
-        await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest });
+        await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
+          restorationIdentity: preparationIdentity });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
       await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
-        resolveGitAuth: createGitRemoteAuthProvider(input.db, input.workspace.companyId, { issueId: input.workspace.sourceIssueId, heartbeatRunId: input.runId }) });
-      for (const command of [input.provisionCommand, input.runtimeProvisionCommand]) if (command?.trim()) {
-        await input.assertOwned?.();
-        const result = await target.runner!.execute({ command: "bash", args: ["-lc", command], cwd: remoteRoot,
-          timeoutMs: 300_000, bypassSession: true });
-        if (result.exitCode !== 0 || result.timedOut) throw new Error("remote_workspace_provision_failed");
-      }
+        preparationIdentity,
+        resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
     }
   }
   for (const repository of (input.source ?? initial.source).repositories ?? []) {
     await input.assertOwned?.();
     await prepareRemoteRepository({ target, remoteCwd: remoteWorkspaceRepositoryPath(remoteRoot, repository),
       repoUrl: repository.repoUrl, ref: repository.ref, pinnedCommit: repository.pinnedCommit,
-      resolveGitAuth: createGitRemoteAuthProvider(input.db, input.workspace.companyId, {
-        issueId: input.workspace.sourceIssueId, heartbeatRunId: input.runId,
-      }) });
+      resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   }
   const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string }> = [];
   const recoverySourceRunIds = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
@@ -224,6 +256,9 @@ export async function prepareRemoteWorkspace(input: {
     return { workspace: savedWorkspace!, lease: savedLease! as EnvironmentLease, remoteRoot, reference: runReference };
   });
   target.remoteCwd = remoteRoot;
+  await provisionRemoteWorkspace({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
+    runId: input.runId, epoch: initial.epoch, remoteCwd: remoteRoot, target, assertOwned: input.assertOwned,
+    commands: [!initial.snapshotId ? input.provisionCommand : null, input.runtimeProvisionCommand] });
   if (!initial.snapshotId) {
     await saveRemoteWorkspace({ ...input, workspace: prepared.workspace, lease: prepared.lease, target,
       assertOwned: input.assertOwned ?? (async () => undefined), boundary: "initial" });
@@ -251,11 +286,16 @@ export async function saveRemoteWorkspace(input: {
       eq(workspaceOperations.phase, "remote_workspace_snapshot"), sql`${workspaceOperations.metadata}->>'boundary' = ${boundary}`,
       sql`${workspaceOperations.metadata}->>'epoch' = ${String(current.epoch)}`)).limit(1);
     if (previous) return previous;
+    const [run] = await tx.select({ nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+      contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, input.runId)));
+    if (!run) throw new Error("remote_workspace_run_missing");
+    const issueId = run.nativeIssueId ?? run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     const [parent] = current.snapshotId ? await tx.select({ generation: executionWorkspaceSnapshots.generation }).from(executionWorkspaceSnapshots)
       .where(and(eq(executionWorkspaceSnapshots.id, current.snapshotId), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
         eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id))) : [];
     const [created] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
-      heartbeatRunId: input.runId, issueId: workspace.sourceIssueId, phase: "remote_workspace_snapshot", status: "running",
+      heartbeatRunId: input.runId, issueId, phase: "remote_workspace_snapshot", status: "running",
       metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation: (parent?.generation ?? 0) + 1 },
     }).returning();
     return created!;
@@ -284,7 +324,12 @@ export async function saveRemoteWorkspace(input: {
       }
       const authority: RemoteWorkspaceAuthority = { ...current, snapshotId: saved.id,
         dirty: boundary !== "final", writerRunId: boundary !== "final" ? input.runId : null };
-      await tx.update(executionWorkspaceSnapshots).set({ status: "committed", updatedAt: at }).where(and(eq(executionWorkspaceSnapshots.id, saved.id), eq(executionWorkspaceSnapshots.status, "uploaded")));
+      const [committed] = await tx.update(executionWorkspaceSnapshots).set({ status: "committed", updatedAt: at }).where(and(
+        eq(executionWorkspaceSnapshots.id, saved.id), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
+        eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.status, "uploaded"))).returning({ id: executionWorkspaceSnapshots.id });
+      if (!committed) throw new Error("remote_workspace_snapshot_publication_changed");
+      await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
+      if (boundary === "final") await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: authority }, updatedAt: at }).where(eq(executionWorkspaces.id, workspace.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: at, updatedAt: at,
         metadata: { ...operation.metadata, snapshotId: saved.id, sha256: saved.sha256 } }).where(eq(workspaceOperations.id, operation.id));
@@ -312,9 +357,7 @@ export async function prepareRemoteWorkspaceRepository(input: {
   const target = requireRemoteWorkspaceTarget(input.target);
   const result = await prepareRemoteRepository({ target, remoteCwd: remoteWorkspaceRepositoryPath(authority.location.remoteCwd, input.repository),
     ...input.repository, verifyOnly: input.verifyOnly,
-    resolveGitAuth: input.resolveGitAuth ?? createGitRemoteAuthProvider(input.db, input.workspace.companyId, {
-      issueId: input.workspace.sourceIssueId, heartbeatRunId: input.runId,
-    }) });
+    resolveGitAuth: input.resolveGitAuth ?? await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
   await input.assertOwned?.();
   await saveRemoteWorkspace({ ...input, target, boundary: `repository:${input.repository.id}:${result.pinnedCommit}`,
     assertOwned: input.assertOwned ?? (async () => undefined) });

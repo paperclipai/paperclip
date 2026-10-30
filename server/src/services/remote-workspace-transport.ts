@@ -28,27 +28,48 @@ const fs = require('node:fs/promises'), path = require('node:path'), cp = requir
 const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
 (async()=>{
  const [root,raw]=process.argv.slice(1), input=JSON.parse(raw);
- if (!path.isAbsolute(root)) throw Error('invalid_root');
- let current='/'; for(const part of root.split('/').filter(Boolean)) {
+ if (!path.isAbsolute(root)||!/^[a-f0-9]{64}$/.test(input.preparationIdentity)) throw Error('invalid_root');
+ const isolated={...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
+ const localEnv={...isolated};for(const key of input.authEnvKeys)delete localEnv[key];
+ let current='/'; for(const part of path.dirname(root).split('/').filter(Boolean)) {
   current=path.join(current,part); await fs.mkdir(current,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
   const s=await fs.lstat(current); if(!s.isDirectory()||s.isSymbolicLink())throw Error('unsafe_root');
  }
- if ((await fs.readdir(root)).length) throw Error('workspace_not_empty');
- if(input.kind==='git'){
-  await exec('git',[...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}});
-  if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','--detach',input.ref]);
-  if(input.branchName)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','-B',input.branchName]);
-  await fs.appendFile(path.join(root,'.git','info','exclude'),'\n/.paperclip-runtime/\n/.paperclip-repositories/\n');
+ const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
+ if(prior){
+  if(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root)throw Error('unsafe_root');
+  const runtime=path.join(root,'.paperclip-runtime'),marker=path.join(runtime,'workspace-ready.json');
+  const dir=await fs.lstat(runtime);if(!dir.isDirectory()||dir.isSymbolicLink())throw Error('unsafe_receipt');
+  const file=await fs.lstat(marker);if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
+  if(JSON.parse(await fs.readFile(marker,'utf8')).preparationIdentity!==input.preparationIdentity)throw Error('workspace_owner_changed');
+  process.stdout.write(JSON.stringify({cwd:root}));return;
  }
+ const staged=await fs.mkdtemp(root+'.preparing-');
+ if(input.kind==='git'){
+  await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:isolated});
+  if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','--detach',input.ref],{env:localEnv});
+  if(input.branchName)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','-B',input.branchName],{env:localEnv});
+  await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
+  await fs.appendFile(path.join(staged,'.git','info','exclude'),'\n/.paperclip-runtime/\n/.paperclip-repositories/\n');
+ }else{
+  await fs.writeFile(path.join(staged,'.gitignore'),'/.paperclip-runtime/\n/.paperclip-repositories/\n',{flag:'wx',mode:0o600});
+ }
+ const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+ const runtimeStat=await fs.lstat(runtime);if(!runtimeStat.isDirectory()||runtimeStat.isSymbolicLink())throw Error('unsafe_receipt');
+ await fs.writeFile(path.join(runtime,'workspace-ready.json'),JSON.stringify({preparationIdentity:input.preparationIdentity}),{flag:'wx',mode:0o600});
+ if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
+ await fs.rename(staged,root);
  process.stdout.write(JSON.stringify({cwd:await fs.realpath(root)}));
 })().catch(()=>{process.stderr.write('remote_workspace_prepare_failed');process.exitCode=1});`;
 
 export async function prepareRemoteWorkspaceDirectory(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; source: RemoteWorkspaceSource; resolveGitAuth: GitRemoteAuthProvider;
+  preparationIdentity: string;
 }) {
   const auth = input.source.kind === "git" ? await input.resolveGitAuth(input.source.repoUrl) : null;
   const output = await command(input.target, ["-e", PREPARE, input.remoteCwd,
-    JSON.stringify({ ...input.source, authArgs: auth?.configArgs ?? [] })], auth?.env);
+    JSON.stringify({ ...input.source, preparationIdentity: input.preparationIdentity,
+      authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
   const result = JSON.parse(output) as { cwd: string };
   if (result.cwd !== input.remoteCwd) throw new Error("remote_workspace_root_changed");
 }
@@ -70,10 +91,14 @@ export async function prepareRemoteRepository(input: {
 }) {
   const auth = await input.resolveGitAuth(input.repoUrl);
   const script = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');const exec=promisify(cp.execFile);
-  (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const opts={env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}};
+  (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const env={...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
+  const localEnv={...env};for(const key of input.authEnvKeys)delete localEnv[key];const opts={env:localEnv};
+  let parent='/';for(const part of path.dirname(root).split('/').filter(Boolean)){parent=path.join(parent,part);
+   await fs.mkdir(parent,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const entry=await fs.lstat(parent);
+   if(!entry.isDirectory()||entry.isSymbolicLink()||await fs.realpath(parent)!==parent)throw Error('unsafe_repository_parent');}
   const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw Error('unsafe_repository')}
-  else{if(input.verifyOnly)throw Error('repository_missing');await fs.mkdir(path.dirname(root),{recursive:true,mode:0o700});await exec('git',[...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],opts);
+  else{if(input.verifyOnly)throw Error('repository_missing');await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env});
    if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','--detach',input.ref],opts);}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
   if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
@@ -82,7 +107,7 @@ export async function prepareRemoteRepository(input: {
   const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:head,branchName:branch}));
   })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
   const output = await command(input.target, ["-e", script, input.remoteCwd,
-    JSON.stringify({ ...input, target: undefined, resolveGitAuth: undefined, authArgs: auth?.configArgs ?? [] })], auth?.env);
+    JSON.stringify({ ...input, target: undefined, resolveGitAuth: undefined, authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
   const value = JSON.parse(output) as { cwd: string; pinnedCommit: string; branchName: string | null };
   if (value.cwd !== input.remoteCwd || !/^[a-f0-9]{40,64}$/.test(value.pinnedCommit)) throw new Error("remote_workspace_repository_receipt_invalid");
   return value;
@@ -110,10 +135,10 @@ export async function captureRemoteWorkspaceArchive(input: {
   // A completed immutable export belongs to this operation and survives controller loss.
   const capture = String.raw`const fs=require('node:fs/promises'),cp=require('node:child_process');const {promisify}=require('node:util');(async()=>{
    const [helper,root,archive,receipt]=process.argv.slice(1);let result;
-   try{result=JSON.parse(await fs.readFile(receipt,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;
+   try{const st=await fs.lstat(receipt);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size>16384)throw Error('unsafe_receipt');result=JSON.parse(await fs.readFile(receipt,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;
     await fs.rm(archive,{force:true});
     const r=await promisify(cp.execFile)(process.execPath,[helper,'capture',root,archive],{maxBuffer:1048576});result=JSON.parse(r.stdout);
-    const temp=receipt+'.tmp';await fs.writeFile(temp,JSON.stringify(result),{mode:0o600});await fs.rename(temp,receipt);}
+    const temp=receipt+'.'+require('node:crypto').randomUUID()+'.tmp';await fs.writeFile(temp,JSON.stringify(result),{mode:0o600,flag:'wx'});await fs.rename(temp,receipt);}
    process.stdout.write(JSON.stringify(result));
   })().catch(()=>{process.stderr.write('remote_workspace_capture_failed');process.exitCode=1});`;
   const receipt = JSON.parse(await command(input.target, ["-e", capture, staged.helper, input.remoteCwd, staged.archive, staged.receipt])) as {
@@ -135,7 +160,7 @@ export async function captureRemoteWorkspaceArchive(input: {
 }
 
 export async function restoreRemoteWorkspaceDirectory(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string;
 }) {
   const operationId = randomUUID();
   // Stage outside the destination; the restore validator requires an empty target.
@@ -144,5 +169,25 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   await input.target.runner!.syncIn!([{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
   }]);
-  await command(input.target, [staged.helper, "restore", staged.archive, input.remoteCwd, input.manifestDigest]);
+  // Publish the restored folder and its identity together. A lost successful
+  // reply can then adopt the same files without repeating a destructive restore.
+  const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');
+  (async()=>{const [helper,archive,root,digest,identity]=process.argv.slice(1);
+   if(!/^[a-f0-9]{64}$/.test(identity))throw Error('invalid_identity');
+   const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
+   if(prior){
+    if(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root)throw Error('unsafe_root');
+    const runtime=path.join(root,'.paperclip-runtime'),marker=path.join(runtime,'workspace-restored.json');
+    const dir=await fs.lstat(runtime);if(!dir.isDirectory()||dir.isSymbolicLink())throw Error('unsafe_receipt');
+    const file=await fs.lstat(marker);if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
+    const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
+    if(receipt.identity!==identity||receipt.manifestDigest!==digest)throw Error('workspace_owner_changed');return;
+   }
+   const staged=await fs.mkdtemp(root+'.restoring-');
+   await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
+   const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
+   await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
+   if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
+  })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
+  await command(input.target, ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
 }

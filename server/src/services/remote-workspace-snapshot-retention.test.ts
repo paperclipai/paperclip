@@ -9,24 +9,31 @@ import { applyPendingMigrations, closeRegisteredClients, companies, createDb, ex
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { notifyRemoteWorkspaceSnapshots, registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
 const url = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
-describe.skipIf(!url)("remote workspace snapshot retention", () => {
+const support = url ? { supported: true } : await getEmbeddedPostgresTestSupport();
+describe.skipIf(!support.supported)("remote workspace snapshot retention", () => {
   let db: ReturnType<typeof createDb>, root: string, storage: StorageService;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   const now = new Date("2026-10-30T12:00:00Z");
-  beforeAll(async () => { await applyPendingMigrations(url!); db = createDb(url!); });
-  afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); });
+  beforeAll(async () => {
+    if (url) { await applyPendingMigrations(url); db = createDb(url); }
+    else { temporary = await startEmbeddedPostgresTestDatabase("workspace-snapshot-retention-"); db = createDb(temporary.connectionString); }
+  }, 90_000);
+  afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); else await temporary?.cleanup(); });
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-retention-test-")); storage = createStorageService(createLocalDiskStorageProvider(root)); });
   afterEach(async () => {
     await db.delete(issueRecoveryActions); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
     await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(companies);
     await fs.rm(root, { recursive: true, force: true });
   });
-  async function seed(status: "superseded" | "pending" | "uploaded" | "committed" = "superseded") {
-    const companyId = randomUUID(), workspaceId = randomUUID(), id = randomUUID(), operationId = randomUUID();
+  async function seed(status: "superseded" | "pending" | "uploaded" | "committed" = "superseded", id = randomUUID()) {
+    const companyId = randomUUID(), workspaceId = randomUUID(), operationId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Retention", issuePrefix: `R${companyId.slice(0, 6)}` });
     const [issue] = await db.insert(issues).values({ companyId, title: "Retention source" }).returning();
     await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issue!.id,
@@ -82,12 +89,57 @@ describe.skipIf(!url)("remote workspace snapshot retention", () => {
   it("settles without recurring reads and wakes on the first real producer", async () => {
     const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     const run = vi.spyOn(owner, "tick"); const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
-    await new Promise(resolve => setTimeout(resolve, 30)); expect(run).toHaveBeenCalledOnce();
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      await new Promise(resolve => setTimeout(resolve, 30)); expect(run).toHaveBeenCalledOnce();
+      const f = await seed();
+      await db.transaction(async tx => { await notifyRemoteWorkspaceSnapshots(tx, `workspace:${f.workspaceId}`); });
+      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally { await worker.stop(); await coordinator.stop(); }
+  });
+  it("finishes bounded pages and revisits a lower UUID produced during a pass", async () => {
+    const later = await seed("superseded", "20000000-0000-4000-8000-000000000001");
+    const last = await seed("superseded", "30000000-0000-4000-8000-000000000001");
+    let earlier: Awaited<ReturnType<typeof seed>> | undefined;
+    const remove = storage.deleteObject.bind(storage); let inserted = false;
+    storage.deleteObject = async (...args) => {
+      if (!inserted) {
+        inserted = true; earlier = await seed("superseded", "10000000-0000-4000-8000-000000000001");
+        await db.transaction(async tx => { await notifyRemoteWorkspaceSnapshots(tx, `workspace:${earlier!.workspaceId}`); });
+      }
+      await remove(...args);
+    };
+    const owner = remoteWorkspaceSnapshotRetentionService(db, { storage, now: () => now, batchSize: 1 });
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const run = vi.spyOn(owner, "tick"), worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
+    try {
+      await vi.waitFor(async () => {
+        expect(earlier).toBeDefined();
+        for (const fixture of [earlier!, later, last]) for (const key of fixture.keys) {
+          expect((await storage.headObject(fixture.companyId, key)).exists).toBe(false);
+        }
+      }, { timeout: 8000, interval: 40 });
+      expect(await owner.nextDeadlineAt()).toBeNull();
+      const completed = run.mock.calls.length; await new Promise(resolve => setTimeout(resolve, 100));
+      expect(run).toHaveBeenCalledTimes(completed);
+    } finally { await worker.stop(); await coordinator.stop(); }
+  });
+  it("becomes quiet while recovery pins a snapshot and wakes on the real recovery resolution", async () => {
     const f = await seed();
-    await db.transaction(async tx => { await notifyRemoteWorkspaceSnapshots(tx, `workspace:${f.workspaceId}`); });
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
-    expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false);
-    await worker.stop(); await coordinator.stop();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      ownerType: "board", cause: "workspace_recovery", fingerprint: randomUUID(), nextAction: "Recover saved files" });
+    const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
+    try {
+      await worker.ready;
+      expect(await owner.nextDeadlineAt()).toBeNull();
+      expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(true);
+      const resolved = await issueRecoveryActionService(db).resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: f.issueId,
+        status: "resolved", outcome: "restored", resolutionNote: "Verified saved files" });
+      expect(resolved?.status).toBe("resolved");
+      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
+      expect(await owner.nextDeadlineAt()).toBeNull();
+    } finally { await worker.stop(); await coordinator.stop(); }
   });
 });

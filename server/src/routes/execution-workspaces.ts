@@ -10,6 +10,7 @@ import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
+  readRemoteWorkspaceAuthority,
   matchWorkspaceRuntimeServiceToCommand,
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
@@ -88,14 +89,13 @@ function resolveFallbackSeedSourceConfigPath(baseWorkspaceCwd: string): string |
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
-  const svc = executionWorkspaceService(db, { pluginWorkerManager: opts.pluginWorkerManager });
+  const environmentRuntime = environmentRuntimeService(db, { pluginWorkerManager: opts.pluginWorkerManager });
+  const svc = executionWorkspaceService(db, { pluginWorkerManager: opts.pluginWorkerManager,
+    destroyRemoteWorkspaceLease: input => environmentRuntime.destroyRemoteWorkspaceLease(input) });
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const runtimeLeases = workspaceRuntimeLeaseService(db);
   const heartbeat = heartbeatService(db, {
-    pluginWorkerManager: opts.pluginWorkerManager,
-  });
-  const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
 
@@ -1296,6 +1296,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           workspaceId: id,
           capturedGeneration,
           destroy: async () => {
+            if (readRemoteWorkspaceAuthority(workspace.metadata)) return svc.cleanupRemoteStorage(workspace);
             await environmentRuntime.destroyReusableSandboxLeases({
               companyId: existing.companyId,
               executionWorkspaceId: existing.id,

@@ -131,7 +131,7 @@ export async function migrateRemoteWorkspace(input: {
         return { workspace, authority: null, operation, source, sourceFingerprint };
       }
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
-        issueId: workspace.sourceIssueId, phase: "remote_workspace_migration", status: "running",
+        issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source } }).returning();
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
       await tx.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspaceMigration: {

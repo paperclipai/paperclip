@@ -24,7 +24,8 @@ describe("remote workspace Product E2E qualification", () => {
     expect(cells.map(row => row.id)).toEqual([executionId]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.suite.id === REMOTE_WORKSPACE_STORAGE_SUITE)).toBe(false);
     expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 1000 });
-    const agent = cells[0]!.profile.buildAgent({ environmentId: id("9"), environmentFixtureId: "daytona", workspacePath: "/unavailable-host-folder", secretRefs: {}, executionId: "synthetic" });
+    const agent = cells[0]!.profile.buildAgent({ environmentId: id("9"), environmentFixtureId: "daytona", workspacePath: "/unavailable-host-folder",
+      secretRefs: { OPENAI_API_KEY: { type: "secret_ref", secretId: id("8"), version: "latest" } }, executionId: "synthetic" });
     expect((agent.adapterConfig as Record<string, unknown>).cwd).toBeUndefined();
     expect(cells[0]!.task.buildPrompt("synthetic")).toContain("fresh random 32-character lowercase hexadecimal reference");
   });

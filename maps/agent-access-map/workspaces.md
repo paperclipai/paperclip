@@ -62,6 +62,20 @@ revision; superseded retries fail while current-choice retries remain idempotent
 Binding revisions and request keys fence retries;
 selection applies at the next normal admission without interrupting a live run.
 
+With experimental `remoteWorkspaceStorageEnabled`, native Paperclip Runner
+sandbox tasks reserve a company/task-bound remote authority through existing
+admission. Existing enrolled workspaces keep that authority when new enrollment
+is disabled. Current authorization and responsible-user checks still apply;
+read-only cross-project referenced folders and explicitly concurrent shared
+writers are rejected. Managed mutable same-project repositories are supported.
+Importing an existing local task folder is an operator source-checkout command,
+not an agent API or tool: see the
+[dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+It requires deployment storage/key access and blocks unfinished writers/recovery.
+Source: [remote source admission](../../server/src/services/heartbeat/remote-workspace-source.ts)
+and [migration](../../server/src/services/remote-workspace-migration.ts).
+Evidence: `source-only` for these additions; live agent qualification is separate.
+
 Admission checks current task/run authority and the persisted selected configuration.
 It does not inventory physical aliases or authorize historical sources/readers.
 Explicit workspace-record selection and full workspace metadata disclosure retain
@@ -251,6 +265,17 @@ reader, physical-root, and directory acquisition classifications have no effect.
 Root containment and symlink escape checks remain, and attachments, task records,
 workspace metadata, and operation logs retain their app-data privacy.
 
+For enrolled remote workspaces the same board file-resource endpoints read the
+authorized live allocation or a verified committed saved version. Returned
+`source.kind` is `live` or `saved`, with `savedAt` for a saved copy. An unavailable
+dirty allocation cannot silently fall back to stale saved bytes. Remote paths
+never become controller filesystem authority. Confined path/symlink checks,
+bounded search/preview, download streaming, and cancellation remain enforced by
+[remote file access](../../server/src/services/remote-workspace-files.ts).
+Evidence: `source-only` here; regression suites are not a live agent read proof.
+Verification: `not-run` — exercise allowed live/saved reads and deny another
+company, changed binding, traversal, and unsaved-allocation fallback.
+
 ## `closure`
 
 Capability ID: `workspaces/closure`.
@@ -280,3 +305,13 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Closure/readiness exists; not every workspace can be reopened, and branch
 reconciliation has a board boundary.
+
+Remote closure additionally requires a clean committed snapshot and no active
+writer. It releases confirmed remote compute while retaining the saved authority;
+reopen restores from that saved version when the allocation is gone. Custom
+cleanup/teardown commands block remote close. No new agent authority is granted.
+Source: [remote lifecycle](../../server/src/services/remote-workspace-lifecycle.ts)
+and [close readiness](../../server/src/services/execution-workspaces.ts).
+Evidence: `source-only` for the remote extension. Verification: `not-run` —
+reject dirty/unfinished/custom-command close, confirm clean release retains the
+snapshot, then reopen under current task/company authorization.

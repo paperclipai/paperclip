@@ -12,6 +12,7 @@ import type { Environment, EnvironmentLease, WorkspaceFileListMode, WorkspaceFil
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 const execFileAsync = promisify(execFile);
 const READ_TIMEOUT_MS = 30_000;
@@ -280,25 +281,35 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       let lease: EnvironmentLease | undefined;
       let source: WorkspaceFileSource;
       let root: string;
+      const loadSaved = async () => {
+        if (!authority.snapshotId || authority.dirty || authority.writerRunId || !options.loadSavedWorkspace) {
+          throw fileFailure("workspace_unavailable");
+        }
+        saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId });
+        return { root: saved.root, source: { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
+      };
       if (authority.location) {
-        if (!options.environmentRuntime) throw fileFailure("workspace_unavailable");
         const [leaseRow] = await db.select().from(environmentLeases).where(and(
           eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, authority.location.leaseId),
         )).limit(1);
         const [environmentRow] = await db.select().from(environments).where(eq(environments.id, authority.location.environmentId)).limit(1);
         if (!leaseRow || !environmentRow || leaseRow.environmentId !== environmentRow.id ||
           leaseRow.providerLeaseId !== authority.location.providerLeaseId ||
-          !["active", "retained", "pending_cleanup"].includes(leaseRow.status) ||
           leaseRow.metadata?.remoteCwd !== authority.location.remoteCwd) throw fileFailure("workspace_unavailable");
-        lease = leaseRow as EnvironmentLease;
-        environment = environmentRow as Environment;
-        root = authority.location.remoteCwd;
-        source = { kind: "live", savedAt: null, snapshotId: null };
+        if (hasRemoteTerminationReceipt(leaseRow)
+            && (leaseRow.metadata?.remoteExecutionTermination as { state?: string } | undefined)?.state === "stopped") {
+          ({ root, source } = await loadSaved());
+        } else {
+          if (!options.environmentRuntime || !["active", "retained", "pending_cleanup"].includes(leaseRow.status)) {
+            throw fileFailure("workspace_unavailable");
+          }
+          lease = leaseRow as EnvironmentLease;
+          environment = environmentRow as Environment;
+          root = authority.location.remoteCwd;
+          source = { kind: "live", savedAt: null, snapshotId: null };
+        }
       } else {
-        if (!authority.snapshotId || !options.loadSavedWorkspace) throw fileFailure("workspace_unavailable");
-        saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId });
-        root = saved.root;
-        source = { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId };
+        ({ root, source } = await loadSaved());
       }
       let closed = false;
       const close = async () => { if (closed) return; closed = true; await saved?.cleanup(); };

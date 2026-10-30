@@ -3,7 +3,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./deliv
 
 export async function notifyExecutionRunWork(transaction: object) {
   for (const queue of [DELIVERY_QUEUES.executionStatus, DELIVERY_QUEUES.executionFinalization,
-    DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.issueMonitors]) {
+    DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.issueMonitors,
+    DELIVERY_QUEUES.remoteWorkspaceSnapshots]) {
     await notifyDeliveryWork(transaction, queue);
   }
 }

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { expect, it } from "vitest";
-import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
+import { assertEmbeddedDatabaseIsolation, controllerFixtureDatabaseName, isOwnedLoopbackDatabase } from "./instance-isolation.js";
 import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig } from "./server-config.js";
 
 it.each(["owned", "missing-receipt", "foreign-connection", "wrong-port", "foreign-owner", "escaped-database"])(
@@ -38,3 +38,14 @@ it.each(["owned", "missing-receipt", "foreign-connection", "wrong-port", "foreig
     }
   },
 );
+
+it("binds an explicit loopback database to one disposable fixture identity", () => {
+  const root = "/private/tmp/paperclip-synthetic-fixture";
+  const name = controllerFixtureDatabaseName(root);
+  expect(isOwnedLoopbackDatabase(`postgres://synthetic@127.0.0.1:56634/${name}`, root)).toBe(true);
+  for (const url of [`postgres://synthetic@db.example.invalid/${name}`, "postgres://synthetic@127.0.0.1/postgres",
+    `postgres://synthetic@127.0.0.1/${name}?host=db.example.invalid`, `https://127.0.0.1/${name}`]) {
+    expect(isOwnedLoopbackDatabase(url, root)).toBe(false);
+  }
+  expect(isOwnedLoopbackDatabase(`postgres://synthetic@127.0.0.1/${name}`, `${root}-other`)).toBe(false);
+});

@@ -8,13 +8,14 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, createDb, environmentLeases, environments, executionWorkspaces, issues, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { fileResourceRoutes } from "../routes/file-resources.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { createRemoteWorkspaceFiles, REMOTE_WORKSPACE_FILES_SCRIPT } from "../services/remote-workspace-files.js";
 import { workspaceFileResourceService } from "../services/workspace-file-resources.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
@@ -184,6 +185,48 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.syncOut).not.toHaveBeenCalled();
   });
+
+  it.each(["confirmed_stop", "unknown_stop", "dirty", "foreign_receipt"])(
+    "uses saved bytes only for a clean workspace with an exact stopped receipt (%s)", async state => {
+      const f = await fixture();
+      const snapshotId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId: f.ids.company, name: "Stopped workspace reader" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.ids.company, agentId, status: "succeeded" });
+      const termination = remoteTerminationReceipt({ id: f.ids.lease, companyId: f.ids.company, heartbeatRunId: runId,
+        provider: "fake", providerLeaseId: f.authority.location!.providerLeaseId },
+      { state: "stopped", providerLeaseId: f.authority.location!.providerLeaseId })!;
+      await db.update(environmentLeases).set({ heartbeatRunId: runId, status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { remoteCwd: f.root, ...(state !== "unknown_stop" ? { remoteExecutionTermination:
+          state === "foreign_receipt" ? { ...termination, leaseId: randomUUID() } : termination } : {}) } })
+        .where(eq(environmentLeases.id, f.ids.lease));
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, snapshotId, dirty: state === "dirty" } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      const savedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "stopped-workspace-saved-"));
+      directories.push(savedRoot);
+      await fs.mkdir(path.join(savedRoot, "docs"));
+      await fs.writeFile(path.join(savedRoot, "docs", "result.md"), "Saved stopped result\n");
+      const cleanup = vi.fn(async () => {});
+      const loadSavedWorkspace = vi.fn(async () => ({ root: savedRoot, savedAt: "2026-10-30T12:00:00.000Z", cleanup }));
+      const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace });
+      const content = workspaceFileResourceService(db, undefined, { remoteFiles }).readContent(f.ids.issue,
+        { workspace: "execution", path: "docs/result.md" });
+      if (state === "confirmed_stop") {
+        await expect(content).resolves.toMatchObject({ content: { data: "Saved stopped result\n" },
+          resource: { source: { kind: "saved", snapshotId, savedAt: "2026-10-30T12:00:00.000Z" } } });
+        expect(loadSavedWorkspace).toHaveBeenCalledWith({ companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId });
+        expect(cleanup).toHaveBeenCalledOnce();
+        const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.ids.workspace));
+        expect(workspace!.metadata?.remoteWorkspace).toMatchObject({ location: f.authority.location });
+      } else {
+        await expect(content).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+        expect(loadSavedWorkspace).not.toHaveBeenCalled();
+      }
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.syncOut).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not fall back to a saved version for an unreachable live allocation", async () => {
     const f = await fixture();

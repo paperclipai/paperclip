@@ -2599,6 +2599,34 @@ Agents inspect/select workspaces and request contained repository preparation th
 
 See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution rules, module ownership, persistence versions, rollout, and verification.
 
+### Experimental native remote workspace authority (2026-10-30)
+
+The off-by-default managed feature `remoteWorkspaceStorageEnabled` lets native
+Paperclip Runner tasks use a sandbox as their working-file authority. External
+PostgreSQL records workspace identity, location, writer epoch, and the committed
+saved version; S3 holds encrypted portable snapshots. A stable deployment
+encryption key is required. The webserver uses disposable transfer/restore
+scratch instead of a durable task checkout. Local execution retains its existing
+path, and existing local workspaces require an explicit, verified import.
+
+One writer owns a logical workspace. Preparation establishes a saved baseline;
+finalization saves supported changes before settling persistence. A webserver
+replacement reconnects to the existing allocation. A committed saved version can
+restore elsewhere without the old sandbox or Git remote, including supported
+dirty Git state and unpushed commits. Changes after the last save still depend
+on the live allocation; this release provides no periodic backup of those edits.
+Failed saving retains the source and recovery obligation before destructive
+cleanup. File browsing distinguishes live bytes from a saved copy and its time.
+
+V1 supports plain task folders, Git sources, and managed mutable repositories
+from the same project. It rejects read-only cross-project referenced folders,
+explicit concurrent shared writers, and custom cleanup/teardown commands on
+remote close. Disabling new enrollment preserves existing authority and recovery.
+This feature does not remove the instance volume or qualify HTTP traffic drain,
+active provider handoff, or other instance data paths. See
+[setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the
+[bounded implementation plan](plans/2026-10-30-remote-workspace-authority.md).
+
 ## Company fast-response service
 
 Companies may configure an optional shared API connection and model for short acknowledgements of accepted human turns. Fast responses use direct SDK inference alongside normal agent work, with a three-second admission deadline, bounded prompts/output, current authorization and independent `fast_response` accounting. They are server-marked platform receipts attributed to the agent, never completion, interaction or recovery evidence. Company-sponsored unlinked external senders are explicit; linked-user permission denials are never bypassed. See [fast-responses.md](fast-responses.md) for provider, delivery, history and endpoint contracts.

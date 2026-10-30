@@ -20,6 +20,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
+  readRemoteWorkspaceAuthority,
   deriveViteHmrPort,
   forceLoopbackBindInCommand,
   isRuntimeExposureAppPort,
@@ -4277,6 +4278,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   forceWorktreeRemoval?: boolean;
 }) {
   if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
+  if (readRemoteWorkspaceAuthority(input.workspace.metadata)) throw new Error("Remote workspace cleanup requires its sandbox lifecycle");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);

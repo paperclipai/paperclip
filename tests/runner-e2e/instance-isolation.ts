@@ -1,11 +1,24 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 
 const CONTROLLER_DATABASE_OWNER_FILE = ".runner-e2e-controller-owner.json";
 
+export function controllerFixtureDatabaseName(temporaryRoot: string) {
+  return `paperclip_e2e_${createHash("sha256").update(temporaryRoot).digest("hex").slice(0, 24)}`;
+}
+
+export function isOwnedLoopbackDatabase(connectionString: string, temporaryRoot: string) {
+  try {
+    const url = new URL(connectionString);
+    return ["postgres:", "postgresql:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+      && url.search === "" && url.pathname === `/${controllerFixtureDatabaseName(temporaryRoot)}`;
+  } catch { return false; }
+}
+
 /** Written only after the supervisor has started this fixture's Postgres. */
 export async function recordControllerDatabaseOwnership(input: {
-  configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string;
+  configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string; loopbackDatabase?: boolean;
 }) {
   const temporaryRoot = await realpath(input.temporaryRoot);
   const dataDirectory = await realpath(input.dataDirectory);
@@ -13,7 +26,7 @@ export async function recordControllerDatabaseOwnership(input: {
     throw new Error("Controller database path escaped its fixture-owned root");
   }
   await writeFile(path.join(dataDirectory, CONTROLLER_DATABASE_OWNER_FILE), JSON.stringify({
-    version: 1, configPath: await realpath(input.configPath), temporaryRoot,
+    version: input.loopbackDatabase ? 2 : 1, configPath: await realpath(input.configPath), temporaryRoot,
     dataDirectory, connectionString: input.connectionString,
   }), { mode: 0o600 });
 }
@@ -82,12 +95,15 @@ export async function assertEmbeddedDatabaseIsolation(
       if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Database escaped fixture");
       const owner = JSON.parse(await readFile(path.join(directory, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
       const port = config.database.embeddedPostgresPort;
-      const expectedConnection = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-      if (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535
+      const external = owner.version === 2;
+      const expectedConnection = external ? config.database.connectionString!
+        : `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+      if ((!external && (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535))
+        || (external && !isOwnedLoopbackDatabase(expectedConnection, root))
         || config.database.connectionString !== expectedConnection
-        || owner.version !== 1 || owner.temporaryRoot !== root || owner.dataDirectory !== directory
+        || ![1, 2].includes(owner.version) || owner.temporaryRoot !== root || owner.dataDirectory !== directory
         || owner.configPath !== await realpath(configPath) || owner.connectionString !== expectedConnection
-        || !(await stat(path.join(directory, "PG_VERSION"))).isFile()) {
+        || (!external && !(await stat(path.join(directory, "PG_VERSION"))).isFile())) {
         throw new Error("Supervisor database ownership mismatch");
       }
     } catch (cause) {

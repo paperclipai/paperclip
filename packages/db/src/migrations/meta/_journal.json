@@ -2927,6 +2927,13 @@
       "when": 1793400383797,
       "tag": "0419_slippery_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1793415555180,
+      "tag": "0420_mean_veda",
+      "breakpoints": true
     }
   ]
 }

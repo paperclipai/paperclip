@@ -3647,6 +3647,7 @@ export function environmentRuntimeService(
     scopeCondition?: ReturnType<typeof and>;
     runId?: string;
     failureReason: string;
+    anyLeasePolicy?: boolean;
   }): Promise<EnvironmentLease | null> {
     if (await nativeWorkspaceExportPendingForLease(db, input.leaseRow)) return null;
     if (!(await allowLegacyShutdownWorkspaceCleanup(db, input.leaseRow))) return null;
@@ -3671,7 +3672,7 @@ export function environmentRuntimeService(
       eq(environmentLeases.companyId, input.leaseRow.companyId),
       eq(environmentLeases.environmentId, input.environment.id),
       input.runId ? eq(environmentLeases.heartbeatRunId, input.runId)
-        : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+        : input.anyLeasePolicy ? undefined : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
       eq(environmentLeases.status, input.leaseRow.status),
       input.scopeCondition,
       sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
@@ -3731,6 +3732,22 @@ export function environmentRuntimeService(
 
   return {
     getDriver,
+
+    async destroyRemoteWorkspaceLease(input: {
+      companyId: string; workspaceId: string; leaseId: string; environmentId: string; providerLeaseId: string;
+    }): Promise<EnvironmentLease | null> {
+      const scope = and(eq(environmentLeases.executionWorkspaceId, input.workspaceId),
+        eq(environmentLeases.providerLeaseId, input.providerLeaseId));
+      const [leaseRow] = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, input.leaseId),
+        eq(environmentLeases.environmentId, input.environmentId), scope,
+      ));
+      if (!leaseRow) throw new Error("remote_workspace_cleanup_lease_changed");
+      const environment = await environmentsSvc.getById(input.environmentId);
+      if (!environment || environment.driver !== "sandbox") throw new Error("remote_workspace_cleanup_environment_unavailable");
+      return destroyClaimedSandboxLease({ environment, leaseRow, scopeCondition: scope, anyLeasePolicy: true,
+        failureReason: "execution_workspace_closed" });
+    },
 
     /**
      * Read the sandbox duplex bridge kill switch for a new run. The host calls it

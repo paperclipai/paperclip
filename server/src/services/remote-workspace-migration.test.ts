@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { activityLog, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
@@ -10,14 +12,27 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
+import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+
+const execute = promisify(execFile);
+const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
+  GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_AUTHOR_NAME: "Migration", GIT_COMMITTER_NAME: "Migration",
+  GIT_AUTHOR_EMAIL: "migration@example.test", GIT_COMMITTER_EMAIL: "migration@example.test" } })).stdout.trim();
 
 const url = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
-describe.skipIf(!url)("remote workspace migration", () => {
+const support = url ? { supported: true } : await getEmbeddedPostgresTestSupport();
+describe.skipIf(!support.supported)("remote workspace migration", () => {
   let db: ReturnType<typeof createDb>, root: string, storage: StorageService;
-  beforeAll(async () => { await applyPendingMigrations(url!); db = createDb(url!); });
-  afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); });
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  beforeAll(async () => {
+    if (url) { await applyPendingMigrations(url); db = createDb(url); }
+    else { temporary = await startEmbeddedPostgresTestDatabase("workspace-migration-"); db = createDb(temporary.connectionString); }
+  }, 90_000);
+  afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); else await temporary?.cleanup(); });
   beforeEach(async () => { vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "61".repeat(32));
     root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-migration-test-")); storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects"))); });
   afterEach(async () => {
@@ -61,6 +76,25 @@ describe.skipIf(!url)("remote workspace migration", () => {
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });
     const operations = await db.select().from(workspaceOperations); expect(operations).toHaveLength(1); expect(operations[0]?.id).toBe(before.operationId);
+  });
+  it("imports dirty unpushed Git work and restores it after the original folder disappears", async () => {
+    const f = await seed(); await git(f.cwd, "init", "-q", "-b", "feature");
+    await git(f.cwd, "add", "."); await git(f.cwd, "commit", "-qm", "unpushed work");
+    await git(f.cwd, "remote", "add", "origin", "https://example.invalid/repository.git");
+    const head = await git(f.cwd, "rev-parse", "HEAD");
+    await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
+    await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
+    await db.update(executionWorkspaces).set({ repoUrl: "https://example.invalid/repository.git", branchName: "feature" }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+    const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    await fs.rm(f.cwd, { recursive: true });
+    const archivePath = path.join(root, "cold.pcws"), targetDir = path.join(root, "cold");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await git(targetDir, "rev-parse", "HEAD")).toBe(head);
+    expect(await git(targetDir, "show", ":saved.txt")).toBe("staged edit");
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("unstaged edit\n");
   });
   it("blocks unresolved writers and explicitly parallel shared workspaces", async () => {
     const f = await seed();

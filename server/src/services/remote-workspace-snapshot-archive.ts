@@ -38,31 +38,46 @@ async function workspaceArchive(input: {
   };
   const git = (cwd: string, args: string[], stdin?: string) => new Promise<string>((resolve, reject) => {
     check();
-    const command = child.execFile("git", ["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
+    const command = child.execFile("git", ["-c", "core.fsmonitor=false", "-c", "pack.threads=1", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
       signal: input.signal, timeout: 300_000, maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0",
+        GIT_AUTHOR_NAME: "Paperclip", GIT_COMMITTER_NAME: "Paperclip", GIT_AUTHOR_EMAIL: "workspace@paperclip.invalid", GIT_COMMITTER_EMAIL: "workspace@paperclip.invalid",
+        GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000" },
     }, (error, stdout) => error ? reject(error) : resolve(stdout));
     if (stdin !== undefined) command.stdin?.end(stdin);
   });
   const directories: string[] = [];
+  const excludedPaths = new Set<string>();
   const walk = async (root: string, copyTo?: string, skipGit = false) => {
     const entries: Entry[] = [];
-    const visit = async (relative: string) => {
+    const visit = async (relative: string, parentIsRepository = false) => {
       const directory = relative ? path.join(root, relative) : root;
       const directoryStat = await fs.lstat(directory);
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
-      for (const name of (await fs.readdir(directory)).sort()) {
+      const names = (await fs.readdir(directory)).sort();
+      const inRepository = parentIsRepository || names.includes(".git");
+      for (const name of names) {
         check();
         const next = relative ? `${relative}/${name}` : name;
         if (!safeRelative(next)) fail("unsupported_filename");
-        if (input.exclude?.some(excluded => next === excluded || next.startsWith(`${excluded}/`)) || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/")) continue;
+        if (input.exclude?.some(excluded => next === excluded || next.startsWith(`${excluded}/`)) || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/")) {
+          excludedPaths.add(next); continue;
+        }
         const source = path.join(root, next), target = copyTo ? path.join(copyTo, next) : null;
         const stat = await fs.lstat(source);
         if (skipGit && name === ".git") { if (stat.isSymbolicLink()) fail("unsafe_git_link"); directories.push(relative); continue; }
+        if (stat.isDirectory() && name === "node_modules") {
+          const packageManifest = await fs.lstat(path.join(directory, "package.json")).catch(() => null);
+          if (packageManifest?.isFile() && !packageManifest.isSymbolicLink()) {
+            // A failing Git read cannot establish that data is untracked.
+            const tracked = inRepository ? await git(directory, ["ls-files", "-z", "--", name]) : "";
+            if (!tracked) { excludedPaths.add(next); continue; }
+          }
+        }
         if (stat.isDirectory()) {
           entries.push({ path: next, type: "directory", mode: stat.mode & 0o777 });
           if (target) await fs.mkdir(target, { mode: 0o700 });
-          await visit(next);
+          await visit(next, inRepository);
         } else if (stat.isSymbolicLink()) {
           const link = await fs.readlink(source);
           if (!safeLink(next, link)) fail("unsafe_symlink");
@@ -156,14 +171,13 @@ async function workspaceArchive(input: {
       const after = await walk(root, undefined, true);
       if (JSON.stringify(before) !== JSON.stringify(after)) fail("changed");
       const entries = await walk(tree);
-      // Parent modes are applied after traversal, so source read-only folders do
-      // not prevent staging their children.
-      for (const entry of before.filter(entry => entry.type === "directory").reverse()) await fs.chmod(path.join(tree, entry.path), entry.mode!);
+      // Keep private staging writable for cleanup; the manifest preserves the
+      // source modes and restoration applies them only after writing children.
       const originals = new Map(before.map(entry => [entry.path, entry]));
       for (const entry of entries) if (entry.type === "directory") {
         const original = originals.get(entry.path); if (original) entry.mode = original.mode;
       }
-      const manifest = { schema, entries }, body = Buffer.from(JSON.stringify(manifest));
+      const manifest = { schema, exclusionPolicy: "paperclip.remote-workspace-exclusions.v1", excluded: [...excludedPaths].sort(), entries }, body = Buffer.from(JSON.stringify(manifest));
       if (body.length > 64 * 1024 * 1024) fail("manifest_too_large");
       const digest = manifestHash(manifest), length = Buffer.alloc(4); length.writeUInt32BE(body.length);
       const output = await fs.open(input.archivePath, "wx", 0o600);
@@ -180,6 +194,7 @@ async function workspaceArchive(input: {
   if (!input.targetDir || !/^[a-f0-9]{64}$/.test(input.expectedManifestDigest ?? "")) fail("restore_binding_invalid");
   const archive = await fs.open(input.archivePath, "r");
   let staging: string | undefined;
+  const stagedDirectories: string[] = [];
   try {
     const prefix = Buffer.alloc(magic.length + 4);
     if ((await archive.read(prefix, 0, prefix.length, 0)).bytesRead !== prefix.length || !prefix.subarray(0, magic.length).equals(magic)) fail("invalid_header");
@@ -211,7 +226,7 @@ async function workspaceArchive(input: {
     const buffer = Buffer.alloc(1024 * 1024);
     for (const entry of manifest.entries) {
       check(); const target = path.join(staging, entry.path);
-      if (entry.type === "directory") await fs.mkdir(target, { mode: 0o700 });
+      if (entry.type === "directory") { await fs.mkdir(target, { mode: 0o700 }); stagedDirectories.push(target); }
       else if (entry.type === "symlink") await fs.symlink(entry.target!, target);
       else {
         const output = await fs.open(target, "wx", 0o600), digest = crypto.createHash("sha256");
@@ -231,7 +246,13 @@ async function workspaceArchive(input: {
     for (const entry of manifest.entries.filter(entry => entry.type === "directory").reverse()) await fs.chmod(path.join(staging, entry.path), entry.mode!);
     await fs.rename(staging, input.targetDir!); staging = undefined;
     return { schema, manifestDigest: input.expectedManifestDigest!, ...await hashFile(input.archivePath), entries: manifest.entries.length };
-  } finally { await archive.close(); if (staging) await fs.rm(staging, { recursive: true, force: true }); }
+  } finally {
+    await archive.close();
+    if (staging) {
+      for (const directory of stagedDirectories) await fs.chmod(directory, 0o700).catch(() => undefined);
+      await fs.rm(staging, { recursive: true, force: true });
+    }
+  }
 }
 
 export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; signal?: AbortSignal }) {

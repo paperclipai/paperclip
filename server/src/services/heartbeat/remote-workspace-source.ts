@@ -39,27 +39,21 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     sourceId: string | null) => {
     const extra: NonNullable<RemoteWorkspaceSource["repositories"]> =
       (base.repositories ?? []).filter(repository => !repository.readOnly);
-  const referenced = isMultiProjectWorkspaceSyncEnabled() ? await resolveRunReferencedProjects(input.issueId, anchorProjectId, {
-    companyId: input.companyId,
-    actor: { type: "agent", source: "agent_jwt", companyId: input.companyId,
-      agentId: input.agentId, runId: input.runId,
-      onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId },
-    issues: issueService(db), projects: projectService(db), access: authorizationService(db),
-  }) : { additional: [], warnings: [], failures: [] };
-  for (const project of referenced.additional) {
-    if (!isMultiProjectWorkspaceSyncRemoteEnabled()) throw new WorkspaceValidationFailure(
-      "Referenced remote workspace access is disabled.", { reason: "remote_referenced_workspace_disabled" });
-    const [repository] = await db.select().from(projectWorkspaces).where(and(
-      eq(projectWorkspaces.companyId, input.companyId), eq(projectWorkspaces.projectId, project.projectId),
-    )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)).limit(1);
-    if (!repository?.repoUrl || repository.cwd && repository.cwd !== "/__paperclip_repo_only__") {
-      throw new WorkspaceValidationFailure("A referenced project requires a remote repository source or an imported saved folder.",
-        { reason: "remote_referenced_workspace_import_required", projectId: project.projectId });
+    const referenced = isMultiProjectWorkspaceSyncEnabled() ? await resolveRunReferencedProjects(input.issueId, anchorProjectId, {
+      companyId: input.companyId,
+      actor: { type: "agent", source: "agent_jwt", companyId: input.companyId,
+        agentId: input.agentId, runId: input.runId,
+        onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId },
+      issues: issueService(db), projects: projectService(db), access: authorizationService(db),
+    }) : { additional: [], warnings: [], failures: [] };
+    if (referenced.additional.length > 0) {
+      if (!isMultiProjectWorkspaceSyncRemoteEnabled()) throw new WorkspaceValidationFailure(
+        "Referenced remote workspace access is disabled.", { reason: "remote_referenced_workspace_disabled" });
+      // Native sandbox providers currently run with external sandbox authority.
+      // They cannot enforce a separate read-only filesystem root for a project.
+      throw new WorkspaceValidationFailure("This remote runtime cannot safely provide read-only project folders.",
+        { reason: "remote_workspace_readonly_sources_unsupported" });
     }
-    extra.push({ id: repository.id, relativePath: `.paperclip-repositories/referenced-${repository.id}`,
-      repoUrl: repository.repoUrl, ref: repository.repoRef, readOnly: true,
-      projectId: project.projectId, projectWorkspaceId: repository.id });
-  }
     return { source: { ...base, ...(extra.length ? { repositories: extra } : { repositories: undefined }) },
       projectId: anchorProjectId, projectWorkspaceId: sourceId,
       warnings: referenced.warnings, referencedProjectFailures: referenced.failures };

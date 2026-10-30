@@ -40,6 +40,16 @@ describe("portable remote workspace archives", () => {
     const snapshot = await capture(await source()); const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual([]);
   });
+  it("preserves read-only directory modes without making capture scratch unremovable", async () => {
+    const cwd = await source(), directory = path.join(cwd, "readonly"); await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "file"), "retained\n"); await fs.chmod(directory, 0o555);
+    let restored: string | undefined;
+    try {
+      restored = await restore(await capture(cwd));
+      expect((await fs.stat(path.join(restored, "readonly"))).mode & 0o777).toBe(0o555);
+      expect(await fs.readFile(path.join(restored, "readonly", "file"), "utf8")).toBe("retained\n");
+    } finally { await fs.chmod(directory, 0o700); if (restored) await fs.chmod(path.join(restored, "readonly"), 0o700); }
+  });
   it.each(["ordinary", "linked", "borrowed"])("restores %s Git with staged/unstaged/unpushed data after all sources disappear", async kind => {
     const base = await source(); await git(base, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(base, "work.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
@@ -78,6 +88,28 @@ describe("portable remote workspace archives", () => {
     expect(await git(restored, "rev-parse", "--is-shallow-repository")).toBe("true");
     expect(await git(restored, "rev-list", "--count", "HEAD")).toBe("1");
     expect(await fs.readFile(path.join(restored, "file"), "utf8")).toBe("two");
+  });
+  it("produces the same saved contents for repeated captures of an unchanged Git clone", async () => {
+    const base = await source(); await git(base, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(base, "file"), "stable\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
+    const cwd = path.join(root, "clone"); await git(root, "clone", "-q", base, cwd);
+    const first = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "first.pcws") });
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const second = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "second.pcws") });
+    expect(second.manifestDigest).toBe(first.manifestDigest); expect(second.sha256).toBe(first.sha256);
+  });
+  it("omits reinstallable dependencies while preserving deliberately tracked files", async () => {
+    const cwd = await source(); await fs.writeFile(path.join(cwd, "package.json"), "{}\n");
+    await fs.mkdir(path.join(cwd, "node_modules")); await fs.writeFile(path.join(cwd, "node_modules", "dependency"), "reinstall\n");
+    const first = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "dependencies.pcws") });
+    const targetDir = path.join(root, "without-dependencies");
+    await restoreRemoteWorkspaceArchive({ archivePath: path.join(root, "dependencies.pcws"), targetDir, expectedManifestDigest: first.manifestDigest });
+    await expect(fs.access(path.join(targetDir, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+    await git(cwd, "init", "-q", "-b", "main"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "deliberately tracked dependency");
+    const second = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "tracked.pcws") });
+    const trackedTarget = path.join(root, "with-tracked-dependencies");
+    await restoreRemoteWorkspaceArchive({ archivePath: path.join(root, "tracked.pcws"), targetDir: trackedTarget, expectedManifestDigest: second.manifestDigest });
+    expect(await fs.readFile(path.join(trackedTarget, "node_modules", "dependency"), "utf8")).toBe("reinstall\n");
   });
   it("rejects a symlink source root", async () => {
     const cwd = await source(), linked = path.join(root, "linked-source"); await fs.symlink(cwd, linked);

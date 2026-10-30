@@ -1,6 +1,7 @@
 import { closeRegisteredClients, createDb } from "@paperclipai/db";
 import { getStorageService } from "../src/storage/index.js";
 import { migrateRemoteWorkspace } from "../src/services/remote-workspace-migration.js";
+import { assertRemoteWorkspacePersistence } from "../src/services/remote-workspaces.js";
 
 const args = process.argv.slice(2);
 const allowed = new Set(["--company-id", "--workspace-id", "--dry-run", "--apply"]);
@@ -16,10 +17,8 @@ try {
   }
   if (args.includes("--dry-run") && args.includes("--apply")) throw new Error("Select either --dry-run or --apply");
   const companyId = identifier("--company-id"), workspaceId = identifier("--workspace-id");
-  const databaseUrl = process.env.DATABASE_URL?.trim(), storage = getStorageService();
-  if (!databaseUrl || !/^postgres(?:ql)?:\/\//.test(databaseUrl) || storage.provider !== "s3" || !process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()) {
-    throw new Error("Migration requires explicit external Postgres, S3 object storage, and PAPERCLIP_SECRETS_MASTER_KEY");
-  }
+  const storage = getStorageService();
+  const { databaseUrl } = assertRemoteWorkspacePersistence(storage);
   const db = createDb(databaseUrl);
   try { process.stdout.write(`${JSON.stringify(await migrateRemoteWorkspace({ db, storage, companyId, workspaceId, apply: args.includes("--apply") }), null, 2)}\n`); }
   finally { await closeRegisteredClients(databaseUrl, { scope: "database" }); }

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -38,6 +38,8 @@ import { createLocalDiskStorageProvider } from "../../storage/local-disk-provide
 import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { selectHeartbeatEnvironment } from "./environment-selection.js";
+import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
+import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -120,6 +122,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.environment.selectedEnvironmentForConfig = environment;
     input.environment.selectedEnvironmentId = environment.id;
     input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.policy.requestedExecutionWorkspaceMode = "agent_default";
     input.policy.useIsolatedTaskDirectory = kind === "empty";
     if (kind === "git") {
       await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl: "https://github.com/example/remote.git", repoRef: "main" })
@@ -142,6 +145,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(resolve).not.toHaveBeenCalled();
       expect(repositoryPreparation).not.toHaveBeenCalled();
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issue.id));
+      expect(workspace.mode).toBe("shared_workspace");
       expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind }, writerRunId: input.run.id });
       await expect(access(workspace.cwd!)).rejects.toThrow();
     } finally {
@@ -162,16 +166,110 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(acquire).not.toHaveBeenCalled();
   });
 
-  it("rejects concurrent shared writers before resolving a remote source", async () => {
+  it.each(["shared_workspace", "agent_default"] as const)("rejects concurrent shared writers resolved from %s before resolving a remote source", async requestedMode => {
     const { input, envOrchestrator } = await fixture();
     input.agent.adapterType = "paperclip_runner";
     input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
       driver: "sandbox", config: { provider: "daytona" } };
     input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.policy.requestedExecutionWorkspaceMode = requestedMode;
     input.policy.issueExecutionWorkspaceSettings = { sharedWorkspaceConcurrency: "allow" };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("one active writer");
     expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("holds execution while the selected workspace is migrating (remote: %s)", async remote => {
+    const { input, source, issue, envOrchestrator } = await fixture();
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
+      sourceIssueId: issue.id, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      name: "Migrating workspace", cwd: source, providerType: "local_fs", strategyType: "project_primary",
+      mode: "shared_workspace", status: "active", metadata: { remoteWorkspaceMigration: { state: "running" } } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issue.id));
+    // The admission snapshot may predate the operator starting the import.
+    input.reuse.existingExecutionWorkspace = toExecutionWorkspace({ ...workspace, metadata: {} });
+    if (remote) {
+      input.agent.adapterType = "paperclip_runner";
+      input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+        driver: "sandbox", config: { provider: "daytona" } };
+      input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    }
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_migration_in_progress" },
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+  });
+
+  it("rejects read-only project references before reserving or acquiring a remote workspace", async () => {
+    const { input, source, issue, envOrchestrator } = await fixture();
+    const previous = new Map(["PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE"]
+      .map(key => [key, process.env[key]]));
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl: "https://github.com/example/remote.git" })
+      .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+    const [reference] = await db.insert(projects).values({ companyId: issue.companyId, name: "Referenced project" }).returning();
+    await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: reference.id,
+      name: "Referenced repository", sourceType: "git", repoUrl: "https://github.com/example/reference.git" });
+    await db.update(issues).set({ description: `[project](${buildProjectMentionHref(reference.id)})` }).where(eq(issues.id, issue.id));
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    try {
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+        code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
+      });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
+      expect(await readdir(source)).not.toContain(".paperclip-repositories");
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
+  it("fences recovered native preparation when its controller claim changes or expires", async () => {
+    const { input, issue, envOrchestrator } = await fixture();
+    const controller = await currentNativeControllerIdentity();
+    const leaseOwner = `recovery:${randomUUID()}`;
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, input.run.id));
+    input.run.runtimeMode = "native";
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.reuse.runOptions = { nativeLeaseOwner: leaseOwner };
+    await db.insert(nativeRunFinalizations).values({ runId: input.run.id, companyId: issue.companyId,
+      issueId: issue.id, phase: "preparing", attempt: 2, controllerGeneration: 3, leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000), controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt });
+    const authority = { db, companyId: issue.companyId, runId: input.run.id, leaseOwner,
+      controllerGeneration: 3, providerAttempt: 2 };
+    await expect(assertNativeSessionPreparationAuthority(authority)).resolves.toBeUndefined();
+    await expect(assertNativeSessionPreparationAuthority({ ...authority, controllerGeneration: 2 }))
+      .rejects.toThrow("native_session_lease_lost");
+    await db.update(nativeRunFinalizations).set({ leaseOwner: "successor-controller" })
+      .where(eq(nativeRunFinalizations.runId, input.run.id));
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("native_session_lease_lost");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
+    await db.update(nativeRunFinalizations).set({ leaseOwner, leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(nativeRunFinalizations.runId, input.run.id));
+    await expect(assertNativeSessionPreparationAuthority(authority)).rejects.toThrow("native_session_lease_lost");
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, input.run.id));
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, input.run.id));
+    await expect(assertNativeSessionPreparationAuthority(authority)).rejects.toThrow("native_session_lease_lost");
   });
 
   it.each([

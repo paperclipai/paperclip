@@ -56,7 +56,11 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
 }) {
   const now = options.now ?? (() => new Date()), batch = options.batchSize ?? 50;
   let after: string | null = null;
+  let scanning = false;
+  let rescanRequested = false;
   async function tick(signal?: AbortSignal) {
+    scanning = true;
+    try {
     const at = now(), result = { checked: 0, pinned: 0, scheduled: 0, deleted: 0, failed: 0, truncated: false };
     const rows = await db.select().from(executionWorkspaceSnapshots).where(and(
       sql`${executionWorkspaceSnapshots.status} <> 'deleted'`,
@@ -106,8 +110,10 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         if (claimed.objectKey) keys.add(claimed.objectKey);
         const prefix = `${claimed.companyId}/workspace-snapshots/${claimed.executionWorkspaceId}/${claimed.id}/`;
         for (const key of keys) {
-          signal?.throwIfAborted();
           if (!key.startsWith(prefix) || key.includes("..") || key.includes("\\")) throw new Error("snapshot_upload_scope_invalid");
+        }
+        for (const key of keys) {
+          signal?.throwIfAborted();
           await options.storage.deleteObject(claimed.companyId, key, { signal });
           if ((await options.storage.headObject(claimed.companyId, key, { signal })).exists) throw new Error("snapshot_object_still_present");
         }
@@ -121,15 +127,21 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
           deleteAfter: new Date(at.getTime() + REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS) }).where(eq(executionWorkspaceSnapshots.id, candidate.id));
       }
     }
-    if (!result.truncated) after = null;
+    if (!result.truncated) {
+      after = null;
+      // Finish the current ordered scan before revisiting a producer that may
+      // have inserted a lower UUID. Repeated hints cannot starve later pages.
+      if (rescanRequested) { rescanRequested = false; result.truncated = true; }
+    }
     return result;
+    } finally { scanning = false; }
   }
   async function nextDeadlineAt() {
     const [row] = await db.select({ at: sql<Date | null>`min(${executionWorkspaceSnapshots.deleteAfter})` }).from(executionWorkspaceSnapshots)
       .where(sql`${executionWorkspaceSnapshots.status} <> 'deleted'`);
     return row?.at ? new Date(row.at).getTime() : null;
   }
-  return { tick, nextDeadlineAt, resetCursor: () => { after = null; } };
+  return { tick, nextDeadlineAt, resetCursor: () => { if (scanning || after !== null) rescanRequested = true; } };
 }
 
 export function registerRemoteWorkspaceSnapshotRetentionWork(
