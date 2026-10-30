@@ -86,7 +86,7 @@ Use a human/unassigned task to verify persistence without invoking a model.
 
 ### `task-list`
 
-Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
+Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. [Status pagination](../../ui/src/pages/Issues.pagination.test.tsx) renders the page with mocked list/API boundaries to cover initial loading, older matching tasks, next-page requests, filter resets, and status plus index projection. [List filters](../../ui/src/components/IssuesList.test.tsx) cover saved statuses and Clear in both implementations. Grouping, opening a task, and returning still need a running-browser check.
 
 Task and inbox rows omit the system interruption labels **Thinking**, **Trying again soon**, and **Retry available**. [Shared row tests](../../ui/src/components/IssueRow.test.tsx) cover working, scheduled-retry, and failed interruptions in both row presentations, including suppression of replacement recovery chips. Task status and other relevant badges remain visible; retry controls remain inside the task conversation.
 

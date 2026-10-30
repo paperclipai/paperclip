@@ -134,6 +134,9 @@ choice stays selected while task data refreshes.
 
 ### Task collection creation filters
 
+The company Tasks list applies selected task statuses before server pagination.
+Changing the status selection starts a separate result set at its first page.
+
 Tasks and project lists hide agent-created and system-created tasks by default.
 The Filters menu's **show agent-created tasks** checkbox includes routine runs,
 recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks

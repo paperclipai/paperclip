@@ -492,6 +492,44 @@ describe("IssuesList", () => {
     });
   });
 
+  it.each([true, false])("reports saved and cleared status filters to the pagination owner (streamlined: %s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ statuses: ["backlog", "in_review"] }));
+    const onStatusFilterChange = vi.fn();
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ status: "backlog" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onStatusFilterChange={onStatusFilterChange}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+    try {
+      await waitForAssertion(() => expect(onStatusFilterChange).toHaveBeenLastCalledWith("backlog,in_review"));
+      await waitForAssertion(() => {
+        const row = container.querySelector('[data-testid="issue-row"]');
+        expect(row).not.toBeNull();
+        expect(row?.getAttribute("data-presentation")).toBe(streamlined ? "legacy" : null);
+      });
+      await act(async () => {
+        const filterButton = Array.from(container.querySelectorAll("button")).find((button) =>
+          button.title.startsWith("Filters:"),
+        );
+        filterButton!.click();
+      });
+      await flush();
+      const clear = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Clear");
+      expect(clear).toBeDefined();
+      await act(async () => { clear!.click(); });
+      await waitForAssertion(() => expect(onStatusFilterChange).toHaveBeenLastCalledWith(""));
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it("keeps the canonical task-row presentation opt in per collection", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList

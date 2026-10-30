@@ -507,6 +507,7 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  onStatusFilterChange?: (status: string) => void;
   /** Opt in per surface while the canonical task row rolls out across collections. */
   rowPresentation?: IssueRowPresentation;
   /** Opt in per surface while the shared collection toolbar rolls out. */
@@ -747,6 +748,7 @@ function StreamlinedIssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  onStatusFilterChange,
   rowPresentation = "legacy",
   toolbarContext,
   toolbarPresentation = "legacy",
@@ -827,6 +829,10 @@ function StreamlinedIssuesList({
       initialStatuses,
     ),
   );
+  const statusFilter = [...viewState.statuses].sort().join(",");
+  useEffect(() => {
+    onStatusFilterChange?.(statusFilter);
+  }, [onStatusFilterChange, statusFilter]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;

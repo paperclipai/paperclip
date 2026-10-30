@@ -188,6 +188,7 @@ function OrganizationIssues({
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const fetchNextPageInFlightRef = useRef(false);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
   const urlSearch = searchParams.get("q") ?? "";
   const [searchOverride, setSearchOverride] = useState<{ search: string; locationSearch: string } | null>(null);
@@ -276,9 +277,11 @@ function OrganizationIssues({
       showAgentCreatedTasks,
       "infinite",
       issuePageSize,
+      statusFilter,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
+      status: statusFilter || undefined,
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
@@ -291,8 +294,7 @@ function OrganizationIssues({
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
-    enabled: !!selectedCompanyId,
-    placeholderData: (previousData) => previousData,
+    enabled: !!selectedCompanyId && statusFilter !== null,
   });
 
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
@@ -324,7 +326,7 @@ function OrganizationIssues({
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      isLoading={statusFilter === null || isLoading}
       isLoadingMoreIssues={isFetchingNextPage}
       error={error as Error | null}
       agents={agents}
@@ -340,6 +342,7 @@ function OrganizationIssues({
       toolbarContext={toolbarContext}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
+      onStatusFilterChange={setStatusFilter}
       enableAgentCreatedVisibilityFilter
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
