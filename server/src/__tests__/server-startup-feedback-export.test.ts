@@ -1121,7 +1121,8 @@ describe("startServer feedback export wiring", () => {
   it("refuses startup when an explicit decision signing secret is too short", async () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "too-short";
     await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET must be at least 32 characters");
-    expect(loadConfigMock).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
