@@ -63,7 +63,7 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
   }));
   const nodes = (): UiNode[] => {
     const shown = tasks.find(task => task.id === displayedId);
-    const status: UiNode = { key: "backlog", role: "checkbox", name: "Backlog", checked: () => collection.backlog,
+    const status: UiNode = { key: "backlog", role: "checkbox", name: shell === "coordinator" ? "Backlog" : "BacklogBacklog", checked: () => collection.backlog,
       check: () => { collection.backlog = true; } };
     const clear: UiNode = { key: "clear", role: "button", name: "Clear", visible: collection.backlog,
       click: () => { collection.backlog = false; } };
@@ -84,7 +84,12 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
       { key: "filter", role: "button", name: collection.backlog ? "1" : "Filter",
         title: collection.backlog ? "Filters: 1" : "Filter", visible: allTasks && !displayedId,
         click: () => { filterMenu = true; } },
-      { key: "filters", role: "dialog", name: "Filters", visible: filterMenu, children: [clear, status] },
+      { key: "filters", role: "dialog", name: "Filters", visible: filterMenu, children: [clear,
+        { key: "status-group", children: [{ key: "status-heading", text: "Status" }, status] },
+        { key: "responsible-group", children: [{ key: "responsible-heading", text: "Responsible" },
+          { key: "responsible-backlog", role: "checkbox", name: "Backlog", checked: () => false,
+            check: () => { throw Error("Selected an assignee instead of a status"); } }] },
+      ] },
       { key: "heading", role: "heading", name: shown?.title, text: shown?.title, visible: Boolean(shown && !lostContent) },
       { key: "description", text: shown?.description, visible: Boolean(shown && !lostContent) },
       ...links(),
@@ -103,6 +108,16 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
       or(other: { resolve(): UiNode[] }) { return locator(() => [...new Map([...resolve(), ...other.resolve()].map(node => [node.key, node])).values()]); },
       first() { return locator(() => resolve().slice(0, 1)); },
       filter({ hasText }: { hasText: string }) { return locator(() => resolve().filter(node => node.text?.includes(hasText))); },
+      locator(selector: string) {
+        if (selector !== "..") throw Error(`Unsupported control-relative selector: ${selector}`);
+        return locator(() => {
+          const keys = new Set(resolve().map(node => node.key));
+          return flatten(nodes()).filter(node => node.children?.some(child => keys.has(child.key)));
+        });
+      },
+      getByText(text: string) {
+        return locator(() => flatten(resolve().flatMap(node => node.children ?? [])).filter(node => node.text === text));
+      },
       getByRole(role: string, { name }: { name: string | RegExp }) {
         return locator(() => flatten(resolve().flatMap(node => node.children ?? [])).filter(node => node.role === role && matches(node.name, name)));
       },
@@ -238,5 +253,14 @@ describe("taskSearchFilter browser journey", () => {
     await expect(test.run()).rejects.toMatchObject({ outcome: "unsupported", code: "missing_task-write" });
     expect(test.tasks).toEqual([]);
     expect(test.ownership).toEqual([]);
+  });
+  it.each([
+    ["intent", "prepare"], ["ignore-search", "search_results"], ["ignore-status", "apply_status"],
+    ["reload-query", "reload_collection"], ["reload-content", "reload_result"], ["back-query", "return_collection"],
+  ] as const)("retains only a closed stage code for %s failure", async (fault, stage) => {
+    const test = fixture(fault);
+    await expect(test.run()).rejects.toMatchObject({ outcome: "failed", code: `task_search_${stage}_failed`,
+      message: `task_search_${stage}_failed` });
+    expect(test.evidence.checks).toEqual([]);
   });
 });

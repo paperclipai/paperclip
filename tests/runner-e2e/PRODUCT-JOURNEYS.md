@@ -49,6 +49,14 @@ The combined Tasks shell reapplies its named view's status preset on mount, so
 the journey first proves the checkbox filter, then selects the normal Backlog
 view and enters the same search again before checking reload/Back persistence.
 Coordinator and legacy task lists keep their supported saved-filter behavior.
+The status selector stays inside the Status group. Legacy status glyphs contribute
+their label to the checkbox's accessible name, producing `BacklogBacklog`; the
+refreshed panel supplies the explicit `Backlog` name. A credential-free browser
+regression covers both forms and a separate assignee called Backlog.
+Unexpected browser/API errors retain only a closed `task_search_<stage>_failed`
+code. Stage names come from the journey source; raw exception text, URLs, form
+values, and response bodies are not added to reporting. Existing owned evidence
+failures keep their specific codes and the screenshot privacy guard stays in place.
 It does not depend on row order or an otherwise empty company. This selection is
 manual until a separate target owner records a fresh pass and admits it to a daily
 plan; adding the shared journey does not qualify any deployed target.
