@@ -8,6 +8,7 @@ import { loadShardDurations, selectGeneralServerShard } from "./general-server-s
 import { invocationEnv } from "./ci-profile/record.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
+import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -378,7 +379,7 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-async function runVitest(args, label, testShard = null) {
+async function runVitest(args, label, testShard = null, exactFiles = false) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -436,7 +437,9 @@ async function runVitest(args, label, testShard = null) {
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
   await new Promise((resolve, reject) => {
-    const child = spawn("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
+    const command = exactFiles ? process.execPath : "pnpm";
+    const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
+    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...args], {
       cwd: repoRoot,
       env: invocationEnv("vitest", env),
       stdio: "inherit",
@@ -615,6 +618,24 @@ const generalServerTestFiles = [
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));
+const selectionProjects = options.mode === serializedModeName || generalServerGroups.includes(options.group)
+  ? ["@paperclipai/server"]
+  : options.group === generalWorkspacesAGroupName ? generalWorkspacesAProjects
+    : options.group === generalWorkspacesBGroupName ? generalWorkspacesBProjects
+      : options.group === generalWorkspacesCGroupName ? generalWorkspacesCProjects : [];
+const selection = process.env.PAPERCLIP_CI_TEST_SELECTION
+  ? selectedShard(loadSelection(), options, selectionProjects) : null;
+if (selection?.["@paperclipai/server"]) {
+  const owned = new Set(options.mode === serializedModeName ? routeTests.map((test) => test.repoPath)
+    : generalServerTestFiles.filter((file) => !excludedServerSuites(options.group).includes(file)));
+  for (const file of selection["@paperclipai/server"]) {
+    if (!owned.has(file)) fail(`Selected test belongs to another server lane: ${file}`);
+  }
+}
+if (selection && options.dryRun) {
+  writeFileSync(1, JSON.stringify({ selection }));
+  process.exit(0);
+}
 if (options.dryRun) {
   const serializedSuites =
     options.mode === serializedModeName
@@ -670,7 +691,16 @@ if (options.dryRun) {
 }
 
 try {
-  if (options.mode === generalModeName || options.mode === allModeName) {
+  if (selection) {
+    for (const [project, files] of Object.entries(selection)) {
+      const serverArgs = project !== "@paperclipai/server" ? []
+        : options.mode === serializedModeName || process.env.PAPERCLIP_TEST_DATABASE_URL
+          ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"];
+      await runVitest(["--project", project, ...serverArgs, ...files],
+        `selected ${project}: ${files.length} files`, null, true);
+    }
+  } else if (options.mode === generalModeName || options.mode === allModeName) {
     if (options.group) {
       await runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
     } else {
@@ -678,7 +708,7 @@ try {
     }
   }
 
-  if (options.mode === serializedModeName || options.mode === allModeName) {
+  if (!selection && (options.mode === serializedModeName || options.mode === allModeName)) {
     await runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
   }
 } catch (error) {

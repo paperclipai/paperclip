@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { writePluginJobChange } from "./plugin-job-work-notifications.js";
 import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -30,6 +31,10 @@ import type {
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+
+function sameBundledPluginRegistration(existing: typeof plugins.$inferSelect, packageName: string, manifest: PaperclipPluginManifestV1): boolean {
+  return existing.pluginKey === manifest.id && existing.packageName === packageName && existing.version === manifest.version && isDeepStrictEqual(existing.manifestJson, manifest);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,10 +145,11 @@ export function pluginRegistryService(db: Db) {
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
+    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, options: { idempotent?: boolean } = {}) => {
       const existing = await getByKey(manifest.id);
       if (existing) {
         if (existing.status !== "uninstalled") {
+          if (options.idempotent && sameBundledPluginRegistration(existing, input.packageName, manifest)) return existing;
           throw conflict(`Plugin already installed: ${manifest.id}`);
         }
 
@@ -153,7 +159,7 @@ export function pluginRegistryService(db: Db) {
           .update(plugins)
           .set({
             packageName: input.packageName,
-            packagePath: input.packagePath ?? null,
+            packagePath: options.idempotent ? existing.packagePath : input.packagePath ?? null,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
@@ -170,7 +176,7 @@ export function pluginRegistryService(db: Db) {
       const installOrder = await nextInstallOrder();
 
       try {
-        const rows = await db
+        const insertion = db
           .insert(plugins)
           .values({
             pluginKey: manifest.id,
@@ -182,9 +188,14 @@ export function pluginRegistryService(db: Db) {
             status: "installed" as PluginStatus,
             installOrder,
             packagePath: input.packagePath ?? null,
-          })
-          .returning();
-        return rows[0];
+          });
+        const rows = await (options.idempotent
+          ? insertion.onConflictDoNothing({ target: plugins.pluginKey })
+          : insertion).returning();
+        if (rows[0]) return rows[0];
+        const concurrent = await getByKey(manifest.id);
+        if (concurrent && concurrent.status !== "uninstalled" && sameBundledPluginRegistration(concurrent, input.packageName, manifest)) return concurrent;
+        throw conflict(`Plugin registration differs from the current image: ${manifest.id}`);
       } catch (error) {
         if (isPluginKeyConflict(error)) {
           throw conflict(`Plugin already installed: ${manifest.id}`);
