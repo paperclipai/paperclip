@@ -72,6 +72,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -1248,11 +1249,13 @@ function safeOutput(value: unknown): Record<string, unknown> {
   };
 }
 
+// Generated from the sidecar schema's closed session.open parameter set.
+const OPEN_PARAMS: ReadonlySet<string> = new Set(GENERATED_ACPX_SIDECAR_OPEN_PARAMS);
+
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "claudeEffort", "grokEffort", "grokDisableWebSearch", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity", "candidateAdmission"]);
-  if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
+  if (Object.keys(value).some(key => !OPEN_PARAMS.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const model = requiredText(value.model, "model");
   const candidateAdmission = value.candidateAdmission === undefined ? undefined
     : parseAcpxCandidateStartupAdmission(value.candidateAdmission, { agent: String(value.agent), model, normalizedSessionId: String(value.normalizedSessionId) });

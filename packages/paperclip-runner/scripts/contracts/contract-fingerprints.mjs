@@ -1,72 +1,31 @@
-// Fingerprints the contracts that cross the Runner/provider-pack boundary from
-// semantic artifacts (schemas, parser allowlists, exported type shapes, env key
-// sets, serde shapes) instead of source bytes. Comments, formatting and
-// function-body refactors do not change a fingerprint; a new field, accepted
+// Fingerprints the contracts that cross the Runner/provider-pack boundary.
+// Contracts are declared as JSON (PRP and sidecar schemas, generated catalogs)
+// and read structurally, with description text stripped; Rust shapes are read
+// lexically (serde structs, payload keys, match literals, env keys). Comments,
+// formatting and refactors do not change a fingerprint; a new field, accepted
 // value or env key does. build-provider-pack.mjs records the combined digest so
 // an image pack is reused only by a controller built from the same contracts.
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import * as babel from "@babel/parser";
 
 const R = "packages/paperclip-runner";
 const RUST = `${R}/runner/crates/runner-core/src`;
 const DOC_KEYS = new Set(["description", "title", "$comment", "examples", "markdownDescription"]);
-const SCHEMA_ID = /^paperclip\.[\w.-]+\.v\d+$/;
 
 /** Contract registry. Each contract binds probes; a probe reads one artifact.
  * Only trees present in every pack build context are read (Docker contexts
  * exclude tests, fixtures and docs), so the digest is the same wherever a pack
- * is built. Registration is by directory where possible; hand-registered files
- * hold boundary contracts outside those directories. */
+ * is built. A TypeScript contract joins the digest by moving its definition
+ * into a schema under protocol/ and generating the TypeScript from it. */
 export const CONTRACTS = [
   { id: "prp.schemas", expand: { kind: "json-dir", dirs: [`${R}/protocol/schemas`, `${R}/protocol/provider-schemas`] } },
-  { id: "completion-continuation", probes: [
-    { kind: "ts-allowlists", path: `${R}/src/drivers/completion-continuation.ts`, functions: /./ },
-  ] },
-  { id: "acpx-admission-errors", probes: [
-    { kind: "ts-const", path: `${R}/src/drivers/acpx/admission-diagnostics.ts` },
-  ] },
-  { id: "acpx-permission-policy", probes: [
-    { kind: "ts-const", path: `${R}/src/drivers/acpx/permission-policy.ts` },
-  ] },
-  { id: "launch-requirements", probes: [
-    { kind: "ts-types", path: `${R}/src/live/runner-provider-launch.ts`, exported: true },
-    { kind: "schema-ids", path: `${R}/src/live/runner-provider-launch.ts` },
-  ] },
-  { id: "launch-preparation-store", probes: [
-    { kind: "ts-types", path: `${R}/src/live/runner-launch-preparation-store.ts` },
-    { kind: "schema-ids", path: `${R}/src/live/runner-launch-preparation-store.ts` },
-  ] },
-  { id: "configured-environment", probes: [
-    { kind: "ts-const", path: `${R}/src/configured-environment.ts` },
-    { kind: "ts-const", path: `${R}/src/drivers/acpx/environment.ts` },
-    { kind: "rust-consts", path: `${RUST}/configured_environment.rs` },
-  ] },
-  { id: "durable-control-plane", probes: [
-    { kind: "ts-const", path: `${R}/src/control-plane/durable-prp-control-plane.ts` },
-    { kind: "ts-allowlists", path: `${R}/src/control-plane/durable-prp-control-plane.ts`, functions: /./ },
-  ] },
-  { id: "acpx-sidecar-input", probes: [
-    { kind: "ts-allowlists", path: `${R}/src/cli/acpx-runtime-sidecar.ts`, functions: /^parse/ },
-    { kind: "ts-allowlists", path: `${R}/src/cli/acpx-sidecar-input.ts`, functions: /./ },
-    { kind: "ts-const", path: `${R}/src/drivers/acpx/generated-sidecar-contract.ts` },
-  ] },
-  { id: "semantic-tool-receipt", probes: [
-    { kind: "ts-const", path: `${R}/src/drivers/semantic-tool-receipt.ts` },
-    { kind: "ts-types", path: `${R}/src/drivers/semantic-tool-receipt.ts`, exported: true },
-  ] },
-  // Prompt and tool description text is model-visible, not a peer contract.
-  { id: "ts.contracts", expand: { dirs: [`${R}/src/contracts`], suffix: ".ts", exclude: /\.test\.ts$|runtime-context-prompts\.ts$/, idPrefix: "ts.contracts.", probes: [
-    { kind: "ts-types", exported: true },
-    { kind: "ts-const", exportedOnly: true, stripDocs: true, exclude: /PROMPT|_DESCRIPTION$/ },
-    { kind: "ts-allowlists", functions: /./ },
-    { kind: "schema-ids" },
-  ] } },
+  { id: "generated", expand: { dirs: [`${R}/generated`], suffix: ".json", idPrefix: "generated.", probes: [{ kind: "json", stripDocs: true }] } },
   { id: "rust", expand: { dirs: [RUST], suffix: ".rs", idPrefix: "rust.", probes: [
     { kind: "rust-serde" }, { kind: "rust-json-keys" }, { kind: "rust-match-literals" }, { kind: "rust-env-keys" },
   ] } },
-  { id: "generated", expand: { dirs: [`${R}/generated`], suffix: ".json", idPrefix: "generated.", probes: [{ kind: "json", stripDocs: true }] } },
+  // Reserved and forwarded runtime env keys are const lists in Rust.
+  { id: "configured-environment", probes: [{ kind: "rust-consts", path: `${RUST}/configured_environment.rs` }] },
 ];
 
 /** Every hand-registered file a probe reads. */
@@ -155,10 +114,6 @@ function probe(spec, readFile) {
 function probeUncached(spec, source) {
   switch (spec.kind) {
     case "json": return canonicalJson(JSON.parse(source), spec);
-    case "ts-const": return tsConsts(source, spec);
-    case "ts-types": return tsTypes(source, spec);
-    case "ts-allowlists": return tsAllowlists(source, spec);
-    case "schema-ids": return [...new Set(stringLiterals(parseTs(source)).filter(s => SCHEMA_ID.test(s)))].sort();
     case "rust-consts": return rustConsts(source);
     case "rust-serde": return rustSerde(source);
     case "rust-json-keys": return rustJsonKeys(source);
@@ -195,194 +150,6 @@ function canonicalJson(value, { stripDocs = false } = {}) {
 }
 function isAnnotation(key, value) {
   return DOC_KEYS.has(key) && (typeof value === "string" || (key === "examples" && Array.isArray(value)));
-}
-
-// ---------- TypeScript (via @babel/parser, comments are not AST nodes) ----------
-
-function parseTs(source) {
-  return babel.parse(source, { sourceType: "module", plugins: ["typescript"], errorRecovery: true });
-}
-function topLevelDeclarations(ast) {
-  const decls = [];
-  for (const stmt of ast.program.body) {
-    const node = stmt.type === "ExportNamedDeclaration" && stmt.declaration ? stmt.declaration : stmt;
-    decls.push({ node, exported: stmt.type === "ExportNamedDeclaration" });
-  }
-  return decls;
-}
-function constBindings(ast) {
-  const map = new Map();
-  for (const { node, exported } of topLevelDeclarations(ast)) {
-    if (node.type !== "VariableDeclaration" || node.kind !== "const") continue;
-    for (const d of node.declarations) if (d.id.type === "Identifier" && d.init) map.set(d.id.name, { init: d.init, exported });
-  }
-  return map;
-}
-function tsConsts(source, spec) {
-  const ast = parseTs(source);
-  const bindings = constBindings(ast);
-  const out = {};
-  // Exported values first. Private helpers they inline are fingerprinted
-  // through those values, so renaming a helper is not a contract change.
-  const inlined = new Set();
-  const ordered = [...bindings].sort(([, a], [, b]) => Number(b.exported) - Number(a.exported));
-  for (const [name, { init, exported }] of ordered) {
-    if (spec.include && !spec.include.test(name)) continue;
-    if (spec.exclude && spec.exclude.test(name)) continue;
-    if (!exported && (inlined.has(name) || spec.exportedOnly)) continue;
-    inlinedNames = exported ? inlined : null;
-    const value = astValue(init, source, bindings, new Set([name]));
-    inlinedNames = null;
-    // Functions and class instances are implementation, not contract data.
-    if (value && typeof value === "object" && value.$impl) continue;
-    out[name] = canonicalJson(value, spec);
-  }
-  return out;
-}
-/** Collects private helpers inlined while evaluating an exported value. */
-let inlinedNames = null;
-function astValue(node, source, bindings, seen) {
-  switch (node.type) {
-    case "TSAsExpression": case "TSSatisfiesExpression": case "TSNonNullExpression": case "ParenthesizedExpression":
-      return astValue(node.expression, source, bindings, seen);
-    case "StringLiteral": case "NumericLiteral": case "BooleanLiteral": return node.value;
-    case "NullLiteral": return null;
-    case "TemplateLiteral":
-      return node.expressions.length === 0 ? node.quasis.map(q => q.value.cooked).join("")
-        : { $template: node.quasis.map(q => q.value.cooked), parts: node.expressions.map(e => astValue(e, source, bindings, seen)) };
-    case "BinaryExpression":
-      if (node.operator === "+") {
-        const l = astValue(node.left, source, bindings, seen), r = astValue(node.right, source, bindings, seen);
-        if (typeof l === "string" && typeof r === "string") return l + r;
-      }
-      return { $expr: normalizedSlice(node, source) };
-    case "ArrayExpression":
-      return node.elements.flatMap(el => {
-        if (!el) return [null];
-        if (el.type === "SpreadElement") {
-          const v = astValue(el.argument, source, bindings, seen);
-          return Array.isArray(v) ? v : v?.$set ?? [{ $spread: v }];
-        }
-        return [astValue(el, source, bindings, seen)];
-      });
-    case "ObjectExpression": {
-      const out = {};
-      for (const prop of node.properties) {
-        if (prop.type === "SpreadElement") Object.assign(out, objectOrRef(astValue(prop.argument, source, bindings, seen)));
-        else if (prop.type === "ObjectProperty" && !prop.computed) out[prop.key.name ?? prop.key.value] = astValue(prop.value, source, bindings, seen);
-        else return { $impl: true };
-      }
-      return out;
-    }
-    case "NewExpression":
-      if (node.callee.type === "Identifier" && node.callee.name === "Set" && node.arguments[0]) {
-        const items = astValue(node.arguments[0], source, bindings, seen);
-        return { $set: Array.isArray(items) ? [...items].sort((a, b) => String(a).localeCompare(String(b))) : items };
-      }
-      return { $impl: true };
-    case "CallExpression":
-      if (node.callee.type === "MemberExpression" && node.callee.object.name === "Object" && node.callee.property.name === "freeze") {
-        return astValue(node.arguments[0], source, bindings, seen);
-      }
-      return { $impl: true };
-    case "Identifier":
-      if (bindings.has(node.name) && !seen.has(node.name)) {
-        inlinedNames?.add(node.name);
-        return astValue(bindings.get(node.name).init, source, bindings, new Set([...seen, node.name]));
-      }
-      return { $ref: node.name };
-    case "MemberExpression": {
-      // Resolve `helper.properties.kind` through the helper's literal value.
-      if (!node.computed) {
-        const object = astValue(node.object, source, bindings, seen);
-        if (object && typeof object === "object" && !Array.isArray(object) && Object.hasOwn(object, node.property.name)) {
-          return object[node.property.name];
-        }
-      }
-      return { $expr: normalizedSlice(node, source) };
-    }
-    case "ArrowFunctionExpression": case "FunctionExpression": case "ClassExpression": return { $impl: true };
-    default: return { $expr: normalizedSlice(node, source) };
-  }
-}
-function objectOrRef(v) { return v && typeof v === "object" && !Array.isArray(v) ? v : { $spread: v }; }
-
-function tsTypes(source, spec) {
-  const ast = parseTs(source);
-  const out = {};
-  for (const { node, exported } of topLevelDeclarations(ast)) {
-    if (spec.exported && !exported) continue;
-    if (node.type === "TSInterfaceDeclaration") {
-      out[node.id.name] = {
-        extends: (node.extends ?? []).map(e => normalizedSlice(e, source)),
-        members: node.body.body.map(m => typeMember(m, source)).sort((a, b) => a.name.localeCompare(b.name)),
-      };
-    } else if (node.type === "TSTypeAliasDeclaration") {
-      out[node.id.name] = typeShape(node.typeAnnotation, source);
-    }
-  }
-  return out;
-}
-function typeMember(m, source) {
-  if (m.type === "TSPropertySignature") {
-    return { name: m.key.name ?? m.key.value ?? normalizedSlice(m.key, source), optional: !!m.optional, readonly: !!m.readonly,
-      type: m.typeAnnotation ? typeShape(m.typeAnnotation.typeAnnotation, source) : null };
-  }
-  return { name: `#${m.type}`, text: normalizedSlice(m, source) };
-}
-function typeShape(node, source) {
-  if (node.type === "TSTypeLiteral") return { members: node.members.map(m => typeMember(m, source)).sort((a, b) => a.name.localeCompare(b.name)) };
-  if (node.type === "TSUnionType") return { union: node.types.map(t => stableStringify(typeShape(t, source))).sort() };
-  return normalizedSlice(node, source);
-}
-
-/** String allowlists a parser enforces: `new Set([...])` and `exact(value, [...])`. */
-/** The accepted values of a file's parser functions. Function names are private
- * and are not part of the identity, so renaming a parser is not a contract change. */
-function tsAllowlists(source, spec) {
-  const ast = parseTs(source);
-  const out = [];
-  for (const { node } of topLevelDeclarations(ast)) {
-    if (node.type !== "FunctionDeclaration" || !node.id || !spec.functions.test(node.id.name)) continue;
-    const lists = [];
-    walk(node.body, n => {
-      if (n.type === "NewExpression" && n.callee.name === "Set" && n.arguments[0]?.type === "ArrayExpression") {
-        lists.push({ set: stringElements(n.arguments[0]) });
-      } else if (n.type === "CallExpression" && n.callee.name === "exact" && n.arguments[1]?.type === "ArrayExpression") {
-        lists.push({ exact: stringElements(n.arguments[1]), at: n.arguments[2] ? normalizedSlice(n.arguments[2], source) : null });
-      } else if (n.type === "CallExpression" && n.callee.type === "MemberExpression" && n.callee.property.name === "includes"
-        && n.callee.object.type === "ArrayExpression") {
-        lists.push({ includes: stringElements(n.callee.object) });
-      }
-    });
-    out.push(...lists.map(l => stableStringify(l)));
-  }
-  return out.sort();
-}
-function stringElements(arr) {
-  return arr.elements.filter(e => e?.type === "StringLiteral").map(e => e.value).sort();
-}
-function stringLiterals(ast) {
-  const out = [];
-  walk(ast.program, n => { if (n.type === "StringLiteral") out.push(n.value); });
-  return out;
-}
-function walk(node, visit) {
-  if (!node || typeof node.type !== "string") return;
-  visit(node);
-  for (const key of Object.keys(node)) {
-    if (key === "loc" || key === "leadingComments" || key === "trailingComments" || key === "innerComments") continue;
-    const child = node[key];
-    if (Array.isArray(child)) child.forEach(c => walk(c, visit));
-    else if (child && typeof child.type === "string") walk(child, visit);
-  }
-}
-/** Source text of a node with comments removed and whitespace collapsed. */
-function normalizedSlice(node, source) {
-  return stripJsComments(source.slice(node.start, node.end)).replace(/\s+/g, " ").replace(/\s*([{}()[\],;:<>|&=?])\s*/g, "$1").replace(/,([}\])>])/g, "$1").trim();
-}
-function stripJsComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
 }
 
 // ---------- Rust (lexical, no syn available) ----------

@@ -106,12 +106,16 @@ OpenCode and ACPX interface revisions. Change a revision only for an incompatibl
 runner/pack boundary change, and qualify the new pack before publishing it.
 Bumping a revision also retires every older image pack.
 The pack build also records a `contractDigest`, computed by
-`scripts/contracts/contract-fingerprints.mjs` from the Runner's schemas,
-parser allowlists, exported contract types, serde shapes and env keys rather
-than from source bytes. An image pack is reused only when its digest equals the
-controller's bundled pack; comments and refactors leave it unchanged, so a
-mismatch means a contract changed and the controller uploads its bundled pack.
-Packs without a digest are not reused.
+`scripts/contracts/contract-fingerprints.mjs` from the JSON contracts under
+`protocol/` and `generated/` and from Rust serde shapes, payload keys, match
+literals and env keys, rather than from source bytes. An image pack is reused
+only when its digest equals the controller's bundled pack; comments and
+refactors leave it unchanged, so a mismatch means a contract changed and the
+controller uploads its bundled pack. Packs without a digest are not reused.
+Define a new runner/pack contract in a schema under `protocol/` and generate the
+TypeScript from it, as the sidecar's `session.open` parameter allowlist is
+generated from `acpx-sidecar.schema.json`; TypeScript-only definitions are not
+part of the digest.
 Dependency versions and Git SHAs remain build provenance. ACPX retains its
 selected agent's qualified profile checks.
 

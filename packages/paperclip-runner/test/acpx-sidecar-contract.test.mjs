@@ -85,6 +85,16 @@ test("Pi session admission requires an explicit supported thinking level includi
   }
 });
 
+test("session.open accepts only the schema's closed parameter set", () => {
+  const open = (params) => ({ protocolVersion, id: 1, command: "session.open", params });
+  const names = Object.keys(schema.$defs.sessionOpenParams.properties);
+  assert.ok(names.includes("grokEffort") && names.includes("runtimeContext"));
+  for (const name of names.filter(name => !["agent", "piThinkingLevel", "claudeEffort", "candidateAdmission", "expectedIdentity"].includes(name))) {
+    assert.equal(validate(open({ agent: "codex", [name]: "value" })), true, name);
+  }
+  assert.equal(validate(open({ agent: "codex", unsupportedField: true })), false);
+});
+
 test("public Pi descriptors preserve effective thinking levels without invalidating historical replay", async () => {
   const descriptorSchema = JSON.parse(await readFile(new URL("../protocol/schemas/provider-descriptor.schema.json", import.meta.url), "utf8"));
   const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);

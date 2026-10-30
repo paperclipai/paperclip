@@ -18,7 +18,7 @@ test("the active Grok profile attests its exact admission source", () => {
 });
 
 for (const contract of [
-  "src/cli/acpx-runtime-sidecar.ts",
+  "src/drivers/acpx/generated-sidecar-contract.ts",
   "runner/crates/runner-core/src/acpx_provider_backend.rs",
 ]) test(`changing the Grok field in ${contract} invalidates the identity`, () => {
   const copy = mkdtempSync(join(tmpdir(), "grok-profile-source-"));
@@ -62,7 +62,7 @@ test("the generator cannot overwrite a versioned identity after source changes",
     const unchanged = generate();
     assert.equal(unchanged.status, 0, unchanged.stderr);
     assert.deepEqual(protectedFiles.map(path => readFileSync(join(copy, path), "utf8")), before);
-    const sidecar = join(copy, prefix, "src/cli/acpx-runtime-sidecar.ts");
+    const sidecar = join(copy, prefix, "src/drivers/acpx/generated-sidecar-contract.ts");
     writeFileSync(sidecar, readFileSync(sidecar, "utf8").replace('"grokEffort"', '"obsoleteGrokEffort"'));
     const result = generate();
     assert.deepEqual(protectedFiles.map(path => readFileSync(join(copy, path), "utf8")), before, "a changed identity must be refused before any write");
