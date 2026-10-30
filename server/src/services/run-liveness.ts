@@ -205,6 +205,25 @@ export function hasConcreteActionEvidence(evidence: Partial<RunLivenessEvidenceI
   );
 }
 
+// Durable output a completion must leave behind: a comment, a work product, or
+// a document revision (plan revisions included). This is deliberately narrower
+// than hasConcreteActionEvidence — internal tool/activity events show the run
+// did *something*, but a run that flips an issue to a terminal status with no
+// comment/work-product/doc revision leaves nothing a human can read to confirm
+// the work actually happened, which is the silent-completion failure this guard
+// rejects. An explicit no-op completion (a short "no action needed" status
+// comment) counts as a comment and passes.
+export function hasCompletionOutputEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined) {
+  const normalized = normalizeEvidence(evidence);
+  return (
+    normalized.issueCommentsCreated +
+      normalized.workProductsCreated +
+      normalized.documentRevisionsCreated +
+      normalized.planDocumentRevisionsCreated >
+    0
+  );
+}
+
 function evidenceReason(evidence: RunLivenessEvidenceInput) {
   const parts: string[] = [];
   if (evidence.issueCommentsCreated > 0) parts.push(`${evidence.issueCommentsCreated} issue comment(s)`);
@@ -334,8 +353,24 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
   }
 
-  if (issueStatus === "done" || issueStatus === "cancelled") {
-    return output("completed", `Issue is ${issueStatus}`);
+  if (issueStatus === "done") {
+    // Completion guard: a run may only complete an issue to `done` if it left
+    // at least one piece of durable output evidence. Otherwise the run silently
+    // flipped the status with nothing to show for it (the symptom: "done" with
+    // no digest/record). Do not accept it as completed — classify it as an
+    // empty response so recovery/observability can see it is not a real
+    // completion. `cancelled` (an intentional stop) is exempt.
+    if (hasCompletionOutputEvidence(evidence)) {
+      return output("completed", "Issue is done");
+    }
+    return output(
+      "empty_response",
+      "Issue is done but the run left no completion evidence (no comment, work product, or document revision)",
+    );
+  }
+
+  if (issueStatus === "cancelled") {
+    return output("completed", "Issue is cancelled");
   }
 
   if (declaredBlocker(input)) {
