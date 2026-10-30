@@ -8,6 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { ZodError } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { getCloudRuntimeConfigSnapshot, toPaperclipConfig } from "./services/cloud-runtime-config-snapshot.js";
 
 function formatConfigValidationError(error: ZodError): string {
   return error.issues
@@ -19,6 +21,7 @@ function formatConfigValidationError(error: ZodError): string {
 }
 
 export function readConfigFile(): PaperclipConfig | null {
+  if (isCloudManagedInstance()) return toPaperclipConfig(getCloudRuntimeConfigSnapshot().config);
   const configPath = resolvePaperclipConfigPath();
 
   if (!fs.existsSync(configPath)) return null;

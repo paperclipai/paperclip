@@ -315,6 +315,21 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
+    const response = operation.responses["200"].content["application/json"].schema;
+    expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
+    expect(response.properties.generatedAt).toMatchObject({ format: "date-time" });
+    expect(response.properties.items).toBeUndefined();
+    expect(response.properties.nextCursor).toBeUndefined();
+    if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
+    for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+  });
+
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/pending-questions"].get;

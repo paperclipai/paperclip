@@ -26,7 +26,10 @@ import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
+import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
+import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
+import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
@@ -371,7 +374,7 @@ import {
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
 
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import {
   providerTraceStore,
 } from "./provider-trace-store.js";
@@ -2090,6 +2093,7 @@ export function heartbeatService(
         }
         try {
           providerTraceCapture = await traceStore.prepare({
+            assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
             runId: run.id,
             companyId: run.companyId,
             provider:
@@ -3131,6 +3135,8 @@ export function heartbeatService(
       const runOutput = createHeartbeatRunOutput(db, {
         run, runId, issueId, runLogStore, identityRedactor, secretKeys,
         appendRunEvent, getCurrentUserRedactionOptions,
+        assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
+        runtimeLogSecretValues: observabilitySecretValues(observability),
       });
       const goalCheckpointSession: {
         current: {
@@ -3216,7 +3222,7 @@ export function heartbeatService(
           message: "run started",
         });
 
-        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent } =
+        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onPersistedNativeLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
@@ -3450,6 +3456,7 @@ export function heartbeatService(
             identityRedactor,
             appendIdentityRedactedLog,
             onLog,
+            onPersistedNativeLog,
             onAdapterEvent,
             onAdapterMeta,
           },
@@ -4072,6 +4079,9 @@ export function heartbeatService(
             companyId: string;
             logStore: string | null;
             logRef: string | null;
+            runtimeMode?: string | null;
+            status?: string;
+            logBytes?: number | null;
           },
       opts?: { offset?: number; limitBytes?: number; alignStartToRecord?: boolean; signal?: AbortSignal },
     ) => {
@@ -4084,12 +4094,14 @@ export function heartbeatService(
       if (!run) throw notFound("Heartbeat run not found");
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 
-      const result = await runLogStore.read(
+      if (!isRunLogStoreType(run.logStore)) throw notFound("Run log backend not supported");
+      const result = await readRecoverableRunLog(db, runLogStore,
         {
-          store: run.logStore as "local_file",
+          store: run.logStore,
           logRef: run.logRef,
         },
         opts,
+        run,
       );
 
       return {
