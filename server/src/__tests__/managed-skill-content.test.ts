@@ -63,6 +63,19 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     return id;
   }
 
+  function runMaintenance(phase: string, companyId: string, managedCloud = false) {
+    const env: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: database.connectionString,
+      PAPERCLIP_STORAGE_PROVIDER: "local_disk", PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects") };
+    delete env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    delete env.PAPERCLIP_MANAGED_CONFIG;
+    if (managedCloud) env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "disposable-cloud-cli-fixture";
+    return promisify(execFile)(process.execPath, [
+      "--import", fileURLToPath(import.meta.resolve("tsx")),
+      fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
+      `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
+    ], { env, timeout: 60_000, maxBuffer: 1024 * 1024 });
+  }
+
   it("imports supporting files from a root-level package without truncating their paths", async () => {
     const companyId = await company();
     const service = companySkillService(db);
@@ -81,26 +94,28 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     const companyId = await company();
     await companySkillService(db).createLocalSkill(companyId, { name: "Cloud CLI", markdown: "# Cloud CLI" });
     const key = "cloud-runtime-config:v1";
-    const run = (phase: string) => promisify(execFile)(process.execPath, [
-      "--import", fileURLToPath(import.meta.resolve("tsx")),
-      fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
-      `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
-    ], { env: { ...process.env, DATABASE_URL: database.connectionString,
-      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-      PAPERCLIP_STORAGE_PROVIDER: "local_disk", PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects") },
-      timeout: 60_000, maxBuffer: 1024 * 1024 });
-    await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
+    const run = () => runMaintenance("eligibility", companyId, true);
+    await expect(run()).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
     await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
     try {
-      const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
+      const eligibility = JSON.parse((await run()).stdout.trim().split("\n").at(-1)!);
       expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
-      const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
-      expect(verification.results).toEqual([expect.objectContaining({ status: "local_storage" })]);
+      expect((await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key)))[0]?.general)
+        .toEqual({ version: 1, revision: 0, config: null });
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     }
   }, 180_000);
+
+  it("verifies local packages through the standalone maintenance process", async () => {
+    const companyId = await company();
+    const skill = await companySkillService(db).createLocalSkill(companyId, { name: "Standalone CLI", markdown: "# Standalone CLI" });
+    const verification = JSON.parse((await runMaintenance("verification", companyId)).stdout.trim().split("\n").at(-1)!);
+    expect(verification.results).toEqual([expect.objectContaining({
+      skillId: skill.id, versionId: skill.currentVersionId, status: "local_storage",
+    })]);
+  }, 90_000);
 
   it("forks live linked-local content even when an older saved version exists", async () => {
     const companyId = await company();
