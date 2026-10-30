@@ -10,7 +10,8 @@ import type {
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createProviderTraceObjectStore, objectProviderTraceRef, importingProviderTraceRef, providerTraceCleanupRef, type ProviderTraceObjectStore } from "./provider-trace-object-store.js";
-import { resolveRunLogS3 } from "./run-log-store.js";
+import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
+import { loadStorageConfig } from "../storage/config.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logActivity } from "./activity-log.js";
 
@@ -256,20 +257,17 @@ export function assessProviderTraceEntries(
 const traceObjectStores = new WeakMap<Db, ProviderTraceObjectStore>();
 
 export function providerTraceStore(db: Db, options: { objectStore?: ProviderTraceObjectStore } = {}) {
-  const selected = process.env.PROVIDER_TRACE_STORE?.trim() || "local_file";
-  if (!["local_file", "s3_segments"].includes(selected)) throw new Error("Invalid PROVIDER_TRACE_STORE");
   let external = options.objectStore;
   function objectStore() {
     if (external) return external;
     const shared = traceObjectStores.get(db);
     if (shared) return external = shared;
-    const config = resolveRunLogS3();
-    if (!config) throw new Error("External provider traces require RUN_LOG_S3_BUCKET");
-    external = createProviderTraceObjectStore(config.provider, process.env.PROVIDER_TRACE_S3_PREFIX?.trim() || "provider-traces");
+    const config = resolveRunEvidenceStorage();
+    if (!config) throw new Error("External provider traces require instance S3 storage");
+    external = createProviderTraceObjectStore(config.provider, config.tracePrefix);
     traceObjectStores.set(db, external);
     return external;
   }
-  if (selected === "s3_segments") objectStore();
   async function readBytes(traceRef: string) {
     return objectProviderTraceRef(traceRef) ? objectStore().read(traceRef) : readTraceBytes(traceRef);
   }
@@ -415,6 +413,11 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       return { metadata: asMetadata(existing), path: tracePath(existing.traceRef) };
     }
 
+    const selected = loadStorageConfig().storageProvider === "s3" ? "s3_segments" : "local_file";
+    if (selected === "s3_segments") {
+      if (!input.assertWriterAuthority) throw new Error("External trace capture requires admitted writer authority");
+      objectStore();
+    }
     await fs.mkdir(traceRoot(), { recursive: true, mode: 0o700 });
     const filename = `${randomUUID()}.ndjson`;
     const traceRef = selected === "s3_segments" ? `s3-segments-v1:${input.companyId}/${input.runId}/${filename}` : filename;

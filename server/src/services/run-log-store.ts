@@ -8,6 +8,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
+import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
 export type RunLogStoreType = "local_file" | "s3_segments";
 export function isRunLogStoreType(value: unknown): value is RunLogStoreType {
@@ -554,20 +555,16 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  const s3 = resolveRunLogS3();
-  const local = createDurableRunLogStore({ basePath, s3 });
-  const selected = process.env.RUN_LOG_STORE?.trim() || "local_file";
-  if (!isRunLogStoreType(selected)) throw new Error("Invalid RUN_LOG_STORE");
-  if (selected === "s3_segments" && !s3) throw new Error("RUN_LOG_STORE=s3_segments requires RUN_LOG_S3_BUCKET");
+  const local = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const s3 = resolveRunEvidenceStorage();
   const external = s3 ? createObjectRunLogStore({
     provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
-    flushMs: Number(process.env.RUN_LOG_S3_FLUSH_MS || 1000),
     assertWriterAuthority: async input => {
       if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
       await input.assertWriterAuthority();
     },
   }) : null;
-  const writer = selected === "s3_segments" ? external! : local;
+  const writer = external ?? local;
   cachedStore = {
     begin: input => {
       if (input.previousStore === "local_file") return local.begin(input);

@@ -44,13 +44,17 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
       byte_count bigint not null default 0, digest text, reason text, requested_by text not null, expires_at timestamptz not null,
       deleted_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now())`);
     directory = await fs.mkdtemp(path.join(os.tmpdir(), "evidence-migration-"));
+    vi.stubEnv("PAPERCLIP_CONFIG", path.join(directory, "config.json"));
     vi.stubEnv("RUN_LOG_BASE_PATH", path.join(directory, "logs"));
     vi.stubEnv("PROVIDER_TRACE_BASE_PATH", path.join(directory, "traces"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "b".repeat(64));
-    vi.stubEnv("RUN_LOG_S3_ENDPOINT", endpoint!);
-    vi.stubEnv("RUN_LOG_S3_REGION", "us-east-1");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_ENDPOINT", endpoint!);
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_REGION", "us-east-1");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_PREFIX", "");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "true");
     bucket = `paperclip-migration-test-${randomUUID()}`;
-    vi.stubEnv("RUN_LOG_S3_BUCKET", bucket);
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", bucket);
     client = new S3Client({
       endpoint,
       region: "us-east-1",

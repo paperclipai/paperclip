@@ -1,8 +1,9 @@
 # Durable run logs and provider traces for disposable web servers
 
 Status: implementation and PR qualification in progress. Runtime storage,
-history migration, and canonical native source replay are implemented behind
-explicit opt-in. Production-provider qualification remains a rollout gate.
+history migration, and canonical native source replay are implemented using the
+instance's existing storage selection. Production-provider qualification remains
+a rollout gate.
 Owner: this Codex chat, through the reviewable PR. Date: 2026-10-30.
 Revision: object-storage-first, following Dotta's operational correction on 2026-10-30.
 Source revision inspected: `0c70cedce9a803bdc201324528abb35e423e7cd0`.
@@ -40,6 +41,9 @@ Firm requirements:
   Local files may be caches or unacknowledged buffers. Preserve local mode.
 - Keep task results, usage settlement, and optional diagnostics independent.
 - Preserve bounded work and existing sleep behavior.
+- Reuse existing instance storage settings and per-stack bucket credentials.
+  New logs and opted-in traces follow S3 file storage automatically, with their
+  own folders beneath the existing prefix. Add no required configuration.
 
 Dotta approved implementation on 2026-10-30. Delivery ends at a reviewable PR
 with relevant checks and review findings resolved. Deployment, volume removal,
@@ -151,7 +155,11 @@ persisted backend/version, including historical records. Remove hardcoded
 inspection together. Preserve current `RUN_LOG_S3_*` mirror configuration for
 legacy mode, without redirecting unrelated product file storage.
 
-Align opt-in with the parent's external-persistence profile. Configuration
+Reuse the existing instance storage configuration without additional switches.
+Cloud already provisions a bucket and bucket-scoped credentials per stack.
+Preserve any configured storage prefix and place journals in `run-logs/` and
+`provider-traces/`, with company/run namespaces underneath. New journals must not
+use a separately configured legacy mirror bucket. Configuration
 errors fail explicitly; never select local-only persistence silently. Add only
 small company/run-bound stream metadata, with unique identities and constraints.
 There are **no proposed run-log payload-chunk or raw-trace payload tables**.
@@ -331,8 +339,9 @@ supported wake/blocker contract.
 | 3. S3-backed provider traces | Producer sinks/rehydration, trace store/routes, expiry/deletion | Slice 2 primitives; actual capture integrity, access and cleanup races |
 | 4. History migration and qualification | Resumable importer, compatibility/authority switch, documentation and staging evidence | All retained inventory accounted for; empty-disk reads and supported rollback after new writes |
 
-These are reviewable boundaries, not a fixed PR count. Keep each usable and
-opt-in. Keep storage logic in its owners, not large heartbeat/executor additions.
+These are reviewable boundaries, not a fixed PR count. Keep each usable with the
+existing instance storage profile. Raw trace capture remains opt-in. Keep storage
+logic in its owners, not large heartbeat/executor additions.
 Generate necessary additive metadata migrations with `pnpm db:generate` and
 follow snapshot-retention rules. There is no DB payload migration or compactor.
 
@@ -428,6 +437,14 @@ claim live-provider or fleet evidence from deterministic fixtures.
 
 ## Implementation state and remaining gates
 
+- Configuration follow-up: shared storage resolution now serves product files,
+  run logs and traces. S3 instances need no extra switches or connection fields.
+  Cloud's existing per-stack bucket and credentials remain the isolation
+  boundary; existing prefixes and company/run subfolders are preserved. The
+  configuration regression failed before the change, then 70 affected tests
+  passed, including real S3-compatible bucket/prefix isolation and cleanup tests.
+  Four existing Cloud environment-contract tests also passed without Cloud code
+  or deployment changes.
 - Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
 - S3 holds payloads from the first committed batch. Conditional object heads
   hold cursors and writer generations. Existing Postgres rows hold lifecycle and

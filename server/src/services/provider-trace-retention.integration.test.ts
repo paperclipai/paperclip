@@ -45,8 +45,9 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
   });
   beforeEach(async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), "trace-retention-"));
+    vi.stubEnv("PAPERCLIP_CONFIG", path.join(directory, "config.json"));
     vi.stubEnv("PROVIDER_TRACE_BASE_PATH", directory);
-    vi.stubEnv("PROVIDER_TRACE_STORE", "local_file");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "e".repeat(64));
     await db.execute(sql`truncate provider_trace_records`);
   });
@@ -78,10 +79,12 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
     }
   });
   function external() {
-    vi.stubEnv("PROVIDER_TRACE_STORE", "s3_segments");
-    vi.stubEnv("RUN_LOG_S3_BUCKET", bucket);
-    vi.stubEnv("RUN_LOG_S3_ENDPOINT", endpoint!);
-    vi.stubEnv("RUN_LOG_S3_REGION", "us-east-1");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", bucket);
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_ENDPOINT", endpoint!);
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_REGION", "us-east-1");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "true");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_PREFIX", "");
   }
   it("schedules expiry when a new local trace is created after startup becomes quiet", async () => {
     const store = providerTraceStore(db),
@@ -97,9 +100,13 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
     expect(await store.nextRetentionDeadline()).toBe(
       new Date(capture.metadata.expiresAt).getTime(),
     );
-    vi.stubEnv("RUN_LOG_S3_BUCKET", bucket);
-    vi.stubEnv("RUN_LOG_S3_ENDPOINT", "http://127.0.0.1:1");
-    await store.remove(runId, companyId);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", bucket);
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_ENDPOINT", "http://127.0.0.1:1");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+    const replacement = providerTraceStore(db);
+    expect(await replacement.getByRun(runId, companyId)).not.toBeNull();
+    await replacement.remove(runId, companyId);
     expect(await store.nextRetentionDeadline()).toBeNull();
   });
   it("drains more than one page of expired local files without requiring another producer", async () => {

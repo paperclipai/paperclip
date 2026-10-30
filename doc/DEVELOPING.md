@@ -3817,9 +3817,10 @@ URLs; the sleep suite truncates company data between tests.
 
 ## S3-backed run evidence
 
-`RUN_LOG_STORE=s3_segments` and `PROVIDER_TRACE_STORE=s3_segments` select optional
-object-backed logs and encrypted raw trace payloads. Local mode remains the
-default. See [run evidence storage](run-evidence-storage.md) for required provider
+New logs and opted-in provider traces automatically use the instance's existing
+S3 storage configuration, bucket, credentials and prefix, under `run-logs/` and
+`provider-traces/`. No extra storage switches are needed. Local-disk instances
+remain local. See [run evidence storage](run-evidence-storage.md) for required provider
 capabilities, stable keys, operating limits, migration commands and qualification.
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.

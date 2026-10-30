@@ -15,7 +15,8 @@ import {
   createProviderTraceObjectStore,
   importingProviderTraceRef,
 } from "./provider-trace-object-store.js";
-import { openLegacyRunLogForMigration, resolveRunLogS3 } from "./run-log-store.js";
+import { openLegacyRunLogForMigration } from "./run-log-store.js";
+import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import {
   createNativeRunLogCoverageVerifier,
@@ -49,8 +50,8 @@ export async function migrateRunEvidence(
   const limit = options.limit ?? 50;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100)
     throw new Error("Migration limit must be between 1 and 100");
-  const config = resolveRunLogS3();
-  if (!config) throw new Error("Run evidence migration requires RUN_LOG_S3_BUCKET");
+  const config = resolveRunEvidenceStorage();
+  if (!config) throw new Error("Run evidence migration requires instance S3 storage");
   function drainedWriter(now = new Date()) {
     return and(
       inArray(heartbeatRuns.status, SETTLED),
@@ -262,7 +263,7 @@ export async function migrateRunEvidence(
     traces.length && options.apply
       ? createProviderTraceObjectStore(
           config.provider,
-          process.env.PROVIDER_TRACE_S3_PREFIX || "provider-traces",
+          config.tracePrefix,
         )
       : null;
   for (const { trace, runStatus } of traces) {

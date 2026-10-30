@@ -1,7 +1,8 @@
 # Run log and provider trace object storage
 
-The optional `s3_segments` backend stores payloads directly in S3-compatible
-storage. Postgres retains the existing run/trace references and lifecycle rows.
+Instances configured for S3-compatible file storage automatically use the
+`s3_segments` backend for new run logs and opted-in provider traces. Postgres
+retains the existing run/trace references and lifecycle rows.
 It adds no payload table, per-record SQL, or database-to-object compactor.
 Structured `heartbeat_run_events` retain their existing database path. Native
 events already committed there before a Runner ACK also provide the recovery
@@ -14,33 +15,38 @@ per-event write. Agent identity private material stays in its existing key store
 
 ## Configuration
 
-Keep the default `local_file` backend for existing local/self-hosted installs.
-To select object storage for new run logs, set:
+No additional storage configuration is required. The existing instance
+`storage.provider` setting, or `PAPERCLIP_STORAGE_PROVIDER`, selects storage.
+The same config-file S3 fields and `PAPERCLIP_STORAGE_S3_*` overrides select the
+bucket, endpoint, region, prefix, and path style used by product files. Credentials
+use the same AWS SDK chain. Local-disk instances keep `local_file` logs and traces.
 
-```sh
-RUN_LOG_STORE=s3_segments
-RUN_LOG_S3_BUCKET=<bucket>
-RUN_LOG_S3_REGION=<region>
-RUN_LOG_S3_ENDPOINT=<S3-compatible-endpoint>
-RUN_LOG_S3_PREFIX=run-logs
-RUN_LOG_S3_FLUSH_MS=1000
+The instance's existing S3 prefix is preserved. The folders underneath it are:
+
+```text
+<existing-prefix>/run-logs/segments-v1/<company>/<agent>/<run>/
+<existing-prefix>/provider-traces/segments-v1/<company>/<run>/<trace>/<channel>/
+<existing-prefix>/<company>/...    existing product files
 ```
 
-The existing AWS credential chain and `RUN_LOG_S3_FORCE_PATH_STYLE` apply.
-`RUN_LOG_S3_ENDPOINT` is optional for AWS. Use a stable bucket/prefix across
-releases. An invalid selection or a missing required bucket fails explicitly.
-Legacy run rows continue using their recorded backend until migrated.
+Cloud's existing provisioning supplies a separate bucket and bucket-scoped
+credentials for each stack, plus the stack's encryption key. The app reuses that
+boundary rather than selecting a global customer bucket. Within a stack, journal
+keys remain company/run scoped. Cleanup lists only the resource's own prefix;
+it cannot sweep other companies, other stacks' prefixes, or product files.
+Folders are organization, not a substitute for bucket permissions or API access
+checks. Shared-bucket self-hosted deployments must retain their existing distinct
+instance prefixes and appropriate storage credentials.
 
-Optional raw provider capture uses the same object provider and credentials:
+Legacy run rows retain their recorded backend until verified migration. Their
+pre-existing `RUN_LOG_S3_*` mirror settings and key paths remain supported for
+legacy reads and writes. They do not override instance storage for new journals.
+Use stable bucket/prefix settings across replacements and releases.
 
-```sh
-PROVIDER_TRACE_STORE=s3_segments
-PROVIDER_TRACE_S3_PREFIX=provider-traces
-PAPERCLIP_SECRETS_MASTER_KEY=<stable-instance-key>
-```
-
-The trace key must be stable and supplied in the environment; this backend does
-not create an encryption key on disposable disk. Raw payload and index objects
+Raw capture still requires its existing explicit capture request. Its encryption
+uses the existing stable `PAPERCLIP_SECRETS_MASTER_KEY`, already supplied to Cloud
+stacks; no separate trace key is introduced or created on disposable disk.
+Raw payload and index objects
 use AES-GCM with a key derived for the particular company/run/trace/channel.
 The bounded head holds only ownership, range, digest, and publication metadata.
 Existing capture opt-in, redaction, instance-admin access, task/company access,
@@ -49,9 +55,9 @@ reveal/download auditing, and the 24-hour capture expiry remain in effect.
 The provider must enforce `If-None-Match: *` and ETag `If-Match`, return ETags,
 and support prefix-scoped paginated listing. Claiming the first journal performs
 a conditional-write capability probe. A backend which ignores preconditions is
-rejected. Do not enable this mode on a production provider until its conditional
-writes, range/read consistency, encryption, object versions, and cleanup have
-been qualified. AWS API compatibility alone is insufficient evidence.
+rejected. Before deploying this release to an S3-configured production instance,
+qualify the provider's conditional writes, range/read consistency, encryption,
+object versions, and cleanup. AWS API compatibility alone is insufficient evidence.
 
 ## Publication and operating limits
 
