@@ -16,6 +16,13 @@ const mockParams = vi.hoisted(() => ({
   pluginRoutePath: undefined as string | undefined,
   "*": undefined as string | undefined,
 }));
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/PAP/wiki",
+  search: "",
+  hash: "",
+  state: null,
+  key: "default",
+}));
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
@@ -38,6 +45,7 @@ vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
   useParams: () => mockParams,
+  useLocation: () => mockLocation,
 }));
 
 vi.mock("@/plugins/slots", async () => {
@@ -115,6 +123,8 @@ describe("PluginPage", () => {
     mockParams.pluginId = undefined;
     mockParams.pluginRoutePath = undefined;
     mockParams["*"] = undefined;
+    mockLocation.pathname = "/PAP/wiki";
+    mockLocation.search = "";
   });
 
   afterEach(() => {
@@ -135,6 +145,52 @@ describe("PluginPage", () => {
     ]);
     expect(container.textContent).toContain("Back");
     expect(container.querySelector('a[href="/PAP/dashboard"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("points Back at the plugin page root when the URL carries query-string deep-link state", async () => {
+    mockParams.pluginRoutePath = "wiki";
+    mockLocation.search = "?kind=request&id=abc-123";
+    mockPluginsApi.listUiContributions.mockResolvedValue([pageContribution()]);
+
+    const root = await renderPage(container);
+
+    expect(container.querySelector('a[href="/PAP/wiki"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/PAP/dashboard"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("points Back at the plugin page root when the route splat selects a sub-screen", async () => {
+    mockParams.pluginRoutePath = "wiki";
+    mockParams["*"] = "page/notes.md";
+    mockPluginsApi.listUiContributions.mockResolvedValue([pageContribution()]);
+
+    const root = await renderPage(container);
+
+    expect(container.querySelector('a[href="/PAP/wiki"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/PAP/dashboard"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("points Back at the plugin-id page root for deep links on the plugin-id route", async () => {
+    mockParams.pluginId = "plugin-wiki";
+    mockLocation.pathname = "/PAP/plugins/plugin-wiki";
+    mockLocation.search = "?tab=history";
+    mockPluginsApi.listUiContributions.mockResolvedValue([pageContribution()]);
+
+    const root = await renderPage(container);
+
+    expect(container.querySelector('a[href="/PAP/plugins/plugin-wiki"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/PAP/dashboard"]')).toBeNull();
 
     await act(async () => {
       root.unmount();
