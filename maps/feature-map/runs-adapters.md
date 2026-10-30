@@ -202,6 +202,10 @@ The assigned secret must reach shell tools; an unassigned host token and Codex's
 own login keys must remain unavailable. Verify the same delivery without an
 agent identity. Shell-policy metadata must contain names rather than values.
 
+On Windows, also verify an authenticated local API request from a real tool
+subprocess. The tool shell must retain Windows loader context such as
+`SYSTEMROOT`; a successful model hello does not prove tool networking.
+
 Choose Codex as the harness; the UI displays its name/icon for both runners.
 Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
 New Codex agents default to the native runner on supported macOS or GNU/Linux
