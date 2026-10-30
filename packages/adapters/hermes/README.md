@@ -97,7 +97,7 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   "adapterConfig": {
     "model": "anthropic/claude-sonnet-4",
     "maxIterations": 50,
-    "timeoutSec": 300,
+    "timeoutSec": 1800,
     "persistSession": true,
     "enabledToolsets": ["terminal", "file", "web"]
   }
@@ -222,7 +222,7 @@ Create issues in Paperclip and assign them to your Hermes agent. On each heartbe
 |-------|------|---------|-------------|
 | `model` | string | `anthropic/claude-sonnet-4` | Model in `provider/model` format |
 | `provider` | string | *(auto-detected)* | API provider: `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` |
-| `timeoutSec` | number | `300` | Execution timeout in seconds |
+| `timeoutSec` | number | `1800` | Execution timeout in seconds |
 | `graceSec` | number | `10` | Grace period before SIGKILL |
 
 ### Tools
