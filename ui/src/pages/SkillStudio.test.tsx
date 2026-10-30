@@ -711,6 +711,34 @@ describe("SkillStudio editor frontmatter", () => {
     confirm.mockRestore();
   });
 
+  it("preserves text typed while a confirmed latest-file reload is pending", async () => {
+    mockCompanySkillsApi.updateFile.mockRejectedValueOnce(new ApiError("Skill version changed", 409, {}));
+    const node = await renderStudio();
+    let editor: HTMLTextAreaElement;
+    await waitFor(() => {
+      editor = Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]'))
+        .find(candidate => candidate.value.includes("# Demo Skill"))!;
+      expect(editor).toBeTruthy();
+    });
+    await keyDown(editor!, "E");
+    await click(buttonsNamed(node, "Save").find(button => !button.disabled)!);
+    await waitFor(() => expect(node.textContent).toContain("This skill changed since you opened it"));
+    const latest = { path: "SKILL.md", content: "# New saved version", versionId: "new-version", markdown: true, editable: true };
+    let resolveReload!: (value: typeof latest) => void;
+    mockCompanySkillsApi.file.mockImplementationOnce(() => new Promise(resolve => { resolveReload = resolve; }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    await waitFor(() => expect(resolveReload).toBeTypeOf("function"));
+    await keyDown(editor!, "E");
+    const editedDuringReload = editor!.value;
+    resolveReload(latest);
+    await waitFor(() => expect(buttonsNamed(node, "Load latest saved file")[0]!.disabled).toBe(false));
+    expect(editor!.value).toBe(editedDuringReload);
+    expect(node.textContent).toContain("Unsaved");
+    expect(node.textContent).toContain("This skill changed since you opened it");
+    confirm.mockRestore();
+  });
+
   it("offers a 'Make a copy' CTA on the read-only banner (PAP-13112)", async () => {
     mockCompanySkillsApi.detail.mockResolvedValueOnce(makeSkill({
       editable: false,

@@ -1323,6 +1323,8 @@ function SkillPane({
 
   const [baseVersionId, setBaseVersionId] = useState<string | null | undefined>();
   const draftFileRef = useRef<string | null>(null);
+  const currentDraftRef = useRef({ skillId, selectedFile, draft });
+  currentDraftRef.current = { skillId, selectedFile, draft };
   const fileQuery = useQuery({
     queryKey: queryKeys.companySkills.file(companyId, skillId, selectedFile),
     queryFn: () => companySkillsApi.file(companyId, skillId, selectedFile),
@@ -1392,6 +1394,9 @@ function SkillPane({
     const result = await fileQuery.refetch();
     if (result.error) { onError("Couldn't load latest file")(result.error); return; }
     if (!result.data) return;
+    // Discard confirmation covers only the draft that started this request.
+    const current = currentDraftRef.current;
+    if (current.skillId !== skillId || current.selectedFile !== selectedFile || current.draft !== draft) return;
     draftFileRef.current = selectedFile;
     setDraft(result.data.content);
     setSavedContent(result.data.content);

@@ -402,3 +402,14 @@ handoff, and production volume removal are outside this slice.
   restricted REST scope after task-mode edits. Both focused HTTP cases and server
   typecheck pass. The complete 52-case HTTP suite passed in 63.78 seconds. This follow-up
   changes only the test fixture and evidence, leaving image runtime code unchanged.
+- Master advanced to `76fde891cc` during image publication. Merge `61f5664337`
+  preserves both the skill-recovery and native-usage imports; no skills behavior
+  changed in the merge. Full workspace typecheck and build passed. A combined
+  local run passed 42 cases, failed three execution timeouts plus a tracer setup
+  assertion, and skipped 52 HTTP cases after a setup timeout. Isolated retries
+  are recorded below rather than treating the combined run as passing.
+- Review found a delayed conflict-reload response could overwrite text typed after
+  discard confirmation. The response now applies only while the same skill, file
+  and draft remain current. All 17 Studio component cases passed, including a
+  delayed response while the user continues typing. This client-only follow-up
+  is separate from the `9200e3fcb4` server image used for remote delivery proof.
