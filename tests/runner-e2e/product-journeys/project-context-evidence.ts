@@ -4,6 +4,7 @@ interface ProjectSnapshot {
   name: string;
   status: string;
   archivedAt: string | null;
+  urlKey?: string | null;
 }
 interface TaskSnapshot {
   id: string;
@@ -14,6 +15,7 @@ interface TaskSnapshot {
   assigneeUserId: string | null;
   assigneeAgentId: string | null;
   workMode: string;
+  identifier?: string | null;
 }
 export interface ProjectContextObservation {
   companyId: string;

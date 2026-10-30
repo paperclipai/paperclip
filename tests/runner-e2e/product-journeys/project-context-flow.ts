@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { createTaskThroughUi } from "../user-actions.js";
 import { projectContextEvidencePasses, type ProjectContextObservation } from "./project-context-evidence.js";
+import { openProjectTaskThroughList, reopenProjectThroughList } from "./project-context-readback.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 export async function projectTaskContext(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
@@ -36,23 +37,11 @@ export async function projectTaskContext(context: JourneyContext, session: Targe
   const runsBeforeReload = await api.get<unknown[]>(`${taskRoute}/runs`);
 
   // Open the project from its list, then open its task from that project's Tasks view.
-  await page.goto(`${api.origin}/${company.issuePrefix}/projects`);
-  const projectListLink = page.locator("main#main-content").getByRole("link").filter({ hasText: projectName });
-  await expect(projectListLink).toHaveCount(1);
-  await projectListLink.click();
-  await page.reload();
-  await expect(page.getByText(projectName, { exact: true }).first()).toBeVisible();
+  await reopenProjectThroughList({ page, origin: api.origin, issuePrefix: company.issuePrefix, projectName,
+    projectRef: projectBeforeReload.urlKey ?? createdProject.id });
   const projectTasks = await api.get<ProjectContextObservation["projectTasks"]>(`/api/companies/${company.id}/issues?projectId=${createdProject.id}&limit=100&offset=0`);
-  const projectTaskLink = page.locator("main#main-content").getByRole("link").filter({ hasText: taskTitle });
-  await expect(projectTaskLink).toHaveCount(1);
-  await projectTaskLink.click();
-  await page.reload();
-  await expect(page.getByText(taskTitle, { exact: true }).first()).toBeVisible();
-  await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible();
-  const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  if (await properties.isVisible()) await properties.click();
-  const projectProperty = page.locator("[data-property-row]").filter({ has: page.locator('[data-property-label="Project"]') });
-  await expect(projectProperty.locator("[data-property-value]")).toContainText(projectName);
+  await openProjectTaskThroughList({ page, origin: api.origin, issuePrefix: company.issuePrefix, projectName, taskTitle, prompt,
+    taskRef: taskBeforeReload.identifier ?? task.issueId });
   const observed: ProjectContextObservation = {
     companyId: company.id, userId: context.user.id, projectId: createdProject.id, projectName,
     taskId: task.issueId, taskTitle, prompt, projectBeforeReload, taskBeforeReload, projectTasks, runsBeforeReload,

@@ -41,7 +41,11 @@ draft can otherwise lose the original content when the file arrives.
 The project/task journey records durable project and task ownership before each
 creation and immediately saves the response IDs. Its project must retain its
 planned state. Independent project-filtered task reads must contain the exact
-new task. The final task view must show the same project after reload. A Cloud
+new task. The final task view must show the same project after reload. Browser
+readback uses the main project heading and visible task content rather
+than a duplicate sidebar label. It binds navigation to the saved project URL key
+and task identifier. Closed failure codes identify project-list, project-open,
+task-open and property-readback failures without retaining Playwright page text. A Cloud
 provider must clean only these owned resources, settle owned tasks before
 archiving the project, and preserve their history. Catalog registration does not
 admit this candidate to a saved daily plan; a real deployment pass is required.
