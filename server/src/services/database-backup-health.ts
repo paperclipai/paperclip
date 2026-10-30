@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
@@ -54,20 +55,28 @@ function alertFileCandidates(opts: InspectDatabaseBackupHealthOptions) {
   ].filter((value): value is string => Boolean(value)))];
 }
 
-function readLastFailure(alertFiles: string[]) {
-  const failures = alertFiles
-    .filter((alertFile) => existsSync(alertFile))
-    .map((alertFile) => {
-      const stat = statSync(alertFile);
-      const message = readFileSync(alertFile, "utf8").trim().split(/\r?\n/)[0] ||
+function isMissing(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+async function readLastFailure(alertFiles: string[]) {
+  const failures = (await Promise.all(alertFiles.map(async (alertFile) => {
+    try {
+      const metadata = await stat(alertFile);
+      const message = (await readFile(alertFile, "utf8")).trim().split(/\r?\n/)[0] ||
         "Database backup failure marker is present.";
       return {
         path: alertFile,
-        mtime: new Date(stat.mtimeMs).toISOString(),
-        mtimeMs: stat.mtimeMs,
+        mtime: new Date(metadata.mtimeMs).toISOString(),
+        mtimeMs: metadata.mtimeMs,
         message,
       };
-    })
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+  })))
+    .filter((failure) => failure !== null)
     .sort((left, right) => right.mtimeMs - left.mtimeMs);
   const latest = failures[0];
   if (!latest) return null;
@@ -78,19 +87,35 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
-function findLatestBackup(backupDir: string, nowMs: number) {
-  if (!existsSync(backupDir)) return null;
-
-  const candidates = readdirSync(backupDir)
-    .filter((name) => name.endsWith(".sql.gz"))
-    .map((name) => {
+async function findLatestBackup(backupDir: string, nowMs: number) {
+  let names: string[];
+  try {
+    names = await readdir(backupDir);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+  let latest: { fullPath: string; stat: Stats } | null = null;
+  // Keep bounded parallelism so a retained history neither floods the
+  // filesystem thread pool nor waits for every metadata read sequentially.
+  const archives = names.filter((name) => name.endsWith(".sql.gz"));
+  for (let index = 0; index < archives.length; index += 4) {
+    const batch = await Promise.all(archives.slice(index, index + 4).map(async (name) => {
       const fullPath = join(backupDir, name);
-      const stat = statSync(fullPath);
-      return { fullPath, name, stat };
-    })
-    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-
-  const latest = candidates[0];
+      try {
+        return { fullPath, stat: await stat(fullPath) };
+      } catch (error) {
+        // Retention can remove a listed backup while its metadata is read.
+        if (isMissing(error)) return null;
+        throw error;
+      }
+    }));
+    for (const candidate of batch) {
+      if (candidate && (!latest || candidate.stat.mtimeMs > latest.stat.mtimeMs)) {
+        latest = candidate;
+      }
+    }
+  }
   if (!latest) return null;
 
   return {
@@ -102,9 +127,9 @@ function findLatestBackup(backupDir: string, nowMs: number) {
   };
 }
 
-export function inspectDatabaseBackupHealth(
+export async function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
-): DatabaseBackupHealthStatus {
+): Promise<DatabaseBackupHealthStatus> {
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
   const maxAgeHours = Math.max(1, opts.maxAgeHours);
@@ -113,8 +138,8 @@ export function inspectDatabaseBackupHealth(
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
 
   try {
-    latestBackup = findLatestBackup(opts.backupDir, now.getTime());
-    lastFailure = readLastFailure(alertFileCandidates(opts));
+    latestBackup = await findLatestBackup(opts.backupDir, now.getTime());
+    lastFailure = await readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
       warnings.push({
