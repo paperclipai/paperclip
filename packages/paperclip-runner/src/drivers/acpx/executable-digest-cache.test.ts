@@ -68,6 +68,12 @@ describe("persistent executable digest cache", () => {
     expect((await lstat(f.directory)).mode & 0o777).toBe(0o755);
   });
 
+  it("does not resolve a relative cache directory through the task working directory", async () => {
+    const cache = createExecutableDigestCache("relative-task-cache");
+    await cache.write(identity, digest);
+    expect(await cache.read(identity)).toBeNull();
+  });
+
   it("publishes complete entries under concurrent writers without leftover temporary files", async () => {
     const f = await fixture();
     await Promise.all(Array.from({ length: 8 }, () => f.cache.write(identity, digest)));

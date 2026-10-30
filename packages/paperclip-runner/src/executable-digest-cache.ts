@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { userInfo } from "node:os";
-import { join } from "node:path";
+import { tmpdir, userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 export interface ExecutableFileIdentity {
   device: string;
@@ -15,9 +15,10 @@ export interface ExecutableFileIdentity {
 export function createExecutableDigestCache(directory?: string) {
   async function location(identity: ExecutableFileIdentity, create: boolean): Promise<string> {
     const user = userInfo();
-    const directories = directory ? [directory] : [join(user.homedir, ".cache"),
-      join(user.homedir, ".cache", "paperclip-runner"),
-      join(user.homedir, ".cache", "paperclip-runner", "executable-digests-v1")];
+    const temporaryRoot = tmpdir();
+    if (!isAbsolute(directory ?? temporaryRoot)) throw new Error("Executable digest cache directory is unavailable");
+    const base = join(temporaryRoot, `paperclip-runner-${user.uid}`);
+    const directories = directory ? [directory] : [base, join(base, "executable-digests-v1")];
     for (const [index, path] of directories.entries()) {
       if (create) await mkdir(path, { mode: 0o700 }).catch(error => {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

@@ -106,8 +106,13 @@ identity, missing entry, or unusable cache causes a full descriptor read and
 hash. A hit reuses the earlier digest; metadata identity is not a fresh content
 hash. Claude, Codex, and Grok use the same native executable admission path.
 
-Cache entries live under the operating-system user's home directory at
-`.cache/paperclip-runner/executable-digests-v1`, outside task workspaces. The
+Cache entries live in the operating-system temporary directory under
+`paperclip-runner-<uid>/executable-digests-v1`, outside task workspaces such as
+`/home/agent`. Neither `HOME` nor the task working directory selects this path.
+Node's `os.tmpdir()` selects the root and honors the platform's absolute
+`TMPDIR`, `TMP`, or `TEMP` override. Hosts must keep that root outside task
+workspaces; a relative or unusable root disables caching. Temporary-directory
+eviction removes the optimization until a later full hash fills it again. The
 directory and files are private to that user. Writes use a temporary file and
 atomic rename, so later Runner or sidecar processes can reuse complete entries.
 Cache errors fall back to hashing. The cache stores no credentials or file paths.
