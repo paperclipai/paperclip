@@ -911,6 +911,131 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
+  it("resolves an AI authentication intent with a custom gateway connection", async () => {
+    // A gateway connection stores its transport's catalog slug ("local"), while
+    // the AI intent names the provider ("anthropic"). The card used to be
+    // unreachable: it listed no ready account and complete() compared the two
+    // slugs and rejected the only connection that could satisfy it.
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const gatewayRunId = randomUUID();
+    const [app] = await db.insert(toolApplications).values({
+      companyId, applicationKey: `gateway-${randomUUID()}`, name: "Local messages gateway", type: "mcp_http",
+      metadata: { sourceTemplateKey: "local" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: app!.id, name: "Gateway · Messages", uid: `gateway-${randomUUID()}`,
+      connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user",
+      healthStatus: "ok", status: "active", enabled: true,
+      config: {
+        sourceTemplateKey: "local",
+        ai: {
+          provider: "anthropic", method: "api_key",
+          routing: { kind: "local", protocol: "messages", baseUrl: "http://127.0.0.1:8317", auth: "bearer", models: [{ id: "gateway-model" }] },
+        },
+      },
+    }).returning();
+    const [grant] = await db.insert(connectionGrants).values({
+      companyId, connectionId: connection!.id, kind: "user",
+      subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id,
+    }).returning();
+    const binding = {
+      provider: "anthropic", method: "api_key", mode: "delegated",
+      connectionId: connection!.id, grantId: grant!.id,
+    } as const;
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Gateway agent", adapterType: "claude_local",
+      adapterConfig: { model: "gateway-model" }, runtimeConfig: { aiConnection: binding },
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId, connectionId: connection!.id, targetType: "agent", targetId: agentId,
+    });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Gateway auth repair", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({
+      id: gatewayRunId, companyId, agentId, status: "failed",
+      responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId },
+    });
+    const intent = await issueThreadInteractionService(db).createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload: {
+          version: 1, purpose: "ai", serviceSlug: "anthropic", serviceName: "Anthropic",
+          serviceLogoUrl: null, requestingAgentId: agentId, requestingAgentName: "Gateway agent",
+          phase: "requested",
+        },
+        sourceRunId: gatewayRunId,
+        addresseeUserId: claims.responsible_user_id!,
+        idempotencyKey: `connection-intent:${gatewayRunId}:anthropic`,
+      },
+    );
+    const service = connectionIntentService(db);
+    expect((await service.setupOptions(intent.id)).existingConnections).toEqual([
+      expect.objectContaining({ id: connection!.id }),
+    ]);
+    await expect(service.complete(intent.id, connection!.id, claims.responsible_user_id!))
+      .resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId: connection!.id } });
+  });
+
+  it("still rejects an AI intent whose provider differs from the selected account", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const mismatchRunId = randomUUID();
+    const [app] = await db.insert(toolApplications).values({
+      companyId, applicationKey: `mismatch-${randomUUID()}`, name: "Local responses gateway", type: "mcp_http",
+      metadata: { sourceTemplateKey: "local" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: app!.id, name: "Gateway · Responses", uid: `mismatch-${randomUUID()}`,
+      connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user",
+      healthStatus: "ok", status: "active", enabled: true,
+      config: {
+        sourceTemplateKey: "local",
+        ai: {
+          provider: "openai", method: "api_key",
+          routing: { kind: "local", protocol: "responses", baseUrl: "http://127.0.0.1:8317/v1", auth: "bearer", models: [{ id: "gateway-model" }] },
+        },
+      },
+    }).returning();
+    const [grant] = await db.insert(connectionGrants).values({
+      companyId, connectionId: connection!.id, kind: "user",
+      subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id,
+    }).returning();
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "OpenAI gateway agent", adapterType: "claude_local",
+      adapterConfig: { model: "gateway-model" },
+      runtimeConfig: {
+        aiConnection: {
+          provider: "anthropic", method: "api_key", mode: "delegated",
+          connectionId: connection!.id, grantId: grant!.id,
+        },
+      },
+    });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Mismatched AI account", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({
+      id: mismatchRunId, companyId, agentId, status: "failed",
+      responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId },
+    });
+    const intent = await issueThreadInteractionService(db).createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload: {
+          version: 1, purpose: "ai", serviceSlug: "anthropic", serviceName: "Anthropic",
+          serviceLogoUrl: null, requestingAgentId: agentId, requestingAgentName: "OpenAI gateway agent",
+          phase: "requested",
+        },
+        sourceRunId: mismatchRunId,
+        addresseeUserId: claims.responsible_user_id!,
+        idempotencyKey: `connection-intent:${mismatchRunId}:anthropic`,
+      },
+    );
+    const service = connectionIntentService(db);
+    expect((await service.setupOptions(intent.id)).existingConnections).toEqual([]);
+    await expect(service.complete(intent.id, connection!.id, claims.responsible_user_id!))
+      .rejects.toThrow("Connection does not match this intent");
+  });
+
 
   async function accessFixture() {
     const [company] = await db.insert(companies).values({ name: "Grant fixture", issuePrefix: `G${randomUUID().slice(0, 7)}` }).returning();
