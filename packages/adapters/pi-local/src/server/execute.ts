@@ -1,5 +1,6 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { mergeAccountingCost, mergeAccountingUsage } from "@paperclipai/adapter-utils/accounting-merge";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -56,7 +57,7 @@ import {
   sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser } from "./parse.js";
+import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser, parsePiProcessOutput, piCostUsage } from "./parse.js";
 import { createPiStdoutCompactor, resolvePiStdoutLogMode } from "./stdout-compaction.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
@@ -767,7 +768,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
-      });
+      }, event => piCostUsage(event) !== null);
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -789,20 +790,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parsePiJsonl(proc.stdout);
-      if (hasAccounting) {
+      // Parse the redaction-aware control output when present.
+      const parsed = parsePiProcessOutput(proc);
+      // Unread records force reconciliation even when no readable record ran
+      // the consumer: a partial control suffix must not pose as a priced total.
+      if (hasAccounting || accountingLog.unreadRecords() > 0) {
         const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.sawAgentEnd = retained.sawAgentEnd;
+        // Merge, never overwrite: a usage counter matching a secret value is
+        // unparseable in the redacted display stream (checkpoint totals stay
+        // zero) while the sanitized control record stays parseable. Either
+        // stream may also be the fuller one when capture is capped.
+        parsed.usage = {
+          ...mergeAccountingUsage(parsed.usage, retained.usage),
+          costUsd: mergeAccountingCost(
+            { costUsd: parsed.usage.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
+            { costUsd: retained.usage.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
+            accountingLog.unreadRecords(),
+          ),
+        };
+        parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // agent_end proves termination, not that redaction preserved every counter.
+      return { proc, rawStderr: proc.stderr, parsed, accountingComplete: accountingLog.unreadRecords() === 0 };
     };
 
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parsePiJsonl>;
+        accountingComplete: boolean;
+        parsed: ReturnType<typeof parsePiProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
@@ -811,7 +828,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          usageComplete: attempt.parsed.sawAgentEnd,
+          usageComplete: attempt.accountingComplete && attempt.parsed.sawAgentEnd,
         usage: attempt.parsed.usage, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), model, billingType: "unknown", costUsd: attempt.parsed.usage.costUsd,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
@@ -844,7 +861,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.parsed.sawAgentEnd,
+        usageComplete: attempt.accountingComplete && attempt.parsed.sawAgentEnd,
       usageBasis: "per_run",
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.

@@ -21,7 +21,7 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverPiModelsCached } from "./models.js";
-import { parsePiJsonl } from "./parse.js";
+import { parsePiProcessOutput } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -275,7 +275,7 @@ export async function testEnvironment(
         },
       );
 
-      const parsed = parsePiJsonl(probe.stdout);
+      const parsed = parsePiProcessOutput(probe);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errors[0] ?? null);
       const authEvidence = `${parsed.errors.join("\n")}\n${probe.stdout}\n${probe.stderr}`.trim();
 

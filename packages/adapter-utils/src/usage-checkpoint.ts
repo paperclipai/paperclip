@@ -12,6 +12,32 @@ const fields = new Set([
   "thoughtsTokenCount", "inputTokens", "totalTokens", "cached", "thoughts", "total_cost_usd", "cost_usd", "costUSD", "costUsd",
 ]);
 const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
+/** Distinguish damaged accounting from ignored metadata. A private sentinel
+ * marks each numeric replacement through projection. Only a projection with no
+ * surviving sentinel may be consumed; damaged counters are never reconstructed. */
+function projectRedactedRecord(line: string, isCostRecord?: (event: Record<string, unknown>) => boolean) {
+  try {
+    const marker = randomUUID();
+    const classification = line.replace(
+      /"(?:[^"\\]|\\.)*"|(?:[-+\d.eE]*\*\*\*REDACTED\*\*\*)+[-+\d.eE]*/g,
+      token => token.startsWith('"') ? token : JSON.stringify(marker),
+    );
+    const event = JSON.parse(classification, (_key, value) => value === marker ? Number.NaN : value);
+    if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+    let damaged = false;
+    const compact = JSON.stringify(project(event), (_key, value) => {
+      if (typeof value === "number" && Number.isNaN(value)) damaged = true;
+      return value;
+    });
+    if (!damaged) return { compact, lost: false };
+    const usage = event.type === "turn_end" ? event.message?.usage : event.usage;
+    const accountingEnvelope = isCostRecord ? isCostRecord(event) : event.type === "step_finish" ||
+      (usage !== null && typeof usage === "object" && !Array.isArray(usage));
+    return { compact: "", lost: accountingEnvelope };
+  } catch {
+    return null;
+  }
+}
 function project(value: unknown, depth = 0, field = ""): unknown {
   if (depth > 8) return undefined;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
@@ -69,20 +95,37 @@ export function createUsageCheckpointLog(
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
   onUsage: ((receipt: AdapterUsageCheckpoint) => Promise<void>) | undefined,
   consume: (records: string) => AdapterUsageCheckpoint | null,
+  isCostRecord?: (event: Record<string, unknown>) => boolean,
+  options: { trackLossWithoutSubscriber?: boolean } = {},
 ) {
+  const tracking = Boolean(onUsage || options.trackLossWithoutSubscriber);
   const attemptId = randomUUID();
   const compactStrings = createStringCompactor();
   let remainder = "", accounting = "", previous = "";
   let snapshot: AdapterUsageCheckpoint | null = null;
   let failure: unknown;
   let failed = false;
+  let unreadRecords = 0;
   function retain(line: string) {
-    let raw: unknown;
-    try { raw = JSON.parse(line); } catch { return; }
-    const compact = JSON.stringify(project(raw));
-    if (!compact || !/usage|tokens|cost|"result"|"turn.started"|"turn.completed"|"turn.failed"|"error"|"agent_end"|"step_finish"|"model"|"modelID"/.test(compact)) return;
+    if (!onUsage && !line.includes(REDACTED_SECRET_ENV_VALUE)) return;
+    let compact: string | undefined;
+    try { compact = JSON.stringify(project(JSON.parse(line))); } catch {
+      if (!line.includes(REDACTED_SECRET_ENV_VALUE)) return;
+      const projected = projectRedactedRecord(line, isCostRecord);
+      if (!projected) return;
+      if (projected.lost) unreadRecords++;
+      compact = projected.compact;
+    }
+    // Loss-only tracking never invokes the checkpoint parser or retains its input.
+    if (!onUsage || !compact || !/usage|tokens|cost|"result"|"turn.started"|"turn.completed"|"turn.failed"|"error"|"agent_end"|"step_finish"|"model"|"modelID"/.test(compact)) return;
     accounting += compact + "\n";
     if (accounting.length > 8 * 1024 * 1024) throw new Error("Accounting checkpoint chunk exceeds 8 MiB");
+  }
+  function recordFailure(error: unknown) {
+    failed = true; failure = error; remainder = ""; accounting = "";
+    // Optional observation must not fail a successful run. Stop buffering and
+    // retain an incomplete verdict when its bounded view cannot classify more.
+    if (!onUsage) unreadRecords++;
   }
   async function publish(complete = false) {
     if (!onUsage) return;
@@ -92,14 +135,22 @@ export function createUsageCheckpointLog(
     }
     const parsed = snapshot;
     if (!parsed) return;
-    const receipt = { ...parsed, complete: parsed.complete || complete };
+    const receipt: AdapterUsageCheckpoint = { ...parsed, complete: parsed.complete || complete };
+    if (unreadRecords > 0) {
+      // A terminal event or clean process exit cannot restore lost records.
+      // These totals are lower bounds, not complete usage or a complete price.
+      const usage = parsed.usage ? { ...parsed.usage } : undefined;
+      if (usage && "costUsd" in usage) usage.costUsd = null;
+      Object.assign(receipt, { complete: false, usage, costUsd: null, costUsdExact: null,
+        cacheAdjustedCostUsd: null, usageByModel: undefined, costStatus: "unpriced" });
+    }
     if (!receipt.complete && receipt.costStatus !== "unpriced" && receipt.costUsd == null && receipt.costUsdExact == null &&
       !Object.values(receipt.usage ?? {}).some(value => typeof value === "number" && value > 0)) return;
     const serialized = JSON.stringify(receipt);
     if (serialized !== previous) { await onUsage({ ...receipt, attemptId }); previous = serialized; }
   }
   const log = async (stream: "stdout" | "stderr", chunk: string) => {
-    if (onUsage && !failed && stream === "stdout") {
+    if (tracking && !failed && stream === "stdout") {
       try {
         remainder += compactStrings(chunk);
         const lines = remainder.split("\n"); remainder = lines.pop() ?? "";
@@ -107,7 +158,7 @@ export function createUsageCheckpointLog(
         for (const line of lines) retain(line);
         await publish();
       } catch (error) {
-        failed = true; failure = error; remainder = ""; accounting = "";
+        recordFailure(error);
       }
     }
     // Receipt persistence and ordinary logs have separate failure contracts.
@@ -115,12 +166,20 @@ export function createUsageCheckpointLog(
     await onLog(stream, chunk);
   };
   return Object.assign(log, {
+    /** Lost accounting records, including a loss-only observer's bounded-view failure. */
+    unreadRecords: () => unreadRecords,
     async flush(options: { complete?: boolean } = {}) {
-      if (failed) throw failure;
-      if (!onUsage) return;
-      if (remainder) { retain(remainder); remainder = ""; }
-      await publish(options.complete ?? false);
+      if (failed) { if (onUsage) throw failure; return; }
+      if (!tracking) return;
+      try {
+        if (remainder) { retain(remainder); remainder = ""; }
+        await publish(options.complete ?? false);
+      } catch (error) {
+        recordFailure(error);
+        if (onUsage) throw error;
+      }
     },
   });
 }
 import { randomUUID } from "node:crypto";
+import { REDACTED_SECRET_ENV_VALUE } from "./secret-env-redaction.js";

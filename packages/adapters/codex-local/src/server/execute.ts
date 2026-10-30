@@ -68,8 +68,10 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   parseCodexJsonl, createCodexJsonlParser,
+  parseCodexProcessOutput,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexAccountingRecord,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -1389,7 +1391,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
-      });
+      }, isCodexAccountingRecord, { trackLossWithoutSubscriber: true });
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           onProcessStopped: providerStop.beginInvocation(),
@@ -1422,7 +1424,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             stderr: cleanedStderr,
           },
           rawStderr: proc.stderr,
-          parsed: parseCodexJsonl(proc.stdout),
+          parsed: parseCodexProcessOutput(proc),
+          accountingComplete: accountingLog.unreadRecords() === 0,
           pricingContext,
           monitor: monitorFired
             ? {
@@ -1451,7 +1454,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parseCodexJsonl>;
+        parsed: ReturnType<typeof parseCodexProcessOutput>;
+        accountingComplete: boolean;
         pricingContext?: AdapterExecutionResult["pricingContext"];
         monitor?:
           | { fired: false }
@@ -1460,14 +1464,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
       isRetry = false,
     ): AdapterExecutionResult => {
+      const usageComplete = attempt.accountingComplete && attempt.parsed.usageComplete;
       if (attempt.monitor?.fired) {
         const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
         return {
           exitCode: null,
           signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
           timedOut: false,
-          usageComplete: attempt.parsed.usageComplete,
-          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+          usageComplete,
+          costStatus: usageComplete ? undefined : "unpriced",
           errorMessage,
           errorCode: "codex_output_inactivity_monitor",
           errorFamily: null,
@@ -1501,8 +1506,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          usageComplete: attempt.parsed.usageComplete,
-          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+          usageComplete,
+          costStatus: usageComplete ? undefined : "unpriced",
           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: "per_run",
           provider: "openai",
@@ -1590,8 +1595,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.parsed.usageComplete,
-        costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+        usageComplete,
+        costStatus: usageComplete ? undefined : "unpriced",
         errorMessage:
           (attempt.proc.exitCode ?? 0) === 0
             ? null

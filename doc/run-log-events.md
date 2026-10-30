@@ -90,6 +90,153 @@ and `harness_state.launch_material` for remote state inspection and fresh launch
 material. These events retain the existing schema and carry no paths or exception strings.
 They also become native Observability spans only with an operator OTLP endpoint.
 
+## Child-Process Captured-Output Literal Protection
+
+The local `runChildProcess` pipe capture collects values once from the resolved
+child environment. It uses a static denylist of secret environment-variable
+names in `packages/adapter-utils/src/secret-env-redaction.ts`. It does not learn
+values from incident reports or past output. Values whose trimmed length is
+less than six are excluded to limit accidental matches in ordinary output.
+
+Stdout and stderr have independent incremental UTF-8 decoders and streaming
+literal redactors. A complete known value is replaced with `***REDACTED***`
+before it reaches `onLog` or the returned display capture. Matching spans can
+cross pipe chunks or overlap other matches. Safe progress is released without
+waiting for EOF; only a possible secret prefix is held. At EOF, each decoder's
+remainder passes through redaction before the redactor's carry is flushed.
+
+Capture with known secret values, or a terminal-cleanup policy, also supplies
+optional sanitized `controlOutput` text. Its collection is independent of cleanup.
+Cleanup predicates receive sanitized text, never the private raw scan buffers.
+The Claude, Codex, Cursor, Gemini, Pi, OpenCode, Grok, and Kimi CLI adapters prefer
+sanitized control records. Their environment probes also use that selection,
+including Claude CLI hello and ACP stored-login parsing and error classification.
+The selection is nullish: an explicitly empty control output never re-enables
+literal display parsing. Producers without control output retain their stdout
+fallback. Claude and Codex additionally inspect already-redacted display capture
+when no terminal result survives private raw retention, but only with explicit
+`displayFallbackSafe` provenance from the capture boundary. A large protected
+string can shrink to a valid record below the display cap after its raw opening
+was clipped. Actual complete replacements must not have removed JSON quotes,
+backslashes or forbidden string controls on either pipe; otherwise display-only
+fallback is disabled for that invocation. Unused unsafe env values do not disable
+it. This deliberately conservative condition can decline genuine compacted
+records after syntax-changing replacements, but cannot promote repaired originals.
+The other adapters do not reconstruct records clipped from the control window.
+EOF cleanup inspection happens after the flushed display has been captured on either
+pipe, without waiting for asynchronous logging. Display capture and `onLog` still
+use literal markers; they need not remain valid JSON.
+
+For a valid single-line JSON record, control sanitization replaces each affected
+string token (including keys) with the quoted marker. Affected numeric prices
+(`cost`, `costUsd`, `costUSD`, `cost_usd`, `total_cost_usd`, or `total`) become
+`null`, not a genuine zero price; other affected numeric tokens become `0`.
+Property names are decoded before classification. Unaffected tokens, including
+real zero prices, remain unchanged. A matched span crossing record structure
+suppresses that record instead of making a new control event.
+A changed malformed JSON-looking line is also suppressed, not repaired. Supported
+Cursor `stdout`/`stderr` framing is recognized before validating the original JSON
+payload; sanitization preserves that frame and uses payload-relative token offsets.
+Malformed framed payloads are not repaired into controls. This preserves genuine
+result records and unaffected accounting; a protected numeric counter itself is not
+recoverable and is neutralized. Other text uses literal replacement. This is not a
+general structured-output sanitizer for all formats.
+
+Pi and OpenCode reconcile control accounting with full-stream display checkpoints.
+A redacted price stays unknown even when later records are priced. If numeric
+redaction makes a display line unreadable, the checkpoint classifies its event
+envelope to count lost cost records. Quoted content remains intact, while an
+unquoted marker and any adjoining numeric-token characters receive a private
+sentinel in a temporary copy. Adjacent or separated markers within one numeric
+token are classified together. Projection must remove every sentinel before any
+accounting can be consumed. This preserves intact usage when only ignored metadata,
+such as `duration_ms`, was redacted. A surviving sentinel means damaged accounting:
+that record is counted as lost, never reconstructed or promoted to control output.
+Each adapter supplies its actual
+cost-envelope predicate: OpenCode counts only `step_finish`; Pi shares its usage
+selection between parsing and classification, excluding envelopes its parser skips.
+Pi `message_end` duplicates with nested usage do not count as lost priced turns.
+An explicitly unavailable Pi primary price cannot enable the direct-price fallback.
+A classified lost record requires complete control evidence covering the expected
+number of cost records; otherwise the total is unknown. Checkpoint callbacks mark
+all price representations unavailable and usage incomplete after losing a display
+cost record, even on completion. Final control reconciliation may recover a price,
+but not a secret-valued counter. The element-wise maximum of usage totals is only
+a lower bound when the two views omit different records; it is not their union.
+Claude, Codex, Gemini, Cursor, Grok, Pi and OpenCode keep final usage incomplete
+after a lost full-stream accounting record, including timeout and error results.
+Neither a terminal event, a clean exit, nor a recovered price overrides that loss.
+Loss tracking also runs when no checkpoint callback is installed, using an explicit
+loss-only mode rather than a fake subscriber. It never invokes the checkpoint
+consumer. If its eight-MiB bound is exceeded, it stops buffering, keeps usage
+incomplete and does not fail the provider run. Real subscribers retain the existing
+fatal parser and receipt-persistence failure contract. Claude's
+classifier includes model-only result ledgers; Gemini's includes `stats` and
+`usageMetadata` envelopes; Cursor normalizes its supported line framing first.
+Grok uses the same bounded classifier for its `end` records without adding an
+incremental checkpoint protocol. Kimi's wire protocol has no usage receipt and
+its explicit no-usage behavior is unchanged. The checkpoint never advertises a
+complete subtotal. An unclassifiable damaged line provides no accounting evidence. OpenCode also preserves the retained stream's
+usage-completeness verdict when its parsed plus classified unread `step_finish`
+records outnumber control records: a valid captured suffix cannot hide earlier
+invalid counters. Equal parsed counts alone do not prove equal coverage. Control
+covering that full expected record count still permits price recovery, not complete usage.
+
+The private terminal scan inspects each full candidate before retaining its
+64-Ki-character tail. The final control capture uses the existing four-Mi-character
+capture limit. Both retain and translate coverage of already-recognized complete
+matches when trimming raw text. They also retain original line-boundary provenance:
+a clipped leading fragment is suppressed through its original newline, including
+later pre-trim inspections and EOF snapshots. Trimming cannot promote a suffix of a
+rejected original record into terminal evidence. Genuine full records are inspected
+before retention and subsequent complete records remain eligible. A protected span
+cannot become a terminal event merely because its original prefix leaves the
+retained window or more data arrives.
+These are private per-pipe buffers, not a new run-log event or schema.
+
+Local/SSH process capture optionally delivers `onControlOutput` batches of ordered,
+once-only sanitized complete records. An unterminated final record is delivered
+at pipe EOF before the process promise resolves. Each pipe holds unresolved secret
+prefixes across record boundaries and retains complete-match coverage when trimming
+its four-Mi-character pending tail. An unresolved prefix may exceed that cap,
+but remains bounded by the longest collected value, as with display carry.
+A record whose opening was clipped is suppressed
+through its newline; its fragment is not a new event. Kimi live assistant/tool events
+consume this callback only, while display `onLog` remains unchanged. Small stable
+records are forwarded live, not reconstructed by replaying final capture.
+
+Sandbox-backed runs have no control channel from the runner, so the sandbox branch
+builds the same `onControlOutput` records itself. It feeds the raw streamed bytes
+(tail chunks, or the runner's own `onLog` chunks when no tail is attached) into one
+sanitized control stream per pipe, never the display `onLog` text. Records are
+delivered in arrival order through a single chain, ahead of the process result.
+A runner that awaits its output callback also waits for that batch's control
+sink. A runner that does not await callbacks has a drop-newest policy: the shared
+queue accepts at most 64 batches and four Mi characters, including the in-flight
+batch. A batch that would exceed either limit is not delivered as live control
+output. At completion, one warning reports only the dropped batch and character
+counts. Display output and the runner's captured result are unchanged. These
+limits bound live-event backlog; they do not make a stuck sink complete.
+If the runner rejects, control backpressure waits are released before abort joins
+its tail loop, so a stuck control sink does not hold the runner error. New and
+queued control batches are no longer delivered after this abort. An already
+invoked sink is not cancelled; display sinks and tail RPCs keep their existing
+behavior. When the runner returns a result normally, control delivery still drains
+before that result is returned, so a stuck sink can still prevent completion.
+Without a tail, a pipe that streamed nothing is covered once from the runner's
+final output; a pipe that did stream is not replayed, so no record is emitted twice. A failing event
+sink logs a warning and does not fail the run. This extends control sanitization
+to the sandbox branch only. It does not extend redaction to independent provider
+capture or tail implementations, and the display logs they produce keep their own
+behavior.
+
+This boundary does not scrub child-created sidecars, provider-owned transcripts,
+historical files, independent sandbox/remote capture implementations, values
+absent from the denylist, encoded or transformed spellings, or arbitrary partial
+fragments. A child can still read its injected credentials. This change does not
+replace credential containment, file permissions, or other run-log safeguards.
+It adds no Paperclip Telemetry or OpenTelemetry export.
+
 ## Native PRP Run-Log Events
 
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from

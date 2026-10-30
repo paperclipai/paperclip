@@ -98,6 +98,14 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
   };
 }
 
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseGrokProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}): ParsedGrokJsonl {
+  return parseGrokJsonl(output.controlOutput?.stdout ?? output.stdout);
+}
+
 export function isGrokUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

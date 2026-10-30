@@ -36,6 +36,7 @@ export function createOpenCodeJsonlParser() {
   };
   let costUsd: number | null = null;
   let missingCost = false;
+  let costRecords = 0;
   let usageReported = false;
   let missingUsage = false;
 
@@ -71,6 +72,7 @@ export function createOpenCodeJsonlParser() {
           if (Object.values(next).every(Number.isSafeInteger)) { Object.assign(usage, next); usageReported = true; }
           else missingUsage = true;
         } else missingUsage = true;
+        costRecords++;
         if (typeof part.cost === "number" && Number.isFinite(part.cost) && part.cost >= 0) costUsd = (costUsd ?? 0) + part.cost;
         else missingCost = true;
         continue;
@@ -100,10 +102,20 @@ export function createOpenCodeJsonlParser() {
       usageReported,
       usageComplete: usageReported && !missingUsage,
       costUsd: missingCost ? null : costUsd,
+      costComplete: !missingCost,
+      costRecords,
       errorMessage: errors.length > 0 ? errors.join("\n") : null,
       toolErrors,
     };
   };
+}
+
+/** Parse sanitized control records without changing the display/log capture. */
+export function parseOpenCodeProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}) {
+  return parseOpenCodeJsonl(output.controlOutput?.stdout ?? output.stdout);
 }
 
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
