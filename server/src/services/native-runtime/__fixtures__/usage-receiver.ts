@@ -41,3 +41,5 @@ process.on("message", async (message: Start | { kind: "command"; requestId: numb
     process.send?.({ requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+process.send?.({ kind: "ready" });

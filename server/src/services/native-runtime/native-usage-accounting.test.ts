@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { createNativeTurnAccounting, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, nativeUsageCostUsd, normalizeNativeUsage, usesNativeUsageDelivery } from "./native-usage-accounting.js";
 
 const provider = { kind: "opencode" as const, model: "test-model" };
 const event = (sourceSeq: number, eventType: string, turnId = "turn-1", payload: Record<string, unknown> = {}) => ({
@@ -8,6 +8,14 @@ const event = (sourceSeq: number, eventType: string, turnId = "turn-1", payload:
 } as PrpEvent);
 
 describe("native turn accounting", () => {
+  it("selects producer delivery only for supported remote Runner execution", () => {
+    expect(usesNativeUsageDelivery({ runnerd: true, remote: true, provider })).toBe(true);
+    expect(usesNativeUsageDelivery({ runnerd: false, remote: true, provider })).toBe(false);
+    expect(usesNativeUsageDelivery({ runnerd: true, remote: false, provider })).toBe(false);
+    expect(usesNativeUsageDelivery({ runnerd: true, remote: true })).toBe(false);
+    expect(usesNativeUsageDelivery({ runnerd: true, remote: true, provider: { kind: "muse", model: null } as never })).toBe(false);
+  });
+
   it("reconstructs cumulative turn usage without counting repeated producer events twice", () => {
     const accounting = createNativeTurnAccounting(provider);
     const usage = { kind: "usage", usage: { runDeltaComplete: true, runDelta: { inputTokens: 120, outputTokens: 10, providerCostUsd: 0.25 } } };

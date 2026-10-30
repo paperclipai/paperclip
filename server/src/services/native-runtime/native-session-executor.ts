@@ -1,5 +1,5 @@
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
-import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery } from "./native-usage-accounting.js";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -8570,8 +8570,8 @@ async function executePaperclipNativeSessionWithinScope(
     for (const row of history) turnAccounting.observe(record(row.payload).prpEvent as PrpEvent);
   }
   let fallbackUsageRecorder: ReturnType<typeof createRunUsageRecorder> | undefined;
-  const producerOwnsUsage = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
-    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(input.execution.provider.kind);
+  const producerOwnsUsage = usesNativeUsageDelivery({ runnerd: input.useRunnerd === true,
+    remote: input.runnerExecutionTarget?.kind === "remote", provider: input.execution.provider });
   const producerUsage = producerOwnsUsage ? await createNativeUsageDelivery(input.db, {
     companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
     runnerInstanceId: effectiveRunnerInstanceId, provider: input.execution.provider,

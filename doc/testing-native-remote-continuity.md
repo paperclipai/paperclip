@@ -285,7 +285,9 @@ Built-in native remote Runner execution accepts structured accounting before
 its PRP transport ACK. `usage.reported`, turn-start, and turn-terminal facts
 produce immutable `run_usage_receipts` rows. The receipt stores only structured
 usage and turn identity. It does not depend on output logs or raw trace capture.
-The source UUID derives from the run and Runner identity. Source event IDs and
+The source UUID derives from the run and Runner identity. Provider-turn IDs and
+turn-start source facts preserve aggregation when several provider turns share
+one PRP envelope turn. Source event IDs and
 sequences remain stable across receiver replacement. Repeated delivery checks
 the saved fact and does not create another receipt for the same report.
 

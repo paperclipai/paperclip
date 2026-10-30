@@ -174,3 +174,10 @@ export function normalizeNativeUsage(usage: Record<string, unknown> | null, opti
     ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
   };
 }
+
+export function usesNativeUsageDelivery(input: {
+  runnerd: boolean; remote: boolean; provider?: NativeExecutionInput["provider"] | null;
+}) {
+  return input.runnerd && input.remote && input.provider !== undefined && input.provider !== null
+    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(input.provider.kind);
+}

@@ -1,3 +1,4 @@
+import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
@@ -495,9 +496,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     adapterFinalizeOutcome = status;
   };
 
-  const producerOwnsUsage = nativeRuntimeResolution.kind === "native" && agent.adapterType === "paperclip_runner"
-    && executionTarget?.kind === "remote" && nativeExecution !== null && nativeExecution !== undefined
-    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(nativeExecution.provider.kind);
+  const producerOwnsUsage = usesNativeUsageDelivery({
+    runnerd: nativeRuntimeResolution.kind === "native" && agent.adapterType === "paperclip_runner",
+    remote: executionTarget?.kind === "remote", provider: nativeExecution?.provider,
+  });
   const usageRecorder = producerOwnsUsage ? undefined : await measureRunPhase("execution.usage_startup", () =>
     createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType }));
   input.effects.onUsageCaptureReady(usageRecorder?.persistFailure ?? (async () => {}));

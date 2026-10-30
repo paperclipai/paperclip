@@ -140,6 +140,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
@@ -7154,6 +7155,34 @@ describe("native terminal-turn accounting", () => {
     expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: true }));
     expect(usageRecorder.create).not.toHaveBeenCalled();
   });
+  it("binds retained warm transport usage to the successor run authority", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "native-warm-usage-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = directory;
+    const first = { ...execution, binding: { ...execution.binding, runId: "first-warm-usage", executionWorkspaceId: "warm-usage-workspace" },
+      session: { ...execution.session, normalizedSessionId: "warm-usage-session", lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60000 } } } as NativeExecutionInputV1;
+    const second = { ...first, binding: { ...first.binding, runId: "second-warm-usage" } };
+    const firstCapture = vi.fn(async (_event: PrpEvent) => {}), secondCapture = vi.fn(async (_event: PrpEvent) => {});
+    try {
+      await createRunnerdBackend({ db: leaseDb(first), execution: first, runnerInstanceId: "warm-producer", onAccountingEvent: firstCapture });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const retainedHook = state.createTransport.mock.calls.at(-1)![0].onAccountingEvent!;
+      const firstReport = { eventType: "usage.reported", runId: first.binding.runId, sourceInstanceId: "warm-producer" } as PrpEvent;
+      await retainedHook(firstReport);
+      expect(firstCapture).toHaveBeenCalledExactlyOnceWith(firstReport);
+      await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
+      await createRunnerdBackend({ db: leaseDb(second), execution: second, runnerInstanceId: "warm-producer", onAccountingEvent: secondCapture });
+      const secondReport = { ...firstReport, runId: second.binding.runId };
+      await retainedHook(secondReport);
+      expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);
+      expect(firstCapture).toHaveBeenCalledTimes(1);
+      await expect(retainedHook(firstReport)).rejects.toThrow("native_usage_run_binding_mismatch");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses the canonical recorder for partial and completed usage when no onUsage callback is supplied", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.execute.mockReset().mockImplementationOnce(async () => {

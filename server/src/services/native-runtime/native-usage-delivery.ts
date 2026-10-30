@@ -36,10 +36,13 @@ export async function createNativeUsageDelivery(db: Db, input: {
   const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
   let observedUsage: Record<string, unknown> | null = null;
   let observedTurn: string | undefined;
+  let activeProviderTurn: string | undefined;
   const observe = (envelope: UsageReceiptEnvelope) => {
     const fact = envelope.producerEvent!;
+    if (fact.eventType === "turn.started") activeProviderTurn = fact.providerTurnId ?? fact.sourceEventId;
+    const accountingTurn = fact.providerTurnId ?? activeProviderTurn ?? fact.turnId;
     const event = { sourceInstanceId: input.runnerInstanceId, sourceSeq: envelope.sequence,
-      turnId: fact.turnId, eventType: fact.eventType,
+      turnId: accountingTurn, eventType: fact.eventType,
       payload: fact.usage ? { kind: "usage", usage: fact.usage } : {} } as PrpEvent;
     if (turnAccounting) {
       turnAccounting.observe(event);
@@ -48,9 +51,9 @@ export async function createNativeUsageDelivery(db: Db, input: {
     if (fact.eventType === "turn.started") observedTurn = undefined;
     if (fact.usage) {
       observedUsage = fact.usage;
-      observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? fact.turnId : undefined;
+      observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? accountingTurn : undefined;
     }
-    return { usage: observedUsage, complete: terminal.has(fact.eventType) && observedTurn !== undefined && observedTurn === fact.turnId };
+    return { usage: observedUsage, complete: terminal.has(fact.eventType) && observedTurn !== undefined && observedTurn === accountingTurn };
   };
   for (const row of saved) {
     const envelope = row.receipt as UsageReceiptEnvelope;
@@ -66,6 +69,7 @@ export async function createNativeUsageDelivery(db: Db, input: {
     const payload = event.payload as Record<string, unknown>;
     const fact: NonNullable<UsageReceiptEnvelope["producerEvent"]> = {
       sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
+      ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
       ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true } } : {}),
     };
     const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
