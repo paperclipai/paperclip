@@ -10,6 +10,7 @@ export const productJourneys = [
   { id: "protected-actions", label: "Approve and decline protected service actions", requires: ["company", "board-user", "task-write", "agent", "review-service"], capabilities: ["questions-and-approvals/tool-review"], paid: true },
   { id: "create-skill-studio", label: "Create a company skill and persist a Skill Studio edit", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/authoring"], paid: true },
   { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/stop-and-pause"], paid: true },
+  { id: "followup-while-running", label: "Send a follow-up during active work and verify its saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/queue"], paid: true },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
 

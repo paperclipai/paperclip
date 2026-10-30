@@ -1,6 +1,12 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
 export const agentJourneyRuns = { "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
-  "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3 } as const;
+  "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3 } as const;
+/** Existing journeys keep exact counts; active follow-up permits in-turn steering. */
+export function agentJourneyRunCountMatches(id: string, count: number | undefined) {
+  if (!Object.hasOwn(agentJourneyRuns, id) || !Number.isSafeInteger(count)) return false;
+  const maximum = agentJourneyRuns[id as keyof typeof agentJourneyRuns];
+  return count === maximum || id === "followup-while-running" && count === 1;
+}
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
@@ -12,5 +18,6 @@ export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "create-skill-studio": ["created-skill-persisted", "skill-creation-attributed", "skill-studio-edit-persisted", "configured-model-and-environment"],
   "stop-redirect": ["checkpoint-artifact-verified", "active-work-stopped", "stop-native-terminal-retained", "new-direction-completed", "stopped-run-remained-terminal",
     "stopped-run-no-later-events", "stop-preserved-download", "redirect-consumed-once", "user-reply-stored-once", "configured-model-and-environment"],
+  "followup-while-running": ["followup-native-command-active", "followup-stored-once", "followup-consumed-once", "followup-final-answer-persisted", "followup-one-or-two-native-runs", "configured-model-and-environment"],
   "cloud-onboarding": ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"],
 };
