@@ -71,6 +71,18 @@ describe("IssueFiltersPopover", () => {
     act(() => root.unmount());
   });
 
+  it.each(["legacy", "streamlined", "refreshed"] as const)("hides unsupported live filters in %s", presentation => {
+    const root = createRoot(container);
+    const props = { presentation, enableLiveRunsFilter: false, state: defaultIssueFilterState, onChange: vi.fn(), activeFilterCount: 0 };
+    act(() => root.render(<IssueFiltersPopover {...props} />));
+    expect(container.textContent).not.toContain("Live runs only");
+    expect(container.textContent).not.toContain("Visibility");
+    act(() => root.render(<IssueFiltersPopover {...props} enableRoutineTasksFilter />));
+    const visibility = container.querySelector('[data-filter-options="visibility"]');
+    expect(Array.from(visibility?.querySelectorAll("label") ?? []).map(label => label.textContent)).toEqual(["Routine tasks"]);
+    act(() => root.unmount());
+  });
+
   it("uses a scrollable popover and a three-column desktop grid", () => {
     const root = createRoot(container);
 
