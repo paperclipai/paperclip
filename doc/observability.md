@@ -328,6 +328,14 @@ once known, `paperclip.native_reconciliation.candidates` (a count). A failed
 pass marks the pass span and the phase that was running with an error status.
 Faster passes record nothing.
 
+Heartbeat configuration preparation overlaps independent reads. Skill preparation
+runs alongside connector assignments; standing connection instructions wait for
+assignment catalog repairs, but can overlap the skill branch. These spans can
+finish out of order. Do not add their durations as serial elapsed time. The
+historical `skills.prepare` span ends when the skill branch settles, rather than
+when its concurrent branches finish. Each preparation attempt settles its started
+branches before it returns an error or releases acquired credentials.
+
 ### Detailed execution phases
 
 The `paperclip.execution` tracer adds these content-free spans beneath the current

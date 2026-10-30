@@ -19,11 +19,20 @@ import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as aiRuntime from "../services/ai-connection-runtime.js";
+import * as connectorRuntime from "../services/connector-runtime.js";
+import * as assignedMcp from "../services/native-runtime/assigned-mcp-tools.js";
 import * as sentry from "../sentry.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(complete => { resolve = complete; });
+  return { promise, resolve };
+}
+
 const skillFailures = vi.hoisted(() => new Map<string, string>());
+const skillWaits = vi.hoisted(() => new Map<string, () => Promise<void>>());
 
 describe("Runner home mode during recovery preparation", () => {
   it.each([
@@ -52,6 +61,7 @@ vi.mock("../services/company-skills.js", async importOriginal => {
     return { ...service, withRuntimeSkillEntries: async <T>(companyId: string,
       options: Parameters<typeof service.withRuntimeSkillEntries>[1],
       consume: (entries: Awaited<ReturnType<typeof service.listRuntimeSkillEntries>>) => T | Promise<T>) => {
+      await skillWaits.get(companyId)?.();
       const failure = skillFailures.get(companyId);
       if (failure) throw new Error(failure);
       return service.withRuntimeSkillEntries(companyId, options, consume);
@@ -91,7 +101,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
     });
   }, 60_000);
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); skillFailures.clear(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); skillFailures.clear(); skillWaits.clear(); });
   afterAll(async () => {
     await heartbeat?.drainActiveRunExecutions();
     unregisterServerAdapter(adapterType);
@@ -288,6 +298,45 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [unchangedAgent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(unchangedAgent.adapterConfig).toMatchObject({ paperclipSkillSync: { desiredSkills: [other.key] } });
   }, 60_000);
+  it("overlaps skills with assignments and dependent connection instructions before composition", async () => {
+    const f = await seed();
+    const skillGate = deferred<void>();
+    skillWaits.set(f.companyId, () => skillGate.promise);
+    const assignments = vi.spyOn(connectorRuntime, "resolveConnectorAssignments");
+    const instructions = vi.spyOn(assignedMcp, "resolveAssignedConnectionInstructionsForRun");
+    const configured = await configuration(f, { provider: "codex", model: "gpt-6.1-sol", homeMode: "isolated" });
+    const opening = configured.prepare();
+    try {
+      await vi.waitFor(() => {
+        expect(assignments).toHaveBeenCalledOnce();
+        expect(instructions).toHaveBeenCalledOnce();
+      });
+    } finally {
+      skillGate.resolve();
+    }
+    expect(await opening).toMatchObject({ prepared: true, runtimeConfig: { homeMode: "isolated", model: "gpt-6.1-sol" } });
+  });
+
+  it("settles concurrent configuration reads before exposing the first preparation failure", async () => {
+    const f = await seed();
+    const assignmentGate = deferred<Awaited<ReturnType<typeof connectorRuntime.resolveConnectorAssignments>>>();
+    const assignments = vi.spyOn(connectorRuntime, "resolveConnectorAssignments").mockReturnValue(assignmentGate.promise);
+    const instructions = vi.spyOn(assignedMcp, "resolveAssignedConnectionInstructionsForRun").mockRejectedValue(new Error("later instruction failure"));
+    skillFailures.set(f.companyId, "first skill failure");
+    const configured = await configuration(f, { provider: "codex", homeMode: "isolated" });
+    let settled = false;
+    const opening = configured.prepare();
+    void opening.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(assignments).toHaveBeenCalledOnce());
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(instructions).not.toHaveBeenCalled();
+    } finally {
+      assignmentGate.resolve([]);
+    }
+    await expect(opening).rejects.toThrow("first skill failure");
+  });
 
   it("does not install new environment declarations when recovering a saved skill selection", async () => {
     const f = await seed(), pluginId = randomUUID(), pluginKey = `fixture.${randomUUID()}`;
@@ -445,11 +494,11 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       const runIdHash = createHash("sha256").update(finished.id).digest("hex").slice(0, 12);
       const steps = exporter.getFinishedSpans().filter(span => span.name.startsWith("heartbeat.prepare.configuration_")
         && span.attributes["paperclip.task.run.run_id"] === runIdHash);
-      expect(steps.map(span => span.name)).toEqual([
+      expect(steps.map(span => span.name).sort()).toEqual([
         "configuration_mentions", "configuration_github_identity", "configuration_secrets", "configuration_ai_runtime",
         "configuration_skills", "configuration_connector_assignments", "configuration_connector_skills",
         "configuration_connector_delivery", "configuration_connection_instructions", "configuration_agent_identity",
-      ].map(step => `heartbeat.prepare.${step}`));
+      ].map(step => `heartbeat.prepare.${step}`).sort());
       for (const span of steps) {
         expect(span.status).toEqual({ code: 0 });
         expect(span.attributes).toEqual({ "paperclip.task.run.run_id": runIdHash });
@@ -494,7 +543,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         && span.attributes["paperclip.task.run.run_id"] === runIdHash);
       expect(steps.find(span => span.name === "heartbeat.prepare.configuration_ai_runtime")?.status.code).toBe(0);
       expect(steps.find(span => span.name === "heartbeat.prepare.configuration_skills")?.status).toEqual({ code: 2 });
-      expect(steps.some(span => span.name === "heartbeat.prepare.configuration_connector_assignments")).toBe(false);
+      expect(steps.some(span => span.name === "heartbeat.prepare.configuration_connector_assignments")).toBe(true);
       for (const span of steps) {
         expect(span.attributes).toEqual({ "paperclip.task.run.run_id": runIdHash });
         expect(span.events).toEqual([]);
