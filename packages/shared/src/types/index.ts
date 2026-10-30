@@ -52,8 +52,10 @@ export type {
   AttentionTransferInput,
   AttentionTransferResult,
   DecisionHistoryItem,
+  DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
   DecisionHistoryPage,
+  DecisionHistoryResultOutcome,
   AttentionDetailImage,
   AttentionFeed,
   AttentionFeedView,
@@ -86,6 +88,7 @@ export {
   ATTENTION_RECEIPT_DAYS,
   ATTENTION_RECEIPT_OUTCOMES,
   ATTENTION_SOURCE_KINDS,
+  DECISION_HISTORY_OUTCOME_FILTERS,
 } from "./attention.js";
 export type {
   DecisionQueue,

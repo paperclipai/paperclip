@@ -1,4 +1,4 @@
-import type { AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
+import type { AttentionItem, AttentionPersonalView, DecisionHistoryItem, DecisionHistoryOutcomeFilter } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
 /**
@@ -19,4 +19,39 @@ export function recentDecisionReceipts(items: DecisionHistoryItem[], now: number
 /** One canonical pending feed, projected as distinct tasks on the Tasks surface. */
 export function pendingDecisionTaskIds(items: AttentionItem[]) {
   return new Set(items.flatMap((item) => item.relatedIssue ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []));
+}
+
+/**
+ * The Decision history outcome filter (PAP-749 plan §3). Withdrawn, Expired and
+ * Closed with task are separate: a card that closed with its task is not in
+ * Expired. "Handled for me" is a different filter (who the card was for), so
+ * it is not an outcome here.
+ */
+export const DECISION_HISTORY_OUTCOME_OPTIONS: ReadonlyArray<{ value: DecisionHistoryOutcomeFilter; label: string }> = [
+  { value: "accepted", label: "Approved" },
+  { value: "answered", label: "Answered" },
+  { value: "rejected", label: "Changes requested" },
+  { value: "decided", label: "Decided" },
+  { value: "withdrawn", label: "Withdrawn" },
+  { value: "expired", label: "Expired" },
+  { value: "issue_closed", label: "Closed with task" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+/**
+ * A history entry's headline. A withdrawn card names who withdrew it
+ * ("Withdrawn by @scott", PAP-749 plan §3); everything else keeps the
+ * server's label.
+ */
+export function decisionHistoryHeadline(item: DecisionHistoryItem, userLabelMap?: ReadonlyMap<string, string> | null) {
+  if (item.resultOutcome === "withdrawn" && item.resolvedByUserId) {
+    return `Withdrawn by @${userLabelMap?.get(item.resolvedByUserId) ?? "someone"}`;
+  }
+  return item.label;
+}
+
+/** The task line of a history entry; an approval with no task names itself instead. */
+export function decisionHistoryContext(item: DecisionHistoryItem) {
+  if (!item.issueId) return item.sourceKind === "approval" ? `Approval · ${item.title}` : item.title;
+  return [item.issueIdentifier, item.issueTitle].filter(Boolean).join(" · ");
 }

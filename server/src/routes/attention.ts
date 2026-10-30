@@ -30,7 +30,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { cancelApprovalAndNotify } from "./approvals.js";
 import { withdrawIssueThreadInteractionAndNotify } from "./issues.js";
 
-const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "all"];
+const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "archived", "all"];
 
 function optionalQueryString(value: unknown, field: string) {
   if (value === undefined) return undefined;

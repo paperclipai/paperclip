@@ -6,7 +6,6 @@ import {
   ChevronUp,
   ExternalLink,
   Loader2,
-  RotateCcw,
 } from "lucide-react";
 import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -35,7 +34,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
-import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip } from "./AttentionCloseMenu";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionStaleChip } from "./AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "./AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
@@ -65,10 +64,13 @@ interface AttentionQueueRowProps {
   onTransfer?: (item: AttentionItem, userId: string) => void;
   /** A close or transfer of this card is in flight. */
   closing?: boolean;
-  /** Restore a snoozed/dismissed row (curtain variant only). */
+  /**
+   * Restore a card you archived or snoozed (the Archived view, PAP-749 plan
+   * §3). The row then says when it was archived or when it comes back, and
+   * its Close… menu offers Restore instead of Archive. The card stays
+   * answerable like any other row.
+   */
   onRestore?: (item: AttentionItem) => void;
-  /** "active" renders the live queue row; "hidden" renders a curtain row. */
-  variant?: "active" | "hidden";
   agentMap?: Map<string, Agent>;
   /** Company agents, for the triage strip's route-to-agent picker. */
   agents?: Agent[];
@@ -100,7 +102,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onTransfer,
   closing = false,
   onRestore,
-  variant = "active",
   agentMap,
   agents,
   showTriage = false,
@@ -116,10 +117,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const status = attentionStatus(item);
   // The task this row belongs to, whichever field the feed put it in.
   const taskRef = attentionTaskRef(item);
-  const isHidden = variant === "hidden";
-  const inline = !isHidden && isInlineResolvable(item);
+  const inline = isInlineResolvable(item);
   const href = item.subject.href;
-  const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);
   const hasImages = images.length > 0;
@@ -131,8 +130,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // expand to reveal the per-card triage strip (PAP-16032 §4.5). Any of these
   // gives a header/thumbnail click somewhere to go. Non-inline, image-less rows
   // with no triage keep the explicit Open button and never toggle on a stray click.
-  const triageEnabled = showTriage && !isHidden;
-  const expandable = inline || (!isHidden && hasImages) || triageEnabled;
+  const triageEnabled = showTriage;
+  const expandable = inline || hasImages || triageEnabled;
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
@@ -145,18 +144,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   };
 
   // Which rows contribute an action bar. Inline rows carry compact decision
-  // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
+  // verbs; deep-link rows carry an Open button.
   // A card for a different person asks "This is for @x. Continue?" before any
   // answer (PAP-749 plan §6), so it offers no one-click verbs while collapsed.
   const forOther = attentionOtherAudienceUserId(item, currentUserId) !== null;
-  const compactActions = !isHidden && !forOther ? collectCompactActions(item) : [];
+  const compactActions = !forOther ? collectCompactActions(item) : [];
   // Who the server will let resolve this interaction. A collapsed row offers
   // Accept/Reject before anything fetches the interaction, so the audience
   // travels with the feed item; null for every non-interaction source and for a
   // feed built before the metadata existed (PAP-17287).
   const audience = describeAttentionResolverAudience(item);
   const showOpen = !inline && !!href;
-  const showRestore = isHidden && !!onRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
   // decision verbs — so the toggle rides alongside them on one row rather than
   // stranding a lone "See less" under the buttons. That makes the collapsed
@@ -188,7 +186,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
    */
   const renderFooter = ({ compact }: { compact: boolean }) => {
     const showCompact = compactActions.length > 0 && (compact || !expanded);
-    if (!toggle && !showCompact && !showOpen && !showRestore) return null;
+    if (!toggle && !showCompact && !showOpen) return null;
     return (
       <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
         {toggle ?? <span />}
@@ -212,12 +210,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </Button>
           )}
 
-          {showRestore && (
-            <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
-              <RotateCcw className="h-3 w-3" />
-              Restore
-            </Button>
-          )}
         </div>
       </div>
     );
@@ -232,7 +224,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         // row's first paint; `auto` keeps the real measured height afterwards.
         "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
         "motion-safe:transition-[opacity,transform,border-color,background-color] motion-safe:duration-200 motion-safe:ease-out hover:border-border/80",
-        isHidden && "bg-muted/30 opacity-80 hover:opacity-100",
         selected && "border-ring ring-1 ring-ring",
       )}
       id={`attention-row-${item.id}`}
@@ -278,6 +269,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               </span>
             </>
           )}
+          {onRestore && item.dismissal?.isActive && (
+            <>
+              <EyebrowSeparator />
+              <AttentionHiddenChip item={item} />
+            </>
+          )}
           {item.stale && (
             <>
               <EyebrowSeparator />
@@ -287,28 +284,18 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </div>
 
         <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
-          {isHidden && snoozedUntil ? (
-            <span
-              className="text-(length:--text-nano) text-muted-foreground"
-              title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
-            >
-              Reappears {reappearLabel(snoozedUntil)}
-            </span>
-          ) : (
-            <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
-          )}
-          {!isHidden && (
-            <AttentionCloseMenu
-              item={item}
-              currentUserId={currentUserId}
-              userLabelMap={userLabelMap}
-              onWithdraw={onWithdraw}
-              onArchive={onDismiss}
-              onSnooze={onSnooze}
-              onTransfer={onTransfer}
-              busy={closing}
-            />
-          )}
+          <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
+          <AttentionCloseMenu
+            item={item}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onWithdraw={onWithdraw}
+            onArchive={onDismiss}
+            onSnooze={onSnooze}
+            onTransfer={onTransfer}
+            onRestore={onRestore}
+            busy={closing}
+          />
         </div>
       </div>
 
@@ -342,7 +329,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         item={item}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
-        onClaim={isHidden ? undefined : onClaim}
+        onClaim={onClaim}
         claiming={claiming}
         className="-mt-2"
       />
@@ -394,9 +381,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </CollapsibleContent>
       </Collapsible>
 
-      {/* A non-inline row keeps one footer across both states — its Open or
-          Restore button and its toggle are the same control either way, so it
-          stays put rather than crossfading with itself. */}
+      {/* A non-inline row keeps one footer across both states — its Open
+          button and its toggle are the same control either way, so it stays
+          put rather than crossfading with itself. */}
       {!inline && renderFooter({ compact: false })}
     </div>
   );
@@ -674,18 +661,6 @@ function decideByProvenance(item: AttentionItem): string | null {
   if (!attribution) return null;
   if (attribution.type === "agent") return attribution.agentName ?? "an agent";
   return "you";
-}
-
-/** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */
-function reappearLabel(snoozedUntil: string): string {
-  const diffMs = new Date(snoozedUntil).getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "soon";
-  const diffMin = Math.round(diffMs / 60000);
-  if (diffMin < 60) return `in ${diffMin}m`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `in ${diffHr}h`;
-  const diffDay = Math.round(diffHr / 24);
-  return `in ${diffDay}d`;
 }
 
 /**

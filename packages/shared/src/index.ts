@@ -178,8 +178,10 @@ export type {
   AttentionTransferInput,
   AttentionTransferResult,
   DecisionHistoryItem,
+  DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
   DecisionHistoryPage,
+  DecisionHistoryResultOutcome,
   AttentionDetailImage,
   AttentionFeed,
   AttentionFeedView,
@@ -212,6 +214,7 @@ export {
   ATTENTION_RECEIPT_DAYS,
   ATTENTION_RECEIPT_OUTCOMES,
   ATTENTION_SOURCE_KINDS,
+  DECISION_HISTORY_OUTCOME_FILTERS,
 } from "./types/attention.js";
 export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {

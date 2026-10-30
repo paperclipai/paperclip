@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, History, Loader2 } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
-import type { Agent, AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
+import type { Agent, AttentionCloseMode, AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { attentionApi } from "@/api/attention";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
@@ -19,13 +18,14 @@ import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
-import { splitStaleAttentionItems } from "@/lib/attention-close";
+import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
-import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
+import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import { DecisionResolver } from "@/components/DecisionResolver";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { SidePanelTab } from "@/components/side-panel";
@@ -49,54 +49,16 @@ const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
   mine: "You're caught up.",
   unassigned: "No cards need an owner.",
   company: "No company alerts right now.",
+  archived: "Nothing archived. Cards you archive or snooze for yourself show here.",
 };
 
-/** "Handled for me" is a filter on who the card was for, not an outcome (PAP-749 plan §6). */
-const HANDLED_FOR_ME = "handled_for_me";
-
+/** The shared Decision history panel, with its tab in the side panel header on desktop. */
 function HistoryPanel({ companyId, agents, userLabelMap, onClose, mobile = false }: { companyId: string; agents: Agent[]; userLabelMap?: ReadonlyMap<string, string>; onClose: () => void; mobile?: boolean }) {
-  const navigate = useNavigate();
-  const [search, setSearch] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [groupBy, setGroupBy] = useState<Group>("none");
-  const [sort, setSort] = useState<"newest" | "oldest">("newest");
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
-  const history = useInfiniteQuery({
-    queryKey: [...queryKeys.attention(companyId), "history", { search, outcome, agentId, projectId, sort }],
-    queryFn: ({ pageParam }) => attentionApi.history(companyId, {
-      search, agentId, projectId, sort, cursor: pageParam, limit: 40,
-      ...(outcome === HANDLED_FOR_ME ? { handledForMe: true } : { outcome }),
-    }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (page) => page.nextCursor ?? undefined,
-  });
-  const items = history.data?.pages.flatMap((page) => page.items) ?? [];
-  const groups = new Map<string, typeof items>();
-  for (const item of items) {
-    const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle : groupBy === "agent" ? item.agentName ?? "Other agents" : groupBy === "project" ? item.projectName ?? "No project" : "";
-    groups.set(label, [...(groups.get(label) ?? []), item]);
-  }
   const slot = typeof document !== "undefined" ? document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID) : null;
   const tab = <SidePanelTab id="decision-history" label="Decision history" active onSelect={() => {}} onClose={onClose} />;
-  return <div className="space-y-5" data-coordinator-decision-history>
-    {!mobile ? <>{slot ? createPortal(tab, slot) : tab}<h2 className="text-lg font-medium">Decision history</h2></> : null}
-    <ToolbarSearch query={search} onQueryChange={setSearch} label="Search decision history" placeholder="Search decisions or task IDs…" />
-    <div className="grid grid-cols-2 gap-2">
-      <NativeSelect aria-label="Filter decision outcomes" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
-        <option value="">All outcomes</option><option value="accepted">Approved</option><option value="answered">Answered</option><option value="rejected">Changes requested</option><option value="decided">Decided</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value={HANDLED_FOR_ME}>Handled for me</option>
-      </NativeSelect>
-      <NativeSelect aria-label="Sort decision history" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></NativeSelect>
-      <NativeSelect aria-label="Filter decision history by agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="col-span-2"><option value="">All agents</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Filter decision history by project" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="col-span-2"><option value="">All projects</option>{(projects.data ?? []).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Group decision history" value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="col-span-2"><option value="none">No grouping</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option></NativeSelect>
-    </div>
-    {history.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading decisions…</p> : null}
-    {history.isError ? <div role="alert" className="space-y-2 text-sm"><p>Decision history could not be loaded.</p><Button variant="outline" onClick={() => void history.refetch()}>Retry</Button></div> : null}
-    {!history.isPending && !history.isError && !items.length ? <p className="text-sm text-muted-foreground">No decisions match these filters.</p> : null}
-    <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time></p></div>)}</section>)}</div>
-    {history.hasNextPage ? <Button variant="outline" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "Loading…" : "Load more decisions"}</Button> : null}
+  return <div data-coordinator-decision-history>
+    <DecisionHistoryPanel companyId={companyId} agents={agents} userLabelMap={userLabelMap}
+      header={!mobile ? <>{slot ? createPortal(tab, slot) : tab}<h2 className="text-lg font-medium">Decision history</h2></> : null} />
   </div>;
 }
 
@@ -126,9 +88,12 @@ export function CoordinatorNeedsYou() {
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
-  // The Stale (N) group starts collapsed in each view (PAP-749 plan §3).
+  // The Stale (N) group starts collapsed in each view; the Archived view's
+  // Snoozed group starts open (PAP-749 plan §3).
   const [staleOpen, setStaleOpen] = useState(false);
-  useEffect(() => { setSettling([]); setSavedIds(new Set()); setStaleOpen(false); }, [selectedCompanyId, userId, view]);
+  const [snoozedOpen, setSnoozedOpen] = useState(true);
+  useEffect(() => { setSettling([]); setSavedIds(new Set()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view]);
+  const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
   const feed = useAttentionViewFeed(selectedCompanyId, view);
@@ -138,11 +103,21 @@ export function CoordinatorNeedsYou() {
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
   const userLabelMap = useMemo(() => buildCompanyUserLabelMap(directory.data?.users), [directory.data?.users]);
   // A closed card leaves the list at once; a withdrawn one comes back as a
-  // receipt in Recent Decisions after the history refetch.
-  const hideClosed = useCallback((item: AttentionItem) => {
+  // receipt in Recent Decisions after the history refetch. In the Archived
+  // view a new snooze time keeps the card (it only changes group), and a
+  // restored card leaves it; elsewhere an Undo brings the card straight back.
+  const hideCard = useCallback((item: AttentionItem) => {
     setSavedIds(current => new Set([...current, `${item.sourceKind}:${item.subject.id}`]));
   }, []);
-  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onClosed: hideClosed });
+  const showCard = useCallback((item: AttentionItem) => {
+    setSavedIds(current => { const next = new Set(current); next.delete(`${item.sourceKind}:${item.subject.id}`); return next; });
+  }, []);
+  const onCardClosed = useCallback((item: AttentionItem, mode: AttentionCloseMode) => {
+    if (archivedView && mode !== "withdraw") return;
+    hideCard(item);
+  }, [archivedView, hideCard]);
+  const onCardRestored = useCallback((item: AttentionItem) => (archivedView ? hideCard : showCard)(item), [archivedView, hideCard, showCard]);
+  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onClosed: onCardClosed, onRestored: onCardRestored });
   const agentQuery = useQuery({ queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId });
   // Full history lives in its own paginated tab. Only the newest bounded page
   // is fetched here; its window expires visually without deleting any record.
@@ -162,7 +137,7 @@ export function CoordinatorNeedsYou() {
   const recentGroups = useMemo(() => {
     const result = new Map<string, DecisionHistoryItem[]>();
     for (const item of visibleRecentItems) {
-      const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle
+      const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle ?? "No task"
         : groupBy === "agent" ? item.agentName ?? "Other agents"
           : groupBy === "project" ? item.projectName ?? "No project" : "";
       result.set(label, [...(result.get(label) ?? []), item]);
@@ -182,7 +157,15 @@ export function CoordinatorNeedsYou() {
     return [item.subject.title, item.relatedIssue?.title, item.relatedIssue?.identifier, item.originAgentName, item.project?.name, attentionDetailLine(item)].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   }).sort((a, b) => (sort === "oldest" ? 1 : -1) * (Date.parse(a.activityAt) - Date.parse(b.activityAt))), [pendingItems, agentFilter, projectFilter, query, sort, agentMap]);
   // Stale cards go to the collapsed group at the bottom of each view (Rule 10).
-  const { current: currentItems, stale: staleItems } = useMemo(() => splitStaleAttentionItems(filtered), [filtered]);
+  // The Archived view keeps stale cards in place with their chip, and puts
+  // snoozed cards in their own group (plan §3).
+  const { current: currentItems, stale: staleItems, snoozed: snoozedItems } = useMemo(() => {
+    if (archivedView) {
+      const { archived, snoozed } = splitArchivedAttentionItems(filtered);
+      return { current: archived, stale: [] as AttentionItem[], snoozed };
+    }
+    return { ...splitStaleAttentionItems(filtered), snoozed: [] as AttentionItem[] };
+  }, [archivedView, filtered]);
   const groups = useMemo(() => {
     const result = new Map<string, AttentionItem[]>();
     for (const item of currentItems.slice(0, renderLimit)) {
@@ -260,6 +243,7 @@ export function CoordinatorNeedsYou() {
       {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <AttentionHiddenChip item={item} />
           <AttentionStaleChip item={item} />
           <AttentionAudienceLine item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
         </div>
@@ -268,7 +252,8 @@ export function CoordinatorNeedsYou() {
           onWithdraw={(entry, reason) => closeActions.close({ item: entry, mode: "withdraw", reason })}
           onArchive={entry => closeActions.close({ item: entry, mode: "archive" })}
           onSnooze={(entry, until) => closeActions.close({ item: entry, mode: "snooze", until })}
-          onTransfer={(entry, target) => closeActions.transfer({ item: entry, userId: target })} />
+          onTransfer={(entry, target) => closeActions.transfer({ item: entry, userId: target })}
+          onRestore={archivedView ? entry => void closeActions.restore(entry) : undefined} />
       </div>
       <AttentionForOtherGate item={item} currentUserId={userId} userLabelMap={userLabelMap}>
       {interaction ? <AttentionInteractionResolver footerSlot={taskLink} presentation="coordinator-decision" companyId={selectedCompanyId!} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
@@ -308,13 +293,17 @@ export function CoordinatorNeedsYou() {
     </div>
     {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
     {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">Decisions could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div> : null}
-    {!feed.isPending && !feed.isError && currentItems.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
+    {!feed.isPending && !feed.isError && currentItems.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : snoozedItems.length ? "No archived cards. Snoozed cards are below." : filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
     {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map(renderCard)}</div>)}
     {currentItems.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
     <AttentionStaleGroup items={staleItems} open={staleOpen} onToggle={() => setStaleOpen(open => !open)} onWithdrawAll={closeActions.withdrawAll}
       busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap}>
       {staleItems.map(renderCard)}
     </AttentionStaleGroup>
+    {/* Snoozed by you: each card says when it comes back (PAP-749 plan §3). */}
+    <AttentionSnoozedGroup count={snoozedItems.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(open => !open)}>
+      {snoozedItems.map(renderCard)}
+    </AttentionSnoozedGroup>
     {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /></motion.div>)}</div>)}</section> : null}
     {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">Recent decisions could not be loaded. <button className="underline" onClick={() => void recent.refetch()}>Retry</button></p> : null}
   </section></LayoutGroup>;

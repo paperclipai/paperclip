@@ -9,14 +9,16 @@ import { WhatNeedsMe } from "./WhatNeedsMe";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// PAP-749 task 1b on the classic Decisions page: the three-view switch, per
-// person and view query keys, the Unassigned banner and Claim.
+// PAP-749 tasks 1b and 2e on the classic Decisions page: the view switch, per
+// person and view query keys, the Unassigned banner, Claim, and the Archived
+// view with Restore and its Snoozed group.
 const fixture = vi.hoisted(() => ({
   userId: "scott",
   byView: {} as Record<string, AttentionItem[]>,
   calls: [] as Array<Record<string, unknown>>,
   claim: vi.fn(async () => ({})),
   close: vi.fn(async (..._args: unknown[]) => ({ until: null })),
+  restore: vi.fn(async (..._args: unknown[]) => ({})),
 }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: false, userId: fixture.userId }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -26,6 +28,8 @@ vi.mock("../hooks/useInboxBadge", () => ({ useInboxDismissals: () => ({ dismiss:
 vi.mock("../api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("../api/decisions", () => ({ decisionsApi: { list: async () => [] } }));
 vi.mock("../api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
+vi.mock("../api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: fixture.restore, dismiss: vi.fn() } }));
+vi.mock("../components/DecisionHistoryPanel", () => ({ DecisionHistoryPanel: () => <div data-history-panel>History</div> }));
 vi.mock("../api/attention", () => ({ attentionApi: {
   claim: fixture.claim,
   close: fixture.close,
@@ -33,7 +37,7 @@ vi.mock("../api/attention", () => ({ attentionApi: {
     fixture.calls.push(options);
     const items = fixture.byView[String(options.view)] ?? [];
     return { companyId: "company", generatedAt: "2026-10-30T12:00:00Z", totalCount: items.length, deskBadgeCount: 2,
-      viewCounts: { mine: 2, unassigned: 1, company: 0 }, nextCursor: null, countsBySourceKind: {}, items };
+      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 3 }, nextCursor: null, countsBySourceKind: {}, items };
   },
 } }));
 vi.mock("../components/DecisionsToolbar", () => ({ DecisionsToolbar: () => null }));
@@ -41,11 +45,13 @@ vi.mock("../components/DecisionQueueRail", () => ({ DecisionQueueRail: () => nul
 vi.mock("../components/DecisionDateChips", () => ({ DecisionDateChips: () => null }));
 vi.mock("../components/DecisionResolver", () => ({ DecisionResolver: () => null }));
 vi.mock("../components/AttentionQueueRow", () => ({
-  AttentionQueueRow: ({ item, onClaim, onDismiss, currentUserId }: { item: AttentionItem; onClaim?: (item: AttentionItem) => void; onDismiss?: (item: AttentionItem) => void; currentUserId?: string | null }) => (
+  AttentionQueueRow: ({ item, onClaim, onDismiss, onRestore, onSnooze, currentUserId }: { item: AttentionItem; onClaim?: (item: AttentionItem) => void; onDismiss?: (item: AttentionItem) => void; onRestore?: (item: AttentionItem) => void; onSnooze?: (item: AttentionItem, until: string) => void; currentUserId?: string | null }) => (
     <div data-row={item.id} data-viewer={currentUserId ?? ""}>
       {item.subject.title}
       {onClaim ? <button type="button" onClick={() => onClaim(item)}>Claim {item.id}</button> : null}
-      {onDismiss ? <button type="button" onClick={() => onDismiss(item)}>Archive {item.id}</button> : null}
+      {onDismiss && !onRestore ? <button type="button" onClick={() => onDismiss(item)}>Archive {item.id}</button> : null}
+      {onRestore ? <button type="button" onClick={() => onRestore(item)}>Restore {item.id}</button> : null}
+      {onRestore && onSnooze ? <button type="button" onClick={() => onSnooze(item, "2026-11-02T09:00:00.000Z")}>Change time {item.id}</button> : null}
     </div>
   ),
 }));
@@ -53,7 +59,7 @@ vi.mock("../components/AttentionQueueRow", () => ({
 function card(id: string, audience: AttentionItem["audience"]) {
   const at = new Date().toISOString();
   return { id, sourceKind: "issue_thread_interaction", subject: { id: `${id}-interaction`, kind: "interaction", title: `Card ${id}`, metadata: {} },
-    audience, dismissal: null, activityAt: at, createdAt: at, updatedAt: at, inlineResolvable: false, decisionVerbs: [], queues: [], shelf: false,
+    audience, dismissal: null, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`, closeModes: ["archive", "snooze"], activityAt: at, createdAt: at, updatedAt: at, inlineResolvable: false, decisionVerbs: [], queues: [], shelf: false,
     severity: "medium", relatedIssue: null, project: null } as unknown as AttentionItem;
 }
 
@@ -67,6 +73,7 @@ beforeEach(() => {
   fixture.calls = [];
   fixture.claim.mockClear();
   fixture.close.mockClear();
+  fixture.restore.mockClear();
   fixture.byView = {
     mine: [card("mine-1", { kind: "user", userId: "scott", reason: "addressee" })],
     unassigned: [card("pool-1", { kind: "pool", userId: null, reason: "none" })],
@@ -91,13 +98,15 @@ async function render(url = "/decisions") {
 describe("classic Decisions views", () => {
   it("opens For you by default with the shared badge count and the Unassigned banner", async () => {
     await render();
-    expect(fixture.calls).toContainEqual(expect.objectContaining({ includeDismissed: true, all: true, view: "mine" }));
+    expect(fixture.calls).toContainEqual(expect.objectContaining({ all: true, view: "mine" }));
+    // The views never ask for hidden cards; those live in the Archived view (PAP-749 plan §3).
+    expect(fixture.calls.some((call) => "includeDismissed" in call)).toBe(false);
     expect(fixture.calls.every((call) => call.view === "mine")).toBe(true);
     const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
-    expect(tabs).toEqual(["For you2", "Unassigned1", "Company0"]);
+    expect(tabs).toEqual(["For you2", "Unassigned1", "Company0", "Archived3"]);
     expect(container.querySelector('[data-row="mine-1"]')?.getAttribute("data-viewer")).toBe("scott");
     expect(container.querySelector("[data-attention-unassigned-banner]")?.textContent).toContain("1 card needs an owner");
-    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "with-dismissed"], exact: false })).toBeTruthy();
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "classic"], exact: false })).toBeTruthy();
   });
 
   it("switches to Unassigned from the banner and claims a card", async () => {
@@ -118,8 +127,8 @@ describe("classic Decisions views", () => {
     await render();
     fixture.userId = "dotta";
     await render();
-    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "dotta", "mine", "with-dismissed"], exact: false })).toBeTruthy();
-    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "with-dismissed"], exact: false })).toBeTruthy();
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "dotta", "mine", "classic"], exact: false })).toBeTruthy();
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "classic"], exact: false })).toBeTruthy();
   });
 
   it("moves stale cards to a collapsed Stale group and withdraws them after a confirmation (PAP-749 task 2c)", async () => {
@@ -148,6 +157,49 @@ describe("classic Decisions views", () => {
     await flush();
     expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "mine-1-interaction", { mode: "archive", reason: undefined, until: undefined, fingerprint: "fp.me" });
     expect(container.querySelector('[data-row="mine-1"]')).toBeNull();
+  });
+
+  it("lists your archived cards, then a Snoozed group, with Restore and Change time (PAP-749 task 2e)", async () => {
+    const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null) => ({
+      ...card(id, { kind: "user", userId: "scott", reason: "addressee" }),
+      dismissal: { kind, dismissedAt: "2026-10-29T12:00:00Z", snoozedUntil, isActive: true },
+    }) as unknown as AttentionItem;
+    fixture.byView = { archived: [hidden("arch-1", "dismiss"), hidden("snz-1", "snooze", "2026-10-31T09:00:00Z")] };
+    await render("/decisions?view=archived");
+    expect(fixture.calls).toContainEqual(expect.objectContaining({ view: "archived", all: true }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Archived3");
+    // The badge stays the For you count; the Archived count is only on its tab.
+    expect(container.querySelector('[data-attention-view-count="mine"]')?.textContent).toBe("2");
+    const snoozedGroup = container.querySelector<HTMLElement>("[data-attention-snoozed-group]")!;
+    expect(snoozedGroup.textContent).toContain("Snoozed (1)");
+    expect(snoozedGroup.querySelector('[data-row="snz-1"]')).not.toBeNull();
+    expect(snoozedGroup.querySelector('[data-row="arch-1"]')).toBeNull();
+    expect(container.querySelector('[data-row="arch-1"]')).not.toBeNull();
+    // No Archive verb here: the card is already archived.
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Archive arch-1")).toBe(false);
+
+    const changeTime = [...container.querySelectorAll("button")].find((button) => button.textContent === "Change time snz-1")!;
+    await act(async () => changeTime.click());
+    await flush();
+    expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "snz-1-interaction", expect.objectContaining({ mode: "snooze", until: "2026-11-02T09:00:00.000Z" }));
+    // A new time keeps the card in the Archived view.
+    expect(container.querySelector('[data-row="snz-1"]')).not.toBeNull();
+
+    const restore = [...container.querySelectorAll("button")].find((button) => button.textContent === "Restore arch-1")!;
+    await act(async () => restore.click());
+    await flush();
+    expect(fixture.restore).toHaveBeenCalledWith("company", "attention:arch-1");
+    expect(container.querySelector('[data-row="arch-1"]')).toBeNull();
+  });
+
+  it("shows the Archived empty state and opens Decision history from the header", async () => {
+    await render("/decisions?view=archived");
+    expect(container.textContent).toContain("Nothing archived.");
+    expect(document.querySelector("[data-history-panel]")).toBeNull();
+    const history = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Decision history"))!;
+    await act(async () => history.click());
+    await flush();
+    expect(document.querySelector("[data-classic-decision-history] [data-history-panel]")).not.toBeNull();
   });
 
   it("shows a Company empty state from the URL", async () => {

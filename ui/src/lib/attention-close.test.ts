@@ -4,10 +4,13 @@ import {
   attentionAlreadyClosedText,
   attentionCanTransfer,
   attentionCanWithdraw,
+  attentionHiddenState,
+  attentionHiddenText,
   attentionOtherAudienceUserId,
   attentionTransferTargets,
   planStaleWithdraw,
   readAttentionAlreadyClosed,
+  splitArchivedAttentionItems,
   splitStaleAttentionItems,
 } from "./attention-close";
 
@@ -76,5 +79,33 @@ describe("attention close helpers (PAP-749 task 2c)", () => {
     expect(attentionAlreadyClosedText(details, labels)).toBe("Already answered by @Dotta");
     expect(readAttentionAlreadyClosed(new Error("boom"))).toBeNull();
     expect(attentionAlreadyClosedText({ ...details, resolvedByUserId: null, resolvedByAgentId: "agent-1" }, labels)).toBe("Already answered by an agent");
+  });
+});
+
+describe("Archived view helpers (PAP-749 task 2e)", () => {
+  const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null, isActive = true) =>
+    item(id, { dismissal: { kind, dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil, isActive } });
+
+  it("reads how a card is hidden for you, and nothing for a card you did not hide", () => {
+    expect(attentionHiddenState(hidden("a", "dismiss"))).toEqual({ kind: "archived", since: "2026-10-29T12:00:00.000Z" });
+    expect(attentionHiddenState(hidden("s", "snooze", "2026-10-31T09:00:00.000Z")))
+      .toEqual({ kind: "snoozed", since: "2026-10-29T12:00:00.000Z", until: "2026-10-31T09:00:00.000Z" });
+    // A card that changed (inactive dismissal) is back in its view, not hidden.
+    expect(attentionHiddenState(hidden("back", "dismiss", null, false))).toBeNull();
+    expect(attentionHiddenState(item("plain"))).toBeNull();
+  });
+
+  it('says "Archived <date>" and "Back <time>"', () => {
+    expect(attentionHiddenText({ kind: "archived", since: "2026-10-29T12:00:00.000Z" })).toMatch(/^Archived /);
+    expect(attentionHiddenText({ kind: "snoozed", since: "2026-10-29T12:00:00.000Z", until: "2026-10-31T09:00:00.000Z" })).toMatch(/^Back /);
+  });
+
+  it("puts archived cards first and the Snoozed group soonest first", () => {
+    const later = hidden("later", "snooze", "2026-11-05T09:00:00.000Z");
+    const sooner = hidden("sooner", "snooze", "2026-10-31T09:00:00.000Z");
+    const archived = hidden("archived", "dismiss");
+    const { archived: archivedItems, snoozed } = splitArchivedAttentionItems([later, archived, sooner]);
+    expect(archivedItems.map((entry) => entry.id)).toEqual(["archived"]);
+    expect(snoozed.map((entry) => entry.id)).toEqual(["sooner", "later"]);
   });
 });

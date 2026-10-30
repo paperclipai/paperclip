@@ -1,11 +1,13 @@
 import { useState, type ReactNode } from "react";
-import { AlarmClock, Archive, ArrowRightLeft, Ban, ChevronDown, Clock, ExternalLink, UserRound } from "lucide-react";
+import { AlarmClock, Archive, ArrowRightLeft, Ban, ChevronDown, Clock, ExternalLink, RotateCcw, UserRound } from "lucide-react";
 import type { AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import {
   attentionCanWithdraw,
   attentionCloseModes,
   attentionForOtherText,
+  attentionHiddenState,
+  attentionHiddenText,
   attentionOtherAudienceUserId,
   attentionStaleChipText,
   attentionTransferTargets,
@@ -55,6 +57,12 @@ export interface AttentionCloseMenuProps {
   onArchive?: (item: AttentionItem) => void;
   onSnooze?: (item: AttentionItem, until: string) => void;
   onTransfer?: (item: AttentionItem, userId: string) => void;
+  /**
+   * Restore a card you archived or snoozed (the Archived view, PAP-749 plan
+   * §3). With it, a hidden card offers Restore instead of Archive, and a
+   * snoozed card offers "Change snooze time".
+   */
+  onRestore?: (item: AttentionItem) => void;
   busy?: boolean;
   className?: string;
 }
@@ -62,8 +70,9 @@ export interface AttentionCloseMenuProps {
 /**
  * One Close… menu on every card (PAP-749 plan §2, Rule 6). Each verb has one
  * effect: Withdraw request closes it for everyone, Archive and Snooze hide it
- * for you only, Transfer sends it to a different person. The menu shows only
- * the verbs the server listed in `closeModes`; the server checks each one again.
+ * for you only, Restore shows it again, Transfer sends it to a different
+ * person. The menu shows only the verbs the server listed in `closeModes`;
+ * the server checks each one again.
  */
 export function AttentionCloseMenu({
   item,
@@ -73,6 +82,7 @@ export function AttentionCloseMenu({
   onArchive,
   onSnooze,
   onTransfer,
+  onRestore,
   busy = false,
   className,
 }: AttentionCloseMenuProps) {
@@ -80,12 +90,14 @@ export function AttentionCloseMenu({
   const [transferTo, setTransferTo] = useState<{ userId: string; label: string } | null>(null);
   const otherUserId = attentionOtherAudienceUserId(item, currentUserId);
   const otherName = otherUserId ? attentionUserLabel(otherUserId, userLabelMap) : null;
+  const hidden = onRestore ? attentionHiddenState(item) : null;
   const canWithdraw = !!onWithdraw && attentionCanWithdraw(item);
-  const canArchive = !!onArchive && attentionCloseModes(item).includes("archive");
+  const canRestore = hidden !== null;
+  const canArchive = !hidden && !!onArchive && attentionCloseModes(item).includes("archive");
   const canSnooze = !!onSnooze && attentionCloseModes(item).includes("snooze");
   const targets = onTransfer ? attentionTransferTargets(item, currentUserId, userLabelMap) : [];
   const href = item.subject.href;
-  if (!canWithdraw && !canArchive && !canSnooze && targets.length === 0 && !href) return null;
+  if (!canWithdraw && !canRestore && !canArchive && !canSnooze && targets.length === 0 && !href) return null;
 
   const transfer = (target: { userId: string; label: string }) => {
     // Transfer changes who the card is for, so a card for a different person asks first.
@@ -117,13 +129,24 @@ export function AttentionCloseMenu({
               Withdraw request…
             </DropdownMenuItem>
           )}
+          {canRestore && (
+            <DropdownMenuItem onSelect={() => onRestore?.(item)} data-attention-close-mode="restore">
+              <RotateCcw className="h-4 w-4" />
+              {hidden?.kind === "snoozed" ? "Restore now" : "Restore"}
+            </DropdownMenuItem>
+          )}
           {canArchive && (
             <DropdownMenuItem onSelect={() => onArchive?.(item)} data-attention-close-mode="archive">
               <Archive className="h-4 w-4" />
               Archive for me
             </DropdownMenuItem>
           )}
-          {canSnooze && <SnoozeSubmenu onSnooze={(until) => onSnooze?.(item, until)} />}
+          {canSnooze && (
+            <SnoozeSubmenu
+              onSnooze={(until) => onSnooze?.(item, until)}
+              label={hidden?.kind === "snoozed" ? "Change snooze time" : undefined}
+            />
+          )}
           {targets.length > 0 && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger data-attention-close-mode="transfer">
@@ -142,7 +165,7 @@ export function AttentionCloseMenu({
           )}
           {href && (
             <>
-              {(canWithdraw || canArchive || canSnooze || targets.length > 0) && <DropdownMenuSeparator />}
+              {(canWithdraw || canRestore || canArchive || canSnooze || targets.length > 0) && <DropdownMenuSeparator />}
               <DropdownMenuItem asChild>
                 <Link to={href}>
                   <ExternalLink className="h-4 w-4" />
@@ -299,6 +322,54 @@ export function AttentionStaleChip({ item }: { item: AttentionItem }) {
       <Clock aria-hidden="true" />
       Stale · {text}
     </Badge>
+  );
+}
+
+/**
+ * When a card in the Archived view went away and when it comes back (PAP-749
+ * plan §3): "Archived Oct 29" or "Back Fri, Oct 31, 9:00 AM". Nothing for a
+ * card you did not hide.
+ */
+export function AttentionHiddenChip({ item }: { item: AttentionItem }) {
+  const hidden = attentionHiddenState(item);
+  if (!hidden) return null;
+  const at = hidden.kind === "snoozed" ? hidden.until : hidden.since;
+  return (
+    <Badge variant="outline" data-attention-hidden={hidden.kind} className="text-muted-foreground" title={new Date(at).toLocaleString()}>
+      {hidden.kind === "snoozed" ? <AlarmClock aria-hidden="true" /> : <Archive aria-hidden="true" />}
+      <time dateTime={at}>{attentionHiddenText(hidden)}</time>
+    </Badge>
+  );
+}
+
+/**
+ * The Snoozed group of the Archived view (PAP-749 plan §3). Open by default:
+ * the person came to this view to see these cards. Each card shows when it
+ * comes back; its Close… menu restores it now or changes the time.
+ */
+export function AttentionSnoozedGroup({
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  if (count === 0) return null;
+  return (
+    <section className="space-y-2" aria-label="Snoozed cards" data-attention-snoozed-group>
+      <IssueGroupHeader
+        label={`Snoozed (${count})`}
+        collapsible
+        collapsed={!open}
+        onToggle={onToggle}
+        className="text-muted-foreground"
+      />
+      {open && <div className="space-y-4">{children}</div>}
+    </section>
   );
 }
 

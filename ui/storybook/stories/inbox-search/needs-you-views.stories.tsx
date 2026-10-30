@@ -7,15 +7,16 @@ import type {
   AttentionSourceKind,
   AttentionViewCounts,
 } from "@paperclipai/shared";
-import { AttentionStaleGroup } from "@/components/AttentionCloseMenu";
+import { AttentionSnoozedGroup, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { AttentionQueueRow } from "@/components/AttentionQueueRow";
 import { AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
-import { splitStaleAttentionItems } from "@/lib/attention-close";
+import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 
-// PAP-749 tasks 1b and 2c: the three-view switch, the "Why me?" line, the "For
+// PAP-749 tasks 1b, 2c and 2e: the view switch, the "Why me?" line, the "For
 // @name" chip, Claim and the Unassigned banner, plus the Close… menu, the Stale
-// chip and the collapsed Stale (N) group with "Withdraw all stale", as the
-// classic Decisions page and Coordinator Needs You render them. Scott is the viewer.
+// chip and the collapsed Stale (N) group with "Withdraw all stale", and the
+// Archived view with Restore and its Snoozed group, as the classic Decisions
+// page and Coordinator Needs You render them. Scott is the viewer.
 const companyId = "company-storybook";
 const SCOTT = "user-scott";
 const DOTTA = "user-dotta";
@@ -154,8 +155,29 @@ const FOR_OTHERS: AttentionItem[] = [
     { ...WITHDRAWABLE, stale: { reason: "aged" }, activityAt: daysAgo(45) }),
 ];
 
-const COUNTS: AttentionViewCounts = { mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length };
-const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS };
+function hiddenBy(kind: "dismiss" | "snooze", dismissedAt: number, snoozedUntil: number | null = null): Partial<AttentionItem> {
+  return {
+    dismissal: {
+      kind,
+      dismissedAt: new Date(dismissedAt).toISOString(),
+      snoozedUntil: snoozedUntil === null ? null : new Date(snoozedUntil).toISOString(),
+      isActive: true,
+    },
+  };
+}
+
+// Scott's own hidden cards: two archived (one also stale) and one snoozed until tomorrow.
+const ARCHIVED: AttentionItem[] = [
+  card("archived-copy", "issue_thread_interaction", "Approve the launch blog copy", "Archived yesterday; still open for Dotta.", { kind: "user", userId: SCOTT, reason: "addressee" },
+    { ...WITHDRAWABLE, ...hiddenBy("dismiss", NOW - DAY) }),
+  card("archived-stale", "issue_thread_interaction", "Confirm the old pricing test", "45 days without a change.", { kind: "user", userId: SCOTT, reason: "instigator" },
+    { ...WITHDRAWABLE, ...hiddenBy("dismiss", NOW - 3 * DAY), stale: { reason: "aged" }, activityAt: daysAgo(45) }),
+  card("snoozed-review", "issue_thread_interaction", "Pick the onboarding email subject", "Snoozed until tomorrow morning.", { kind: "user", userId: SCOTT, reason: "addressee" },
+    { ...WITHDRAWABLE, ...hiddenBy("snooze", NOW - 2 * HOUR, NOW + 21 * HOUR) }),
+];
+
+const COUNTS: AttentionViewCounts = { mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length, archived: ARCHIVED.length };
+const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS, archived: ARCHIVED };
 
 function NeedsYouViews({
   initialView = "mine",
@@ -175,8 +197,14 @@ function NeedsYouViews({
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const [staleOpen, setStaleOpen] = useState(initialStaleOpen);
   const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId);
+  const [snoozedOpen, setSnoozedOpen] = useState(true);
   const hide = (entry: AttentionItem) => setHidden((current) => new Set(current).add(entry.id));
-  const { current, stale } = splitStaleAttentionItems(items[view].filter((item) => !hidden.has(item.id)));
+  const visible = items[view].filter((item) => !hidden.has(item.id));
+  // The Archived view keeps stale cards in place and puts snoozed cards in their own group.
+  const archivedSplit = splitArchivedAttentionItems(visible);
+  const { current, stale, snoozed } = view === "archived"
+    ? { current: archivedSplit.archived, stale: [] as AttentionItem[], snoozed: archivedSplit.snoozed }
+    : { ...splitStaleAttentionItems(visible), snoozed: [] as AttentionItem[] };
   const row = (item: AttentionItem) => (
     <AttentionQueueRow
       key={item.id}
@@ -188,6 +216,7 @@ function NeedsYouViews({
       onSnooze={hide}
       onWithdraw={hide}
       onTransfer={hide}
+      onRestore={view === "archived" ? hide : undefined}
       currentUserId={SCOTT}
       userLabelMap={USER_LABELS}
       onClaim={hide}
@@ -209,6 +238,9 @@ function NeedsYouViews({
       >
         {stale.map(row)}
       </AttentionStaleGroup>
+      <AttentionSnoozedGroup count={snoozed.length} open={snoozedOpen} onToggle={() => setSnoozedOpen((open) => !open)}>
+        {snoozed.map(row)}
+      </AttentionSnoozedGroup>
     </div>
   );
 }
@@ -262,6 +294,15 @@ export const ForAnotherPerson: Story = {
 export const CompanyInlineVerbs: Story = {
   args: { initialView: "company", expandedId: "budget" },
 };
+
+/**
+ * Your Archived view (PAP-749 plan §3): the cards you archived, each with its
+ * archive date (and Stale chip when it is also stale), then the Snoozed group
+ * with the time each card comes back. The Close… menu offers Restore (or
+ * "Restore now" and "Change snooze time") instead of Archive. The tab count
+ * is never in the For you badge.
+ */
+export const Archived: Story = { args: { initialView: "archived" } };
 
 /** Nothing waits in the pool, so For you shows no banner. */
 export const ForYouNoBanner: Story = {

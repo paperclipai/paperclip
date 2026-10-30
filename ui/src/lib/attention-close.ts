@@ -64,6 +64,53 @@ export function attentionTransferTargets(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/**
+ * How a card in the Archived view is hidden for you (PAP-749 plan §3):
+ * archived until it changes, or snoozed until a time. `null` for a card you
+ * did not hide.
+ */
+export type AttentionHiddenState =
+  | { kind: "archived"; since: string }
+  | { kind: "snoozed"; since: string; until: string };
+
+export function attentionHiddenState(item: AttentionItem): AttentionHiddenState | null {
+  const dismissal = item.dismissal;
+  if (!dismissal?.isActive) return null;
+  if (dismissal.kind === "snooze" && dismissal.snoozedUntil) {
+    return { kind: "snoozed", since: dismissal.dismissedAt, until: dismissal.snoozedUntil };
+  }
+  return { kind: "archived", since: dismissal.dismissedAt };
+}
+
+/** "Archived Oct 29" or "Back Fri, Oct 31, 9:00 AM" (local time). */
+export function attentionHiddenText(hidden: AttentionHiddenState): string {
+  if (hidden.kind === "snoozed") {
+    return `Back ${new Date(hidden.until).toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
+  }
+  return `Archived ${new Date(hidden.since).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
+/**
+ * The Archived view's two parts: archived cards first, then the Snoozed group,
+ * which comes back soonest first.
+ */
+export function splitArchivedAttentionItems(items: AttentionItem[]): {
+  archived: AttentionItem[];
+  snoozed: AttentionItem[];
+} {
+  const archived: AttentionItem[] = [];
+  const snoozed: AttentionItem[] = [];
+  for (const item of items) (attentionHiddenState(item)?.kind === "snoozed" ? snoozed : archived).push(item);
+  snoozed.sort((a, b) => Date.parse(a.dismissal!.snoozedUntil!) - Date.parse(b.dismissal!.snoozedUntil!));
+  return { archived, snoozed };
+}
+
 /** Current cards first; stale cards go to the collapsed Stale (N) group (Rule 10). */
 export function splitStaleAttentionItems(items: AttentionItem[]): {
   current: AttentionItem[];

@@ -10,14 +10,16 @@ import {
 } from "@paperclipai/shared";
 
 /**
- * The three-view switch on the classic Decisions page and Coordinator Needs
- * You (PAP-749 plan §1, Rule 3). "For you" is the default; the URL keeps the
- * other two so a link (and the Unassigned banner) can open them directly.
+ * The view switch on the classic Decisions page and Coordinator Needs You
+ * (PAP-749 plan §1, Rule 3; §3). "For you" is the default; the URL keeps the
+ * others so a link (and the Unassigned banner) can open them directly.
+ * Archived holds the cards you archived or snoozed for yourself.
  */
 export const ATTENTION_VIEW_LABELS: Record<AttentionPersonalView, string> = {
   mine: "For you",
   unassigned: "Unassigned",
   company: "Company",
+  archived: "Archived",
 };
 
 export const ATTENTION_VIEW_PARAM = "view";
@@ -28,7 +30,7 @@ export function parseAttentionView(value: string | null | undefined): AttentionP
     : "mine";
 }
 
-export const EMPTY_ATTENTION_VIEW_COUNTS: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0 };
+export const EMPTY_ATTENTION_VIEW_COUNTS: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0 };
 
 /** "N cards need an owner" (recommendation e). Never part of the badge. */
 export function unassignedBannerText(count: number) {

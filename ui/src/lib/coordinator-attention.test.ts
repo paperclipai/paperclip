@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
-import { COORDINATOR_RECENT_DECISION_MS, pendingDecisionTaskIds, recentDecisionReceipts } from "./coordinator-attention";
+import {
+  COORDINATOR_RECENT_DECISION_MS,
+  DECISION_HISTORY_OUTCOME_OPTIONS,
+  decisionHistoryContext,
+  decisionHistoryHeadline,
+  pendingDecisionTaskIds,
+  recentDecisionReceipts,
+} from "./coordinator-attention";
 
 describe("Coordinator attention projections", () => {
   it("lists one task for two pending decisions and removes it only after the last decision leaves", () => {
@@ -21,5 +28,32 @@ describe("Coordinator attention projections", () => {
     const review = { sourceKind: "review", subject: { id: "task", kind: "issue", metadata: { reviewAttentionState: "stalled" } } } as unknown as AttentionItem;
     expect([...pendingDecisionTaskIds([review])]).toEqual(["task"]);
     expect([...pendingDecisionTaskIds([])]).toEqual([]);
+  });
+});
+
+describe("Decision history presentation (PAP-749 task 2e)", () => {
+  const entry = (overrides: Partial<DecisionHistoryItem>) => ({
+    id: "issue_thread_interaction:a", sourceKind: "issue_thread_interaction", sourceId: "a", issueId: "task-1", issueIdentifier: "PAP-1",
+    issueTitle: "Launch copy", title: "Copy review", label: "Withdrawn by user", outcome: "cancelled", resultOutcome: "withdrawn",
+    resolvedAt: "2026-10-30T12:00:00.000Z", resolvedByUserId: "scott", resolvedByAgentId: null, agentId: null, agentName: null,
+    projectId: null, projectName: null, href: "/PAP/issues/PAP-1#interaction-a", target: null, ...overrides,
+  }) as DecisionHistoryItem;
+
+  it("offers Withdrawn, Expired and Closed with task as separate outcome filters", () => {
+    expect(DECISION_HISTORY_OUTCOME_OPTIONS.map((option) => option.label)).toEqual(expect.arrayContaining(["Withdrawn", "Expired", "Closed with task"]));
+    expect(DECISION_HISTORY_OUTCOME_OPTIONS.find((option) => option.label === "Closed with task")?.value).toBe("issue_closed");
+  });
+
+  it("names who withdrew a card and keeps every other label", () => {
+    const labels = new Map([["scott", "Scott"]]);
+    expect(decisionHistoryHeadline(entry({}), labels)).toBe("Withdrawn by @Scott");
+    expect(decisionHistoryHeadline(entry({ resolvedByUserId: null, label: "Withdrawn" }), labels)).toBe("Withdrawn");
+    expect(decisionHistoryHeadline(entry({ resultOutcome: null, label: "Approved", outcome: "accepted" }), labels)).toBe("Approved");
+  });
+
+  it("shows the task, or names an approval that has no task", () => {
+    expect(decisionHistoryContext(entry({}))).toBe("PAP-1 · Launch copy");
+    expect(decisionHistoryContext(entry({ sourceKind: "approval", issueId: null, issueIdentifier: null, issueTitle: null, title: "Hire a designer" })))
+      .toBe("Approval · Hire a designer");
   });
 });

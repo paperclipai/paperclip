@@ -134,11 +134,13 @@ export function useAttentionCloseActions(
     onClosed?: (item: AttentionItem, mode: AttentionCloseMode) => void;
     /** Called when a close failed, so an optimistic hide can come back. */
     onCloseFailed?: (item: AttentionItem, mode: AttentionCloseMode) => void;
+    /** Called after a Restore (or an Undo) succeeded, before the feed refetches. */
+    onRestored?: (item: AttentionItem) => void;
   } = {},
 ) {
   const queryClient = useQueryClient();
   const toasts = useOptionalToastActions();
-  const { userLabelMap, onClosed, onCloseFailed } = options;
+  const { userLabelMap, onClosed, onCloseFailed, onRestored } = options;
   const [bulkPending, setBulkPending] = useState(false);
 
   const invalidate = useCallback(() => {
@@ -154,15 +156,30 @@ export function useAttentionCloseActions(
     return error instanceof Error ? error.message : undefined;
   }, [userLabelMap]);
 
-  const restore = useCallback(async (item: AttentionItem) => {
-    if (!companyId) return;
+  /**
+   * Restore deletes your dismissal, so an archived or snoozed card shows in its
+   * view again (PAP-749 plan §3). Resolves `false` when the server refused, so
+   * a page can bring back a card it hid optimistically.
+   */
+  const restore = useCallback(async (item: AttentionItem): Promise<boolean> => {
+    if (!companyId) return false;
+    let restored = true;
     try {
       await inboxDismissalsApi.restore(companyId, item.dismissalKey);
+      onRestored?.(item);
+      toasts?.pushToast({
+        id: `attention-restore-${item.id}`,
+        title: "Restored",
+        body: item.subject.title ?? undefined,
+        tone: "info",
+      });
     } catch (error) {
+      restored = false;
       toasts?.pushToast({ title: "Could not restore this card", body: errorBody(error), tone: "error" });
     }
     invalidate();
-  }, [companyId, errorBody, invalidate, toasts]);
+    return restored;
+  }, [companyId, errorBody, invalidate, onRestored, toasts]);
 
   const close = useMutation({
     mutationFn: ({ item, mode, reason, until }: AttentionCloseRequest) =>

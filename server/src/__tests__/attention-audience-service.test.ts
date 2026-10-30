@@ -370,6 +370,80 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     expect(afterDismiss.viewCounts.mine).toBe(1);
   });
 
+  // PAP-749 task 2e: the Archived view reads the viewer's own inbox_dismissals.
+  it("returns only your archived and snoozed cards in view=archived, counted on their tab and never in the badge", async () => {
+    const { companyId, workerId } = await seedCompany("ARV");
+    const scottCard = async () => insertConfirmation({ companyId, issueId: await insertIssue({ companyId, createdByUserId: SCOTT, originKind: "manual" }), workerId });
+    const archivedCard = await scottCard();
+    const snoozedCard = await scottCard();
+    const currentCard = await scottCard();
+    const expiredSnoozeCard = await scottCard();
+    const changedCard = await scottCard();
+    const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    const archivedPoolCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
+
+    const before = await list(companyId, SCOTT, "all");
+    const itemOf = (sourceId: string) => before.items.find((item) => item.subject.id === sourceId)!;
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    await db.insert(inboxDismissals).values([
+      { companyId, userId: SCOTT, itemKey: itemOf(archivedCard).dismissalKey, kind: "dismiss", fingerprint: itemOf(archivedCard).changeFingerprint },
+      { companyId, userId: SCOTT, itemKey: itemOf(snoozedCard).dismissalKey, kind: "snooze", snoozedUntil: tomorrow, fingerprint: itemOf(snoozedCard).changeFingerprint },
+      // A card of any audience can be archived for yourself, also an Unassigned one.
+      { companyId, userId: SCOTT, itemKey: itemOf(archivedPoolCard).dismissalKey, kind: "dismiss", fingerprint: itemOf(archivedPoolCard).changeFingerprint },
+      // These two are back: the snooze ended, and the card changed since it was archived.
+      { companyId, userId: SCOTT, itemKey: itemOf(expiredSnoozeCard).dismissalKey, kind: "snooze", snoozedUntil: new Date(Date.now() - 60_000), fingerprint: itemOf(expiredSnoozeCard).changeFingerprint },
+      { companyId, userId: SCOTT, itemKey: itemOf(changedCard).dismissalKey, kind: "dismiss", fingerprint: "an-older-version.me" },
+    ]);
+
+    const archived = await list(companyId, SCOTT, "archived");
+    expect(new Set(archived.items.map((item) => item.subject.id))).toEqual(new Set([archivedCard, snoozedCard, archivedPoolCard]));
+    expect(archived.items.every((item) => item.dismissal?.isActive)).toBe(true);
+    const snoozed = archived.items.find((item) => item.subject.id === snoozedCard)!;
+    expect(snoozed.dismissal).toMatchObject({ kind: "snooze", snoozedUntil: tomorrow.toISOString(), isActive: true });
+    expect(archived.items.find((item) => item.subject.id === archivedPoolCard)?.audience.kind).toBe("pool");
+    expect(archived.totalCount).toBe(3);
+    expect(archived.receipts).toBeUndefined();
+
+    // The tab count is the Archived list; the badge is still only current For you cards.
+    expect(archived.viewCounts).toMatchObject({ mine: 3, unassigned: 0, archived: 3 });
+    expect(archived.deskBadgeCount).toBe(3);
+    for (const view of ["mine", "unassigned", "company", "all"] as const) {
+      expect((await list(companyId, SCOTT, view)).viewCounts).toEqual(archived.viewCounts);
+    }
+    const mineIds = (await list(companyId, SCOTT, "mine")).items.map((item) => item.subject.id);
+    expect(mineIds).toEqual(expect.arrayContaining([currentCard, expiredSnoozeCard, changedCard]));
+    expect(mineIds).not.toContain(archivedCard);
+    expect(mineIds).not.toContain(snoozedCard);
+    expect((await list(companyId, SCOTT, "unassigned")).items.map((item) => item.subject.id)).not.toContain(archivedPoolCard);
+
+    // Archive is personal: Dotta's Archived view is empty and her pool still has the card.
+    const dottaArchived = await list(companyId, DOTTA, "archived");
+    expect(dottaArchived.items).toEqual([]);
+    expect(dottaArchived.viewCounts.archived).toBe(0);
+    expect((await list(companyId, DOTTA, "unassigned")).items.map((item) => item.subject.id)).toContain(archivedPoolCard);
+
+    // Restore (deleting the dismissal) moves the card back to For you.
+    await db.delete(inboxDismissals).where(and(eq(inboxDismissals.userId, SCOTT), eq(inboxDismissals.itemKey, itemOf(archivedCard).dismissalKey)));
+    const restored = await list(companyId, SCOTT, "archived");
+    expect(restored.items.map((item) => item.subject.id)).not.toContain(archivedCard);
+    expect(restored.viewCounts).toMatchObject({ mine: 4, archived: 2 });
+  });
+
+  it("accepts view=archived on the route and still rejects unknown views", async () => {
+    const { companyId } = await seedCompany("ARR");
+    const testApp = express();
+    testApp.use((req, _res, next) => {
+      (req as any).actor = { type: "board", source: "session", userId: SCOTT, companyIds: [companyId], isInstanceAdmin: false };
+      next();
+    });
+    testApp.use("/api", attentionRoutes(db));
+    testApp.use(errorHandler);
+    const feed = await request(testApp).get(`/api/companies/${companyId}/attention?view=archived&all=true`).expect(200);
+    expect(feed.body).toMatchObject({ items: [], viewCounts: { archived: 0 } });
+    expect(feed.body.receipts).toBeUndefined();
+    await request(testApp).get(`/api/companies/${companyId}/attention?view=hidden`).expect(400);
+  });
+
   it("claims a pool card for one person and removes it from every other person's pool", async () => {
     const { companyId, workerId } = await seedCompany("CLM");
     const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });

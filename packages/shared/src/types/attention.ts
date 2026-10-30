@@ -263,19 +263,26 @@ export interface AttentionAudience {
  * Which slice of the attention feed to return. `all` is the default and is a
  * superset that preserves the pre-PAP-749 behaviour (no user-visible change);
  * `mine`, `unassigned`, and `company` partition the feed by {@link
- * AttentionAudience.kind}.
+ * AttentionAudience.kind}. `archived` is the requesting person's own hidden
+ * cards (PAP-749 plan §3): open cards they archived or snoozed, read from
+ * their `inbox_dismissals`, whatever the card's audience.
  */
-export type AttentionFeedView = "mine" | "unassigned" | "company" | "all";
+export type AttentionFeedView = "mine" | "unassigned" | "company" | "archived" | "all";
 
-/** The three views the Decisions pages switch between (PAP-749 plan §1, Rule 3). */
-export const ATTENTION_PERSONAL_VIEWS = ["mine", "unassigned", "company"] as const;
+/**
+ * The views the Decisions pages switch between (PAP-749 plan §1, Rule 3; §3):
+ * For you, Unassigned, Company and the person's own Archived view.
+ */
+export const ATTENTION_PERSONAL_VIEWS = ["mine", "unassigned", "company", "archived"] as const;
 export type AttentionPersonalView = (typeof ATTENTION_PERSONAL_VIEWS)[number];
 
 /**
- * Current cards in each view for the requesting user (PAP-749 plan §1, Rule
- * 5). Counted before the view, date and queue filters and pagination, and
- * without personally dismissed, snoozed or archived cards, so every surface
- * reads the same numbers whatever it fetched.
+ * Cards in each view for the requesting user (PAP-749 plan §1, Rule 5).
+ * Counted before the view, date and queue filters and pagination, so every
+ * surface reads the same numbers whatever it fetched. `mine`, `unassigned` and
+ * `company` count current cards without the ones this person archived or
+ * snoozed; `archived` counts exactly those hidden cards (archived plus
+ * snoozed). Only `mine` is the badge; the other counts stay on their tabs.
  */
 export type AttentionViewCounts = Record<AttentionPersonalView, number>;
 
@@ -539,20 +546,31 @@ export interface AttentionFeed {
    */
   receipts?: AttentionReceipt[];
 }
-/** Read-only projection of canonical task decisions; never a second write store. */
+/**
+ * Read-only projection of canonical task decisions and approvals (PAP-749 plan
+ * §3); never a second write store.
+ */
 export interface DecisionHistoryItem {
   id: string;
-  sourceKind: "issue_thread_interaction" | "decision";
+  sourceKind: "issue_thread_interaction" | "decision" | "approval";
   sourceId: string;
-  issueId: string;
+  /** The task the decision belongs to. `null` for an approval with no linked task. */
+  issueId: string | null;
   issueIdentifier: string | null;
-  issueTitle: string;
+  issueTitle: string | null;
   agentId: string | null;
   agentName: string | null;
   projectId: string | null;
   projectName: string | null;
   title: string;
+  /** The stored status: `accepted`, `answered`, `cancelled`, `expired`, `approved`, … */
   outcome: string;
+  /**
+   * The more specific recorded close, when the status alone hides it:
+   * `withdrawn` (a person or the agent withdrew the request), `skipped` or
+   * `issue_closed` ("Closed with task"). `null` for an ordinary answer.
+   */
+  resultOutcome?: DecisionHistoryResultOutcome | null;
   label: string;
   /** Why the request was withdrawn or skipped, when the person gave a reason. */
   reason?: string | null;
@@ -567,6 +585,27 @@ export interface DecisionHistoryItem {
   href: string;
   target: { kind: "issue_document"; issueId?: string; key: string; revisionId: string } | { kind: "issue_attachment"; attachmentId: string } | null;
 }
+
+export type DecisionHistoryResultOutcome = "withdrawn" | "skipped" | "issue_closed";
+
+/**
+ * Outcome filters of the Decision history panel (PAP-749 plan §3). Each value
+ * matches every source that can have it: `withdrawn` covers withdrawn
+ * interactions and the decisions and approvals a person withdrew; `expired`
+ * is a time-out or supersede, never a card that closed with its task;
+ * `issue_closed` is "Closed with task".
+ */
+export const DECISION_HISTORY_OUTCOME_FILTERS = [
+  "accepted",
+  "answered",
+  "rejected",
+  "decided",
+  "withdrawn",
+  "expired",
+  "issue_closed",
+  "cancelled",
+] as const;
+export type DecisionHistoryOutcomeFilter = (typeof DECISION_HISTORY_OUTCOME_FILTERS)[number];
 
 export interface DecisionHistoryQuery {
   cursor?: string;

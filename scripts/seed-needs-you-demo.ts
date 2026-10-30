@@ -55,6 +55,15 @@
  * answered a confirmation on her task, withdrew her question with a reason
  * (the task shows unread in her Mine), and approved the approval she
  * requested. Transfer stays a live step, so Riley still starts with no cards.
+ *
+ * Archived view and history filters (PAP-749 task 2e): Scott's Archived tab
+ * holds the archived cards (one of them also stale, 40 days without a change)
+ * and, in its Snoozed group, the card snoozed until tomorrow. Decision history
+ * now includes approvals: Dotta's approval Scott approved, the approval Scott
+ * withdrew, and a strategy approval with no task that Scott rejected. The
+ * Withdrawn, Expired and Closed with task filters each match their own rows;
+ * the closed-with-task card is stored as `expired` like the product stores it,
+ * and the Expired filter leaves it out.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -550,6 +559,12 @@ async function seed(db: Db) {
   const logOnly = await makeInteraction(logOnlyIssue, "request_confirmation", { prompt: "Archived; later activity is only log noise." }, { title: "Archived with log-only activity", addresseeUserId: scott });
   hiddenCards.push({ id: logOnly.id, mode: "archive" });
   card("Archived/Snoozed", "archived card with only log activity (stays hidden)");
+  // Task 2e: the Archived view shows the archive date and whether the card is also stale.
+  const archivedStaleIssue = await makeIssue({ title: "Archived and stale (40 days)", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+  const archivedStale = await makeInteraction(archivedStaleIssue, "request_confirmation", { prompt: "Archived a while ago; nothing changed for 40 days." }, { title: "Archived and stale", addresseeUserId: scott });
+  await backdateInteraction(db, archivedStale.id, daysAgo(40));
+  hiddenCards.push({ id: archivedStale.id, mode: "archive" });
+  card("Archived/Snoozed", "archived card that is also stale (Archived view: archive date + Stale chip)");
 
   const scottFeed = await attentionService(db).list(companyId, { userId: scott, all: true, allowUnscopedAll: true });
   const feedBySourceId = new Map(scottFeed.items.map((item) => [item.subject.id, item]));
@@ -609,7 +624,13 @@ async function seed(db: Db) {
     await db.insert(issueApprovals).values({ companyId, issueId: histApprovalIssue.id, approvalId: histApproval.id });
     await approvalSvc.cancel(histApproval.id, "We picked a different vendor.", { cancelledByUserId: scott });
     await closedEntry(scott, "approval", histApproval.id, histApprovalIssue.id, "We picked a different vendor.");
-    card("Closed history", "approval Scott withdrew (cancelled, never approved; history in task 2e)");
+    card("Closed history", "approval Scott withdrew (history: \"Withdrawn by @Scott\" with the reason)");
+
+    // Task 2e: approvals are in history. One with no task, rejected by Scott.
+    const histRejected = await approvalSvc.create(companyId, { type: "approve_ceo_strategy", status: "pending", requestedByUserId: dotta, payload: { title: "Adopt the 2027 pricing strategy", summary: "Rejected; the board kept current pricing." } } as never) as { id: string };
+    await approvalSvc.reject(histRejected.id, scott, "Keep current pricing for now.");
+    await db.update(approvalsTable).set({ decidedAt: daysAgo(4), updatedAt: daysAgo(4) }).where(eq(approvalsTable.id, histRejected.id));
+    card("Closed history", "approval with no task that Scott rejected (history: \"Approval · …\")");
 
     const histExpired = await makeIssue({ title: "History: expired", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
     const e = await makeInteraction(histExpired, "request_confirmation", { prompt: "Expired in the past." }, { title: "Expired" });
@@ -618,7 +639,9 @@ async function seed(db: Db) {
 
     const histClosedWithTask = await makeIssue({ title: "History: closed with its task", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
     const c = await makeInteraction(histClosedWithTask, "request_confirmation", { prompt: "Closed when its task closed." }, { title: "Closed with task" });
-    await db.update(issueThreadInteractions).set({ status: "cancelled", resolvedAt: daysAgo(1), result: { outcome: "issue_closed" }, updatedAt: daysAgo(1) }).where(eq(issueThreadInteractions.id, c.id));
+    // Stored as `expired` with outcome `issue_closed`, the shape the product
+    // writes when a task closes; the Expired filter leaves it out (task 2e).
+    await db.update(issueThreadInteractions).set({ status: "expired", resolvedAt: daysAgo(1), result: { version: 1, outcome: "issue_closed" }, updatedAt: daysAgo(1) }).where(eq(issueThreadInteractions.id, c.id));
     await db.update(issuesTable).set({ status: "done", updatedAt: daysAgo(1) }).where(eq(issuesTable.id, histClosedWithTask.id));
     card("Closed history", "interaction closed with its task");
   }

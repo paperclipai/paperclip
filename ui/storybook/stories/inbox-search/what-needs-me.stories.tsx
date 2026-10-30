@@ -453,7 +453,6 @@ function Queue({
                       key={it.id}
                       item={it}
                       companyId={companyId}
-                      variant="hidden"
                       expanded={false}
                       onToggleExpand={() => {}}
                       onDismiss={() => {}}
@@ -467,7 +466,7 @@ function Queue({
 
           {dismissed.length > 0 && (
             <section className="space-y-2">
-              <IssueGroupHeader label={`Dismissed (${dismissed.length})`} collapsible collapsed={!openCurtains} className="text-muted-foreground" />
+              <IssueGroupHeader label={`Archived (${dismissed.length})`} collapsible collapsed={!openCurtains} className="text-muted-foreground" />
               {openCurtains && (
                 <div className="space-y-2">
                   {dismissed.map((it) => (
@@ -475,7 +474,6 @@ function Queue({
                       key={it.id}
                       item={it}
                       companyId={companyId}
-                      variant="hidden"
                       expanded={false}
                       onToggleExpand={() => {}}
                       onDismiss={() => {}}

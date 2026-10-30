@@ -34,9 +34,14 @@ With **Settings → Experimental → Coordinator workspace** enabled, `/decision
 is **Needs You**. Pending cards use the existing attention feed and canonical
 resolvers. **Tasks → Needs attention** projects the **For you** feed as distinct tasks.
 
-Both `/decisions` surfaces switch between **For you** (default), **Unassigned**
-and **Company** (`?view=unassigned|company`); each list is cached per person and
-view. Your own cards say **Why me?**, a different person's card shows **For
+Both `/decisions` surfaces switch between **For you** (default), **Unassigned**,
+**Company** and **Archived** (`?view=unassigned|company|archived`); each list is
+cached per person and view. **Archived** lists only the open cards you archived
+(with the archive date and any Stale chip), then a **Snoozed** group with the
+time each card comes back; its Close… menu offers **Restore** (or **Restore
+now** and **Change snooze time**) instead of Archive, and the cards stay
+answerable. Its tab count is never in the badge, and the other views no longer
+show Snoozed/Archived curtains. Your own cards say **Why me?**, a different person's card shows **For
 @name**, and an ownerless request card offers **Claim**, which makes you its
 addressee and removes it from everyone else's pool (`attention.claimed` activity).
 For you shows "N cards need an owner" while the pool has cards; that count is
@@ -59,7 +64,7 @@ stops **Raise budget** or **Keep paused** inline. Stale cards carry a **Stale ·
 reason** chip and sit in a collapsed **Stale (N)** group at the bottom of each
 view; **Withdraw all stale** lists every card first and withdraws only those
 with a real withdraw. "Dismiss — no effects" and the questions-only Cancel are
-gone; the classic "Dismissed" curtain is now **Archived**.
+gone; archived and snoozed cards live in the **Archived** view.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
 resolutions resize into compact receipts while the same contained Gather Light
@@ -74,8 +79,11 @@ canonical stalled-review item stays in Needs You and Tasks → Needs attention.
 Coordinator presents the existing recovery actions with **Mark task done** as
 the task-level verdict, distinct from the saved artifact receipt.
 
-Open **Decision history** on this surface for the paginated history sidebar;
-it merges answered questions and confirmations with Decisions-v1 outcomes.
+Open **Decision history** (on both `/decisions` surfaces) for the paginated
+history panel; it merges answered questions and confirmations, Decisions-v1
+outcomes and approvals. Outcome filters include **Withdrawn**, **Expired** (not
+cards closed with their task), **Closed with task** and **Handled for me**; a
+withdrawn entry names who withdrew it and the reason.
 
 ### `search`
 
@@ -137,8 +145,10 @@ cover pending question forms and confirmations in persistent agent chats, remova
 after an answer with retained history, and company/task-visibility/addressee checks.
 Idle chats without structured requests remain absent.
 [Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
-cover the view partition, the For you badge with per-view counts, and the claim
-service and route permission matrix.
+cover the view partition, the For you badge with per-view counts, the personal
+`view=archived` list and its tab count, and the claim service and route
+permission matrix. The [canonical history](../../server/src/__tests__/decision-history.test.ts)
+tests also cover approvals and the Withdrawn / Expired / Closed with task filters.
 [Close and transfer tests](../../server/src/__tests__/attention-close.test.ts)
 cover withdraw for every interaction kind (including on a closed task), approval
 and decision cancel, personal archive/snooze, transfer, history labels, and the
@@ -151,9 +161,10 @@ and the idempotent closed-task sweep. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
 checks that a chat-sourced canonical question reaches its original resolver and context,
 and the view switch, banner, Why me?, For @name and Claim; the
-[classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions.
+[classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
+plus the Archived view with Restore, Change time and Decision history on both pages.
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
-show For you, Unassigned, Company and a different person's cards.
+show For you, Unassigned, Company, Archived and a different person's cards.
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.

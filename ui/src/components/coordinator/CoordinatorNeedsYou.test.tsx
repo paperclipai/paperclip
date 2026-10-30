@@ -9,6 +9,8 @@ import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const dismissals = vi.hoisted(() => ({ restore: vi.fn(async (..._args: unknown[]) => ({})) }));
+vi.mock("@/api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: dismissals.restore, dismiss: vi.fn() } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -66,6 +68,81 @@ async function click(text: string) {
   expect(button, text).toBeTruthy();
   await act(async () => button!.click()); await flush();
 }
+async function renderPage(url = fixture.url) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
+  await flush(); await flush();
+  return client;
+}
+describe("Coordinator Needs You — Archived view and history filters (PAP-749 task 2e)", () => {
+  const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null) => ({
+    id, sourceKind: "issue_thread_interaction", inlineResolvable: false, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`,
+    closeModes: ["withdraw", "archive", "snooze"], audience: { kind: "user", userId: "reviewer", reason: "addressee" },
+    dismissal: { kind, dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil, isActive: true },
+    subject: { id: `${id}-interaction`, kind: "interaction", title: `Hidden ${id}`, href: `/PAP/issues/PAP-9#${id}`, metadata: {} },
+    relatedIssue: null, activityAt: new Date().toISOString(),
+  }) as unknown as AttentionItem;
+
+  it("lists your archived cards with their date and a Snoozed group, and restores one", async () => {
+    fixture.byView = { archived: [hidden("arch", "dismiss"), hidden("snz", "snooze", "2026-10-31T09:00:00.000Z")] };
+    fixture.viewCounts = { mine: 2, unassigned: 0, company: 0, archived: 2 };
+    const client = await renderPage("/decisions?view=archived");
+    expect(fixture.listCalls).toContainEqual(expect.objectContaining({ view: "archived", all: true }));
+    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabs).toEqual(["For you2", "Unassigned0", "Company0", "Archived2"]);
+    const archivedCard = container.querySelector<HTMLElement>('[data-attention-card="arch"]')!;
+    expect(archivedCard.querySelector('[data-attention-hidden="archived"]')?.textContent).toMatch(/^Archived /);
+    const group = container.querySelector<HTMLElement>("[data-attention-snoozed-group]")!;
+    expect(group.textContent).toContain("Snoozed (1)");
+    expect(group.querySelector('[data-attention-card="snz"] [data-attention-hidden="snoozed"]')).not.toBeNull();
+    expect(group.querySelector('[data-attention-card="arch"]')).toBeNull();
+
+    const trigger = archivedCard.querySelector<HTMLElement>("[data-attention-close-menu]")!;
+    await act(async () => {
+      trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-attention-close-mode="archive"]')).toBeNull();
+    await act(async () => document.body.querySelector<HTMLElement>('[data-attention-close-mode="restore"]')!.click());
+    await flush();
+    expect(dismissals.restore).toHaveBeenCalledWith("company", "attention:arch");
+    expect(container.querySelector('[data-attention-card="arch"]')).toBeNull();
+    client.clear();
+  });
+
+  it("shows the Archived empty state", async () => {
+    fixture.byView = { archived: [] };
+    const client = await renderPage("/decisions?view=archived");
+    expect(container.textContent).toContain("Nothing archived. Cards you archive or snooze for yourself show here.");
+    client.clear();
+  });
+
+  it("filters history by Withdrawn, Expired and Closed with task, and names who withdrew and why", async () => {
+    fixture.mobile = true;
+    fixture.pending = [];
+    fixture.history = [{ id: "approval:appr", sourceKind: "approval", sourceId: "appr", issueId: null, issueIdentifier: null, issueTitle: null,
+      title: "Hire a designer", label: "Withdrawn by user", outcome: "cancelled", resultOutcome: "withdrawn", reason: "Budget moved to Q1",
+      resolvedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), resolvedByUserId: "dotta", resolvedByAgentId: null,
+      agentId: null, agentName: null, projectId: null, projectName: null, href: "/PAP/approvals/appr", target: null }];
+    const historySpy = vi.spyOn(await import("@/api/attention").then((module) => module.attentionApi), "history");
+    const client = await renderPage();
+    await click("Decision history");
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const outcome = dialog.querySelector<HTMLSelectElement>('[aria-label="Filter decision outcomes"]')!;
+    const labels = [...outcome.options].map((option) => option.textContent);
+    expect(labels).toEqual(expect.arrayContaining(["Withdrawn", "Expired", "Closed with task", "Handled for me"]));
+    expect(dialog.textContent).toContain("Withdrawn by @Dotta");
+    expect(dialog.textContent).toContain("Reason: Budget moved to Q1");
+    expect(dialog.textContent).toContain("Approval · Hire a designer");
+    await act(async () => {
+      outcome.value = "issue_closed";
+      outcome.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(historySpy).toHaveBeenCalledWith("company", expect.objectContaining({ outcome: "issue_closed" }));
+    client.clear();
+  });
+});
 describe("Coordinator Needs You", () => {
   it("reveals and focuses a linked decision beyond the first rendering window, then consumes only its URL parameter", async () => {
     fixture.url = "/decisions?decisionId=target&q=kept";

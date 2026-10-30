@@ -3,7 +3,7 @@ import { act, forwardRef, type AnchorHTMLAttributes } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionAudience, AttentionItem } from "@paperclipai/shared";
-import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip, AttentionStaleGroup } from "./AttentionCloseMenu";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "./AttentionCloseMenu";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -91,6 +91,35 @@ describe("AttentionCloseMenu", () => {
     await openMenu();
     await click(menuItem("archive"));
     expect(onArchive).toHaveBeenCalledWith(item);
+  });
+
+  it("offers Restore instead of Archive on a card you archived (PAP-749 task 2e)", async () => {
+    const onRestore = vi.fn();
+    const item = card("a", { dismissal: { kind: "dismiss", dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil: null, isActive: true } });
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onArchive={vi.fn()} onSnooze={vi.fn()} onWithdraw={vi.fn()} onRestore={onRestore} />);
+    await openMenu();
+    expect(menuItem("archive")).toBeNull();
+    expect(menuItem("withdraw")).not.toBeNull();
+    expect(menuItem("restore")?.textContent).toContain("Restore");
+    expect(menuItem("snooze")?.textContent).toContain("Snooze for me");
+    await click(menuItem("restore"));
+    expect(onRestore).toHaveBeenCalledWith(item);
+  });
+
+  it('offers "Restore now" and "Change snooze time" on a snoozed card', async () => {
+    const item = card("s", { dismissal: { kind: "snooze", dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil: "2026-10-31T09:00:00.000Z", isActive: true } });
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onArchive={vi.fn()} onSnooze={vi.fn()} onRestore={vi.fn()} />);
+    await openMenu();
+    expect(menuItem("restore")?.textContent).toContain("Restore now");
+    expect(menuItem("snooze")?.textContent).toContain("Change snooze time");
+  });
+
+  it("keeps Archive when no restore handler is given, even for a hidden card", async () => {
+    const item = card("a", { dismissal: { kind: "dismiss", dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil: null, isActive: true } });
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onArchive={vi.fn()} />);
+    await openMenu();
+    expect(menuItem("restore")).toBeNull();
+    expect(menuItem("archive")).not.toBeNull();
   });
 
   it("confirms a withdraw and sends the reason", async () => {
@@ -218,5 +247,30 @@ describe("AttentionStaleGroup", () => {
   it("renders nothing without stale cards", async () => {
     await render(<AttentionStaleGroup items={[]} open onToggle={vi.fn()} currentUserId={SCOTT}><p>cards</p></AttentionStaleGroup>);
     expect(container.querySelector("[data-attention-stale-group]")).toBeNull();
+  });
+});
+
+describe("AttentionHiddenChip and AttentionSnoozedGroup (PAP-749 task 2e)", () => {
+  it("shows when a card was archived and when a snoozed card comes back", async () => {
+    await render(<>
+      <AttentionHiddenChip item={card("a", { dismissal: { kind: "dismiss", dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil: null, isActive: true } })} />
+      <AttentionHiddenChip item={card("s", { dismissal: { kind: "snooze", dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil: "2026-10-31T09:00:00.000Z", isActive: true } })} />
+      <AttentionHiddenChip item={card("plain")} />
+    </>);
+    expect(container.querySelector('[data-attention-hidden="archived"]')?.textContent).toMatch(/^Archived /);
+    expect(container.querySelector('[data-attention-hidden="snoozed"] time')?.getAttribute("dateTime")).toBe("2026-10-31T09:00:00.000Z");
+    expect(container.querySelectorAll("[data-attention-hidden]")).toHaveLength(2);
+  });
+
+  it("starts open with its count, collapses with one click, and renders nothing when empty", async () => {
+    const onToggle = vi.fn();
+    await render(<AttentionSnoozedGroup count={2} open onToggle={onToggle}><p data-child>cards</p></AttentionSnoozedGroup>);
+    const group = container.querySelector<HTMLElement>("[data-attention-snoozed-group]")!;
+    expect(group.textContent).toContain("Snoozed (2)");
+    expect(group.querySelector("[data-child]")).not.toBeNull();
+    await click(group.querySelector<HTMLElement>("[aria-expanded]"));
+    expect(onToggle).toHaveBeenCalled();
+    await render(<AttentionSnoozedGroup count={0} open onToggle={onToggle}><p data-child>cards</p></AttentionSnoozedGroup>);
+    expect(container.querySelector("[data-attention-snoozed-group]")).toBeNull();
   });
 });

@@ -1329,8 +1329,11 @@ export function audienceMatchesView(
 ): boolean {
   switch (view) {
     // `all` is the pre-PAP-749 superset; the existing per-source filters already
-    // shaped `collected`, so every surviving item belongs in it.
+    // shaped `collected`, so every surviving item belongs in it. `archived` is
+    // every card the person hid themselves, whatever its audience (plan §3);
+    // the caller selects it by the person's own dismissal, not by audience.
     case "all":
+    case "archived":
       return true;
     case "mine":
       return audience.kind === "user" && audience.userId != null && audience.userId === userId;
@@ -2454,8 +2457,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             && item.audience.userId === options.userId,
         });
         // Rule 9: a personally hidden card returns only on a fingerprint change.
+        // Hidden cards stay in the snapshot so the Archived view and its tab
+        // count can read them; the view filter below drops them elsewhere.
         item.dismissal = activeDismissalState(dismissals, item, now);
-        if (!includeDismissed && item.dismissal?.isActive) continue;
         currentItems.push(item);
       }
 
@@ -2473,10 +2477,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         throw badRequest("activitySince must be before or equal to activityUntil");
       }
       const queueKey = options.queue?.trim() || null;
+      const hiddenForViewer = (item: AttentionItem) => item.dismissal?.isActive === true;
       const visibleItems = enrichedItems.filter((item) => {
-        // `all` (the default) keeps the pre-PAP-749 superset; the other views
-        // partition by resolved audience (PAP-749 plan §1, Rule 3).
-        if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
+        if (view === "archived") {
+          // The person's own Archived view (PAP-749 plan §3): open cards they
+          // archived or snoozed, and nothing else.
+          if (!hiddenForViewer(item)) return false;
+        } else {
+          // `all` (the default) keeps the pre-PAP-749 superset; the other views
+          // partition by resolved audience (PAP-749 plan §1, Rule 3).
+          if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
+          if (!includeDismissed && hiddenForViewer(item)) return false;
+        }
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
         const activity = timestamp(item.activityAt);
@@ -2561,13 +2573,19 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const item of rankedItems) countsBySourceKind[item.sourceKind] += 1;
       // One count per view for the switch, the Unassigned banner and the shared
       // badge (PAP-749 plan §1, Rule 5). Counted before the view, date and queue
-      // filters and pagination, so every surface reads the same numbers, and
-      // without the cards this person dismissed, snoozed or archived.
-      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0 };
+      // filters and pagination, so every surface reads the same numbers. The
+      // three audience views skip the cards this person archived or snoozed;
+      // the Archived tab counts exactly those (plan §3), never in the badge.
+      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0 };
       for (const item of enrichedItems) {
-        if (item.dismissal?.isActive || item.archivedAt) continue;
+        if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
+        if (hiddenForViewer(item)) {
+          viewCounts.archived += 1;
+          continue;
+        }
         for (const countedView of ATTENTION_PERSONAL_VIEWS) {
+          if (countedView === "archived") continue;
           if (audienceMatchesView(item.audience, countedView, options.userId)) viewCounts[countedView] += 1;
         }
       }

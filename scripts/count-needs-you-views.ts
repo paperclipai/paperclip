@@ -28,6 +28,7 @@ import {
 import type { AttentionFeedView } from "../packages/shared/src/index.js";
 import { attentionService } from "../server/src/services/attention.js";
 import { attentionReceiptService } from "../server/src/services/attention-receipts.js";
+import { decisionHistoryService } from "../server/src/services/decision-history.js";
 import { issueService } from "../server/src/services/issues.js";
 import { expirePendingInteractionsOnClosedIssues } from "../server/src/services/closed-issue-interaction-sweep.js";
 
@@ -149,6 +150,32 @@ async function main() {
       console.log(`${name}: ${receipts.length} receipt(s); unread in Mine: ${unread.map((issue) => issue.title).join(", ") || "none"}`);
       for (const receipt of receipts) {
         console.log(`  - ${receipt.outcome.padEnd(9)} by ${receipt.actorUserId === idByEmail.get(DEMO_EMAILS.Scott) ? "Scott" : receipt.actorUserId}: ${receipt.title}${receipt.reason ? ` (reason: ${receipt.reason})` : ""}`);
+      }
+    }
+
+    // Task 2e: each person's Archived view (archived first, then the Snoozed
+    // group) and its tab count, which is never in the badge; then the Decision
+    // history outcome filters, approvals included.
+    console.log("\n=== Archived view (task 2e) ===");
+    for (const [name, email] of Object.entries(DEMO_EMAILS)) {
+      const userId = idByEmail.get(email);
+      if (!userId) continue;
+      const feed = await svc.list(company.id, { userId, view: "archived" });
+      console.log(`${name}: Archived tab ${feed.viewCounts.archived}, badge ${feed.deskBadgeCount} (= For you ${feed.viewCounts.mine})`);
+      for (const item of feed.items) {
+        const when = item.dismissal!.kind === "snooze" ? `snoozed, back ${item.dismissal!.snoozedUntil}` : `archived ${item.dismissal!.dismissedAt}`;
+        console.log(`  - ${when}${item.stale ? ` · stale ${item.stale.reason}` : ""}: ${item.subject.title}`);
+      }
+    }
+    if (scottForHidden) {
+      const actor = { type: "board", source: "session", userId: scottForHidden, companyIds: [company.id], isInstanceAdmin: true } as never;
+      const history = decisionHistoryService(db);
+      console.log("\n=== Decision history filters for Scott (task 2e) ===");
+      for (const outcome of [undefined, "withdrawn", "expired", "issue_closed", "accepted", "rejected"]) {
+        const page = await history.list(company.id, { actor, userId: scottForHidden, limit: 100, ...(outcome ? { outcome } : {}) });
+        const approvals = page.items.filter((item) => item.sourceKind === "approval").length;
+        console.log(`${(outcome ?? "all").padEnd(12)} ${String(page.items.length).padStart(3)} entr${page.items.length === 1 ? "y" : "ies"} (${approvals} approval${approvals === 1 ? "" : "s"})`);
+        if (outcome) for (const item of page.items) console.log(`  - ${item.sourceKind.padEnd(24)} ${item.label}${item.reason ? ` (reason: ${item.reason})` : ""}: ${item.title}`);
       }
     }
 

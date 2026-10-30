@@ -6171,8 +6171,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
-      view: z.enum(["mine", "unassigned", "company", "all"]).optional()
-        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days."),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
+        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6255,14 +6255,15 @@ registry.registerPath({
   tags: ["inbox"],
   summary: "List recorded decisions visible to the current board user",
   description:
-    "Requires a board user with company access. Returns a DecisionHistoryPage with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
+    "Requires a board user with company access. Returns a DecisionHistoryPage of closed interactions, decisions and approvals, with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
       cursor: z.string().max(1000).optional(),
       limit: z.coerce.number().int().min(1).max(100).optional(),
       search: z.string().trim().max(200).optional(),
-      outcome: z.string().max(40).optional(),
+      outcome: z.string().max(40).optional()
+        .describe("Outcome filter: accepted, answered, rejected, decided, withdrawn, expired (time-outs and supersedes, not task closes), issue_closed (closed with task) or cancelled. Other values match the stored status."),
       agentId: z.string().uuid().optional(),
       projectId: z.string().uuid().optional(),
       sort: z.enum(["newest", "oldest"]).optional(),

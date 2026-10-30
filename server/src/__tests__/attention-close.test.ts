@@ -272,7 +272,12 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
     await request(scott).post(closeUrl(companyId, "decision", decisionId)).send({ mode: "withdraw" }).expect(409);
 
     const history = await decisionHistoryService(db).list(companyId, { actor: board(companyId, SCOTT) as never, userId: SCOTT, outcome: "withdrawn" });
-    expect(history.items).toEqual([expect.objectContaining({ sourceKind: "decision", label: "Withdrawn by user", reason: "Vendor chosen elsewhere" })]);
+    // Approvals are in history too (PAP-749 task 2e), so the withdrawn approval shows next to the decision.
+    expect(history.items).toHaveLength(2);
+    expect(history.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceKind: "decision", label: "Withdrawn by user", reason: "Vendor chosen elsewhere" }),
+      expect.objectContaining({ sourceKind: "approval", label: "Withdrawn by user", reason: "Plan changed", resultOutcome: "withdrawn" }),
+    ]));
   });
 
   it("serves the approval cancel route to board users only", async () => {

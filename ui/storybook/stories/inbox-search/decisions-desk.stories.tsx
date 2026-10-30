@@ -153,7 +153,7 @@ function feed(items: AttentionItem[]): AttentionFeed {
     generatedAt: iso(NOW),
     totalCount: items.length,
     deskBadgeCount,
-    viewCounts: { mine: deskBadgeCount, unassigned: 3, company: 2 },
+    viewCounts: { mine: deskBadgeCount, unassigned: 3, company: 2, archived: items.length - deskBadgeCount },
     nextCursor: null,
     countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
     items,
