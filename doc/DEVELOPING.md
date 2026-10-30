@@ -193,6 +193,50 @@ canary dry run.
 The uncached typecheck job also runs the repository-wide CLI guidance safety
 guard. It still scans UI changes when unrelated server shards are omitted.
 
+For ordinary source-only PRs, a separate `Select Vitest files` job refines the
+general and serialized test lanes before their runners are allocated. It runs
+on the gate-approved test fleet, loads the real Vitest projects, and follows
+imports across workspace packages. Only projects with their own source changes
+are narrowed; unchanged consumer projects retain their complete coarse lane
+coverage without paying for another graph traversal. Filesystem, subprocess, network, CommonJS,
+dynamic-loader, unresolved, and unapproved external-package consumers are
+retained conservatively, including indirect consumers through local helpers.
+The selector explicitly tracks setup/configuration dependencies as well as test
+imports. The small pure-dependency allowlist lives in
+`scripts/ci/vitest-selection-graph.mjs`; new external packages remain opaque
+until reviewed. This is deliberately broader than `vitest related` alone.
+For conservative retention, explicit complete local mock factories cut the
+mocked implementation's I/O edges. Partial mocks, spies, automocks, mock bypasses,
+and dynamic or escaped mocking APIs do not. Edits to a mocked module still use
+Vitest's unmodified related-file graph. Non-isolated projects run in full.
+
+Selected files are repartitioned within their existing owners using the current
+per-runner budgets and server timing weights. Small selections allocate fewer
+jobs; empty lanes allocate none. Serialized files remain serialized, and chat's
+line shards, native Runner lanes, Rust, builds, typechecking and E2E retain their
+existing selection/execution rules. The job summary reports files and jobs
+selected per lane, and the `vitest-selection` artifact records the manifest and
+dependency audit.
+
+Missing/deleted/renamed files, non-source inputs, unrecognized graph inputs,
+setup/config changes, failed dependency installs, graph errors and timeouts use
+the complete original task plan. A published manifest must match the checked-out
+merge SHA, its plan hash and the expected shard/project ownership. Missing or
+invalid manifests fail selected jobs and the required aggregate; they cannot
+turn reduced matrices green. Turbo hashes the selected file assignment through
+`PAPERCLIP_CI_SELECTION_HASH`, so a passing subset cannot satisfy a full run or a
+different selection.
+
+Set the repository variable `CI_VITEST_SELECTION=off` to disable file selection
+while keeping the existing task-level optimization. Empty or `enabled` enables
+it; other values disable it. `full-ci`, profiling, and task-level `full`/`shadow`
+modes also bypass file selection. Qualification uses real Vitest graphs and real
+Turbo cache entries, including a filesystem contract omitted by the raw graph:
+
+```sh
+node --test scripts/ci/test-selection*.test.mjs scripts/ci/cache.integration.test.mjs
+```
+
 General and serialized test suites and the standalone Rust suite use Turbo's
 content-addressed cache. An execution adapter maps selected lanes to the existing
 package scripts and their declared inputs. It selects tracked and non-ignored

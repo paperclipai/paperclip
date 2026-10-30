@@ -623,6 +623,13 @@ const selectionProjects = options.mode === serializedModeName || generalServerGr
       : options.group === generalWorkspacesCGroupName ? generalWorkspacesCProjects : [];
 const selection = process.env.PAPERCLIP_CI_TEST_SELECTION
   ? selectedShard(loadSelection(), options, selectionProjects) : null;
+if (selection?.["@paperclipai/server"]) {
+  const owned = new Set(options.mode === serializedModeName ? routeTests.map((test) => test.repoPath)
+    : generalServerTestFiles.filter((file) => !excludedServerSuites(options.group).includes(file)));
+  for (const file of selection["@paperclipai/server"]) {
+    if (!owned.has(file)) fail(`Selected test belongs to another server lane: ${file}`);
+  }
+}
 if (selection && options.dryRun) {
   writeFileSync(1, JSON.stringify({ selection }));
   process.exit(0);

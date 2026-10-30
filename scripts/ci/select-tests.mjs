@@ -51,7 +51,7 @@ export async function createTestSelection(plan, head) {
   const { selectProjectTests } = await import("./vitest-selection-graph.mjs");
   const graphs = [];
   for (const project of projects) {
-    const graph = await selectProjectTests({ project, changed: plan.changed });
+    const graph = await selectProjectTests({ project, changed: plan.changed, onlyOwnChanges: true });
     graphs.push(graph);
     console.log(`${project}: ${graph.selected.length}/${graph.inventory.length} files, ${graph.alwaysRun.length} retained conservatively, ${graph.seconds.toFixed(1)}s`);
     for (const owner of Object.values(owners)) if (owner[project] === null) owner[project] = graph.inventory;

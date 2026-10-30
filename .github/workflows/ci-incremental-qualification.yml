@@ -22,6 +22,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  qualify_test_selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: ./.github/actions/setup-ci-dependencies
+      - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
+        run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
+
   qualify:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -12,6 +12,7 @@ const purePackages = new Set([
   "react-router", "react-router-dom", "@tanstack/react-query", "@tanstack/query-core",
   "zod", "lodash", "lodash-es", "date-fns", "clsx", "tailwind-merge", "class-variance-authority",
   "lucide-react", "immer", "nanoid", "uuid", "semver",
+  "radix-ui", "motion", "@dnd-kit/core", "@dnd-kit/sortable", "@dnd-kit/utilities",
 ]);
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
   "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto"]);
@@ -26,13 +27,29 @@ export function sourceDependencies(file, source) {
   const ast = parseSync(file, source);
   const imports = new Set();
   const reasons = new Set();
+  const mockBindings = new Set(ast.program.body.filter((node) => node.type === "ImportDeclaration" && node.source.value === "vitest")
+    .flatMap((node) => node.specifiers.filter((s) => s.type === "ImportSpecifier" && ["vi", "vitest"].includes(s.imported.name)).map((s) => s.local.name)));
+  const hoistedBindings = new Set(ast.program.body.filter((node) => node.type === "ImportDeclaration" && node.source.value === "vitest")
+    .flatMap((node) => node.specifiers.filter((s) => s.type === "ImportSpecifier" && ["vi", "vitest"].includes(s.imported.name)
+      && s.local.name === s.imported.name).map((s) => s.local.name)));
+  const mocks = [];
   if (ast.errors.length) reasons.add("unparsed source");
   const literal = (node) => node?.type === "Literal" && typeof node.value === "string";
   const importSource = (node) => {
     if (literal(node)) imports.add(node.value);
     else reasons.add("dynamic module name");
   };
-  function visit(node) {
+  for (const statement of ast.program.body) {
+    const call = statement.type === "ExpressionStatement" ? statement.expression : null;
+    const callee = call?.type === "CallExpression" ? call.callee : null;
+    const factory = call?.arguments?.[1];
+    if (callee?.type === "MemberExpression" && !callee.computed && callee.property.name === "mock"
+      && hoistedBindings.has(callee.object.name) && literal(call.arguments[0])
+      && ["ArrowFunctionExpression", "FunctionExpression"].includes(factory?.type) && factory.params.length === 0) {
+      mocks.push(call.arguments[0].value);
+    }
+  }
+  function visit(node, parent = null) {
     if (!node || typeof node !== "object") return;
     if ((node.type === "ImportDeclaration" && node.importKind !== "type")
       || (["ExportNamedDeclaration", "ExportAllDeclaration"].includes(node.type) && node.exportKind !== "type")) {
@@ -42,6 +59,13 @@ export function sourceDependencies(file, source) {
     if (node.type === "TSImportEqualsDeclaration") reasons.add("CommonJS import");
     if (node.type === "Identifier" && /^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)) {
       reasons.add("external input or dynamic code");
+    }
+    if ((node.type === "Identifier" && /^(importActual|unmock|doUnmock)$/.test(node.name))
+      || (literal(node) && /^(importActual|unmock|doUnmock)$/.test(node.value))) reasons.add("mock bypass");
+    if (node.type === "Identifier" && mockBindings.has(node.name) && parent
+      && parent.type !== "ImportSpecifier"
+      && !(parent.type === "MemberExpression" && parent.object === node && !parent.computed)) {
+      reasons.add("escaped or dynamic mocking API");
     }
     if (node.type === "CallExpression") {
       const name = source.slice(node.callee.start, node.callee.end);
@@ -55,15 +79,15 @@ export function sourceDependencies(file, source) {
       if (/\b(?:fetch|eval|Function|glob|globSync)\b/.test(name)) reasons.add("external input or dynamic code");
     }
     for (const value of Object.values(node)) {
-      if (Array.isArray(value)) value.forEach(visit);
-      else if (value && typeof value === "object" && value.type) visit(value);
+      if (Array.isArray(value)) value.forEach((child) => visit(child, node));
+      else if (value && typeof value === "object" && value.type) visit(value, node);
     }
   }
   visit(ast.program);
-  return { imports: [...imports], reasons: [...reasons] };
+  return { imports: [...imports], reasons: [...reasons], mocks };
 }
 
-export async function selectProjectTests({ root = process.cwd(), project, changed }) {
+export async function selectProjectTests({ root = process.cwd(), project, changed, onlyOwnChanges = false }) {
   root = realpathSync(root);
   const started = performance.now();
   const absoluteChanges = changed.map((file) => path.resolve(root, file));
@@ -75,6 +99,14 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     const environment = owner.vite.environments.ssr;
     const inventory = await ctx.globTestSpecifications();
     if (!inventory.length) throw new Error(`Empty inventory: ${project}`);
+    const relative = (spec) => path.relative(root, spec.moduleId).split(path.sep).join("/");
+    if (onlyOwnChanges && !absoluteChanges.some((file) => file.startsWith(`${owner.config.root}${path.sep}`))) {
+      // Keep coarse dependency coverage, but avoid spending a graph traversal
+      // on an unchanged consumer project merely to retain most of its IO tests.
+      const files = inventory.map(relative).sort();
+      return { project, inventory: files, selected: files, related: [], alwaysRun: files, coveredChanges: [],
+        opaqueModules: {}, retainedReason: "Unchanged project retains complete lane coverage", seconds: (performance.now() - started) / 1000 };
+    }
     const raw = await ctx.getRelevantTestSpecifications();
     const modules = environment.moduleGraph.idToModuleMap;
     const audit = new Map();
@@ -84,9 +116,11 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       return parsed.get(file);
     };
     const resolve = async (specifier, importer) => {
-      const resolved = await environment.pluginContainer.resolveId(specifier, importer);
-      if (!resolved || resolved.external || !path.isAbsolute(resolved.id) || resolved.id.includes("?")) return null;
-      try { return realpathSync(resolved.id); } catch { return null; }
+      try {
+        const resolved = await environment.pluginContainer.resolveId(specifier, importer);
+        if (!resolved || resolved.external || !path.isAbsolute(resolved.id) || resolved.id.includes("?")) return null;
+        return realpathSync(resolved.id);
+      } catch { return null; } // A conditional/require-only export is opaque.
     };
     // Setup dependencies are not test-import edges. A change anywhere in their
     // local import closure invalidates the entire project, including helpers.
@@ -100,35 +134,84 @@ export async function selectProjectTests({ root = process.cwd(), project, change
         if (isBuiltin(specifier)) continue;
         const dependency = await resolve(specifier, file);
         if (dependency && inside(root, dependency)) await setupClosure(dependency);
-        else if (specifier.startsWith(".")) throw new Error(`Unresolved setup dependency: ${specifier}`);
+        else if (!dependency) throw new Error(`Unresolved setup dependency: ${specifier}`);
       }
     }
-    for (const file of owner.config.setupFiles ?? []) await setupClosure(file);
+    for (const file of [...(owner.config.setupFiles ?? []), ...(owner.config.globalSetup ?? []),
+      ...(owner.config.snapshotSerializers ?? [])]) {
+      const resolved = path.isAbsolute(file) ? file : await resolve(file, owner.vite.config.configFile);
+      if (resolved && inside(root, resolved)) await setupClosure(resolved);
+      else if (!resolved) throw new Error(`Unresolved setup module: ${file}`);
+    }
+    for (const file of owner.vite.config.configFileDependencies ?? []) setup.add(realpathSync(file));
     const setupChanged = absoluteChanges.some((file) => setup.has(file));
+    const resolvedDependencies = new Map();
+    const localImports = new Map();
+    const dependencyPath = (dep) => {
+      if (!resolvedDependencies.has(dep)) {
+        const file = dep.startsWith("/@fs/") ? dep.slice(process.platform === "win32" ? 5 : 4)
+          : path.join(owner.config.root, dep);
+        try { resolvedDependencies.set(dep, realpathSync(file)); }
+        catch { resolvedDependencies.set(dep, null); }
+      }
+      return resolvedDependencies.get(dep);
+    };
     for (const [id, module] of modules) {
       if (!inside(root, id) || !/\.[cm]?[jt]sx?$/.test(id)) continue;
       const source = parse(id);
       const reasons = [...source.reasons];
-      for (const specifier of source.imports) {
-        if (isBuiltin(specifier)) {
-          if (!pureBuiltins.has(specifier.replace(/^node:/, ""))) reasons.push(`builtin ${specifier}`);
+      const local = [];
+      localImports.set(id, local);
+      // Use the same resolved runtime edges as Vitest, including literal dynamic
+      // imports. Resolving the original syntax again uses the wrong conditions
+      // for require-only exports and invents edges for erased type imports.
+      const transformed = module.transformResult;
+      if (!Array.isArray(transformed?.deps)) reasons.push("unknown transform shape");
+      for (const dependencyId of [...(transformed?.deps ?? []), ...(transformed?.dynamicDeps ?? [])]) {
+        if (isBuiltin(dependencyId)) {
+          if (!pureBuiltins.has(dependencyId.replace(/^node:/, ""))) reasons.push(`builtin ${dependencyId}`);
           continue;
         }
-        const dependency = await resolve(specifier, id);
+        const dependency = dependencyPath(dependencyId);
         if (dependency && inside(root, dependency)) {
+          local.push(dependency);
           // Vitest intentionally skips some edges (e.g. CJS, externalized
           // workspaces). Never regard an untracked local edge as independent.
-          if (!modules.get(dependency)?.transformResult) reasons.push(`untracked dependency ${specifier}`);
-        } else if (!dependency || !purePackages.has(packageName(specifier))) {
-          reasons.push(`opaque dependency ${specifier}`);
+          if (!modules.get(dependency)?.transformResult) reasons.push(`untracked dependency ${path.relative(root, dependency)}`);
+        } else {
+          const external = dependency?.split(`${path.sep}node_modules${path.sep}`).at(-1).split(path.sep).join("/");
+          if (!dependency || !dependency.includes(`${path.sep}node_modules${path.sep}`) || !purePackages.has(packageName(external))) {
+            reasons.push(`opaque dependency ${external ? packageName(external) : dependencyId}`);
+          }
         }
       }
       if (!module.transformResult) reasons.push("untransformed module");
       if (reasons.length) audit.set(id, [...new Set(reasons)]);
     }
-    ctx.config.related = [...audit.keys()];
-    const retained = setupChanged ? inventory : await ctx.getRelevantTestSpecifications();
-    const relative = (spec) => path.relative(root, spec.moduleId).split(path.sep).join("/");
+    const retained = [];
+    for (const spec of inventory) {
+      const mocked = new Set();
+      // Honor only unconditional, explicitly supplied mock factories without an
+      // importOriginal parameter. Automocks, spies, unmock/importActual, dynamic
+      // mocking and escaped vi bindings stay conservative. The related-file
+      // graph remains uncut: edits to a mocked module can still select its tests.
+      if (owner.config.isolate !== false) {
+        for (const name of parse(spec.moduleId).mocks) {
+          const target = await resolve(name, spec.moduleId);
+          if (target && inside(root, target)) mocked.add(target);
+        }
+      }
+      const queue = [spec.moduleId], visited = new Set();
+      let opaque = setupChanged || owner.config.isolate === false;
+      while (queue.length && !opaque) {
+        const file = queue.pop();
+        if (visited.has(file)) continue;
+        visited.add(file);
+        if (audit.has(file)) { opaque = true; break; }
+        for (const dependency of localImports.get(file) ?? []) if (!mocked.has(dependency)) queue.push(dependency);
+      }
+      if (opaque) retained.push(spec);
+    }
     const selected = [...new Set([...raw, ...retained].map(relative))].sort();
     return {
       project,
