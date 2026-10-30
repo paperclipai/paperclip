@@ -36,6 +36,7 @@ import {
   referencedSourceContentSignature,
   resolveStalledToolTimeoutMs,
   rewriteGeminiAcpFlagForVersion,
+  summarizeAcpProcessTerminal,
   summarizeAcpStopActivity,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
@@ -3946,6 +3947,39 @@ describe("summarizeAcpStopActivity", () => {
 
   it("omits the event age when no event preceded the stop", () => {
     expect(summarizeAcpStopActivity(10_000, null, [])).toEqual({});
+  });
+});
+
+describe("summarizeAcpProcessTerminal", () => {
+  it("reports nothing before the process session records terminal evidence", () => {
+    expect(summarizeAcpProcessTerminal(null)).toEqual({});
+    expect(summarizeAcpProcessTerminal(undefined)).toEqual({});
+  });
+
+  it("reports a signal-killed remote process", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: "unknown", signal: "SIGKILL",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalSignal: "SIGKILL",
+    });
+  });
+
+  it("reports an exit code and omits an unknown signal", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: 137, signal: "unknown",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+    });
+  });
+
+  it("reports a host proxy close with no exit details", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "proxy_close", outcome: "error", exitCode: "unknown", signal: "unknown",
+    })).toEqual({ acpProcessTerminalSource: "proxy_close", acpProcessTerminalOutcome: "error" });
   });
 });
 
@@ -8045,12 +8079,13 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     runtime: unknown,
     sandbox: Awaited<ReturnType<typeof setupRemoteSandbox>>,
     deps: Partial<AcpxEngineExecutorOptions> = {},
+    processSessionBridge: Record<string, unknown> = {},
   ) {
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
       async () => handle as never,
     );
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
-      async () => ({ agentCommand: null, stop: async () => {} }) as never,
+      async () => ({ agentCommand: null, stop: async () => {}, ...processSessionBridge }) as never,
     );
     const execute = createAcpxEngineExecutor({
       createRuntime: () => runtime as never,
@@ -8263,6 +8298,36 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // Distinct from a session-identity failure and from the deadline code.
     expect(result.errorCode).not.toBe("acpx_session_init_failed");
     expect(result.errorCode).not.toBe("acpx_handshake_timeout");
+  }, 10000);
+
+  it("reports how the agent process session ended when the process exits during the handshake", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const runtime = {
+      ensureSession: async () => {
+        throw new Error("agent process exited during initialize");
+      },
+      startTurn: () => {
+        throw new Error("startTurn must not run after a failed handshake");
+      },
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox, {}, {
+      readTerminalEvidence: () => ({
+        source: "remote_event", outcome: "exit", exitCode: 137, signal: "SIGKILL",
+      }),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.resultJson).toMatchObject({
+      phase: "ensure_session",
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+      acpProcessTerminalSignal: "SIGKILL",
+    });
   }, 10000);
 
   it("aborts an in-flight turn and fails the run when the duplex channel latches a loss mid-turn", async () => {
