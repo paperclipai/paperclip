@@ -14,7 +14,7 @@ import { WorkspaceRetryControl } from "../components/WorkspaceRetryButton";
 import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
 import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
-import { useTaskPluginPanels, taskPluginPanelId } from "@/hooks/useTaskPluginPanels";
+import { useTaskPluginPanels, taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import { useTaskBrowsers, useBrowserArrivals } from "@/hooks/useTaskBrowsers";
 import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
@@ -4063,6 +4063,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const timeout = window.setTimeout(() => observer.disconnect(), 10_000);
     return () => { observer.disconnect(); window.clearTimeout(timeout); };
   }, [coordinatorWorkspaceEnabled, issue?.id, location.hash, location.key]);
+  const taskPanelAccountScope = coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous";
   const { panels: pluginPanels, isLoading: pluginPanelsLoading } = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
   const openedPluginPanelKeys = useRef(new Set<string>());
@@ -4070,13 +4071,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useEffect(() => {
     for (const panel of pluginPanels) {
       if (!panel.autoOpen || !panel.runId) continue;
-      const key = JSON.stringify([currentUserId, issue?.id, panel.runId, taskPluginPanelId(panel)]);
+      const key = taskPluginPanelActivationKey(panel, taskPanelAccountScope, issue!);
       if (revealedPluginPanels.current.has(key)) continue;
       revealedPluginPanels.current.add(key);
+      if (dismissedPluginPanelKeys.current.has(key)) continue;
       openTaskSidePanel();
       if (isMobile) setMobilePropsOpen(true);
     }
-  }, [pluginPanels, currentUserId, issue?.id, openTaskSidePanel, isMobile]);
+  }, [pluginPanels, taskPanelAccountScope, issue?.companyId, issue?.id, openTaskSidePanel, isMobile]);
   const browserQuery = useTaskBrowsers(issue?.id);
   const { openBrowserId, openBrowser: setOpenBrowserId, acknowledgeBrowserOpened: handleBrowserOpened } =
     useBrowserArrivals(currentUserId ?? "anonymous", issue?.id, browserQuery.data);
@@ -6192,7 +6194,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
             {...sharedProps}
-            accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
+            accountScope={taskPanelAccountScope}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
             showSubtasksTab={streamlinedTaskDetailEnabled}
@@ -6215,6 +6217,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [
     pluginPanels,
     pluginPanelsLoading,
+    taskPanelAccountScope,
     openBrowserId,
     handleBrowserOpened,
     closePanel,
@@ -8810,7 +8813,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
                     issue={issue}
-                    accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
+                    accountScope={taskPanelAccountScope}
                     childIssues={childIssues}
                     issueLinkState={
                       streamlinedTaskDetailEnabled

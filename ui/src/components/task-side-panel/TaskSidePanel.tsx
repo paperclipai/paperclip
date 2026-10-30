@@ -3,7 +3,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
-import { taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { taskPluginPanelActivationKey, taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
 import { PluginSlotMount } from "@/plugins/slots";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
@@ -373,7 +373,7 @@ function TaskSidePanelForScope({
   const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
   const localDismissedPluginPanels = useRef(new Set<string>());
   const dismissedPluginPanels = dismissedPluginPanelKeys ?? localDismissedPluginPanels.current;
-  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]), [accountScope, issue.companyId, issue.id]);
+  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => taskPluginPanelActivationKey(panel, accountScope, issue), [accountScope, issue.companyId, issue.id]);
   useEffect(() => {
     const ids = new Set(pluginPanels.map(taskPluginPanelId));
     for (const tab of controller.tabs) {

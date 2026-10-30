@@ -22,6 +22,10 @@ export function taskPluginPanelId(panel: TaskPluginPanel) {
   return `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`;
 }
 
+export function taskPluginPanelActivationKey(panel: TaskPluginPanel, accountScope: string, issue: Pick<Issue, "companyId" | "id">) {
+  return JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]);
+}
+
 /** Plugins own their views; activity controls automatic opening. */
 export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = true): { panels: TaskPluginPanel[]; isLoading: boolean } {
   const queryClient = useQueryClient();
@@ -33,13 +37,13 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
   const panels = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel), [declaredSlots]);
   const slots = useMemo(() => panels.filter(slot => slot.taskSidePanel?.activation), [panels]);
   const connected = useTaskRunLiveUpdates({
-    companyId: savedTask && slots.length > 0 && !errorMessage ? issue?.companyId : null,
+    companyId: savedTask && panels.length > 0 && !errorMessage ? issue?.companyId : null,
     issueId: issue?.id, issueQueryRef: issue?.id ?? "pending", assigneeAgentId: issue?.assigneeAgentId,
   });
   const { data: runs, isError: runsError } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
-    enabled: savedTask && slots.length > 0 && !errorMessage,
+    enabled: savedTask && panels.length > 0 && !errorMessage,
     refetchInterval: connected ? false : 3000,
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,

@@ -85,10 +85,18 @@ it("offers declared manual views without an activation mapping", async () => {
   const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
   plugin.slots = [manual];
   await render();
-  expect(panels).toEqual([{ entityId: "agent", autoOpen: false, slot: manual }]);
-  expect(list).not.toHaveBeenCalled();
+  expect(panels).toEqual([{ entityId: "agent", runId: "run", autoOpen: false, slot: manual }]);
+  expect(list).toHaveBeenCalledWith("task");
   expect(history).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled();
+});
+
+it("uses the running agent for manual views without an activity mapping", async () => {
+  const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
+  plugin.slots = [manual]; list.mockResolvedValue([{ ...run, agentId: "running-agent" }]);
+  await render();
+  expect(panels).toEqual([{ entityId: "running-agent", runId: "run", autoOpen: false, slot: manual }]);
+  expect(history).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
 });
 
 it("has no manual agent view for an unassigned idle task", async () => {
@@ -286,10 +294,10 @@ it.each([500, 403])("bounds failed discovery reads for HTTP %s", async status =>
   expect(current).toEqual([]);
 });
 
-it("does not discover a task view without a declared activity mapping", async () => {
+it("does not automatically open a task view without a declared activity mapping", async () => {
   plugin.slots = [{ ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } }];
   await render();
-  expect(list).not.toHaveBeenCalled(); expect(history).not.toHaveBeenCalled();
+  expect(list).toHaveBeenCalledWith("task"); expect(history).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled(); expect(current).toEqual([]);
 });
 
