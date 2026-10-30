@@ -47,6 +47,7 @@ const apiPrefixes: Record<string, string> = {
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
+  "connection-event-wake.ts": "/",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
@@ -113,6 +114,8 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
+  "POST /api/instance/connector-events/wake",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -180,6 +183,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "connection-event-wake.ts") return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&

@@ -3,6 +3,7 @@ import { registerRoutineExecutionStatusWork } from "./services/routine-execution
 import { routineExecutionStatusService } from "./services/routine-run-status.js";
 import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
 import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
+import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
@@ -1458,35 +1459,13 @@ async function startServerWithDatabaseTeardown(
       ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
       ?? null,
   });
-  const scheduleGitHubConnectionEventPoll = (forSetup = false) => {
-    if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-    const work = githubConnectionEvents.pollOnce({ forSetup })
-      .then((result) => {
-        if (result.leased > 0 || result.failed > 0) {
-          logger.info(result, "GitHub connection event poll completed");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "GitHub connection event poll failed");
-      });
-    trackHeartbeatSchedulerWork(work);
-    return work;
-  };
+  const githubCanRun = () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped;
+  const githubEventWorker = registerGitHubConnectionEventWork(db, deliveryWork, githubConnectionEvents, githubCanRun);
+  const githubContinuityWorker = registerGitHubConnectionContinuityWork(db, deliveryWork, tools, githubCanRun);
+  server.on("close", () => { void githubEventWorker.stop(); void githubContinuityWorker.stop(); });
   server.on("close", registerGitHubBotCloudSetupPoller(db, async () => {
-    await scheduleGitHubConnectionEventPoll(true);
+    if (githubCanRun()) await githubConnectionEvents.pollOnce({ forSetup: true });
   }));
-  const scheduleGitHubConnectionContinuitySweep = () => {
-    if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(tools.sweepGitHubConnectionContinuity()
-      .then((result) => {
-        if (result.due > 0 || result.failed > 0) {
-          logger.info(result, "GitHub connection continuity sweep completed");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "GitHub connection continuity sweep failed");
-      }));
-  };
 
   await timeStartupRecovery("tool_reviews", async () => {
     if (config.heartbeatSchedulerEnabled) {
@@ -1517,8 +1496,7 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
     : app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
   await timeStartupRecovery("delivery_workers", () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)));
-  scheduleGitHubConnectionEventPoll();
-  scheduleGitHubConnectionContinuitySweep();
+  await Promise.all([githubEventWorker.ready, githubContinuityWorker.ready]);
 
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
@@ -1904,8 +1882,6 @@ async function startServerWithDatabaseTeardown(
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        scheduleGitHubConnectionEventPoll();
-        scheduleGitHubConnectionContinuitySweep();
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
 
@@ -1970,8 +1946,6 @@ async function startServerWithDatabaseTeardown(
     // as the enabled path.
     await startEnvironmentCleanup();
     startHeartbeatSchedulerInterval(() => {
-      scheduleGitHubConnectionEventPoll();
-      scheduleGitHubConnectionContinuitySweep();
     });
   }
   

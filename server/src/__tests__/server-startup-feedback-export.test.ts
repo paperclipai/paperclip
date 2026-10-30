@@ -14,7 +14,7 @@ import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { decisionService, decisionRetentionService, toolAccessService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +38,13 @@ const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null)
 vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
 vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
 vi.mock("../telemetry.js", () => ({ initTelemetry: cloudRuntimeStartupMocks.telemetry, getTelemetryClient: vi.fn(() => null) }));
+
+// Producer transaction/notification behavior is covered by the real PostgreSQL
+// GitHub worker suite; this startup seam supplies a lightweight database mock.
+vi.mock("../services/delivery-work-notifications.js", async () => ({
+  ...await vi.importActual<typeof import("../services/delivery-work-notifications.js")>("../services/delivery-work-notifications.js"),
+  subscribeDeliveryWork: vi.fn(() => () => {}),
+}));
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -450,6 +457,7 @@ vi.mock("../services/index.js", () => ({
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   githubConnectionEventService: vi.fn(() => ({
+    nextPollAt: vi.fn(() => null),
     pollOnce: vi.fn(async () => ({
       leased: 0,
       processed: 0,
@@ -501,6 +509,8 @@ vi.mock("../services/index.js", () => ({
       needsAttention: 0,
       failed: 0,
     })),
+    nextGitHubConnectionContinuityAt: vi.fn(async () => null),
+    githubConnectionContinuitySchedule: vi.fn(async () => []),
     sweepGitHubConnectionContinuity: vi.fn(async () => ({
       checked: 0,
       due: 0,
@@ -1352,6 +1362,32 @@ describe("startServer feedback export wiring", () => {
     completionSweepMock.mockClear();
     publishLiveEvent({ companyId: "company-two", type: "activity.logged", payload: { action: "issue.updated" } });
     expect(completionSweepMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("registers GitHub delivery/deadline workers once without aggregate polling (scheduler=%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 30_000 }));
+    const ticks: Array<() => void> = [];
+    const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
+      if (ms === 30_000) ticks.push(callback);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      for (const queue of [DELIVERY_QUEUES.connectionEvents, DELIVERY_QUEUES.connectionContinuity]) {
+        expect(deliveryWorkRegisterMock.mock.calls.filter(([registered]) => registered === queue)).toHaveLength(1);
+      }
+      const polls = vi.mocked(githubConnectionEventService).mock.results.map(result => result.value.pollOnce);
+      const sweeps = vi.mocked(toolAccessService).mock.results.map(result => result.value.sweepGitHubConnectionContinuity);
+      const schedules = vi.mocked(toolAccessService).mock.results.map(result => result.value.githubConnectionContinuitySchedule);
+      expect(sweeps.reduce((sum, call) => sum + call.mock.calls.length, 0)).toBe(0);
+      const count = () => [...polls, ...sweeps, ...schedules].reduce((sum, call) => sum + call.mock.calls.length, 0);
+      const startup = count();
+      expect(startup).toBe(2);
+      for (let i = 0; i < 3; i++) for (const tick of ticks) tick();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(count()).toBe(startup);
+      expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.connectionEvents || error.queue === DELIVERY_QUEUES.connectionContinuity)).toEqual([]);
+    } finally { intervals.mockRestore(); }
   });
 
   it("does not rescan idle tool health from the aggregate maintenance tick", async () => {

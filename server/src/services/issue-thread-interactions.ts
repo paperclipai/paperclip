@@ -3035,9 +3035,13 @@ export function issueThreadInteractionService(
       }> = [],
       scope?: MergeConfirmationScope,
       signal?: AbortSignal,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
-      const candidates = await mergedPullRequestConfirmationCandidates(scope ??
-        (mergedHints.length === 1 ? { companyId: mergedHints[0]!.companyId } : undefined));
+      const scopes = scope ? [scope] : mergedHints.length
+        ? [...new Set(mergedHints.map(hint => hint.companyId))].map(companyId => ({ companyId }))
+        : [undefined];
+      const candidates: Awaited<ReturnType<typeof mergedPullRequestConfirmationCandidates>> = [];
+      for (const candidateScope of scopes) candidates.push(...await mergedPullRequestConfirmationCandidates(candidateScope));
       const eligible = mergedHints.length ? candidates.filter(candidate => mergedHints.some(hint =>
         hint.companyId === candidate.issue.companyId && candidate.references.some(reference =>
           hint.owner.toLowerCase() === reference.owner.toLowerCase() &&
@@ -3104,6 +3108,7 @@ export function issueThreadInteractionService(
             issue: candidate.issue,
             current: candidate.interaction,
             input: {},
+            mutationOptions,
             actor: {
               systemId: "system:pr-merged",
               resolutionDetails: {
@@ -3144,7 +3149,7 @@ export function issueThreadInteractionService(
         ) {
           continue;
         }
-        await opts.wakeup(wakeIssue.assigneeAgentId, {
+        const wake = async () => { await opts.wakeup!(wakeIssue.assigneeAgentId!, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -3175,6 +3180,9 @@ export function issueThreadInteractionService(
             source: "merged_pull_request_sweep",
           },
         });
+        };
+        if (mutationOptions.deferConfirmationCommitEffects) mutationOptions.deferConfirmationCommitEffects(wake);
+        else await wake();
         woken += 1;
       }
 
