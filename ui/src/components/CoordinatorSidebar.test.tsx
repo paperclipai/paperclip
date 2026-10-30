@@ -6,22 +6,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
 import { CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
-import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), collapsed: false, userId: "reviewer" }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer" }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: [] }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
-vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention } }));
+vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/COO/decisions" }),
+  useLocation: () => ({ pathname: fixture.pathname, search: "" }),
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
   NavLink: ({ to, children, className, state: _state, end: _end, ...props }: {
     to: string; children: ReactNode; className?: string | ((state: { isActive: boolean }) => string); state?: unknown; end?: boolean;
@@ -35,10 +35,15 @@ function feed(items: AttentionItem[]): AttentionFeed {
     nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
+function summary(items: AttentionItem[]) {
+  const { items: _items, nextCursor: _cursor, ...counts } = feed(items);
+  return counts;
+}
+
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer";
-  fixture.attention.mockResolvedValue(feed([pending("question"), pending("review")]));
+  vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
+  fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
@@ -104,17 +109,19 @@ describe("Coordinator Needs You badge", () => {
     client.setQueryData([...coordinatorAttentionQueryKey("company"), { search: "no match" }], feed([]));
     client.setQueryData([...queryKeys.attention("company"), "history", "recent"], { items: [{ id: "answered-question" }] });
     await renderSidebar();
-    expect(fixture.attention).toHaveBeenCalledWith("company", { all: true });
+    expect(fixture.attention).not.toHaveBeenCalled();
+    expect(client.getQueryData(coordinatorAttentionQueryKey("company"))).toBeUndefined();
+    expect(fixture.summary).toHaveBeenCalledWith("company");
     expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("2");
   });
 
   it("updates after canonical attention refreshes and removes the badge once every decision is resolved", async () => {
     await renderSidebar();
-    fixture.attention.mockResolvedValue(feed([pending("review")]));
+    fixture.summary.mockResolvedValue(summary([pending("review")]));
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("1");
-    fixture.attention.mockResolvedValue(feed([]));
+    fixture.summary.mockResolvedValue(summary([]));
     client.setQueryData([...queryKeys.attention("company"), "history", "recent"], { items: [{ id: "answered-question" }, { id: "accepted-review" }] });
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
@@ -126,5 +133,40 @@ describe("Coordinator Needs You badge", () => {
     fixture.collapsed = true;
     await renderSidebar();
     expect(decisionLink().getAttribute("aria-label")).toBe("Needs You, 2 decisions");
+  });
+});
+
+
+describe("Coordinator collection reads", () => {
+  it("does not replace a resolved count with an older summary that arrives later", async () => {
+    const key = coordinatorAttentionSummaryQueryKey("company");
+    client.setQueryDefaults(key, { staleTime: Infinity });
+    client.setQueryData(key, { ...summary([pending("old")]), generatedAt: "2026-10-27T12:00:00Z" }, { updatedAt: 20 });
+    client.setQueryData(coordinatorAttentionQueryKey("company"), { ...feed([]), generatedAt: "2026-10-27T12:01:00Z" }, { updatedAt: 10 });
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
+  it("keeps a newer resolved count when returning to a cached navigation summary", async () => {
+    const key = coordinatorAttentionSummaryQueryKey("company");
+    client.setQueryDefaults(key, { staleTime: Infinity });
+    client.setQueryData(key, summary([pending("old")]), { updatedAt: 1 });
+    client.setQueryData(coordinatorAttentionQueryKey("company"), feed([]), { updatedAt: 2 });
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
+    expect(fixture.summary).not.toHaveBeenCalled();
+    expect(fixture.attention).not.toHaveBeenCalled();
+  });
+
+  it("reuses the page-owned complete feed on Needs You without a second summary read", async () => {
+    fixture.pathname = "/COO/decisions";
+    client.setQueryData(coordinatorAttentionQueryKey("company"), feed([pending("review")]));
+    await renderSidebar();
+    expect(fixture.summary).not.toHaveBeenCalled();
+    expect(fixture.attention).not.toHaveBeenCalled();
+    expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("1");
+    await act(async () => client.setQueryData(coordinatorAttentionQueryKey("company"), feed([])));
+    await flush();
+    expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
   });
 });

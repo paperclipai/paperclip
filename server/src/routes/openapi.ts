@@ -1,6 +1,7 @@
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiPaths,
@@ -1417,6 +1418,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "GET /api/companies/{companyId}/attention/summary",
+  "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -6159,6 +6162,29 @@ registry.registerPath({
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
+
+const attentionSummaryResponseSchema = z.object({
+  companyId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  totalCount: z.number().int().nonnegative(),
+  deskBadgeCount: z.number().int().nonnegative(),
+  countsBySourceKind: z.record(z.enum(ATTENTION_SOURCE_KINDS), z.number().int().nonnegative()),
+}).strict();
+
+for (const [projection, responseSchema] of [
+  ["summary", attentionSummaryResponseSchema],
+  ["tasks", attentionSummaryResponseSchema.extend({ taskIds: z.array(z.string().uuid()) })],
+] as const) {
+  registry.registerPath({
+    method: "get",
+    path: `/api/companies/{companyId}/attention/${projection}`,
+    tags: ["inbox"],
+    summary: projection === "summary" ? "Get canonical attention counts" : "Get complete attention task membership",
+    description: "Requires a board user with company access. Reads the complete canonical attention set with current task privacy, addressee, dismissal, snooze, and archive rules. Returns counts without decision cards, images, plan bodies, or pagination. The tasks projection also returns distinct accessible task IDs. This read grants no resolution authority.",
+    request: { params: z.object({ companyId: z.string() }) },
+    responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
+  });
+}
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
