@@ -79,10 +79,11 @@ const support = await getEmbeddedPostgresTestSupport();
         ready();
         await held;
       });
-      await locked;
-      const reading = pluginAgentRuntimeIdentity(db, f.pluginId, f.companyId, f.agentId);
-      void reading.catch(() => undefined);
+      let reading!: ReturnType<typeof pluginAgentRuntimeIdentity>;
       try {
+        await Promise.race([locked, writing]);
+        reading = pluginAgentRuntimeIdentity(db, f.pluginId, f.companyId, f.agentId);
+        void reading.catch(() => undefined);
         await vi.waitFor(async () => {
           const [state] = await db.execute<{ waiting: boolean }>(sql`select exists (
             select 1 from pg_stat_activity where ${writerPid} = any(pg_blocking_pids(pid))
