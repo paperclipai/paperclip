@@ -10299,6 +10299,7 @@ export function issueService(db: Db) {
               .select({
                 id: executionWorkspaces.id,
                 mode: executionWorkspaces.mode,
+                projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
               })
               .from(executionWorkspaces)
               .where(
@@ -10308,7 +10309,20 @@ export function issueService(db: Db) {
                 ),
               )
               .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
+            // A persisted execution workspace is validated at run time against
+            // the base checkout of the issue's project workspace. Attaching it
+            // to a child that names a different project workspace (another
+            // repository) produces an issue that can never start: the worktree
+            // is not registered in that repository, so every run fails with
+            // workspace_validation_failed. Inherit only when the child keeps
+            // the workspace's own project workspace; otherwise let the child
+            // realize its own workspace in the repository it asked for.
+            const sourceWorkspaceMatchesProjectWorkspace =
+              sourceWorkspace != null &&
+              (projectWorkspaceId == null ||
+                sourceWorkspace.projectWorkspaceId == null ||
+                sourceWorkspace.projectWorkspaceId === projectWorkspaceId);
+            if (sourceWorkspace && sourceWorkspaceMatchesProjectWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
               inheritedWorkspaceSelection = true;
               executionWorkspacePreference = "reuse_existing";
