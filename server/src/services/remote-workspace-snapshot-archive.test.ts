@@ -110,6 +110,8 @@ describe("portable remote workspace archives", () => {
     await git(cwd, "config", "branch.main.remote", "upstream");
     await git(cwd, "config", "branch.main.merge", "refs/heads/main");
     await git(cwd, "config", "branch.main.rebase", "true");
+    await git(cwd, "config", "user.name", "Synthetic repository author");
+    await git(cwd, "config", "user.email", "repository-author@example.invalid");
     await git(cwd, "remote", "add", "local-cache", path.join(root, "old-host-cache.git"));
     await git(cwd, "config", "branch.cache.remote", "local-cache");
     await git(cwd, "config", "branch.cache.merge", "refs/heads/main");
@@ -127,6 +129,11 @@ describe("portable remote workspace archives", () => {
     const configuration = await fs.readFile(path.join(restored, ".git", "config"), "utf8");
     expect(configuration).not.toContain(root); expect(configuration).not.toContain("SYNTHETIC_SENSITIVE");
     expect(configuration).not.toContain("local-cache"); expect(configuration).not.toContain('branch "cache"');
+    await fs.writeFile(path.join(restored, "next-file"), "later work\n"); await git(restored, "add", "next-file");
+    await execute("git", ["-C", restored, "-c", `core.hooksPath=${os.devNull}`, "-c", "commit.gpgsign=false", "commit", "-qm", "restored workspace continues"], {
+      env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull, GIT_CONFIG_COUNT: "0" },
+    });
+    expect(await git(restored, "log", "-1", "--format=%an <%ae>")).toBe("Synthetic repository author <repository-author@example.invalid>");
     await git(restored, "fsck", "--full", "--no-dangling");
   });
   it.each(["https://synthetic-token@github.com/team/repo.git", "https://github.com/team/repo.git?access_token=SYNTHETIC_ONLY"])(

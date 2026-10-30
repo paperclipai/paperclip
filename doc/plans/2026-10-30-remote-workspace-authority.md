@@ -40,10 +40,12 @@ an independent API read with HTTP 401. The attempt and provisional creation name
 are retained privately; provider absence cannot be certified with an invalid key.
 A current credential is required before retry. Active native controller continuity
 also depends on [PR #18343](https://github.com/paperclipai/paperclip/pull/18343).
-A separate ordinary browser check of the saved-copy S3 path is in progress.
+A separate ordinary saved-copy browser check passed against actual S3, with
+the original source deleted: file listing, saved-copy time, text preview, exact
+binary download hash, and reload all passed in the supported classic interface.
 The streamlined desktop task shell also crashes for a control task with no
 workspace. That counterfactual identifies an existing SidePanelTabs issue; the
-remaining file check uses the supported classic task interface.
+passing file check uses the supported classic task interface.
 
 Material failures remain in the evidence record. The first required typecheck
 found a missing experimental flag in a UI fixture; the fixture was fixed and the
@@ -59,7 +61,7 @@ remaining failures are compared in isolation rather than assumed unrelated.
 The first automated review scored 3/5 and identified four valid gaps. Fixes now
 retain later managed-repository commits, reject unsupported manual commands before
 local filesystem access, remove completed remote export staging with durable
-cleanup retry records, and preserve safe portable Git remotes/tracking settings.
+cleanup retry records, and preserve safe portable Git remotes, tracking, and commit identity.
 Their regression tests pass. A fresh review is required for these changes.
 
 V1 admission rejects read-only cross-project referenced folders because the

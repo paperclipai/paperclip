@@ -61,12 +61,12 @@ async function workspaceArchive(input: {
     // Read only the repository's own allowlisted values. Includes, execution
     // hooks, filters, credential helpers, and machine-specific paths stay out.
     const raw = await git(repo, ["config", "--null", "--local", "--no-includes", "--get-regexp",
-      "^(remote\\..*\\.(url|pushurl|fetch)|branch\\..*\\.(remote|merge|rebase))$"])
+      "^(remote\\..*\\.(url|pushurl|fetch)|branch\\..*\\.(remote|merge|rebase)|user\\.(name|email))$"])
       .catch((error: { code?: number }) => { if (error.code === 1) return ""; throw error; });
     const settings = raw.split("\0").filter(Boolean).map(row => {
       const split = row.indexOf("\n"), key = row.slice(0, split), value = row.slice(split + 1);
       if (split < 1 || /[\u0000-\u0020\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
-      return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch)$/.exec(key), branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key) };
+      return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch)$/.exec(key), branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key), identity: /^user\.(name|email)$/.test(key) };
     });
     const remotes = new Set(settings.flatMap(item => item.remote?.[2] === "url" ? [item.remote[1]!] : []));
     for (const setting of settings) if (setting.remote && ["url", "pushurl"].includes(setting.remote[2]!)) {
@@ -96,7 +96,7 @@ async function workspaceArchive(input: {
           await git(repo, ["check-ref-format", "--allow-onelevel", setting.value]).catch(() => fail("unsupported_git_setting"));
         }
         if (setting.branch[2] === "rebase" && !["true", "false", "merges", "interactive", "preserve", "yes", "no", "on", "off", "1", "0", ""].includes(setting.value)) fail("unsupported_git_setting");
-      } else fail("unsupported_git_setting");
+      } else if (!setting.identity) fail("unsupported_git_setting");
       retained.push({ key: setting.key, value: setting.value });
     }
     return retained;
