@@ -50,6 +50,61 @@ async function readOrigin(cwd: string): Promise<string | null> {
   }).catch(() => null);
 }
 
+// One repository has several spellings: https://, ssh://, and scp-style
+// [user@]host:path, each with or without `.git`. The user, port, and transport
+// do not name another repository, so compare only the host and the path.
+// The path stays case-sensitive, and an unrecognized form has no identity.
+function repositoryIdentity(url: string): string | null {
+  let host: string;
+  let pathname: string;
+  // Git reads `host:path` as scp-style when no slash comes before the first
+  // colon. A one-letter host is a Windows drive (`C:/repo`), not a remote.
+  const scp = /^(?:[^@/\s]+@)?([^@:/\s]{2,}):(?!\/\/)(\S+)$/.exec(url);
+  if (scp) {
+    host = scp[1]!;
+    pathname = scp[2]!;
+  } else {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { return null; }
+    if (!["https:", "http:", "ssh:", "git:", "git+ssh:", "ssh+git:"].includes(parsed.protocol)
+      || parsed.search || parsed.hash) return null;
+    host = parsed.hostname;
+    pathname = parsed.pathname;
+  }
+  const repository = pathname.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/, "");
+  if (!host || repository.split("/").some(part => !part || part === "." || part === "..")) return null;
+  return `${host.toLowerCase()}/${repository}`;
+}
+
+function sameRepository(left: string, right: string): boolean {
+  if (left === right) return true;
+  const identity = repositoryIdentity(left);
+  return identity !== null && identity === repositoryIdentity(right);
+}
+
+// Expand url.<base>.insteadOf the way fetch does, without contacting the remote.
+async function expandRemoteUrl(cwd: string, url: string): Promise<string> {
+  if (url.startsWith("-")) return url;
+  return exec("git", ["ls-remote", "--get-url", url], {
+    cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
+  }).then(result => result.stdout.trim() || url).catch(() => url);
+}
+
+// The stored origin and the recorded URL may use different spellings, or an SSH
+// host alias that the operator maps with insteadOf. Compare them as written
+// first. Then compare them after the same rewrites run on both sides, so a
+// rewrite cannot change only one side of the comparison.
+async function originMatchesRecordedRepository(cwd: string, repoUrl: string): Promise<boolean> {
+  const origin = await readOrigin(cwd);
+  if (!origin) return false;
+  const recorded = repoUrl.trim();
+  if (sameRepository(origin, recorded)) return true;
+  const [expandedOrigin, expandedRecorded] = await Promise.all([
+    expandRemoteUrl(cwd, origin), expandRemoteUrl(cwd, recorded),
+  ]);
+  return sameRepository(expandedOrigin, expandedRecorded);
+}
+
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
   const directory = await exec("git", ["rev-parse", "--path-format=absolute", flag], {
     cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
@@ -163,7 +218,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !await originMatchesRecordedRepository(owner, workspace.repoUrl)) {
         repositoryMismatch = true;
         continue;
       }
@@ -181,7 +236,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl && !await originMatchesRecordedRepository(candidate, workspace.repoUrl)) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
@@ -194,7 +249,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner) && await originMatchesRecordedRepository(owner, workspace.repoUrl)) return owner;
   }
   fail(workspace, "source_repository_unavailable");
 }
