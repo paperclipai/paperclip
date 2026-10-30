@@ -1014,6 +1014,7 @@ Example:
 Recovery rule:
 
 - if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, Paperclip queues one automatic assignment recovery wake
+- a parked `deferred_issue_execution` wake counts as a live execution path for a stranded `todo` issue only when it belongs to the current assignee; a parked wake left behind by a previous assignee, for example after a handoff whose run was cancelled, does not keep the sweep from queueing the assignment recovery wake, and it does not resolve the board-owned recovery action as a new source path once the issue is `blocked`
 - if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates a board-owned recovery action without changing the source assignee or waking a substitute agent; the visible comment is evidence, not the recovery path by itself
 
 This is a dispatch recovery, not a continuation recovery.
