@@ -511,6 +511,14 @@ export function createPostgresRunDispatchAdapter(
     return decideScheduledRetryGate(factsResult.facts, input.now);
   }
 
+  async function nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null> {
+    const [row] = await db.select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+        input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined))
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt)).limit(1);
+    return row?.at?.getTime() ?? null;
+  }
+
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
     const rows = await db
       .select()
@@ -1414,6 +1422,7 @@ export function createPostgresRunDispatchAdapter(
 
   return {
     evaluateScheduledRetryGate,
+    nextScheduledRetryAt,
     listDueRetries,
     cancelStaleQueuedRun,
     dispatchResolvedInteractionIfCurrent,

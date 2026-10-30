@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -83,6 +84,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  await notifyRunDispatch(db);
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
   }

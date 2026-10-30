@@ -1,0 +1,105 @@
+import { PgDialect } from "drizzle-orm/pg-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { installDatabaseWorkSignals } from "../../../../packages/db/src/work-signals.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { registerRunDispatchWork } from "./dispatch-work.js";
+
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const stop of cleanup.splice(0)) await stop();
+  vi.useRealTimers();
+});
+function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean } = {}) {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  const dialect = new PgDialect();
+  const execute = vi.fn(async (query: any) => {
+    if (dialect.sqlToQuery(query).sql.includes("pg_current_xact_id")) return [{ xid: "42" }];
+    throw new Error("unexpected database query");
+  });
+  const db = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>) {
+    return callback({ execute, transaction: db.transaction });
+  } });
+  const state = { due: input.due ?? null as number | null, suppressed: input.suppressed ?? false,
+    draining: input.draining ?? false, standby: false, fail: false };
+  const promote = vi.fn(async () => {
+    if (state.fail) throw new Error("database unavailable");
+    if (state.due !== null && state.due <= Date.now()) state.due = null;
+  });
+  const next = vi.fn(async () => state.due);
+  const dispatch = vi.fn(async () => {});
+  const coordinator = createDeliveryWorkCoordinator({ owner: db,
+    canRun: () => !state.draining && !state.standby, canReconcile: () => !state.standby, onError: vi.fn() });
+  const worker = registerRunDispatchWork(coordinator, {
+    promoteDueScheduledRetries: promote, nextScheduledRetryAt: next,
+    resumeQueuedRunsAfterDrain: dispatch, schedulingSuppressed: async () => state.suppressed,
+  }, () => !state.draining && !state.standby);
+  cleanup.push(() => coordinator.stop());
+  return { db, state, promote, next, dispatch, coordinator, worker,
+    notify: () => db.transaction(tx => notifyRunDispatch(tx)),
+    settle: () => vi.advanceTimersByTimeAsync(0) };
+}
+
+describe("run dispatch obligations", () => {
+  it.each([false, true])("settles empty/feature-suppressed state and stops all owner work (suppressed=%s)", async suppressed => {
+    const f = fixture({ suppressed }); await f.worker.ready;
+    const calls = [f.promote.mock.calls.length, f.next.mock.calls.length, f.dispatch.mock.calls.length];
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect([f.promote.mock.calls.length, f.next.mock.calls.length, f.dispatch.mock.calls.length]).toEqual(calls);
+    expect(f.db.execute).not.toHaveBeenCalled();
+  });
+  it("restores an exact deadline and does no earlier recovery work", async () => {
+    const f = fixture({ due: 1_010_000 }); await f.worker.ready;
+    expect(f.coordinator.nextWakeAt()).toBe(1_010_000);
+    await vi.advanceTimersByTimeAsync(9_999); expect(f.promote).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(f.promote).toHaveBeenCalledTimes(2);
+    expect(f.state.due).toBeNull(); expect(f.coordinator.nextWakeAt()).toBeNull();
+    expect(f.dispatch).toHaveBeenCalledOnce();
+  });
+  it("rearms earlier work and cancels a future deadline on a committed producer change", async () => {
+    const f = fixture({ due: 1_600_000 }); await f.worker.ready;
+    f.state.due = 1_005_000; await f.notify(); await f.settle();
+    expect(f.coordinator.nextWakeAt()).toBe(1_005_000);
+    f.state.due = null; await f.notify(); await f.settle();
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+    const before = f.next.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20 * 60_000); expect(f.next).toHaveBeenCalledTimes(before);
+  });
+  it("remembers the first producer arriving during drain without owner SQL", async () => {
+    const f = fixture(); await f.worker.ready; f.state.draining = true;
+    await f.notify(); await f.settle(); await vi.advanceTimersByTimeAsync(90_000);
+    expect(f.promote).toHaveBeenCalledOnce(); expect(f.next).toHaveBeenCalledOnce();
+    f.state.draining = false; await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.promote).toHaveBeenCalledTimes(2); expect(f.dispatch).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("retains failed work across drain and settles after recovery", async () => {
+    const f = fixture(); f.state.fail = true; await f.worker.ready;
+    f.state.draining = true; await vi.advanceTimersByTimeAsync(90_000);
+    expect(f.promote).toHaveBeenCalledOnce(); expect(f.next).not.toHaveBeenCalled();
+    f.state.fail = false; f.state.draining = false; await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.promote).toHaveBeenCalledTimes(2); expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("preserves a notification during a nonoverlapping pass", async () => {
+    const f = fixture(); await f.worker.ready;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    f.promote.mockImplementationOnce(() => held);
+    await f.notify(); await f.settle();
+    await f.notify(); await f.settle();
+    expect(f.promote).toHaveBeenCalledTimes(2);
+    release(); await f.settle();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.promote).toHaveBeenCalledTimes(3); expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("does not dispatch on warm standby and cancels deadlines at shutdown", async () => {
+    const f = fixture({ due: 1_010_000 }); f.state.standby = true; await f.worker.ready;
+    await vi.advanceTimersByTimeAsync(90_000); expect(f.promote).not.toHaveBeenCalled();
+    f.state.standby = false; await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.promote).toHaveBeenCalledOnce(); expect(f.state.due).toBeNull();
+    f.state.due = Date.now() + 60_000; await f.notify(); await f.settle(); await f.worker.stop();
+    await vi.advanceTimersByTimeAsync(90_000); expect(f.promote).toHaveBeenCalledTimes(2);
+  });
+});

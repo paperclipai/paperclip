@@ -1842,6 +1842,8 @@ async function startServerWithDatabaseTeardown(
       await startupHeartbeatRecovery;
     }
 
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerRunDispatchWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
@@ -2044,12 +2046,10 @@ async function startServerWithDatabaseTeardown(
           // persisted queued work is still being driven forward.
           runPeriodicRecovery(() => heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true })
-            .then(() => heartbeat.promoteDueScheduledRetries())
-            .then(async (promotion) => {
+            .then(async () => {
               await heartbeat.resumeQueuedRuns();
               const reconciled = await heartbeat.reconcileStrandedAssignedIssues({ skipExternalConversationSettlement: true });
               if (
-                promotion.promoted > 0 ||
                 reconciled.assignmentDispatched > 0 ||
                 reconciled.dispatchRequeued > 0 ||
                 reconciled.continuationRequeued > 0 ||
@@ -2058,7 +2058,7 @@ async function startServerWithDatabaseTeardown(
                 reconciled.escalated > 0
               ) {
                 logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                  { ...reconciled },
                   "periodic heartbeat recovery changed assigned issue state",
                 );
               }

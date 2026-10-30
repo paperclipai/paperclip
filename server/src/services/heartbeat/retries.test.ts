@@ -35,6 +35,7 @@ function callbacks() {
     getWorktreeExecutionCutoff: vi.fn(async (): Promise<Date | null> => null),
     applyRunDispatchPostCommitEffects: vi.fn<(effects: PostCommitEffect[]) => void>(),
     runDispatch: {
+      nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
       promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),

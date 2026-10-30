@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -2447,6 +2448,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
+      await notifyRunDispatch(tx);
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
@@ -637,6 +638,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
+      await notifyRunDispatch(tx);
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -715,6 +717,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
+      await notifyRunDispatch(tx);
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
