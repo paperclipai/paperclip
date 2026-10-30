@@ -25,7 +25,7 @@ The feed and worker share confirmation collapse, newer-run probes, issue visibil
 
 ## Existing mutation boundaries reactivate work
 
-Committed hints identify a company, source kind, and source ID where those values are known. Retention's own writes use exact source hints; blocker retention changes invalidate the company/source because multiple blocked roots can project one terminal subject. Reconstruction pages and due batches remain bounded.
+Committed hints identify a company, source kind, and source ID where those values are known. Retention's own writes use exact source hints; blocker retention changes invalidate the company/source because multiple blocked roots can project one terminal subject. Reconstruction pages and due batches remain bounded. Review attention and interaction invokability are computed in company batches per candidate page; a full 100-candidate review page uses at most 20 statements and 100 confirmations use at most six. Ordinary execution, decision and budget mutations pass their affected company; exact decision sources are included.
 
 Producer coverage includes decision creation and changes; interaction creation, resolution, expiry and supersession; issue creation, updates, blocker relations, checkout, adoption and release; agent hire, configuration, lifecycle, error clearing and deletion; budget incidents and company pause/resume; exhausted-run events and retry-run creation; native status, review, finalization and reconstruction; external conversation transitions; and imported blocker relations. Existing service transactions retain outer commit ownership. Savepoint release does not publish work before outer commit.
 
@@ -33,7 +33,7 @@ The writer contract follows the existing delivery workers: serving processes use
 
 ## Real PostgreSQL evidence proves quiet and reactivation
 
-The new acceptance suite exercises all eight sources, including terminal blocker identity and date, newest confirmations, independent quality gates, unhealthy reporting chains, conversation visibility, maintained reviews and pending approvals, newer-run suppression, ordinary task and interaction producers, ordinary exhaustion-event ingress, and ordinary error clearing.
+The new acceptance suite exercises all eight sources, including terminal blocker identity and date, newest confirmations, independent quality gates, unhealthy reporting chains, conversation visibility, maintained reviews and pending approvals, newer-run suppression, ordinary task and interaction producers, ordinary exhaustion-event ingress, and ordinary error clearing. Additional ordinary producer controls cover child creation with a parent-blocking relation, budget incident creation and resolution, and repeated company-scoped execution-control writes.
 
 It also checks keep/revive, moved and cancelled deadlines, company activation and isolation, retained terminal history, restart, nested outer commit and rollback, first writes during drain, retry across drain, atomic archive/outbox rollback, and notifications during reconstruction. A 225-item backlog uses three startup pages and source-specific self-invalidations. SQL is counted at the PostgreSQL driver boundary.
 

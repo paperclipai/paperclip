@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { authUsers, companyMemberships, agents, approvals, budgetIncidents, budgetPolicies, companies, createDb, applyPendingMigrations, decisionArchiveNotificationOutbox,
-  decisionRetention, decisions, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions,
+  decisionRetention, decisions, costEvents, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issueRelations, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { attentionRetentionService, registerAttentionRetentionWork } from "../services/attention-retention.js";
+import { budgetService } from "../services/budgets.js";
+import { writeExecutionControl } from "../services/execution-control-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { attentionService } from "../services/attention.js";
 import { companyService } from "../services/companies.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -133,6 +136,76 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(outbox).toHaveLength(1); expect(outbox[0]).toMatchObject({ companyId, sourceKind: "review", sourceId: row.id, originAgentId: agentId, originIssueId: row.id });
     expect((await db.select().from(issues).where(eq(issues.id, row.id)))[0].status).toBe("in_review");
     await coordinator!.stop(); coordinator = undefined; await start(); await quiet();
+  });
+
+  it("registers the ordinary createChild blocker path inside its relation transaction", async () => {
+    const parent = await issueService(db).create(companyId, { title: "Parent", status: "in_progress", assigneeAgentId: agentId, createdByAgentId: agentId });
+    await start(); await quiet();
+    const { issue: child, parentBlockerAdded } = await issueService(db).createChild(parent.id, {
+      title: "Child needs review", status: "in_review", assigneeUserId: "board", createdByAgentId: agentId,
+      blockParentUntilDone: true,
+    });
+    expect(parentBlockerAdded).toBe(true);
+    expect(await db.select().from(issueRelations).where(and(eq(issueRelations.issueId, child.id),
+      eq(issueRelations.relatedIssueId, parent.id)))).toHaveLength(1);
+    await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(delay + 2000); await archived("review", child.id); await quiet();
+    expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, child.id))).toHaveLength(1);
+  });
+
+  it("batches a full page of maintained reviews and confirmations by company", async () => {
+    const rows = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
+      title: randomUUID(), status: "in_review", assigneeAgentId: agentId, updatedAt: old() }))).returning();
+    await db.insert(issueThreadInteractions).values(rows.map(row => ({ companyId, issueId: row.id,
+      kind: "request_confirmation", addresseeAgentId: agentId, payload: { version: 1, prompt: "Agent verdict" } })));
+    statements.length = 0;
+    const page = await attentionRetentionService(db).load({ companyId, sourceKind: "review" });
+    expect(page.rows).toEqual([]); expect(page.complete).toBe(false);
+    expect(statements.length).toBeLessThanOrEqual(20);
+    expect(statements.filter(query => query.includes('from "agents"')).length).toBeLessThanOrEqual(1);
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    statements.length = 0;
+    const interactions = await attentionRetentionService(db).load({ companyId, sourceKind: "issue_thread_interaction" });
+    expect(interactions.rows).toHaveLength(100); expect(interactions.complete).toBe(false);
+    expect(statements.length).toBeLessThanOrEqual(6);
+    expect(statements.filter(query => query.includes('from "agents"'))).toHaveLength(1);
+  });
+
+  it("scopes ordinary execution-control writes to their company", async () => {
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Other", issuePrefix: "OTHER" });
+    await db.insert(issues).values(Array.from({ length: 125 }, () => ({ companyId: otherCompany,
+      title: randomUUID(), status: "in_review", assigneeUserId: "board", updatedAt: old() })));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+    const service = attentionRetentionService(db), load = vi.spyOn(service, "load");
+    await start(service); await quiet(); load.mockClear();
+    for (let count = 0; count < 3; count++) {
+      await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization,
+        tx => tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, run.id)), { companyId });
+      await quiet();
+    }
+    expect(load).toHaveBeenCalled();
+    expect(load.mock.calls.every(([scope]) => scope?.companyId === companyId)).toBe(true);
+  });
+
+  it("registers and cancels budget deadlines through ordinary policy and incident producers", async () => {
+    const service = budgetService(db);
+    await service.upsertPolicy(companyId, { scopeType: "agent", scopeId: agentId, amount: 100,
+      warnPercent: 85, hardStopEnabled: false, notifyEnabled: true }, "board");
+    const retention = attentionRetentionService(db), load = vi.spyOn(retention, "load");
+    await start(retention); await quiet(); load.mockClear();
+    const [event] = await db.insert(costEvents).values({ companyId, agentId, provider: "openai", biller: "openai",
+      billingType: "metered_api", model: "fixture", inputTokens: 100, outputTokens: 20,
+      costCents: 90, occurredAt: new Date() }).returning();
+    await service.evaluateCostEvent(event);
+    await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const [incident] = await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId));
+    expect(incident).toMatchObject({ status: "open", thresholdType: "soft" });
+    expect(await state("budget_alert", incident.id)).toBeNull();
+    await service.upsertPolicy(companyId, { scopeType: "agent", scopeId: agentId, amount: 200 }, "board");
+    await quiet();
+    expect((await db.select().from(budgetIncidents).where(eq(budgetIncidents.id, incident.id)))[0].status).toBe("resolved");
+    expect(load.mock.calls.every(([scope]) => scope?.companyId === companyId)).toBe(true);
   });
 
   it("matches the existing feed across all eight remaining source kinds and exclusion variants", async () => {

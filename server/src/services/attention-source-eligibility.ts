@@ -1,6 +1,10 @@
 import { and, eq, gt, inArray, sql, type SQL } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 
+export const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
+export const ATTENTION_BUDGET_WARNING_PERCENT = 85;
+export const ATTENTION_AGENT_ERROR_STATUS = "error";
+
 export function collapsePendingConfirmationsToNewest<T extends {
   id: string;
   issueId: string;

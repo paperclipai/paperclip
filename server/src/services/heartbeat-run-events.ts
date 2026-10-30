@@ -10,6 +10,8 @@ import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 
+export const RETRY_EXHAUSTION_MESSAGE_PREFIX = "Bounded retry exhausted";
+
 export interface AppendHeartbeatRunEventInput {
   companyId: string;
   runId: string;
@@ -75,7 +77,7 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
-  const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith("Bounded retry exhausted"));
+  const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
@@ -131,7 +133,7 @@ export async function appendHeartbeatRunEvent(
           eq(heartbeatRunEvents.runId, input.runId),
           eq(heartbeatRunEvents.agentId, input.agentId),
           eq(heartbeatRunEvents.eventType, "lifecycle"),
-          sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          sql`${heartbeatRunEvents.message} like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`}`,
           sql`${heartbeatRunEvents.payload} @> ${JSON.stringify(input.retryExhaustion)}::jsonb`,
         ))
         .limit(1)

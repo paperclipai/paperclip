@@ -1,13 +1,14 @@
-import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, decisionRetention, decisions, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, approvals, type Db } from "@paperclipai/db";
 import type { AttentionSourceKind } from "@paperclipai/shared";
 import { evaluateAgentInvokability } from "./agent-invokability.js";
-import { collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
+import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "./decision-retention.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { attentionIssueCondition } from "./issue-visibility.js";
+import { RETRY_EXHAUSTION_MESSAGE_PREFIX } from "./heartbeat-run-events.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
@@ -34,7 +35,7 @@ const sources: Record<Kind, SQL> = {
   issue_thread_interaction: sql`select 'issue_thread_interaction', i.id::text, i.company_id, i.updated_at
     from issue_thread_interactions i where i.status = 'pending' and i.addressee_user_id is null`,
   recovery_action: sql`select 'recovery_action', r.id::text, r.company_id, r.updated_at
-    from issue_recovery_actions r where r.status in ('active', 'escalated') and r.owner_type in ('user', 'board')`,
+    from issue_recovery_actions r where r.status in ('active', 'escalated') and r.owner_type in (${sql.join(HUMAN_RECOVERY_OWNER_TYPES.map(owner => sql`${owner}`), sql`, `)})`,
   blocker_attention: sql`select 'blocker_attention', i.id::text, i.company_id, i.updated_at
     from issues i where i.status = 'blocked' and i.hidden_at is null and i.harness_kind is null`,
   review: sql`select 'review', i.id::text, i.company_id, i.updated_at
@@ -42,11 +43,11 @@ const sources: Record<Kind, SQL> = {
   failed_run: sql`select 'failed_run', r.id::text, r.company_id, coalesce(r.finished_at, r.updated_at, r.created_at)
     from heartbeat_runs r where r.status in ('failed', 'timed_out') and exists (
       select 1 from heartbeat_run_events e where e.run_id = r.id and e.company_id = r.company_id
-        and e.event_type = 'lifecycle' and e.message like 'Bounded retry exhausted%')`,
+        and e.event_type = 'lifecycle' and e.message like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`})`,
   budget_alert: sql`select 'budget_alert', b.id::text, b.company_id, b.updated_at from budget_incidents b
     where b.status = 'open' and (b.threshold_type = 'hard' or (b.amount_limit > 0
-      and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= 85))`,
-  agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at from agents a where a.status = 'error'`,
+      and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= ${ATTENTION_BUDGET_WARNING_PERCENT}))`,
+  agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at from agents a where a.status = ${ATTENTION_AGENT_ERROR_STATUS}`,
 };
 
 export function attentionRetentionService(db: Db) {
@@ -74,7 +75,69 @@ export function attentionRetentionService(db: Db) {
     return row;
   }
 
-  async function eligible(database: Db, candidate: Candidate, variant?: "owner" | "terminal", lock = false): Promise<Entry | null> {
+  async function interactionEligibility(database: Db, candidates: Candidate[]) {
+    const result = new Map<string, boolean>();
+    const byCompany = new Map<string, string[]>();
+    for (const candidate of candidates) {
+      if (candidate.sourceKind !== "issue_thread_interaction") continue;
+      const ids = byCompany.get(candidate.companyId) ?? [];
+      ids.push(candidate.sourceId);
+      byCompany.set(candidate.companyId, ids);
+    }
+    for (const [companyId, ids] of byCompany) {
+      const rows = await database.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.id, ids),
+        eq(issueThreadInteractions.status, "pending"), isNull(issueThreadInteractions.addresseeUserId)));
+      if (!rows.length) continue;
+      const visible = await database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId),
+        inArray(issues.id, rows.map(row => row.issueId)), attentionIssueCondition(true)));
+      const visibleIds = new Set(visible.map(row => row.id));
+      const roster = await database.select().from(agents).where(eq(agents.companyId, companyId));
+      const boardAddressed = (row: typeof issueThreadInteractions.$inferSelect) => !row.addresseeAgentId
+        || !evaluateAgentInvokability(roster.find(agent => agent.id === row.addresseeAgentId), roster).invokable;
+      const confirmationIssueIds = rows.filter(row => row.kind === "request_confirmation").map(row => row.issueId);
+      const siblings = confirmationIssueIds.length ? await database.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, confirmationIssueIds),
+        eq(issueThreadInteractions.status, "pending"), eq(issueThreadInteractions.kind, "request_confirmation"),
+        isNull(issueThreadInteractions.addresseeUserId))) : [];
+      const newest = new Set(collapsePendingConfirmationsToNewest(siblings.filter(boardAddressed)).map(row => row.id));
+      for (const row of rows) result.set(row.id, visibleIds.has(row.issueId) && boardAddressed(row)
+        && (row.kind !== "request_confirmation" || newest.has(row.id)));
+    }
+    return result;
+  }
+
+  async function reviewEligibility(database: Db, candidates: Candidate[]) {
+    const result = new Map<string, boolean>();
+    const byCompany = new Map<string, string[]>();
+    for (const candidate of candidates) {
+      if (candidate.sourceKind !== "review") continue;
+      const ids = byCompany.get(candidate.companyId) ?? [];
+      ids.push(candidate.sourceId);
+      byCompany.set(candidate.companyId, ids);
+    }
+    for (const [companyId, ids] of byCompany) {
+      const rows = await database.select().from(issues).where(and(eq(issues.companyId, companyId),
+        inArray(issues.id, ids), attentionIssueCondition(false)));
+      const pendingApprovals = await database.select({ issueId: issueApprovals.issueId }).from(issueApprovals)
+        .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId)).where(and(
+          eq(issueApprovals.companyId, companyId), eq(approvals.companyId, companyId),
+          inArray(issueApprovals.issueId, ids), eq(approvals.status, "pending")));
+      const approved = new Set(pendingApprovals.map(row => row.issueId));
+      const stalled = await issueService(database).listReviewAttention(companyId, rows);
+      for (const row of rows) {
+        const state = parseIssueExecutionState(row.executionState);
+        result.set(row.id, requiresReviewAttention({
+          hasHumanParticipant: state?.status === "pending" && state.currentParticipant?.type === "user",
+          hasUserAssignee: Boolean(row.assigneeUserId), hasPendingApproval: approved.has(row.id),
+          stalled: stalled.get(row.id)?.state === "stalled",
+        }));
+      }
+    }
+    return result;
+  }
+
+  async function eligible(database: Db, candidate: Candidate, variant?: "owner" | "terminal", lock = false, reviewAttention?: Map<string, boolean>, interactionAttention?: Map<string, boolean>): Promise<Entry | null> {
     let sourceId = candidate.sourceId;
     let activityAt = candidate.activityAt;
     let dueAt = candidate.deadlineAt;
@@ -83,38 +146,14 @@ export function attentionRetentionService(db: Db) {
         .where(and(eq(decisions.companyId, candidate.companyId), eq(decisions.id, sourceId), eq(decisions.status, "open")));
       if (!row || row.originIssueId && !await visibleIssue(database, candidate.companyId, row.originIssueId)) return null;
     } else if (candidate.sourceKind === "issue_thread_interaction") {
-      const [row] = await database.select().from(issueThreadInteractions).where(and(
-        eq(issueThreadInteractions.companyId, candidate.companyId), eq(issueThreadInteractions.id, sourceId),
-        eq(issueThreadInteractions.status, "pending"), isNull(issueThreadInteractions.addresseeUserId)));
-      if (!row || !await visibleIssue(database, candidate.companyId, row.issueId, true)) return null;
-      const roster = row.addresseeAgentId ? await database.select().from(agents).where(eq(agents.companyId, candidate.companyId)) : [];
-      if (row.addresseeAgentId && evaluateAgentInvokability(roster.find(agent => agent.id === row.addresseeAgentId), roster).invokable) return null;
-      if (row.kind === "request_confirmation") {
-        const siblings = await database.select().from(issueThreadInteractions).where(and(
-          eq(issueThreadInteractions.companyId, candidate.companyId), eq(issueThreadInteractions.issueId, row.issueId),
-          eq(issueThreadInteractions.status, "pending"), eq(issueThreadInteractions.kind, "request_confirmation"),
-          isNull(issueThreadInteractions.addresseeUserId)));
-        const companyAgents = roster.length ? roster : await database.select().from(agents).where(eq(agents.companyId, candidate.companyId));
-        const board = siblings.filter(sibling => !sibling.addresseeAgentId
-          || !evaluateAgentInvokability(companyAgents.find(agent => agent.id === sibling.addresseeAgentId), companyAgents).invokable);
-        if (!collapsePendingConfirmationsToNewest(board).some(sibling => sibling.id === sourceId)) return null;
-      }
+      const attention = interactionAttention ?? await interactionEligibility(database, [candidate]);
+      if (!attention.get(sourceId)) return null;
     } else if (candidate.sourceKind === "recovery_action") {
       const [row] = await database.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, candidate.companyId), eq(issueRecoveryActions.id, sourceId)));
       if (!row || !await visibleIssue(database, candidate.companyId, row.sourceIssueId)) return null;
     } else if (candidate.sourceKind === "review") {
-      const row = await visibleIssue(database, candidate.companyId, sourceId);
-      if (!row) return null;
-      const state = parseIssueExecutionState(row.executionState);
-      const [approval] = await database.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
-        .where(and(eq(issueApprovals.companyId, candidate.companyId), eq(approvals.companyId, candidate.companyId),
-          eq(issueApprovals.issueId, sourceId), eq(approvals.status, "pending"))).limit(1);
-      if (!requiresReviewAttention({ hasHumanParticipant: state?.status === "pending" && state.currentParticipant?.type === "user",
-        hasUserAssignee: Boolean(row.assigneeUserId), hasPendingApproval: Boolean(approval), stalled: false })) {
-        const attention = await issueService(database).listReviewAttention(candidate.companyId, [row]);
-        if (!requiresReviewAttention({ hasHumanParticipant: false, hasUserAssignee: false, hasPendingApproval: false,
-          stalled: attention.get(sourceId)?.state === "stalled" })) return null;
-      }
+      const attention = reviewAttention ?? await reviewEligibility(database, [candidate]);
+      if (!attention.get(sourceId)) return null;
     } else if (candidate.sourceKind === "blocker_attention") {
       const row = await visibleIssue(database, candidate.companyId, sourceId);
       if (!row) return null;
@@ -157,10 +196,12 @@ export function attentionRetentionService(db: Db) {
     const key = JSON.stringify(scope ?? {});
     const rows = await candidates(db, scope, cursors.get(key));
     const entries: Entry[] = [];
+    const reviews = await reviewEligibility(db, rows);
+    const interactions = await interactionEligibility(db, rows);
     for (const row of rows) {
       if (signal?.aborted) return { rows: null, complete: true };
       for (const variant of row.sourceKind === "blocker_attention" ? ["owner", "terminal"] as const : [undefined]) {
-        const entry = await eligible(db, row, variant);
+        const entry = await eligible(db, row, variant, false, reviews, interactions);
         if (entry) entries.push(entry);
       }
     }

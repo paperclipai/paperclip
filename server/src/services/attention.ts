@@ -1,4 +1,4 @@
-import { collapsePendingConfirmationsToNewest, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
+import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -108,7 +108,6 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
-const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
@@ -1762,7 +1761,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
-        if (incident.thresholdType !== "hard" && observedPercent < 85) continue;
+        if (incident.thresholdType !== "hard" && observedPercent < ATTENTION_BUDGET_WARNING_PERCENT) continue;
         const dedupKey = `budget:${incident.policyId}:${toIso(incident.windowStart)}:${incident.thresholdType}`;
         add(createItem({
           companyId,
@@ -1825,7 +1824,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: agents.updatedAt,
         })
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), eq(agents.status, "error")))
+        .where(and(eq(agents.companyId, companyId), eq(agents.status, ATTENTION_AGENT_ERROR_STATUS)))
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
       for (const agent of erroredAgents) {
