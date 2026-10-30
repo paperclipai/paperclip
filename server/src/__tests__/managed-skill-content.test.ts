@@ -87,16 +87,19 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
     ], { env: { ...process.env, DATABASE_URL: database.connectionString,
       PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-      PAPERCLIP_STORAGE_PROVIDER: "local_disk", PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects") },
+      PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: "managed-skill-content-fixture",
+      PAPERCLIP_STORAGE_S3_REGION: "us-east-1", PAPERCLIP_STORAGE_S3_ENDPOINT: "http://127.0.0.1:1",
+      PAPERCLIP_SECRETS_MASTER_KEY: "11".repeat(32), AWS_EC2_METADATA_DISABLED: "true" },
       timeout: 60_000, maxBuffer: 1024 * 1024 });
     await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
-    await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
+    const [stored] = await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } }).returning();
     try {
       const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
       expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
-      expect(verification.results).toEqual([expect.objectContaining({ status: "local_storage" })]);
+      expect(verification.results).toEqual([expect.objectContaining({ status: "provider_mismatch" })]);
+      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toEqual([stored]);
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     }
