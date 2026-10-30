@@ -612,6 +612,14 @@ the local run timing log. Their fixed names add no paths, credentials, or conten
 attributes. The operator endpoint gate remains unchanged. Source installs without
 prebuilt archives retain the existing directory upload span.
 
+Archive installation verifies the archive bytes and then the installed pack
+against the selected manifest. It does not hash the unused expanded controller
+tree. Directory installation still verifies that tree before upload, including
+when the remote cannot extract an available archive. The final installed-pack
+verification applies to both paths. A slow controller tree scan can block the
+server event loop and inflate overlapping asynchronous span durations; a copy
+span alone does not establish that the disk spent all that time copying.
+
 The native provider lifecycle emits one foldable OpenTelemetry trace, linked to
 the server attempt described above. This is
 the native-run trace schema version `3`. `task.provider_session` is the native
