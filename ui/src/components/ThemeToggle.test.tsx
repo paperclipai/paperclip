@@ -6,11 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeToggle } from "./ThemeToggle";
 
 const mockToggleTheme = vi.hoisted(() => vi.fn());
-const mockTheme = vi.hoisted(() => ({ value: "dark" as "dark" | "light" }));
+const mockPreference = vi.hoisted(() => ({
+  value: "light" as "light" | "dark" | "system",
+}));
 
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
-    theme: mockTheme.value,
+    theme: mockPreference.value === "system" ? "dark" : mockPreference.value,
+    themePreference: mockPreference.value,
     toggleTheme: mockToggleTheme,
   }),
 }));
@@ -30,7 +33,7 @@ describe("ThemeToggle", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockTheme.value = "dark";
+    mockPreference.value = "light";
   });
 
   afterEach(() => {
@@ -39,7 +42,7 @@ describe("ThemeToggle", () => {
     vi.clearAllMocks();
   });
 
-  it("renders an icon button by default with the 'switch to light' label when current theme is dark", async () => {
+  it("renders an icon button by default, naming the state it switches to", async () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(<ThemeToggle />);
@@ -48,13 +51,41 @@ describe("ThemeToggle", () => {
 
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
-    expect(button?.getAttribute("aria-label")).toBe("Switch to light mode");
-    expect(button?.getAttribute("title")).toBe("Switch to light mode");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to dark mode");
+    expect(button?.getAttribute("title")).toBe("Switch to dark mode");
 
     await act(async () => {
       button?.click();
     });
     expect(mockToggleTheme).toHaveBeenCalledTimes(1);
+
+    await act(async () => root.unmount());
+  });
+
+  it("offers the system theme as the step after dark", async () => {
+    mockPreference.value = "dark";
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ThemeToggle />);
+    });
+    await flushReact();
+
+    const button = container.querySelector("button");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to system theme");
+
+    await act(async () => root.unmount());
+  });
+
+  it("returns to light from the system theme", async () => {
+    mockPreference.value = "system";
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ThemeToggle />);
+    });
+    await flushReact();
+
+    const button = container.querySelector("button");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to light mode");
 
     await act(async () => root.unmount());
   });
@@ -66,7 +97,7 @@ describe("ThemeToggle", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Switch to light mode");
+    expect(container.textContent).toContain("Switch to dark mode");
     expect(container.textContent).toContain("Toggle the app appearance.");
 
     await act(async () => root.unmount());
@@ -83,7 +114,7 @@ describe("ThemeToggle", () => {
     expect(button?.classList).toContain("h-(--profile-popover-row-height)");
     expect(button?.classList).toContain("gap-(--profile-popover-row-gap)");
     expect(button?.querySelector("span")?.classList).toContain("size-5");
-    expect(container.textContent).toContain("Switch to light mode");
+    expect(container.textContent).toContain("Switch to dark mode");
     expect(container.textContent).not.toContain("Toggle the app appearance.");
 
     await act(async () => root.unmount());
@@ -104,20 +135,6 @@ describe("ThemeToggle", () => {
 
     expect(mockToggleTheme).toHaveBeenCalledTimes(1);
     expect(onAfterToggle).toHaveBeenCalledTimes(1);
-
-    await act(async () => root.unmount());
-  });
-
-  it("flips label and icon when current theme is light", async () => {
-    mockTheme.value = "light";
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(<ThemeToggle />);
-    });
-    await flushReact();
-
-    const button = container.querySelector("button");
-    expect(button?.getAttribute("aria-label")).toBe("Switch to dark mode");
 
     await act(async () => root.unmount());
   });
