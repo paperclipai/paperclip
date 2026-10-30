@@ -7,6 +7,7 @@ import {
   normalizeSkillDraftSlug,
   skillCreateDraftToPayload,
   splitCategoryDraft,
+  updateSkillDraftTagline,
 } from "./skill-create";
 
 function skill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDetail {
@@ -93,6 +94,29 @@ describe("skill create helpers", () => {
     expect(draft.forkedFromName).toBe("Demo Skill");
     expect(draft.folderId).toBeNull();
     expect(draft.markdown).toContain("name: Demo Skill Fork");
+  });
+
+  it("keeps a new skill description synchronized with the full tagline", () => {
+    let draft = buildBlankSkillDraft();
+
+    draft = updateSkillDraftTagline(draft, "E");
+    draft = updateSkillDraftTagline(draft, "Evaluate pull requests with clear evidence.");
+
+    expect(draft.description).toBe("Evaluate pull requests with clear evidence.");
+    expect(draft.markdown).toContain("description: Evaluate pull requests with clear evidence.");
+    expect(skillCreateDraftToPayload({ ...draft, name: "Review" }).description)
+      .toBe("Evaluate pull requests with clear evidence.");
+  });
+
+  it("preserves a fork's source description when its tagline changes", () => {
+    const draft = buildForkSkillDraft(skill({
+      description: "A detailed source description.",
+      tagline: "Original tagline.",
+    }));
+    const updated = updateSkillDraftTagline(draft, "A revised fork tagline.");
+
+    expect(updated.description).toBe("A detailed source description.");
+    expect(updated.tagline).toBe("A revised fork tagline.");
   });
 
   it("converts drafts to create payloads with fallback slug and markdown", () => {
