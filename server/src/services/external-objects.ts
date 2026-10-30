@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, lte, not, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, lte, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
 import {
@@ -374,10 +374,11 @@ export function externalObjectService(
     ...(opts.detectors ?? []),
     ...(githubProvider ? [githubProvider.detector] : []),
   ]);
-  const resolverRegistry = createExternalObjectResolverRegistry([
+  const resolvers = [
     ...(opts.resolvers ?? []),
     ...(githubProvider?.resolvers ?? []),
-  ]);
+  ];
+  const resolverRegistry = createExternalObjectResolverRegistry(resolvers);
 
   async function isEnabled() {
     if (typeof opts.enabled === "function") return await opts.enabled();
@@ -1031,6 +1032,22 @@ export function externalObjectService(
   }
 
   async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
+    const supportedObjects = resolvers.map((resolver) => and(
+      eq(externalObjects.providerKey, resolver.providerKey),
+      resolver.objectType ? eq(externalObjects.objectType, resolver.objectType) : undefined,
+    )!);
+    if (opts.pluginWorkerManager) {
+      for (const provider of await readyObjectReferencePlugins(db)) {
+        if (!provider.manifestJson.capabilities.includes("external.objects.read")) continue;
+        for (const reference of provider.manifestJson.objectReferences ?? []) {
+          supportedObjects.push(and(
+            eq(externalObjects.providerKey, reference.providerKey),
+            inArray(externalObjects.objectType, reference.objectTypes),
+          )!);
+        }
+      }
+    }
+    if (supportedObjects.length === 0) return [];
     const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_REFRESH_LEASE_SECONDS * 1000);
     // Terminal objects are usually skipped forever, but a GitHub "not found"
     // verdict is only trustworthy while the repository is actually visible to
@@ -1058,6 +1075,11 @@ export function externalObjectService(
       .where(
         and(
           eq(externalObjects.companyId, companyId),
+          or(...supportedObjects),
+          exists(db.select({ id: externalObjectMentions.id }).from(externalObjectMentions).where(and(
+            eq(externalObjectMentions.companyId, companyId),
+            eq(externalObjectMentions.objectId, externalObjects.id),
+          ))),
           refreshable,
           lte(externalObjects.nextRefreshAt, now),
           or(
@@ -1066,6 +1088,7 @@ export function externalObjectService(
           ),
         ),
       )
+      .orderBy(asc(externalObjects.nextRefreshAt), asc(externalObjects.id))
       .limit(limit);
     const results = [];
     for (const row of due) {
