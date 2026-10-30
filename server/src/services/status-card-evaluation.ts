@@ -90,5 +90,9 @@ export function registerStatusCardEvaluationWork(
 ) {
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.statusCardEvaluation, {
     run: service.run, next: service.next, onSettled: service.changed, canRun, retryMs: 30_000,
+    // Batch source hints for at most one second after reconciliation. Do not
+    // use minimumSpacingMs: known policy/retry deadlines must preempt batching.
+    // This window alone arms no timer when the feature has no pending work.
+    notificationCoalesceMs: 1_000,
   });
 }

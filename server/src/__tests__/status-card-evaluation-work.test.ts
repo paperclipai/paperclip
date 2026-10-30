@@ -1,5 +1,7 @@
 import { budgetService } from "../services/budgets.js";
 import { documentService } from "../services/documents.js";
+import * as companySearch from "../services/company-search.js";
+import { setImmediate as immediate } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +26,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let draining = false;
   let companyId: string, agentId: string;
   const errors: unknown[] = [];
+  const evaluations = new Set<Promise<unknown>>();
   let compiledQuery = companySearchQuerySchema.parse({ scope: "issues", status: ["blocked"] });
   const actor = { agentId: null, userId: "board-user" };
   const policy = (mode: "manual" | "reactive" | "interval" = "reactive") => statusCardRefreshPolicySchema.parse({
@@ -60,16 +63,29 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.delete(instanceSettings); await db.delete(agents); await db.delete(companyMemberships); await db.delete(companies);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
-  async function start() {
+  async function start(service = statusCardEvaluationService(db, { wakeup })) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
-    await registerStatusCardEvaluationWork(coordinator, statusCardEvaluationService(db, { wakeup }), () => !draining).ready;
+    await registerStatusCardEvaluationWork(coordinator, { ...service, run: signal => {
+      const work = service.run(signal);
+      evaluations.add(work);
+      void work.then(() => evaluations.delete(work), () => evaluations.delete(work));
+      return work;
+    } }, () => !draining).ready;
   }
   async function settled() {
-    await vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(idleWorkSnapshot().active).toBe(0);
-    }, { timeout: 5000 });
+    // Do not leap across PostgreSQL connect timers while real I/O is pending.
+    // Await actual domain work, then require several settled event-loop turns
+    // so a transient zero hold cannot stand in for transaction reconciliation.
+    for (let turn = 0; turn < 3; turn++) {
+      await vi.waitFor(async () => {
+        await Promise.allSettled([...evaluations]);
+        await vi.advanceTimersByTimeAsync(500);
+        await Promise.allSettled([...evaluations]);
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      await immediate();
+    }
   }
   async function quiet() {
     await settled();
@@ -128,11 +144,111 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
 
+  it("coalesces one hundred committed source writes without delaying another company's saved deadline", async () => {
+    const reactive = await card();
+    const originalCompany = companyId, originalAgent = agentId;
+    companyId = randomUUID(); agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Other", issuePrefix: `O${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Other summarizer", role: "general", status: "idle", adapterType: "process", adapterConfig: {} });
+    const other = await card("interval");
+    const otherIssue = await issueService(db).create(companyId, { title: "Other interval blocker", status: "blocked", priority: "medium" });
+    const otherReactive = await card();
+    companyId = originalCompany; agentId = originalAgent;
+    const service = statusCardEvaluationService(db, { wakeup });
+    const originalRun = service.run;
+    let running: Promise<unknown> | undefined;
+    const run = vi.spyOn(service, "run").mockImplementation(signal => {
+      const result = originalRun(signal); running = result; return result;
+    });
+    await start(service); await settled();
+    await vi.advanceTimersByTimeAsync(1000);
+    // Give each committed producer and any actual domain work time to settle.
+    // This prevents incidental overlap from hiding per-write reconstruction.
+    const flush = async () => {
+      for (let i = 0; i < 10; i++) {
+        await running; await immediate();
+      }
+    };
+    await flush();
+    const select = vi.spyOn(db, "select");
+    const factory = companySearch.companySearchService;
+    const searchedCompanies: string[] = [];
+    vi.spyOn(companySearch, "companySearchService").mockImplementation(owner => {
+      const search = factory(owner);
+      const actual = search.search;
+      search.search = async (...args) => { searchedCompanies.push(args[0]); return actual(...args); };
+      return search;
+    });
+    run.mockClear();
+    const burstStarted = Date.now();
+    for (let i = 0; i < 50; i++) {
+      const issue = await issueService(db).create(companyId, { title: `Burst blocker ${i}`, status: "blocked", priority: "medium" });
+      await flush();
+      await issueService(db).addComment(issue.id, `Human update ${i}`, { userId: "board-user" });
+      await flush();
+    }
+    await flush();
+    // One eager reconciliation after idle and one bounded batched continuation;
+    // the producers themselves are not counted as background SQL.
+    const dueReads = () => select.mock.calls.filter(([fields]) => fields && "card" in fields && fields.card === statusCards).length;
+    const nextReads = () => select.mock.calls.filter(([fields]) => fields && "at" in fields && fields.at === statusCards.nextEvalAt).length;
+    const elapsedMs = Date.now() - burstStarted;
+    const maximum = Math.ceil(elapsedMs / 1000) + 2;
+    console.info("status-card burst", { elapsedMs, maximum, runs: run.mock.calls.length, due: dueReads(), next: nextReads(), searches: searchedCompanies.length });
+    expect(run.mock.calls.length).toBeLessThanOrEqual(maximum);
+    expect(dueReads()).toBeLessThanOrEqual(maximum); expect(nextReads()).toBeLessThanOrEqual(maximum);
+    expect(searchedCompanies.length).toBeLessThanOrEqual(maximum);
+    expect(searchedCompanies.length).toBeGreaterThan(0);
+    expect(new Set(searchedCompanies)).toEqual(new Set([originalCompany]));
+    expect(wakeup).not.toHaveBeenCalled();
+    // Re-register with an existing durable deadline inside the coalescing
+    // window. A company hint must not make that real deadline wait one second.
+    await coordinator!.stop(); coordinator = undefined;
+    const dueAt = Date.now() + 500;
+    await db.update(statusCards).set({ nextEvalAt: new Date(dueAt), nextEvalReason: "refresh" }).where(eq(statusCards.id, other.id));
+    await start(service); await flush();
+    await issueService(db).addComment(otherIssue.id, "Another company's coalesced human update", { userId: "board-user" });
+    await issueService(db).addComment((await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, originalCompany)))[0]!.id,
+      "More changes while another company is due", { userId: "board-user" });
+    await flush();
+    await vi.advanceTimersByTimeAsync(500); await flush();
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalledOnce());
+    expect(Date.now()).toBeLessThan(dueAt + 500);
+    expect(wakeup.mock.calls[0]![0]).not.toBe(originalAgent);
+    const generated = (await statusCardService(db).getById(other.id))!;
+    expect(generated.generatingIssueId).toBeTruthy();
+    expect((await statusCardService(db).getById(reactive.id))!.pendingChangeCount).toBeGreaterThan(0);
+    expect((await statusCardService(db).getById(otherReactive.id))!.pendingChangeCount).toBeGreaterThan(0);
+    expect(searchedCompanies).toContain(other.companyId);
+    // Complete all ordinary results, then prove there is no recurring batch
+    // timer once the requested work has settled.
+    companyId = other.companyId; agentId = other.agentId!;
+    await writeback(other.id, generated.generatingIssueId!);
+    await statusCardService(db).update((await statusCardService(db).getById(other.id))!, { archived: true }, actor);
+    companyId = originalCompany; agentId = originalAgent;
+    await vi.advanceTimersByTimeAsync(120_000); await settled(); await flush();
+    await vi.waitFor(async () => expect((await statusCardService(db).getById(reactive.id))!.generatingIssueId).toBeTruthy());
+    const pending = (await statusCardService(db).getById(reactive.id))!;
+    expect(pending.generatingIssueId).toBeTruthy();
+    await writeback(reactive.id, pending.generatingIssueId!);
+    const otherPending = (await statusCardService(db).getById(otherReactive.id))!;
+    expect(otherPending.generatingIssueId).toBeTruthy();
+    companyId = other.companyId; agentId = other.agentId!;
+    await writeback(otherReactive.id, otherPending.generatingIssueId!);
+    companyId = originalCompany; agentId = originalAgent;
+    select.mockRestore();
+    await quiet(); expect(errors).toEqual([]);
+  }, 30_000);
+
   it("cancels archived or disabled future work and replaces an earlier interval deadline", async () => {
     await start(); let created = await card("interval"); await settled();
     const old = coordinator!.nextWakeAt();
     created = await statusCardService(db).update(created, { refreshPolicy: { ...policy("interval"), intervalMinutes: 1 } }, actor);
-    await settled(); expect(coordinator!.nextWakeAt()).toBeLessThan(old!);
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.allSettled([...evaluations]);
+      expect(coordinator!.nextWakeAt()).toBeLessThan(old!);
+    });
     await statusCardService(db).update(created, { archived: true }, actor); await quiet();
     expect(wakeup).not.toHaveBeenCalled(); expect(errors).toEqual([]);
   });

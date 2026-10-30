@@ -123,3 +123,15 @@ five minutes keeps its remaining time without extension. This bounds migration
 compatibility delay while preserving prior crash/failure recovery. After the
 first successful evaluation all newly saved deadlines have explicit ownership.
 No recurring compatibility scan is added.
+
+Source notifications use the shared deadline helper's fixed one-second batching
+window. The first hint after idle can reconcile immediately. Later hints merge
+by company until that window ends. The window does not slide with each new
+write, so a sustained source stream cannot postpone reconciliation forever.
+One second keeps reactive cards prompt (the removed heartbeat default was 30s)
+and bounds burst SQL. No minimum spacing is set: an already-known policy,
+expiry, or retry deadline can preempt batching. The window alone creates no
+scheduled work after settlement. Real issue/comment producer acceptance measures
+due/next queries and actual searches under 100 writes, preserves both companies'
+hints, dispatches another company's saved deadline inside the batching window,
+and checks SQL quietness after authorized results.
