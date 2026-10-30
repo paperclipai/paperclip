@@ -46,11 +46,14 @@ const plannedCommands = [
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
   { command: "pnpm", args: ["exec", "vitest", "run", ...args], cwd: packageRoot },
   ...(runNativeRunnerGroup
-    ? [{
-        command: "pnpm",
-        args: ["test:run:general", "--", "--group", "general-server-native-runner"],
-        cwd: workspaceRoot,
-      }]
+    ? [
+        { command: "pnpm", args: ["run", "build:binary"], cwd: packageRoot },
+        {
+          command: "pnpm",
+          args: ["test:run:general", "--", "--group", "general-server-native-runner"],
+          cwd: workspaceRoot,
+        },
+      ]
     : []),
 ];
 
