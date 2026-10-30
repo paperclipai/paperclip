@@ -1,5 +1,4 @@
-import { agentJourneyRuns, journeyRequiredChecks } from "./product-journeys/success-contract.js";
-import { agentJourneyRunCountValid } from "./product-journeys/catalog.js";
+import { agentJourneyRuns, agentJourneyRunCountValid, journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";

@@ -1,10 +1,11 @@
 import { agentJourneyRuns } from "./success-contract.js";
-export { agentJourneyRuns } from "./success-contract.js";
+export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
   { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
   { id: "project-task-context", label: "Create a project and reopen its self-assigned task", requires: ["company", "board-user", "task-write"], capabilities: ["projects/lifecycle", "projects/task-context", "tasks/create"], paid: false },
   { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
+  { id: "question-answer-resume", label: "Answer agent questions and verify the saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "task-properties", label: "Assign a task to the signed-in user", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["tasks/properties"], paid: false },
   { id: "task-search-filter", label: "Search and filter tasks, then reopen the exact saved result", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/organize"], paid: false },
   { id: "plan-revise-accept", label: "Revise and approve a saved Plan, then complete the task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/plan-review"], paid: true },
@@ -17,13 +18,6 @@ export const productJourneys = [
 ] as const;
 
 export function isAgentJourney(id: JourneyId): id is keyof typeof agentJourneyRuns { return Object.hasOwn(agentJourneyRuns, id); }
-
-/** Existing journeys keep exact counts; active follow-up permits in-turn steering. */
-export function agentJourneyRunCountValid(id: string, count: number | undefined) {
-  if (!Object.hasOwn(agentJourneyRuns, id) || !Number.isSafeInteger(count)) return false;
-  const maximum = agentJourneyRuns[id as keyof typeof agentJourneyRuns];
-  return count === maximum || id === "followup-while-running" && count === 1;
-}
 
 export function preparationPreview(config: TargetConfig) {
   return {
