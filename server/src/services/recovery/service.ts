@@ -580,7 +580,7 @@ export type AdapterFailureRecoveryClassification =
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
-    /(?:try again at|resets?(?:\s+at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
+    /(?:try again at|resets?(?:\s+at)?)\s+(\d{1,2})(?![\d-])(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );
   if (!match) return null;
 

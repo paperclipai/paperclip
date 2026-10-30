@@ -479,6 +479,29 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
   });
 
+  it("wakes the assignee when a quota monitor's conversation retry budget is exhausted", async () => {
+    const sourceRunId = randomUUID();
+    const { companyId, issueId, agentId } = await seedFixture({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
+      finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
+      scheduledRetryAttempt: 2,
+      resultJson: {
+        conversationContinuation: "continue_conversation_v1",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    });
+    await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({ agentId, reason: "issue_monitor_due" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId))).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.monitorNextCheckAt).toBeNull();
+  });
+
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
     const sourceRunId = randomUUID();
     const { companyId, issueId, agentId: assigneeAgentId } = await seedFixture({
