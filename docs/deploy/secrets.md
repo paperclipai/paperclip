@@ -429,7 +429,9 @@ If import preview fails:
 
 ### Backup And Restore
 
-Each provider family has a different backup story:
+The deployment-wide restore order — which artifact to load first, and where the
+master key sits in it — is in [Backup And Restore](/deploy/backup-restore). Each
+provider family has a different backup story:
 
 - `local_encrypted`: back up the local master key file and the Paperclip
   database together. Either alone is not enough to restore the encrypted
