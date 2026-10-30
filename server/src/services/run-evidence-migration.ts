@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
@@ -311,19 +311,42 @@ export async function migrateRunEvidence(
         if (stat && (!stat.isFile() || stat.size > 192 * 1024 * 1024))
           throw new Error("legacy_trace_capture_size_invalid");
       }
-      const native = await fs.readFile(file),
-        rehydration = await fs.readFile(`${file}.rehydration`).catch((error) => {
-          if (error.code === "ENOENT") return Buffer.alloc(0);
-          throw error;
+      const sourceHash = createHash("sha256");
+      let byteCount = 0,
+        nativeTail: number | undefined;
+      for (const [index, sidecar] of [file, `${file}.rehydration`].entries()) {
+        const source = createReadStream(sidecar, {
+          highWaterMark: 1024 * 1024,
+          signal: options.signal,
         });
-      const bytes = Buffer.concat([
-        native,
-        ...(native.length && native.at(-1) !== 10 && rehydration.length ? [Buffer.from("\n")] : []),
-        rehydration,
-      ]);
-      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+        try {
+          let first = true;
+          for await (const chunk of source) {
+            const bytes = Buffer.from(chunk);
+            if (
+              index === 1 &&
+              first &&
+              bytes.length &&
+              nativeTail !== undefined &&
+              nativeTail !== 10
+            ) {
+              sourceHash.update("\n");
+              byteCount++;
+            }
+            first = false;
+            sourceHash.update(bytes);
+            byteCount += bytes.length;
+            if (index === 0 && bytes.length) nativeTail = bytes.at(-1);
+          }
+        } catch (error) {
+          if (index !== 1 || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        } finally {
+          source.destroy();
+        }
+      }
+      const digest = `sha256:${sourceHash.digest("hex")}`;
       if (trace.digest && trace.digest !== digest) throw new Error("legacy_trace_digest_mismatch");
-      item.bytes = bytes.length;
+      item.bytes = byteCount;
       item.sha256 = digest;
       if (traceObjects) {
         options.signal?.throwIfAborted();
@@ -366,10 +389,16 @@ export async function migrateRunEvidence(
               );
             if (!current) throw new Error("trace_migration_authority_changed");
           },
-          { restore: false },
+          { restore: false, signal: options.signal },
         );
         await traceObjects.finish(ref);
-        if (!(await traceObjects.read(ref)).equals(bytes))
+        const remoteHash = createHash("sha256");
+        let remoteBytes = 0;
+        for await (const chunk of traceObjects.readChunks(ref, options.signal)) {
+          remoteHash.update(chunk);
+          remoteBytes += chunk.length;
+        }
+        if (remoteBytes !== byteCount || `sha256:${remoteHash.digest("hex")}` !== digest)
           throw new Error("trace_migration_remote_digest_mismatch");
         options.signal?.throwIfAborted();
         const updated = await db.transaction(async (tx) => {

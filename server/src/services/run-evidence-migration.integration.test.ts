@@ -108,8 +108,9 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     });
     await fs.writeFile(path.join(directory, "logs", logRef), log);
     await fs.mkdir(path.join(directory, "traces"), { recursive: true });
-    const native = Buffer.from('{"kind":"frame","rawBase64":"e30="}\n'),
+    const native = Buffer.from('{"kind":"frame","rawBase64":"e30="}\n'.repeat(33000).trimEnd()),
       rehydration = Buffer.from('{"kind":"interpretation","frameId":1}\n');
+    const expectedTrace = Buffer.concat([native, Buffer.from("\n"), rehydration]);
     await fs.writeFile(path.join(directory, "traces", filename), native);
     await fs.writeFile(path.join(directory, "traces", `${filename}.rehydration`), rehydration);
     const expiry = new Date(Date.now() + 3600_000);
@@ -120,7 +121,7 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
       values (${trace}, ${company}, ${run}, 'complete', 'codex', ${filename}, 'test', ${expiry.toISOString()}, ${`sha256:${createHash(
         "sha256",
       )
-        .update(Buffer.concat([native, rehydration]))
+        .update(expectedTrace)
         .digest("hex")}`})`);
     const active = randomUUID(),
       missing = randomUUID(),
@@ -186,7 +187,7 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     expect(new Date(saved[0].expires_at).getTime()).toBe(expiry.getTime());
     expect(saved[0].status).toBe("complete");
     expect(await createProviderTraceObjectStore(provider).read(saved[0].trace_ref)).toEqual(
-      Buffer.concat([native, rehydration]),
+      expectedTrace,
     );
   }, 30_000);
   it("blocks a native archive with a missing committed tail and checkpoints only verified source coverage", async () => {

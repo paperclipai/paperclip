@@ -90,24 +90,42 @@ function isMissing(error: unknown) {
   );
 }
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-const qualifiedProviders = new WeakMap<StorageProvider, Promise<void>>();
-async function qualifyConditionalWrites(provider: StorageProvider, prefix: string) {
-  let qualification = qualifiedProviders.get(provider);
-  if (!qualification) {
-    qualification = (async () => {
+interface ConditionalQualification {
+  work: Promise<void>;
+  controller: AbortController;
+  waiters: number;
+}
+const qualifiedProviders = new WeakSet<StorageProvider>();
+const qualifications = new WeakMap<StorageProvider, ConditionalQualification>();
+async function qualifyConditionalWrites(
+  provider: StorageProvider,
+  prefix: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  if (qualifiedProviders.has(provider)) return;
+  let qualification = qualifications.get(provider);
+  if (!qualification || qualification.controller.signal.aborted) {
+    const controller = new AbortController();
+    const probeSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+    const current: ConditionalQualification = { controller, waiters: 0, work: Promise.resolve() };
+    qualification = current;
+    current.work = (async () => {
       const objectKey = `${prefix}/conditional-probe-${randomUUID()}`;
       const body = Buffer.from("paperclip-conditional-probe-v1");
       const put = provider.putObjectConditional!.bind(provider);
       try {
-        await retryObjectOperation(() =>
-          put({
-            objectKey,
-            body,
-            contentLength: body.length,
-            contentType: "text/plain",
-            ifNoneMatch: "*",
-            signal: AbortSignal.timeout(15_000),
-          }),
+        await retryObjectOperation(
+          () =>
+            put({
+              objectKey,
+              body,
+              contentLength: body.length,
+              contentType: "text/plain",
+              ifNoneMatch: "*",
+              signal: probeSignal,
+            }),
+          probeSignal,
         );
         for (const condition of [
           { ifNoneMatch: "*" as const },
@@ -115,15 +133,17 @@ async function qualifyConditionalWrites(provider: StorageProvider, prefix: strin
         ]) {
           let rejected = false;
           try {
-            await retryObjectOperation(() =>
-              put({
-                objectKey,
-                body,
-                contentLength: body.length,
-                contentType: "text/plain",
-                ...condition,
-                signal: AbortSignal.timeout(15_000),
-              }),
+            await retryObjectOperation(
+              () =>
+                put({
+                  objectKey,
+                  body,
+                  contentLength: body.length,
+                  contentType: "text/plain",
+                  ...condition,
+                  signal: probeSignal,
+                }),
+              probeSignal,
             );
           } catch (error) {
             if (!isObjectPreconditionFailure(error)) throw error;
@@ -132,15 +152,48 @@ async function qualifyConditionalWrites(provider: StorageProvider, prefix: strin
           if (!rejected) throw new Error("Object storage does not enforce conditional publication");
         }
       } finally {
-        await provider.deleteObject({ objectKey, signal: AbortSignal.timeout(15_000) });
+        await provider.deleteObject({ objectKey, signal: probeSignal });
       }
-    })();
-    qualifiedProviders.set(provider, qualification);
-    void qualification.catch(() => {
-      qualifiedProviders.delete(provider);
+      probeSignal.throwIfAborted();
+      qualifiedProviders.add(provider);
+    })().finally(() => {
+      if (qualifications.get(provider) === current) qualifications.delete(provider);
     });
+    qualifications.set(provider, current);
+    void current.work.catch(() => undefined);
   }
-  await qualification;
+  const pending = qualification;
+  pending.waiters++;
+  await new Promise<void>((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      if (finished) return false;
+      finished = true;
+      signal?.removeEventListener("abort", abort);
+      pending.waiters--;
+      return true;
+    };
+    const abort = () => {
+      if (!release()) return;
+      if (!pending.waiters) {
+        pending.controller.abort(signal!.reason);
+        void pending.work.then(
+          () => reject(signal!.reason),
+          () => reject(signal!.reason),
+        );
+      } else reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    pending.work.then(
+      () => {
+        if (release()) resolve();
+      },
+      (error) => {
+        if (release()) reject(error);
+      },
+    );
+  });
 }
 
 let activeIO = 0;
@@ -274,7 +327,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     if (current?.head.deleted || (current?.head.owner ?? null) !== input.expectedOwner)
       throw new ObjectJournalConflictError();
     await input.assertAuthority();
-    await qualifyConditionalWrites(provider, prefix);
+    await qualifyConditionalWrites(provider, prefix, input.signal);
     await input.assertAuthority();
     const value: ObjectJournalHead = {
       v: 1,

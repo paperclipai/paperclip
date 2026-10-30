@@ -42,6 +42,13 @@ Legacy run rows retain their recorded backend until verified migration. Their
 pre-existing `RUN_LOG_S3_*` mirror settings and key paths remain supported for
 legacy reads and writes. They do not override instance storage for new journals.
 Use stable bucket/prefix settings across replacements and releases.
+As with existing product files, changing the instance bucket or prefix is a
+separate storage move and requires copying the complete namespace and preserving
+its keys before changing configuration. Switching to local storage does not move
+existing S3 evidence. Readers reject an unavailable external store; they never
+substitute an empty local log. Restore the original stack's storage profile to
+read its history. This upgrade migrates legacy local evidence into the existing
+stack store; it does not introduce bucket relocation or reverse migration.
 
 Raw capture still requires its existing explicit capture request. Its encryption
 uses the existing vault key, from `PAPERCLIP_SECRETS_MASTER_KEY` or the existing
@@ -193,6 +200,9 @@ unresolved. Other pages continue. The server logs each blocked resource and a
 pass summary. Unresolved passes retry after five minutes, with backoff up to
 30 minutes. Transport failures retry through the shared coordinator. After all
 retained history is migrated, the worker stops querying and contacting storage.
+Trace source hashing and remote verification stream bounded chunks instead of
+loading a complete capture into server memory. The worker cancellation signal
+reaches file reads, trace opening, conditional probing, uploads and verification.
 Local-disk instances do not register this worker. Outstanding migration conservatively
 blocks instance sleep, and shutdown aborts the batch and waits for owned work.
 

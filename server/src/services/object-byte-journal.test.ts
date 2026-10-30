@@ -65,6 +65,55 @@ const authority = async () => undefined;
 afterEach(() => vi.useRealTimers());
 
 describe("object byte journal", () => {
+  it("keeps a shared capability probe alive for another writer when one claim cancels", async () => {
+    const s = storage();
+    const put = s.provider.putObjectConditional!;
+    let release!: () => void, started!: () => void, admitted!: () => void;
+    let probeSignal: AbortSignal | undefined;
+    const probing = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const joined = new Promise<void>((resolve) => {
+      admitted = resolve;
+    });
+    s.provider.putObjectConditional = async (input) => {
+      if (input.objectKey.includes("conditional-probe-") && !probeSignal) {
+        probeSignal = input.signal;
+        await new Promise<void>((resolve, reject) => {
+          release = resolve;
+          input.signal!.addEventListener("abort", () => reject(input.signal!.reason), {
+            once: true,
+          });
+          started();
+        });
+      }
+      return put(input);
+    };
+    const controller = new AbortController();
+    const a = createObjectByteJournal({ provider: s.provider, prefix: "company/a/log" });
+    const first = a.claim({
+      expectedOwner: null,
+      assertAuthority: authority,
+      signal: controller.signal,
+    });
+    void first.catch(() => undefined);
+    await probing;
+    const b = createObjectByteJournal({ provider: s.provider, prefix: "company/b/log" });
+    const second = b.claim({
+      expectedOwner: null,
+      assertAuthority: async () => {
+        admitted();
+      },
+    });
+    await joined;
+    await Promise.resolve();
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    expect(probeSignal!.aborted).toBe(false);
+    release();
+    const writer = await second;
+    expect((await b.head())!.head.owner).toBe(writer.head.owner);
+  });
   it("recovers committed bytes and stable ranges with no local filesystem", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "company/run/log" });

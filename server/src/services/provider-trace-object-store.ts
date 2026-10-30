@@ -37,6 +37,7 @@ interface Channel {
 interface Capture {
   channels: Channel[];
   controller: AbortController;
+  signal: AbortSignal;
   flush?: Promise<void>;
   timer?: NodeJS.Timeout;
   stopped: boolean;
@@ -49,7 +50,9 @@ export function createProviderTraceObjectStore(
   provider: StorageProvider,
   prefix = "provider-traces",
 ) {
-  deriveLocalEncryptedInstanceSecret("provider-trace:existing-key", process.env, { allowCreate: false });
+  deriveLocalEncryptedInstanceSecret("provider-trace:existing-key", process.env, {
+    allowCreate: false,
+  });
   const captures = new Map<string, Capture>();
   const openings = new Map<string, Promise<void>>();
   function schedule(capture: Capture) {
@@ -67,7 +70,9 @@ export function createProviderTraceObjectStore(
     return ["native", "rehydration"].map((channel, i) => {
       const root = `${prefix}/segments-v1/${match[1]}/${match[2]}/${match[3]}/${channel}`;
       const key = Buffer.from(
-        deriveLocalEncryptedInstanceSecret(`provider-trace:${root}`, process.env, { allowCreate: false }),
+        deriveLocalEncryptedInstanceSecret(`provider-trace:${root}`, process.env, {
+          allowCreate: false,
+        }),
         "base64url",
       );
       const aad = Buffer.from(root);
@@ -101,7 +106,7 @@ export function createProviderTraceObjectStore(
     capture.dirty = false;
     capture.flush = (async () => {
       for (const channel of capture.channels) {
-        capture.controller.signal.throwIfAborted();
+        capture.signal.throwIfAborted();
         const file = await fs.open(channel.path, "r");
         try {
           const stat = await file.stat();
@@ -112,11 +117,7 @@ export function createProviderTraceObjectStore(
             const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, stat.size - offset));
             const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
             if (bytesRead !== buffer.length) throw new Error("provider_trace_capture_changed");
-            channel.writer = await channel.journal.append(
-              channel.writer,
-              buffer,
-              capture.controller.signal,
-            );
+            channel.writer = await channel.journal.append(channel.writer, buffer, capture.signal);
             offset += buffer.length;
           }
         } finally {
@@ -138,7 +139,7 @@ export function createProviderTraceObjectStore(
     ref: string,
     filePath: string,
     assertAuthority: () => Promise<void>,
-    options: { restore?: boolean } = {},
+    options: { restore?: boolean; signal?: AbortSignal } = {},
   ) {
     const existing = openings.get(ref);
     if (existing) return existing;
@@ -152,22 +153,28 @@ export function createProviderTraceObjectStore(
     ref: string,
     filePath: string,
     assertAuthority: () => Promise<void>,
-    options: { restore?: boolean } = {},
+    options: { restore?: boolean; signal?: AbortSignal } = {},
   ) {
     if (captures.has(ref)) return;
+    const controller = new AbortController();
     const capture: Capture = {
       channels: [],
-      controller: new AbortController(),
+      controller,
+      signal: options.signal
+        ? AbortSignal.any([controller.signal, options.signal])
+        : controller.signal,
       stopped: false,
       dirty: false,
       finishIdle: () => undefined,
     };
     try {
       for (const source of channelsFor(ref, filePath)) {
-        const current = await source.journal.head();
+        capture.signal.throwIfAborted();
+        const current = await source.journal.head(capture.signal);
         const writer = await source.journal.claim({
           expectedOwner: current?.head.owner ?? null,
           assertAuthority,
+          signal: capture.signal,
         });
         capture.channels.push({ ...source, writer });
         const file = await fs.open(source.path, options.restore === false ? "a+" : "w", 0o600);
@@ -178,12 +185,15 @@ export function createProviderTraceObjectStore(
             options.restore !== false && start < writer.head.end;
             start += CHUNK_BYTES
           ) {
-            await file.write(await source.journal.readRange(writer.head, start, CHUNK_BYTES));
+            await file.write(
+              await source.journal.readRange(writer.head, start, CHUNK_BYTES, capture.signal),
+            );
           }
         } finally {
           await file.close();
         }
       }
+      capture.signal.throwIfAborted();
       capture.finishIdle = beginIdleTrackedWork();
       captures.set(ref, capture);
       for (const channel of capture.channels) {
@@ -201,7 +211,7 @@ export function createProviderTraceObjectStore(
       for (const channel of capture.channels) channel.watcher?.close();
       await Promise.allSettled(
         capture.channels.map(async (channel) => {
-          await channel.journal.close(channel.writer);
+          await channel.journal.close(channel.writer, capture.signal);
         }),
       );
       if (options.restore !== false)
@@ -221,31 +231,33 @@ export function createProviderTraceObjectStore(
       if (capture.error) throw capture.error;
       await sync(capture);
       for (const channel of capture.channels)
-        channel.writer = await channel.journal.close(channel.writer);
+        channel.writer = await channel.journal.close(channel.writer, capture.signal);
     } finally {
       if (capture.timer) clearTimeout(capture.timer);
       captures.delete(ref);
       capture.finishIdle();
     }
   }
-  async function read(ref: string) {
-    const buffers: Buffer[] = [];
-    for (const { journal } of channelsFor(ref)) {
-      const snapshot = await journal.head();
+  async function* readChunks(ref: string, signal?: AbortSignal) {
+    let nativeTail: number | undefined;
+    for (const [index, { journal }] of channelsFor(ref).entries()) {
+      const snapshot = await journal.head(signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("provider_trace_payload_unavailable");
       if (snapshot.head.end > MAX_CAPTURE_BYTES)
         throw new Error("provider_trace_capture_size_invalid");
-      const parts: Buffer[] = [];
-      for (let offset = 0; offset < snapshot.head.end; offset += CHUNK_BYTES)
-        parts.push(await journal.readRange(snapshot.head, offset, CHUNK_BYTES));
-      buffers.push(Buffer.concat(parts));
+      if (index === 1 && snapshot.head.end && nativeTail !== undefined && nativeTail !== 10)
+        yield Buffer.from("\n");
+      for (let offset = 0; offset < snapshot.head.end; offset += CHUNK_BYTES) {
+        const bytes = await journal.readRange(snapshot.head, offset, CHUNK_BYTES, signal);
+        if (index === 0 && bytes.length) nativeTail = bytes.at(-1);
+        yield bytes;
+      }
     }
-    const [native, rehydration] = buffers as [Buffer, Buffer];
-    return Buffer.concat([
-      native,
-      ...(native.length && native.at(-1) !== 10 && rehydration.length ? [Buffer.from("\n")] : []),
-      rehydration,
-    ]);
+  }
+  async function read(ref: string, signal?: AbortSignal) {
+    const chunks: Buffer[] = [];
+    for await (const bytes of readChunks(ref, signal)) chunks.push(bytes);
+    return Buffer.concat(chunks);
   }
   async function stop(ref: string) {
     const capture = captures.get(ref);
@@ -276,6 +288,6 @@ export function createProviderTraceObjectStore(
     }
     return true;
   }
-  return { open, finish, read, remove, settled, stopRun };
+  return { open, finish, read, readChunks, remove, settled, stopRun };
 }
 export type ProviderTraceObjectStore = ReturnType<typeof createProviderTraceObjectStore>;

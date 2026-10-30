@@ -160,9 +160,14 @@ describe.skipIf(!endpoint)("instance storage for run evidence", () => {
       newRun: true,
     });
     expect(localHandle.store).toBe("local_file");
+    expect(() => local.read(handle)).toThrow("Object run log storage is not configured");
     await local.append(localHandle, { stream: "stdout", ts: "then", chunk: "local" });
     await local.finalize(localHandle);
     expect((await local.read(localHandle)).content).toContain("local");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.resetModules();
+    const restored = (await import("./run-log-store.js")).getRunLogStore();
+    expect((await restored.read(handle)).content).toContain("file-config");
     await fs.unlink(path.join(directory, "config.json"));
   });
   it("scopes trace publication and cleanup to the existing prefix, company and stack", async () => {

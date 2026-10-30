@@ -462,6 +462,14 @@ claim live-provider or fleet evidence from deterministic fixtures.
   cold import exceeded a test deadline (moved module setup into the fixture), a
   sandbox denied localhost access (rerun with network permission), and the first
   automatic fixture bucket name exceeded S3's length limit (shortened the name).
+- Shutdown review: automatic trace import now propagates cancellation through
+  source reads, opening, conditional-write qualification, upload and verification.
+  Five real-SDK stalled-request regressions failed before the fix, then passed.
+  A shared capability probe survives one cancelled claimant and aborts when its
+  last claimant leaves. Source and remote trace hashing stream bounded chunks.
+  A multi-chunk native sidecar without a final newline retains exact download
+  ordering and digest. Existing file-key and empty-web-home app checks passed at
+  a142424fc9; subsequent changes affect copy cancellation and verification only.
 - Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
 - S3 holds payloads from the first committed batch. Conditional object heads
   hold cursors and writer generations. Existing Postgres rows hold lifecycle and
