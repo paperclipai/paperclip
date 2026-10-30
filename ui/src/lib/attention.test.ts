@@ -46,6 +46,8 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     updatedAt: "2026-07-09T12:00:00Z",
     relatedIssue: null,
     audience: { kind: "pool", userId: null, reason: "none" },
+    stale: null,
+    changeFingerprint: "fixture.other",
     project: null,
     workspace: null,
     expiresAt: null,

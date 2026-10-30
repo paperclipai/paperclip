@@ -435,7 +435,7 @@ function ClassicWhatNeedsMe() {
   const handleDismiss = useCallback(
     (item: AttentionItem) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      dismiss(item.dismissalKey);
+      dismiss(item.dismissalKey, item.changeFingerprint);
       setExpandedId((previous) => (previous === item.id ? null : previous));
       // ~8s undo window; restores the row in place via T1's DELETE endpoint.
       pushToast({
@@ -453,7 +453,7 @@ function ClassicWhatNeedsMe() {
   const handleSnooze = useCallback(
     (item: AttentionItem, snoozedUntil: string) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      snooze(item.dismissalKey, snoozedUntil);
+      snooze(item.dismissalKey, snoozedUntil, item.changeFingerprint);
       setExpandedId((previous) => (previous === item.id ? null : previous));
     },
     [snooze],

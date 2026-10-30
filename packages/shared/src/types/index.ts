@@ -59,6 +59,8 @@ export type {
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
+  AttentionStale,
+  AttentionStaleReason,
   AttentionSubject,
   AttentionSubjectKind,
   AttentionTriageAttribution,

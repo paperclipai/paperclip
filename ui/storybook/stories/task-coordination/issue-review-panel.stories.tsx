@@ -64,6 +64,8 @@ const stalledReviewRow: AttentionItem = {
   updatedAt: "2026-08-02T00:30:00.000Z",
   relatedIssue: null,
   audience: { kind: "pool", userId: null, reason: "none" },
+  stale: null,
+  changeFingerprint: "fixture.other",
   project: null,
   workspace: null,
   detail: null,

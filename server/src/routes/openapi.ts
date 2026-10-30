@@ -6918,6 +6918,7 @@ registry.registerPath({
           ),
         kind: z.enum(["dismiss", "snooze"]).optional(),
         snoozedUntil: z.string().datetime().optional(),
+        fingerprint: z.string().max(200).optional(),
       }),
     ),
   },

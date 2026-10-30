@@ -296,6 +296,7 @@ describe("inbox helpers", () => {
         kind: "dismiss",
         dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
         snoozedUntil: null,
+        fingerprint: null,
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       },

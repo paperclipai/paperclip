@@ -9,13 +9,22 @@ export function ordinaryQuestionCondition() {
     and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))`;
 }
 
-/** Deferring conversation input cannot authorize an action or a plan. */
-export function deferredInteractionCondition() {
-  return sql<boolean>`(${issueThreadInteractions.dismissedAt} is not null
-    and ${issueThreadInteractions.kind} in ('ask_user_questions', 'request_confirmation', 'request_checkbox_confirmation', 'request_item_verdicts', 'suggest_tasks')
+/**
+ * Conversation input that a person may defer. Everything else is a governed
+ * request (an approval-bearing action, credential, connection, governed clamp
+ * or document target) that keeps its gate until someone answers it.
+ */
+export function deferrableInteractionCondition() {
+  return sql<boolean>`(${issueThreadInteractions.kind} in ('ask_user_questions', 'request_confirmation', 'request_checkbox_confirmation', 'request_item_verdicts', 'suggest_tasks')
     and ${issueThreadInteractions.effectiveResolverPolicySource} = 'requested'
     and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
     and coalesce(${issueThreadInteractions.payload}->'target'->>'type', '') <> 'issue_document')`;
+}
+
+/** Deferring conversation input cannot authorize an action or a plan. */
+export function deferredInteractionCondition() {
+  return sql<boolean>`(${issueThreadInteractions.dismissedAt} is not null
+    and ${deferrableInteractionCondition()})`;
 }
 
 /** Historical questions remain answerable, including after task completion. */

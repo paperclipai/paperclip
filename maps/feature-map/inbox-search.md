@@ -108,7 +108,12 @@ company/private-task isolation, and private v1 targets.
 [Attention service regressions](../../server/src/__tests__/attention-service.test.ts)
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
-Idle chats without structured requests remain absent. The
+Idle chats without structured requests remain absent.
+[Current-card tests](../../server/src/__tests__/attention-current-cards.test.ts)
+cover the shared active-request predicate with Mine, the 30-day, closed-task,
+decision-deadline and 7-day Unassigned stale rules, stale approval escalation
+without withdrawal, fingerprint-only resurfacing of dismissed and snoozed cards,
+and the idempotent closed-task sweep. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
 checks that a chat-sourced canonical question reaches its original resolver and context.
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.

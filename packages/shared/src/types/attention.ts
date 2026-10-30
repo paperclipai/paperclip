@@ -261,6 +261,22 @@ export interface AttentionAudience {
  */
 export type AttentionFeedView = "mine" | "unassigned" | "company" | "all";
 
+/**
+ * Why a card is stale (PAP-749 plan §2, Rule 10). A stale card stays open and
+ * answerable; the label only moves it to the Stale group. The server never
+ * withdraws a stale card and never treats one as approved.
+ * - `issue_closed`: its task is done or cancelled and the card is still pending.
+ * - `aged`: no important change for 30 days ("Waiting 30+ days").
+ * - `decision_expiring`: a decision with 80% or more of its time limit gone.
+ * - `unowned`: an Unassigned card with no owner for 7 days ("No owner for 7+
+ *   days"); it moves to the Company view.
+ */
+export type AttentionStaleReason = "issue_closed" | "aged" | "decision_expiring" | "unowned";
+
+export interface AttentionStale {
+  reason: AttentionStaleReason;
+}
+
 export interface AttentionItem {
   id: string;
   companyId: string;
@@ -282,6 +298,15 @@ export interface AttentionItem {
   relatedIssue: AttentionSubject | null;
   /** Where this card shows (PAP-749 plan §1, Rule 2). Placement only; never authority. */
   audience: AttentionAudience;
+  /** Set when the card is stale (PAP-749 plan §2, Rule 10); `null` for a current card. */
+  stale: AttentionStale | null;
+  /**
+   * Opaque fingerprint of the card's important content for this viewer
+   * (PAP-749 plan §2, Rule 9). Send it with a dismiss or snooze; the hidden
+   * card returns only when the fingerprint changes, not on log entries,
+   * retries, unrelated comments or assignee changes.
+   */
+  changeFingerprint: string;
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
   expiresAt: string | null;

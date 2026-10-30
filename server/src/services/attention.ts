@@ -29,6 +29,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
   AttentionAudience,
   AttentionDecisionVerb,
@@ -44,6 +45,7 @@ import type {
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
+  AttentionStale,
   AttentionSubject,
   AttentionTriageAttribution,
   AttentionWorkspaceRef,
@@ -64,6 +66,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { humanCreatedIssueCondition } from "./issue-participation.js";
+import { activeIssueInteractionCondition, deferrableInteractionCondition } from "./issue-question-context.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
@@ -147,6 +150,7 @@ type DismissalState = {
   kind: "dismiss" | "snooze";
   dismissedAt: Date;
   snoozedUntil: Date | null;
+  fingerprint: string | null;
 };
 
 type PlanDocumentSummary = {
@@ -191,18 +195,20 @@ function timestamp(value: Date | string | null | undefined): number {
 
 function activeDismissalState(
   dismissalByKey: ReadonlyMap<string, DismissalState>,
-  dismissalKey: string,
-  activityAt: string,
+  item: Pick<AttentionItem, "dismissalKey" | "activityAt" | "changeFingerprint">,
   now: number,
 ) {
-  const dismissal = dismissalByKey.get(dismissalKey);
+  const dismissal = dismissalByKey.get(item.dismissalKey);
   if (!dismissal) return null;
 
   const dismissedAt = toIso(dismissal.dismissedAt);
   const snoozedUntil = dismissal.snoozedUntil ? toIso(dismissal.snoozedUntil) : null;
+  // PAP-749 Rule 9: a hidden card returns only on an important change. Rows
+  // saved before the fingerprint existed keep the old activity-time rule.
+  const covered = dismissalCoversChange(dismissal.fingerprint, item.changeFingerprint);
   const isActive = dismissal.kind === "snooze"
-    ? dismissal.snoozedUntil != null && timestamp(dismissal.snoozedUntil) > now
-    : timestamp(dismissal.dismissedAt) >= timestamp(activityAt);
+    ? dismissal.snoozedUntil != null && timestamp(dismissal.snoozedUntil) > now && covered !== false
+    : covered ?? timestamp(dismissal.dismissedAt) >= timestamp(item.activityAt);
 
   return {
     kind: dismissal.kind,
@@ -375,6 +381,8 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "rank"
   | "dismissal"
   | "audience"
+  | "stale"
+  | "changeFingerprint"
   | "project"
   | "workspace"
   | "expiresAt"
@@ -409,6 +417,9 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     // Placeholder; the audience post-pass overwrites this once per item once the
     // per-issue context is loaded (PAP-749 plan §1, Rule 2).
     audience: { kind: "pool", userId: null, reason: "none" },
+    // Placeholders; the same post-pass sets these (PAP-749 plan §2, Rules 9-10).
+    stale: null,
+    changeFingerprint: "",
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     expiresAt: input.expiresAt ?? null,
@@ -848,6 +859,7 @@ async function dismissalByKey(db: Db, companyId: string, userId: string | null |
       kind: inboxDismissals.kind,
       dismissedAt: inboxDismissals.dismissedAt,
       snoozedUntil: inboxDismissals.snoozedUntil,
+      fingerprint: inboxDismissals.fingerprint,
     })
     .from(inboxDismissals)
     .where(and(eq(inboxDismissals.companyId, companyId), eq(inboxDismissals.userId, userId)));
@@ -855,6 +867,7 @@ async function dismissalByKey(db: Db, companyId: string, userId: string | null |
     kind: row.kind,
     dismissedAt: row.dismissedAt,
     snoozedUntil: row.snoozedUntil,
+    fingerprint: row.fingerprint,
   }]));
 }
 
@@ -1234,6 +1247,8 @@ export type IssueAudienceContext = {
   conversationUserId: string | null;
   assigneeUserId: string | null;
   instigatorUserId: string | null;
+  /** The card's own issue status; the stale rule reads it, the resolver does not. */
+  issueStatus?: string | null;
 };
 
 const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
@@ -1305,6 +1320,116 @@ export function audienceMatchesView(
   }
 }
 
+const DAY_MS = 86_400_000;
+/** Rule 10: a card with no important change for this long is stale. */
+export const ATTENTION_STALE_AFTER_DAYS = 30;
+/** Recommendation (e): an Unassigned card with no owner for this long moves to Company. */
+export const ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS = 7;
+/** Rule 10: a decision is stale once this share of its time limit is gone. */
+const DECISION_STALE_ELAPSED_RATIO = 0.8;
+
+/**
+ * What counts as an important change for one card (PAP-749 plan §2, Rule 9).
+ * `content` names the proposal, its options, or the state a person decides on;
+ * `since` is when that content last changed. Log entries, automatic retries,
+ * unrelated comments and assignee changes are deliberately not part of it.
+ * `required` marks an approval or governed request: the gate stays closed until
+ * a person answers, so a stale one escalates instead of fading.
+ */
+export type AttentionChangeBasis = {
+  content: unknown;
+  since: Date | string;
+  required?: boolean;
+};
+
+const FINGERPRINT_FOR_VIEWER = "me";
+const FINGERPRINT_FOR_OTHER = "other";
+
+/**
+ * The opaque `AttentionItem.changeFingerprint`: a hash of the important content
+ * plus whether the card is addressed to the viewer, so "the card comes to you
+ * again" counts as a change (Rule 9) while a hand-off away from you does not.
+ */
+export function attentionChangeFingerprint(input: {
+  sourceKind: AttentionSourceKind;
+  content: unknown;
+  forViewer: boolean;
+}): string {
+  const hash = normalizedContentHash({ v: 1, sourceKind: input.sourceKind, content: input.content ?? null })
+    .slice("sha256:".length, "sha256:".length + 32);
+  return `${hash}.${input.forViewer ? FINGERPRINT_FOR_VIEWER : FINGERPRINT_FOR_OTHER}`;
+}
+
+/**
+ * Whether a stored dismissal still hides the card. `null` means the row has no
+ * fingerprint (saved before Rule 9), so the caller keeps the activity-time
+ * rule. Otherwise the card stays hidden until its content changes or it is
+ * newly addressed to the viewer.
+ */
+export function dismissalCoversChange(stored: string | null | undefined, current: string): boolean | null {
+  if (!stored) return null;
+  const [storedHash, storedTarget] = stored.split(".");
+  const [currentHash, currentTarget] = current.split(".");
+  if (storedHash !== currentHash) return false;
+  return !(currentTarget === FINGERPRINT_FOR_VIEWER && storedTarget !== FINGERPRINT_FOR_VIEWER);
+}
+
+/**
+ * Rule 10: why a card is stale, if it is. The first matching reason wins. The
+ * label only moves the card to the Stale group; nothing here withdraws it.
+ */
+export function resolveAttentionStale(input: {
+  sourceKind: AttentionSourceKind;
+  issueStatus: string | null | undefined;
+  since: Date | string;
+  createdAt: Date | string;
+  expiresAt?: Date | string | null;
+  audience: AttentionAudience;
+  now: number;
+}): AttentionStale | null {
+  if (input.issueStatus === "done" || input.issueStatus === "cancelled") return { reason: "issue_closed" };
+  if (input.sourceKind === "decision" && input.expiresAt) {
+    const created = timestamp(input.createdAt);
+    const window = timestamp(input.expiresAt) - created;
+    if (window > 0 && input.now - created >= window * DECISION_STALE_ELAPSED_RATIO) {
+      return { reason: "decision_expiring" };
+    }
+  }
+  const age = input.now - timestamp(input.since);
+  if (age >= ATTENTION_STALE_AFTER_DAYS * DAY_MS) return { reason: "aged" };
+  if (input.audience.kind === "pool" && age >= ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS * DAY_MS) {
+    return { reason: "unowned" };
+  }
+  return null;
+}
+
+/**
+ * Where an old card goes so it never disappears (Rule 10 and recommendation
+ * (e)). An Unassigned card with no owner for 7 days moves to Company. A
+ * required card (approval or governed request) waiting 30 days moves to the
+ * default decision owner, or to Company when there is none. Placement only: the
+ * card stays pending and its gate stays closed.
+ */
+export function escalateStaleAudience(input: {
+  audience: AttentionAudience;
+  since: Date | string;
+  required: boolean;
+  now: number;
+  companyConfig?: AttentionAudienceCompanyConfig;
+}): AttentionAudience {
+  const age = input.now - timestamp(input.since);
+  if (input.audience.kind === "pool" && age >= ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS * DAY_MS) {
+    return { kind: "company", userId: null, reason: "none" };
+  }
+  if (input.required && input.audience.kind === "user" && age >= ATTENTION_STALE_AFTER_DAYS * DAY_MS) {
+    const owner = input.companyConfig?.defaultDecisionOwnerUserId ?? null;
+    return owner
+      ? { kind: "user", userId: owner, reason: "escalation_owner" }
+      : { kind: "company", userId: null, reason: "none" };
+  }
+  return input.audience;
+}
+
 /**
  * Load the per-issue audience context for `startIssueIds`: the chat user and
  * human assignee of each start issue, plus the instigator found by walking the
@@ -1322,7 +1447,11 @@ async function resolveIssueAudienceContextMap(
 
   type ChainNode = { parentId: string | null; instigatorSelf: string | null };
   const chain = new Map<string, ChainNode>();
-  const starterContext = new Map<string, { conversationUserId: string | null; assigneeUserId: string | null }>();
+  const starterContext = new Map<string, {
+    conversationUserId: string | null;
+    assigneeUserId: string | null;
+    issueStatus: string;
+  }>();
 
   let frontier = starts;
   for (let depth = 0; depth <= MAX_INSTIGATOR_CHAIN_DEPTH && frontier.length > 0; depth += 1) {
@@ -1332,6 +1461,7 @@ async function resolveIssueAudienceContextMap(
       .select({
         id: issues.id,
         parentId: issues.parentId,
+        status: issues.status,
         conversationUserId: issues.conversationUserId,
         assigneeUserId: issues.assigneeUserId,
         createdByUserId: issues.createdByUserId,
@@ -1348,6 +1478,7 @@ async function resolveIssueAudienceContextMap(
         starterContext.set(row.id, {
           conversationUserId: row.conversationUserId,
           assigneeUserId: row.assigneeUserId,
+          issueStatus: row.status,
         });
       }
     }
@@ -1372,6 +1503,7 @@ async function resolveIssueAudienceContextMap(
       conversationUserId: context?.conversationUserId ?? null,
       assigneeUserId: context?.assigneeUserId ?? null,
       instigatorUserId,
+      issueStatus: context?.issueStatus ?? null,
     });
   }
   return result;
@@ -1399,15 +1531,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const now = serviceOptions.now?.() ?? Date.now();
       const view: AttentionFeedView = options.view ?? "all";
       const collected: AttentionItem[] = [];
-      // Raw audience inputs captured per item during collection, keyed by dedup
-      // key, then resolved once after dedup (PAP-749 plan §1, Rule 2).
+      // Raw audience inputs and important-change facts captured per item during
+      // collection, keyed by dedup key, then resolved once after dedup (PAP-749
+      // plan §1, Rule 2; §2, Rules 9-10). Personal hiding needs the resolved
+      // audience, so it is applied in the same post-pass.
       const audienceInputByDedupKey = new Map<string, AttentionAudienceInput>();
+      const changeBasisByDedupKey = new Map<string, AttentionChangeBasis>();
 
-      const add = (item: AttentionItem, audienceInput: AttentionAudienceInput) => {
+      const add = (item: AttentionItem, audienceInput: AttentionAudienceInput, change: AttentionChangeBasis) => {
         audienceInputByDedupKey.set(item.dedupKey, audienceInput);
-        const dismissal = activeDismissalState(dismissals, item.dismissalKey, item.activityAt, now);
-        if (!includeDismissed && dismissal?.isActive) return;
-        collected.push({ ...item, dismissal });
+        changeBasisByDedupKey.set(item.dedupKey, change);
+        collected.push(item);
       };
 
       if (!options.excludeSources?.includes("approval")) {
@@ -1473,7 +1607,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             updatedAt: toIso(approval.updatedAt),
             relatedIssue: null,
             detail: approvalDetail(approval.type, approval.payload),
-          }), { issueId: linkedIssueId, requestedByUserId: approval.requestedByUserId });
+          }), { issueId: linkedIssueId, requestedByUserId: approval.requestedByUserId }, {
+            // `updatedAt` moves only when the request (re)enters pending, e.g. a
+            // resubmission with a revised proposal; comments do not touch it.
+            content: { type: approval.type, payload: approval.payload },
+            since: approval.updatedAt,
+            required: true,
+          });
         }
 
       }
@@ -1496,6 +1636,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           effectiveResolverPolicySource: issueThreadInteractions.effectiveResolverPolicySource,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
+          // Rule 9: the same "current request" predicate Mine and runs use. Old
+          // ordinary questions and requests a person deferred (interaction
+          // `dismissedAt`) leave the list; they stay answerable on the task.
+          active: sql<boolean>`${activeIssueInteractionCondition()}`,
+          // Governed requests keep their gate; a stale one escalates (Rule 10).
+          required: sql<boolean>`not ${deferrableInteractionCondition()}`,
         })
         .from(issueThreadInteractions)
         .where(and(
@@ -1528,7 +1674,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
         && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
       );
-      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
+      // Collapse before dropping deferred rows, so deferring the newest
+      // confirmation does not resurface the older one it replaced.
+      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows)
+        .filter((row) => row.active);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
         // A pending human request remains actionable in a persistent chat even
         // though its idle container is intentionally absent from work queues.
@@ -1586,7 +1735,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             interaction,
             (agentId) => companyAgentMap.get(agentId)?.name ?? null,
           ),
-        }), { issueId: interaction.issueId, addresseeUserId: interaction.addresseeUserId });
+        }), { issueId: interaction.issueId, addresseeUserId: interaction.addresseeUserId }, {
+          content: { kind: interaction.kind, payload: interaction.payload },
+          since: interaction.createdAt,
+          required: interaction.required,
+        });
       }
 
       const openDecisionQuery = db.select({
@@ -1596,6 +1749,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         ruleKey: decisions.ruleKey,
         title: decisions.title,
         body: decisions.body,
+        options: decisions.options,
         status: decisions.status,
         expiresAt: decisions.expiresAt,
         originIssueId: decisions.originIssueId,
@@ -1643,7 +1797,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail: { kind: "generic", summaryExcerpt: decision.body.slice(0, DETAIL_EXCERPT_LENGTH), images: [] },
-        }), { issueId: decision.originIssueId });
+        }), { issueId: decision.originIssueId }, {
+          content: { title: decision.title, body: decision.body, options: decision.options },
+          since: decision.createdAt,
+        });
       }
 
       if (!options.excludeSources?.includes("join_request")) {
@@ -1705,7 +1862,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: toIso(join.updatedAt),
           relatedIssue: null,
           detail: genericDetail(label, []),
-        }), { issueId: null, companyScoped: true });
+        }), { issueId: null, companyScoped: true }, {
+          content: { requestType: join.requestType },
+          since: join.createdAt,
+        });
       }
 
       }
@@ -1777,6 +1937,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           issueId: recovery.sourceIssueId,
           ownerUserId: recovery.ownerType === "user" ? recovery.ownerUserId : null,
           companyScoped: recovery.ownerType === "board",
+        }, {
+          // Escalation and a new next action are important; retry attempts
+          // that only move `updatedAt` are not.
+          content: { status: recovery.status, nextAction: recovery.nextAction },
+          since: recovery.createdAt,
         });
       }
 
@@ -1851,6 +2016,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             ownerUserId: descriptor.owner && typeof descriptor.owner === "object" && "userId" in descriptor.owner
               ? descriptor.owner.userId
               : null,
+          }, {
+            content: { action: descriptor.action },
+            since: issue.blockedTransitionAt,
           });
         }
         const blockerAttention = issue.blockerAttention;
@@ -1905,7 +2073,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             blockedTaskCount,
             images: issueImages(blockerImageMap, terminalIssueId),
           },
-        }), { issueId: terminalIssueId });
+        }), { issueId: terminalIssueId }, {
+          content: { state: candidate.state },
+          since: candidate.terminalSummary.updatedAt,
+        });
       }
 
       const reviewRows = await db
@@ -2004,6 +2175,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }), {
           issueId: review.id,
           reviewParticipantUserId: currentParticipant?.type === "user" ? currentParticipant.userId : null,
+        }, {
+          // A new review round (stage or decision) or a newly linked approval
+          // is important; the reviewer is audience, not content.
+          content: {
+            stalled,
+            pendingApprovalId,
+            stageId: state?.currentStageId ?? null,
+            lastDecisionId: state?.lastDecisionId ?? null,
+          },
+          since: review.updatedAt,
         });
       }
 
@@ -2073,7 +2254,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt(run.error ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
           },
-        }), { issueId, companyScoped: true });
+        }), { issueId, companyScoped: true }, {
+          // Each failed run is its own card; nothing about it changes later.
+          content: null,
+          since: run.finishedAt ?? run.updatedAt ?? run.createdAt,
+        });
       }
 
       const budgetOverview = await budgetService(db).overview(companyId);
@@ -2127,7 +2312,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             amountLimit: incident.amountLimit,
             images: [],
           },
-        }), { issueId: null, companyScoped: true });
+        }), { issueId: null, companyScoped: true }, {
+          // Spend creeping upward inside one incident is not a new choice.
+          content: { status: incident.status },
+          since: incident.createdAt,
+        });
       }
 
       const erroredAgents = await db
@@ -2180,7 +2369,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt(agent.errorReason),
             images: [],
           },
-        }), { issueId: null, companyScoped: true });
+        }), { issueId: null, companyScoped: true }, {
+          content: { errorReason: agent.errorReason },
+          since: agent.updatedAt,
+        });
       }
 
       const deduped = new Map<string, AttentionItem>();
@@ -2198,15 +2390,46 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         dedupedItems.map((item) => audienceInputByDedupKey.get(item.dedupKey)?.issueId ?? null),
       );
+      const audienceConfig: AttentionAudienceCompanyConfig = {
+        defaultDecisionOwnerUserId: companyConfig.defaultDecisionOwnerUserId,
+      };
+      const currentItems: AttentionItem[] = [];
       for (const item of dedupedItems) {
         const input = audienceInputByDedupKey.get(item.dedupKey) ?? { issueId: null };
         const ctx = input.issueId ? audienceContext.get(input.issueId) ?? null : null;
-        item.audience = resolveAttentionAudience(input, ctx, {
-          defaultDecisionOwnerUserId: companyConfig.defaultDecisionOwnerUserId,
+        const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
+        const audience = resolveAttentionAudience(input, ctx, audienceConfig);
+        // Rule 10: label stale cards and move old ones to a person or Company.
+        // Nothing here withdraws a card or treats it as answered.
+        item.stale = resolveAttentionStale({
+          sourceKind: item.sourceKind,
+          issueStatus: ctx?.issueStatus,
+          since: change.since,
+          createdAt: item.createdAt,
+          expiresAt: item.expiresAt,
+          audience,
+          now,
         });
+        item.audience = escalateStaleAudience({
+          audience,
+          since: change.since,
+          required: change.required === true,
+          now,
+          companyConfig: audienceConfig,
+        });
+        item.changeFingerprint = attentionChangeFingerprint({
+          sourceKind: item.sourceKind,
+          content: change.content,
+          forViewer: item.audience.kind === "user" && item.audience.userId != null
+            && item.audience.userId === options.userId,
+        });
+        // Rule 9: a personally hidden card returns only on a fingerprint change.
+        item.dismissal = activeDismissalState(dismissals, item, now);
+        if (!includeDismissed && item.dismissal?.isActive) continue;
+        currentItems.push(item);
       }
 
-      const collectedItems = dedupedItems.sort(compareAttentionItems);
+      const collectedItems = currentItems.sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
 

@@ -1,0 +1,1 @@
+ALTER TABLE "inbox_dismissals" ADD COLUMN "fingerprint" text;

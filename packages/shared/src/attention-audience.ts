@@ -1,4 +1,4 @@
-import type { AttentionAudienceReason } from "./types/attention.js";
+import type { AttentionAudienceReason, AttentionStaleReason } from "./types/attention.js";
 
 /**
  * The "Why me?" line for each audience reason (PAP-749 plan §1, Rule 4). The UI
@@ -21,4 +21,19 @@ export const ATTENTION_AUDIENCE_REASON_TEXT: Record<AttentionAudienceReason, str
 
 export function attentionAudienceReasonText(reason: AttentionAudienceReason): string | null {
   return ATTENTION_AUDIENCE_REASON_TEXT[reason];
+}
+
+/**
+ * The Stale chip text for each stale reason (PAP-749 plan §2, Rule 10, and the
+ * 7-day Unassigned rule). Exhaustive on purpose, like the "Why me?" copy.
+ */
+export const ATTENTION_STALE_REASON_TEXT: Record<AttentionStaleReason, string> = {
+  issue_closed: "Task closed",
+  aged: "Waiting 30+ days",
+  decision_expiring: "Expires soon",
+  unowned: "No owner for 7+ days",
+};
+
+export function attentionStaleReasonText(reason: AttentionStaleReason): string {
+  return ATTENTION_STALE_REASON_TEXT[reason];
 }

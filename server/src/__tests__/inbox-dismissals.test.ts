@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
+import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -225,6 +226,64 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       .expect(204);
 
     await expect(dismissalsSvc.list(companyId, userId)).resolves.toEqual([]);
+  });
+
+  it("stores an attention card fingerprint and rejects one on other inbox items", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId,
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", inboxDismissalRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "approval:approval-1", fingerprint: "abc.me" })
+      .expect(400);
+
+    const dismissed = await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:interaction:1", fingerprint: "abc.me" })
+      .expect(201);
+    expect(dismissed.body).toMatchObject({ itemKey: "attention:interaction:1", kind: "dismiss", fingerprint: "abc.me" });
+
+    const snoozedUntil = "2099-01-01T00:00:00.000Z";
+    await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:interaction:1", kind: "snooze", snoozedUntil, fingerprint: "def.other" })
+      .expect(201);
+    expect((await dismissalsSvc.list(companyId, userId))[0]).toMatchObject({ kind: "snooze", fingerprint: "def.other" });
+
+    // Hiding again without a fingerprint clears it, so the row never compares
+    // against content the user did not see.
+    await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:interaction:1" })
+      .expect(201);
+    expect((await dismissalsSvc.list(companyId, userId))[0]?.fingerprint).toBeNull();
+
+    const [logged] = await db.select().from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(asc(activityLog.createdAt))
+      .limit(1);
+    expect(logged?.details).toMatchObject({ itemKey: "attention:interaction:1", fingerprint: "abc.me" });
   });
 
   it("honors dismissal timestamps and resurfaces approvals with newer activity", async () => {

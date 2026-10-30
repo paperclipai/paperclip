@@ -25,6 +25,13 @@
  * Logins: the three demo users share one password, the DEMO_PASSWORD constant
  * below (override with SEED_DEMO_PASSWORD). Emails are listed in DEMO_USERS.
  *
+ * Current cards (PAP-749 task 2a): archived/snoozed cards store the card's
+ * `changeFingerprint`, read from the live feed exactly as the UI sends it, so
+ * they return only on an important change. The pending cards on the done and
+ * cancelled tasks are expired by the closed-task sweep at the next server
+ * start; the approval on a done task stays (approvals are never auto-closed)
+ * and shows the "Task closed" stale reason.
+ *
  * Default decision owner (PAP-749 task 1d-lite): set SEED_DEFAULT_DECISION_OWNER
  * to a demo user key (scott|dotta|riley) to configure the company's default
  * decision owner. When set, the Unassigned-group cards route to that user's
@@ -69,6 +76,7 @@ import { budgetService } from "../server/src/services/budgets.js";
 import { costService } from "../server/src/services/costs.js";
 import { issueRecoveryActionService } from "../server/src/services/issue-recovery-actions.js";
 import { inboxDismissalService } from "../server/src/services/inbox-dismissals.js";
+import { attentionService } from "../server/src/services/attention.js";
 import { createAgentLifecycle } from "../server/src/services/agent-lifecycle.js";
 
 // drizzle-orm and better-auth are server-package dependencies; from a repo-root
@@ -103,9 +111,6 @@ function resolveDatabaseUrl(): string {
   if (config.databaseUrl) return config.databaseUrl;
   return `postgres://paperclip:paperclip@127.0.0.1:${config.embeddedPostgresPort}/paperclip`;
 }
-
-/** attention.ts derives each dismissal key as `attention:${dedupKey}`. */
-const dismissalKeyFor = (dedupKey: string) => `attention:${dedupKey}`;
 
 async function main() {
   const url = resolveDatabaseUrl();
@@ -442,14 +447,29 @@ async function seed(db: Db) {
     const onDone = await makeInteraction(doneIssue, "request_confirmation", { prompt: "The task is done but this card lingers." }, { title: "Lingering on a done task" });
     await db.update(issuesTable).set({ status: "done", updatedAt: daysAgo(5) }).where(eq(issuesTable.id, doneIssue.id));
     await backdateInteraction(db, onDone.id, daysAgo(5));
-    card("Stale", "pending card on a done task");
+    card("Stale", "pending card on a done task (expired by the sweep at the next server start)");
   }
   {
     const cancelledIssue = await makeIssue({ title: "Confirmation on a cancelled task", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
     const onCancelled = await makeInteraction(cancelledIssue, "request_confirmation", { prompt: "The task is cancelled but this card lingers." }, { title: "Lingering on a cancelled task" });
     await db.update(issuesTable).set({ status: "cancelled", updatedAt: daysAgo(5) }).where(eq(issuesTable.id, cancelledIssue.id));
     await backdateInteraction(db, onCancelled.id, daysAgo(5));
-    card("Stale", "pending card on a cancelled task");
+    card("Stale", "pending card on a cancelled task (expired by the sweep at the next server start)");
+  }
+  {
+    // The sweep never closes approvals, so this one keeps the "Task closed" reason.
+    const doneApprovalIssue = await makeIssue({ title: "Approval left on a done task", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+    const doneApproval = await approvalSvc.create(companyId, { type: "request_board_approval", status: "pending", requestedByUserId: scott, payload: { title: "Approval on a finished task", summary: "The task is done; the approval still waits for a person." } } as never);
+    await db.insert(issueApprovals).values({ companyId, issueId: doneApprovalIssue.id, approvalId: (doneApproval as { id: string }).id });
+    await db.update(issuesTable).set({ status: "done", updatedAt: daysAgo(3) }).where(eq(issuesTable.id, doneApprovalIssue.id));
+    card("Stale", "approval on a done task (stale: Task closed; never auto-withdrawn)");
+  }
+  {
+    // Unassigned for 8 days: moves to Company with "No owner for 7+ days".
+    const unownedIssue = await makeIssue({ title: "Agent work with no owner for 8 days", status: "todo", createdByAgentId: worker!.id });
+    const unowned = await makeInteraction(unownedIssue, "request_confirmation", { prompt: "Nobody claimed this for over a week." }, { title: "Ownerless for 8 days", actorAgentId: worker!.id });
+    await backdateInteraction(db, unowned.id, daysAgo(8));
+    card("Stale", "Unassigned card older than 7 days (moves to Company: No owner for 7+ days)");
   }
   // decision at ~85% of a 7-day TTL (created 6 days ago, expires ~1 day out)
   const decisionIssue = await makeIssue({ title: "Decision nearing its deadline", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
@@ -476,27 +496,45 @@ async function seed(db: Db) {
   // GROUP: Archived & snoozed (Scott) — two archived, one snoozed until
   //        tomorrow, one archived card with a newer change that must come back.
   // =========================================================================
+  // Hide each card with the fingerprint Scott's feed shows for it, exactly as
+  // the UI sends it (PAP-749 Rule 9).
+  const hiddenCards: Array<{ id: string; mode: "archive" | "snooze" }> = [];
   for (const i of [1, 2]) {
     const archIssue = await makeIssue({ title: `Archived by Scott #${i}`, status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
     const arch = await makeInteraction(archIssue, "request_confirmation", { prompt: `Scott archived this card (#${i}).` }, { title: `Archived #${i}`, addresseeUserId: scott });
-    await dismissals.dismiss(companyId, scott, dismissalKeyFor(`interaction:${arch.id}`), now());
+    hiddenCards.push({ id: arch.id, mode: "archive" });
     card("Archived/Snoozed", `card archived by Scott (#${i})`);
   }
-  {
-    const snoozeIssue = await makeIssue({ title: "Snoozed by Scott until tomorrow", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
-    const snoozed = await makeInteraction(snoozeIssue, "request_confirmation", { prompt: "Scott snoozed this until tomorrow." }, { title: "Snoozed", addresseeUserId: scott });
-    await dismissals.snooze(companyId, scott, dismissalKeyFor(`interaction:${snoozed.id}`), daysFromNow(1), now());
-    card("Archived/Snoozed", "card snoozed by Scott until tomorrow");
+  const snoozeIssue = await makeIssue({ title: "Snoozed by Scott until tomorrow", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+  const snoozed = await makeInteraction(snoozeIssue, "request_confirmation", { prompt: "Scott snoozed this until tomorrow." }, { title: "Snoozed", addresseeUserId: scott });
+  hiddenCards.push({ id: snoozed.id, mode: "snooze" });
+  card("Archived/Snoozed", "card snoozed by Scott until tomorrow");
+  const comebackIssue = await makeIssue({ title: "Archived, then changed — must come back", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+  const comeback = await makeInteraction(comebackIssue, "request_confirmation", { prompt: "Archived earlier, then the agent changed the proposal." }, { title: "Archived with a new change", addresseeUserId: scott });
+  hiddenCards.push({ id: comeback.id, mode: "archive" });
+  card("Archived/Snoozed", "archived card whose proposal changed (comes back)");
+  const logOnlyIssue = await makeIssue({ title: "Archived, then only log activity — stays hidden", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+  const logOnly = await makeInteraction(logOnlyIssue, "request_confirmation", { prompt: "Archived; later activity is only log noise." }, { title: "Archived with log-only activity", addresseeUserId: scott });
+  hiddenCards.push({ id: logOnly.id, mode: "archive" });
+  card("Archived/Snoozed", "archived card with only log activity (stays hidden)");
+
+  const scottFeed = await attentionService(db).list(companyId, { userId: scott, all: true, allowUnscopedAll: true });
+  const feedBySourceId = new Map(scottFeed.items.map((item) => [item.subject.id, item]));
+  for (const hidden of hiddenCards) {
+    const item = feedBySourceId.get(hidden.id);
+    if (!item) throw new Error(`[seed] card ${hidden.id} missing from Scott's feed; cannot archive it`);
+    if (hidden.mode === "snooze") {
+      await dismissals.snooze(companyId, scott, item.dismissalKey, daysFromNow(1), hoursAgo(2), item.changeFingerprint);
+    } else {
+      await dismissals.dismiss(companyId, scott, item.dismissalKey, hoursAgo(2), item.changeFingerprint);
+    }
   }
-  {
-    const comebackIssue = await makeIssue({ title: "Archived, then changed — must come back", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
-    const comeback = await makeInteraction(comebackIssue, "request_confirmation", { prompt: "Archived earlier, but a newer change should resurface it." }, { title: "Archived with a new change", addresseeUserId: scott });
-    // Dismiss in the past, then bump the interaction's activity to now so the
-    // dismissal is no longer active (activityAt > dismissedAt) and the card returns.
-    await dismissals.dismiss(companyId, scott, dismissalKeyFor(`interaction:${comeback.id}`), hoursAgo(2));
-    await db.update(issueThreadInteractions).set({ updatedAt: now() }).where(eq(issueThreadInteractions.id, comeback.id));
-    card("Archived/Snoozed", "archived card with a newer change (resurfaces)");
-  }
+  // After archiving: a new proposal is an important change, so the card returns.
+  await db.update(issueThreadInteractions)
+    .set({ payload: { version: 1, prompt: "Revised proposal: ship behind a flag first?" }, updatedAt: now() })
+    .where(eq(issueThreadInteractions.id, comeback.id));
+  // Activity alone (log entries, retries, comments) is not, so this card stays hidden.
+  await db.update(issueThreadInteractions).set({ updatedAt: now() }).where(eq(issueThreadInteractions.id, logOnly.id));
 
   // =========================================================================
   // GROUP: Closed (history) — answered, withdrawn, expired, closed-with-task.

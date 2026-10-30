@@ -310,8 +310,8 @@ export function DecisionQueuePage() {
                           currentUserId={currentUserId}
                           expanded={expandedId === item.id}
                           onToggleExpand={handleToggleExpand}
-                          onDismiss={(next) => dismiss(next.dismissalKey)}
-                          onSnooze={(next, until) => snooze(next.dismissalKey, until)}
+                          onDismiss={(next) => dismiss(next.dismissalKey, next.changeFingerprint)}
+                          onSnooze={(next, until) => snooze(next.dismissalKey, until, next.changeFingerprint)}
                           onExcluded={invalidate}
                         />
                       ))}
@@ -343,8 +343,8 @@ export function DecisionQueuePage() {
                   currentUserId={currentUserId}
                   expanded={expandedId === item.id}
                   onToggleExpand={handleToggleExpand}
-                  onDismiss={(next) => dismiss(next.dismissalKey)}
-                  onSnooze={(next, until) => snooze(next.dismissalKey, until)}
+                  onDismiss={(next) => dismiss(next.dismissalKey, next.changeFingerprint)}
+                  onSnooze={(next, until) => snooze(next.dismissalKey, until, next.changeFingerprint)}
                 />
               ))}
             </Curtain>

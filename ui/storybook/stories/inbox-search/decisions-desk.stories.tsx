@@ -95,6 +95,8 @@ function item(
       metadata: {},
     },
     audience: { kind: "pool", userId: null, reason: "none" },
+    stale: null,
+    changeFingerprint: "fixture.other",
     project: null,
     workspace: null,
     expiresAt: null,

@@ -27,6 +27,7 @@ import {
 } from "../packages/db/src/index.js";
 import type { AttentionFeedView } from "../packages/shared/src/index.js";
 import { attentionService } from "../server/src/services/attention.js";
+import { expirePendingInteractionsOnClosedIssues } from "../server/src/services/closed-issue-interaction-sweep.js";
 
 // Repo-root scripts can't resolve server-only bare deps directly, so pull
 // drizzle's helpers through the server package (see the seed script).
@@ -66,6 +67,32 @@ async function main() {
     const idByEmail = new Map(userRows.map((row) => [row.email, row.id]));
 
     const svc = attentionService(db);
+    // Task 2a: stale cards by reason, for Scott's full feed.
+    const printStale = async (label: string) => {
+      const scott = idByEmail.get(DEMO_EMAILS.Scott);
+      if (!scott) return;
+      const feed = await svc.list(company.id, { userId: scott, view: "all" });
+      const stale = feed.items.filter((item) => item.stale);
+      console.log(`\n[${label}] Scott view=all: ${feed.totalCount} card(s), ${stale.length} stale`);
+      for (const item of stale) {
+        console.log(`  - ${item.stale!.reason.padEnd(17)} ${item.audience.kind.padEnd(7)} ${item.sourceKind}: ${item.subject.title}`);
+      }
+    };
+    await printStale("before startup sweep");
+    // Task 2a Rule 9: which of Scott's personally hidden cards stay hidden.
+    const scottForHidden = idByEmail.get(DEMO_EMAILS.Scott);
+    if (scottForHidden) {
+      const withHidden = await svc.list(company.id, { userId: scottForHidden, view: "all", includeDismissed: true });
+      console.log("\n[hidden] Scott's archived/snoozed cards:");
+      for (const item of withHidden.items.filter((entry) => entry.dismissal)) {
+        console.log(`  - ${item.dismissal!.isActive ? "hidden  " : "returned"} ${item.dismissal!.kind.padEnd(7)} ${item.subject.title}`);
+      }
+    }
+    // A server start runs the closed-task sweep once; run it twice to show it is idempotent.
+    console.log(`\n[sweep] first run:  ${JSON.stringify(await expirePendingInteractionsOnClosedIssues(db))}`);
+    console.log(`[sweep] second run: ${JSON.stringify(await expirePendingInteractionsOnClosedIssues(db))}`);
+    await printStale("after startup sweep");
+
     console.log(`\n=== Needs You demo card counts by view (company ${company.id}, prefix ${company.prefix}) ===`);
     console.log("user   | all | mine | unassigned | company");
     console.log("-------+-----+------+------------+--------");
