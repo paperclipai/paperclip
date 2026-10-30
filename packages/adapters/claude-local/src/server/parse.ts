@@ -66,6 +66,76 @@ export function claudeModelReceipts(modelUsage: unknown) {
   return receipts.every((part) => part !== null) ? receipts : undefined;
 }
 
+export const CLAUDE_USAGE_BASELINE_REQUEST_ID = "paperclip-usage-baseline";
+
+const CLAUDE_ACCOUNTING_FIELDS = [
+  "inputTokens", "outputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "costUSD",
+] as const;
+type ClaudeUsageBaseline = { costUsd: number; modelUsage: Record<string, unknown> };
+
+function isNonnegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function validClaudeModelLedger(modelUsage: Record<string, unknown>): boolean {
+  return Object.values(modelUsage).every(raw => {
+    const entry = parseObject(raw);
+    return CLAUDE_ACCOUNTING_FIELDS.every(field => isNonnegativeNumber(entry[field]));
+  });
+}
+
+function readClaudeUsageBaseline(event: Record<string, unknown>): ClaudeUsageBaseline | null {
+  const response = parseObject(event.response);
+  if (response.request_id !== CLAUDE_USAGE_BASELINE_REQUEST_ID || response.subtype !== "success") return null;
+  const session = parseObject(parseObject(response.response).session);
+  if (!isNonnegativeNumber(session.total_cost_usd)) return null;
+  if (!session.model_usage || typeof session.model_usage !== "object" || Array.isArray(session.model_usage)) return null;
+  const modelUsage = parseObject(session.model_usage);
+  return validClaudeModelLedger(modelUsage) ? { costUsd: session.total_cost_usd, modelUsage } : null;
+}
+
+function claudeRunAccounting(result: Record<string, unknown>, baseline: ClaudeUsageBaseline | null) {
+  const rawCost = result.total_cost_usd;
+  const costUsd = typeof rawCost === "number" && Number.isFinite(rawCost) ? rawCost : null;
+  const original = { modelUsage: result.modelUsage, costUsd };
+  if (!baseline || (costUsd !== null && costUsd < baseline.costUsd)) return original;
+
+  const modelUsage = parseObject(result.modelUsage);
+  const runModelUsage: Record<string, unknown> = {};
+  if (Object.keys(modelUsage).length > 0) {
+    if (!validClaudeModelLedger(modelUsage)) return original;
+    // A decreasing/missing ledger is not the continuation we sampled. Never
+    // turn that into a negative receipt or subtract an unrelated session.
+    if (Object.keys(baseline.modelUsage).some(model => !(model in modelUsage))) return original;
+    for (const [model, raw] of Object.entries(modelUsage)) {
+      const entry = parseObject(raw);
+      const previous = parseObject(baseline.modelUsage[model]);
+      const delta = { ...entry };
+      for (const field of CLAUDE_ACCOUNTING_FIELDS) {
+        const value = entry[field] as number;
+        const prior = asNumber(previous[field], 0);
+        if (value < prior) return original;
+        delta[field] = value - prior;
+      }
+      // Preserve non-additive metadata; optional counters are additive too.
+      for (const field of ["thinkingTokens", "webSearchRequests"]) {
+        if (isNonnegativeNumber(entry[field])) {
+          const prior = asNumber(previous[field], 0);
+          if (entry[field] < prior) return original;
+          delta[field] = entry[field] - prior;
+        }
+      }
+      // Restored models with no activity in this invocation must not turn a
+      // single-model receipt into "mixed" just because an earlier run used them.
+      if (CLAUDE_ACCOUNTING_FIELDS.some(field => delta[field] !== 0)) runModelUsage[model] = delta;
+    }
+  }
+  return {
+    modelUsage: Object.keys(modelUsage).length ? runModelUsage : result.modelUsage,
+    costUsd: costUsd === null ? null : costUsd - baseline.costUsd,
+  };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   return createClaudeStreamParser()(stdout);
 }
@@ -78,6 +148,8 @@ export function createClaudeStreamParser() {
   const assistantTexts: string[] = [];
   const messageUsage = new Map<string, UsageSummary>();
   let anonymousMessage = 0;
+  let usageBaseline: ClaudeUsageBaseline | null = null;
+  let observedWork = false;
   const observedTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
 
   return (stdout: string) => {
@@ -88,6 +160,10 @@ export function createClaudeStreamParser() {
       if (!event) continue;
 
       const type = asString(event.type, "");
+      if (type === "control_response") {
+        if (!observedWork && usageBaseline === null) usageBaseline = readClaudeUsageBaseline(event);
+        continue;
+      }
       if (type === "system" && asString(event.subtype, "") === "init") {
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
         model = asString(event.model, model);
@@ -95,6 +171,7 @@ export function createClaudeStreamParser() {
       }
 
       if (type === "assistant") {
+        observedWork = true;
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
         const message = parseObject(event.message);
         const observed = parseObject(message.usage);
@@ -124,6 +201,7 @@ export function createClaudeStreamParser() {
       }
 
       if (type === "result") {
+        observedWork = true;
         finalResult = event;
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       }
@@ -134,6 +212,7 @@ export function createClaudeStreamParser() {
         sessionId,
         model,
         costUsd: null as number | null,
+        modelUsage: undefined as unknown,
         usage: messageUsage.size ? { ...observedTotals } : null,
         usageBasis: "per_run" as const,
         summary: assistantTexts.join("\n\n").trim(),
@@ -141,24 +220,25 @@ export function createClaudeStreamParser() {
       };
     }
 
-    const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
+    const accounting = claudeRunAccounting(finalResult, usageBaseline);
+    const modelUsageTotals = claudeModelUsageTotals(accounting.modelUsage);
     const usageObj = parseObject(finalResult.usage);
     const usage: UsageSummary = modelUsageTotals ?? {
       inputTokens: asNumber(usageObj.input_tokens, 0) + asNumber(usageObj.cache_creation_input_tokens, 0),
       cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
       outputTokens: asNumber(usageObj.output_tokens, 0),
     };
-    const costRaw = finalResult.total_cost_usd;
-    const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
     const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
 
     return {
       sessionId,
       model,
-      costUsd,
+      costUsd: accounting.costUsd,
+      modelUsage: accounting.modelUsage,
       usage,
-      // modelUsage covers exactly this CLI invocation, so mark it per-run to
-      // keep the server from applying its session-cumulative delta heuristic.
+      // Claude Code >= 2.1.277 restores costs on resume. Subtract the ledger
+      // sampled in this process before the prompt, including subagent usage.
+      // Older CLIs without the control response keep their per-invocation totals.
       usageBasis: "per_run" as const,
       summary,
       resultJson: finalResult,

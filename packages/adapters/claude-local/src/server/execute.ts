@@ -65,6 +65,7 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
+  CLAUDE_USAGE_BASELINE_REQUEST_ID,
   claudeModelUsageTotals,
   claudeModelReceipts,
   parseClaudeStreamJson, createClaudeStreamParser,
@@ -843,7 +844,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
   ) => {
-    const args = ["--print", "--output-format", "stream-json", "--verbose"];
+    const args = ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"];
     if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
@@ -958,18 +959,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const consumeAccounting = createClaudeStreamParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+    let hasAccounting = false;
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+      hasAccounting = true;
       const parsed = consumeAccounting(stdout);
       return { usage: parsed.usage ?? undefined, usageBasis: "per_run", costUsd: parsed.costUsd,
         provider: "anthropic", biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-        billingType, model: Object.keys(parseObject(parsed.resultJson?.modelUsage)).length > 1 ? "mixed" : parsed.model || model,
-          usageByModel: claudeModelReceipts(parsed.resultJson?.modelUsage), complete: parsed.resultJson !== null };
+        billingType, model: Object.keys(parseObject(parsed.modelUsage)).length > 1 ? "mixed" : parsed.model || model,
+          usageByModel: claudeModelReceipts(parsed.modelUsage), complete: parsed.resultJson !== null };
     });
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       onProcessStopped: providerStop.beginInvocation(),
       cwd,
       env,
-      stdin: prompt,
+      // Sample the restored ledger inside the same process, before its first
+      // user message. Previous-run totals are not a safe baseline: Claude may
+      // restore or reset its cost state independently of Paperclip's session.
+      stdin: [
+        JSON.stringify({ type: "control_request", request_id: CLAUDE_USAGE_BASELINE_REQUEST_ID, request: { subtype: "get_usage", skip_behaviors: true } }),
+        JSON.stringify({ type: "user", message: { role: "user", content: prompt } }),
+        "",
+      ].join("\n"),
       timeoutSec,
       graceSec,
       onSpawn,
@@ -986,6 +996,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await accountingLog.flush();
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
+    // The display tail can omit the initial control response. Keep accounting
+    // from the complete stream even when no checkpoint callback is installed.
+    if (hasAccounting) {
+      const retained = consumeAccounting("");
+      parsedStream.usage = retained.usage;
+      parsedStream.costUsd = retained.costUsd;
+      parsedStream.modelUsage = retained.modelUsage;
+      parsedStream.model = retained.model || parsedStream.model;
+    }
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
     return { proc, parsedStream, parsed };
   };
@@ -1021,8 +1040,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         usageBasis: "per_run",
         provider: "anthropic",
         biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-        model: Object.keys(parseObject(parsedStream.resultJson?.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
-        usageByModel: claudeModelReceipts(parsedStream.resultJson?.modelUsage),
+        model: Object.keys(parseObject(parsedStream.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
+        usageByModel: claudeModelReceipts(parsedStream.modelUsage),
         billingType,
         costUsd: parsedStream.costUsd,
         errorMessage: `Timed out after ${timeoutSec}s`,
@@ -1091,8 +1110,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         usageBasis: "per_run",
         provider: "anthropic",
         biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-        model: Object.keys(parseObject(parsedStream.resultJson?.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
-        usageByModel: claudeModelReceipts(parsedStream.resultJson?.modelUsage),
+        model: Object.keys(parseObject(parsedStream.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
+        usageByModel: claudeModelReceipts(parsedStream.modelUsage),
         billingType,
         costUsd: parsedStream.costUsd,
         errorMessage: fallbackErrorMessage,
@@ -1271,14 +1290,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       errorMeta,
       usage,
-      usageByModel: claudeModelReceipts(parsed.modelUsage),
+      usageByModel: claudeModelReceipts(parsedStream.modelUsage ?? parsed.modelUsage),
       ...(usageBasis ? { usageBasis } : {}),
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: "anthropic",
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-      model: Object.keys(parseObject(parsed.modelUsage)).length > 1 ? "mixed" : parsedStream.model || asString(parsed.model, model),
+      model: Object.keys(parseObject(parsedStream.modelUsage ?? parsed.modelUsage)).length > 1 ? "mixed" : parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd,
       resultJson: mergedResultJson,

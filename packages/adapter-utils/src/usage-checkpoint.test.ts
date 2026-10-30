@@ -14,6 +14,37 @@ const createParser = () => {
 const event = JSON.stringify({ type: "usage", usage: { inputTokens: 2, costUsd: 0.25 }, text: "private content" });
 
 describe("usage checkpoint stream", () => {
+  it("retains counter-free assistant events as work-start markers", async () => {
+    const consume = vi.fn((_records: string) => null);
+    const log = createUsageCheckpointLog(vi.fn(), vi.fn(), consume);
+    await log("stdout", JSON.stringify({ type: "assistant", message: {
+      id: "first-message", content: [{ type: "text", text: "private content" }],
+    } }) + "\n");
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(consume.mock.calls[0][0])).toEqual({
+      type: "assistant", message: { id: "first-message" },
+    });
+  });
+
+  it("retains Claude's control-response accounting without its unrelated payload", async () => {
+    const consume = vi.fn((_records: string) => null);
+    const log = createUsageCheckpointLog(vi.fn(), vi.fn(), consume);
+    const accounting = { total_cost_usd: 0.5, model_usage: { "claude-model": {
+      inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 30, cacheCreationInputTokens: 40, costUSD: 0.5,
+    } } };
+    await log("stdout", JSON.stringify({ type: "control_response", response: {
+      subtype: "success", request_id: "paperclip-usage-baseline", response: {
+        session: { ...accounting, transcript: "private transcript", prompt: "private prompt" },
+        subscription_type: "private subscription", rate_limits: { detail: "private account" },
+      },
+    } }) + "\n");
+    const retained = consume.mock.calls[0][0];
+    expect(retained).not.toContain("private");
+    expect(JSON.parse(retained)).toMatchObject({ type: "control_response", response: {
+      subtype: "success", request_id: "paperclip-usage-baseline", response: { session: accounting },
+    } });
+  });
+
   it("redacts malformed counter text without making the counter absent", async () => {
     const consume = vi.fn((_records: string) => null);
     const log = createUsageCheckpointLog(vi.fn(), vi.fn(), consume);
