@@ -149,7 +149,7 @@ import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
 import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
 import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
 import { AgentAuditTab } from "./AgentAuditTab";
-import { AgentAvatar } from "../components/AgentAvatar";
+import { AgentDirectReports } from "./agent-detail/AgentDirectReports";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
 import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
@@ -1975,19 +1975,12 @@ export function AgentOverview({
                 </span>
               )}
             </div>
-            <div className="flex items-start gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="shrink-0 py-0.5 text-muted-foreground">Direct reports</span>
+            <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">Direct reports</span>
               {directReports.length === 0 ? (
                 <span className="text-foreground">None</span>
               ) : (
-                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                  {directReports.map((report) => (
-                    <Link key={report.id} to={agentDetailHref(agentRouteRef(report))} className="inline-flex items-center gap-0.5 text-foreground no-underline hover:underline">
-                      <AgentAvatar agent={report} size={24} />
-                      {report.name}
-                    </Link>
-                  ))}
-                </span>
+                <AgentDirectReports reports={directReports} />
               )}
             </div>
           </div>

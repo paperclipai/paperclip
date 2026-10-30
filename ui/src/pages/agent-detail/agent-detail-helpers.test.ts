@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fitReports } from "./AgentDirectReports";
 import { revisionSummary } from "./AgentHistoryDialog";
 import { checkExternalProfile } from "./InstructionsBundleSettings";
 import { countSince, formatWindowCount } from "./overview-counts";
@@ -54,5 +55,23 @@ describe("countSince", () => {
   it("applies the row filter", () => {
     const failed = rows([0.5, 1, 3]).map((row, index) => ({ ...row, status: index === 1 ? "failed" : "succeeded" }));
     expect(countSince(failed, now - 2 * day, 200, (row) => row.status === "failed")).toEqual({ count: 1, atLeast: false });
+  });
+});
+
+describe("fitReports", () => {
+  const widths = [106, 106, 56, 60, 106, 129, 116, 140];
+
+  it("shows every report when they fit in two lines", () => {
+    expect(fitReports(widths.slice(0, 4), 406, 16, 56)).toBe(4);
+    expect(fitReports(widths, 900, 16, 56)).toBe(8);
+  });
+
+  it("leaves room for the more button on the second line", () => {
+    expect(fitReports(widths, 406, 16, 56)).toBe(6);
+    expect(fitReports(widths, 202, 16, 56)).toBe(2);
+  });
+
+  it("shows every report before the width is known", () => {
+    expect(fitReports(widths, 0, 16, 56)).toBe(8);
   });
 });
