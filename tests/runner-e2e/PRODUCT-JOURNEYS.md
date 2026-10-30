@@ -36,8 +36,11 @@ never start a server or depend on a tenant filesystem.
 
 The question-resumption journey uses the same natural-language scenario, browser
 answer helper and behavioral grader as the classic `question-resume` suite. Native
-provider questions can stay in one run; semantic questions create one exactly bound
-continuation each. A target declares a three-run maximum and positive model allowance,
+provider questions can stay in one run; durable native questions create one exactly bound
+continuation each. Creation must have an applied semantic receipt or a completed native
+API mutation receipt with the original card, exact scope, form and idempotency key.
+An API receipt must retain its creation identity unchanged after the answer. A form or
+run count alone is never provenance. A target declares a three-run maximum and positive model allowance,
 and a passing receipt must contain one to three attributed native runs. Other journeys
 retain their exact run-count requirements. Both real board answers, no premature
 output, the sole document's agent/company/task ownership and its reloaded revision

@@ -28,7 +28,7 @@ import type { JourneyContext } from "./types.js";
 type Row = Record<string, any>;
 const context = { company: { id: "company" }, user: { id: "board" }, environmentId: "daytona",
   agent: { id: "agent", provider: "opencode", model: "model", runtimeMode: "native" } } as JourneyContext;
-function recording(paths: Array<"provider" | "semantic">) {
+function recording(paths: Array<"provider" | "semantic" | "api">) {
   const runs: Row[] = [], cards: Row[] = [], checkpoints: any[] = [];
   const createRun = (previous?: Row) => ({ id: `run-${runs.length}`, status: "running", runtimeMode: "native", companyId: "company", issueId: "task", agentId: "agent",
     contextSnapshot: { paperclipEnvironment: { id: "daytona" }, ...(previous ? { issueId: "task", sourceRunId: previous.sourceRunId,
@@ -42,12 +42,18 @@ function recording(paths: Array<"provider" | "semantic">) {
   for (const [index, path] of paths.entries()) {
     const run = runs.at(-1)!;
     const field = index === 0 ? { id: "choice", answerMode: "single_select", options: [{ id: "am", label: "Morning" }, { id: "pm", label: "Afternoon" }] } : { id: "reference", answerMode: "text" };
-    const request = `request-${index}`, semantic = path === "semantic";
+    const request = `request-${index}`, semantic = path !== "provider";
     const card: Row = { id: `question-${index}`, kind: "ask_user_questions", status: "pending", companyId: "company", issueId: "task", createdByAgentId: "agent", sourceRunId: run.id,
-      idempotencyKey: semantic ? `semantic-${index}` : `paperclip-runner-question:${run.id}:${request}`, continuationPolicy: semantic ? "wake_assignee" : "none",
+      idempotencyKey: semantic ? `semantic-${index}` : `paperclip-runner-question:${run.id}:${request}`, continuationPolicy: semantic ? "wake_assignee" : "none", createdByUserId: null,
       payload: { ...(semantic ? {} : { runtimeRequestId: request }), questionSet: { questions: [field] } } };
     cards.push(card);
-    if (semantic) { run.status = "succeeded"; run.resultJson.semanticToolReceipts[card.idempotencyKey] = { operationId: "request_human_input", result: { disposition: "applied", interaction: structuredClone(card) } }; }
+    if (semantic) {
+      run.status = "succeeded";
+      if (path === "api") run.resultJson.apiToolReceipts = { ["a".repeat(64)]: { state: "completed", digest: "b".repeat(64),
+        operationId: "POST /api/issues/{id}/interactions", result: { ok: true, status: 201,
+          operationId: "POST /api/issues/{id}/interactions", data: structuredClone(card) } } };
+      else run.resultJson.semanticToolReceipts[card.idempotencyKey] = { operationId: "request_human_input", result: { disposition: "applied", interaction: structuredClone(card) } };
+    }
     snapshot(index === 0 ? "initial" : "answered");
     card.status = "answered"; card.resolvedByUserId = "board";
     card.result = { answers: [{ questionId: field.id, optionIds: index === 0 ? ["pm"] : [], ...(index === 1 ? { otherText: "Use AMBERnonce." } : {}) }] };
@@ -59,7 +65,7 @@ function recording(paths: Array<"provider" | "semantic">) {
 const failures = (f: ReturnType<typeof recording>) => gradeClarificationEvidence(context, "task", "AMBERnonce", f.checkpoints, f.readback).filter(c => !c.passed);
 
 describe("attached clarification evidence", () => {
-  it.each([true, false])("reports API fallback without accepting it as native question evidence (choice=%s)", choice => {
+  it.each([true, false])("rejects an incomplete API receipt instead of inferring native question evidence (choice=%s)", choice => {
     const f = recording(["semantic", "semantic"]), point = f.checkpoints[choice ? 0 : 1];
     const question = point.interactions.find((i: Row) => i.status === "pending"), source = point.runs.at(-1);
     source.resultJson = { apiToolReceipts: { call: { state: "completed", operationId: "POST /api/issues/{id}/interactions",
@@ -76,25 +82,28 @@ describe("attached clarification evidence", () => {
     point.runs[0].resultJson.semanticToolReceipts[question.idempotencyKey].result.interaction.payload = structuredClone(question.payload);
     expect(clarificationQuestionFailure(point, question, true)).toBe("clarification_choice_form_invalid");
   });
-  it.each([["provider", "provider"], ["provider", "semantic"], ["semantic", "provider"], ["semantic", "semantic"]] as const)("accepts the real %s/%s paths with native binding and reload proof", (...paths) => {
+  it.each([["provider", "provider"], ["provider", "semantic"], ["semantic", "provider"], ["semantic", "semantic"],
+    ["api", "api"], ["api", "semantic"], ["semantic", "api"], ["provider", "api"], ["api", "provider"]] as const)("accepts the real %s/%s paths with native binding and reload proof", (...paths) => {
     expect(failures(recording([...paths]))).toEqual([]);
   });
   it.each(["foreign-user", "foreign-agent-document", "foreign-task-document", "lost-revision", "wrong-visible-answer", "changed-readback-body", "premature-document", "extra-child", "foreign-model", "foreign-environment", "missing-native-input", "duplicate-question", "wrong-answer"])("rejects a plausible false pass: %s", kind => {
-    const f = recording(["semantic", "semantic"]), first = f.checkpoints[0], final = f.checkpoints[2];
-    if (kind === "foreign-user") final.interactions[1].resolvedByUserId = "other-board";
-    if (kind === "foreign-agent-document") final.documents[0].updatedByAgentId = "other-agent";
-    if (kind === "foreign-task-document") final.documents[0].issueId = "other-task";
-    if (kind === "lost-revision") f.readback.revisionId = "old-revision";
-    if (kind === "wrong-visible-answer") f.readback.visibleBody = "Welcome to the morning meetup.";
-    if (kind === "changed-readback-body") f.readback.body += " changed";
-    if (kind === "premature-document") first.documents = [final.documents[0]];
-    if (kind === "extra-child") final.children.push({ id: "extra-child" });
-    if (kind === "foreign-model") final.runs[0].runnerProfileJson.nativeExecutionInput.provider.model = "other-model";
-    if (kind === "foreign-environment") final.runs[0].contextSnapshot.paperclipEnvironment.id = "local";
-    if (kind === "missing-native-input") delete final.runs[0].runnerProfileJson.nativeExecutionInput.task.prompt;
-    if (kind === "duplicate-question") final.interactions.push(structuredClone(final.interactions[1]));
-    if (kind === "wrong-answer") final.interactions[1].result.answers[0].otherText = "Use the old reference.";
-    expect(failures(f).length).toBeGreaterThan(0);
+    for (const path of ["semantic", "api"] as const) {
+      const f = recording([path, path]), first = f.checkpoints[0], final = f.checkpoints[2];
+      if (kind === "foreign-user") final.interactions[1].resolvedByUserId = "other-board";
+      if (kind === "foreign-agent-document") final.documents[0].updatedByAgentId = "other-agent";
+      if (kind === "foreign-task-document") final.documents[0].issueId = "other-task";
+      if (kind === "lost-revision") f.readback.revisionId = "old-revision";
+      if (kind === "wrong-visible-answer") f.readback.visibleBody = "Welcome to the morning meetup.";
+      if (kind === "changed-readback-body") f.readback.body += " changed";
+      if (kind === "premature-document") first.documents = [final.documents[0]];
+      if (kind === "extra-child") final.children.push({ id: "extra-child" });
+      if (kind === "foreign-model") final.runs[0].runnerProfileJson.nativeExecutionInput.provider.model = "other-model";
+      if (kind === "foreign-environment") final.runs[0].contextSnapshot.paperclipEnvironment.id = "local";
+      if (kind === "missing-native-input") delete final.runs[0].runnerProfileJson.nativeExecutionInput.task.prompt;
+      if (kind === "duplicate-question") final.interactions.push(structuredClone(final.interactions[1]));
+      if (kind === "wrong-answer") final.interactions[1].result.answers[0].otherText = "Use the old reference.";
+      expect(failures(f).length).toBeGreaterThan(0);
+    }
   });
   it("requires reload evidence even for a correct API document", () => {
     const f = recording(["provider", "provider"]);
