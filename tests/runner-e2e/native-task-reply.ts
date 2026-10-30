@@ -5,6 +5,7 @@ type Row = Record<string, any>;
 export interface TaskReplyObservation {
   body: string; anchor: string | null; settled: boolean; nativeFinal: boolean; visible: boolean;
 }
+export type BoundTaskFinalReply = Awaited<ReturnType<typeof readBoundTaskFinalReply>>;
 
 /** Native task replies can render from a saved turn before a completion comment
  * is projected. Respect an explicit presentation decision when one exists. */

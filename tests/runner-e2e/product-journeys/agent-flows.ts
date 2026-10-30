@@ -93,7 +93,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
     state.currentIssue.status === "done" && state.taskRuns.length === count && state.taskRuns.every(run => !active(run))
     && state.interactions.every(row => row.status !== "pending"), "agent_task_not_completed");
-  const finalReply = async (issue: Row, state: TaskState, marker: string) => {
+  const finalReply = async (issue: Row, state: TaskState, marker?: string) => {
     const runs = state.taskRuns.filter(run => run.status === "succeeded");
     if (!runs.length || runs.some(run => !Number.isFinite(Date.parse(run.finishedAt)))) throw new JourneyError("failed", "final_run_time_missing");
     const run = [...runs].sort((a, b) => Date.parse(a.finishedAt) - Date.parse(b.finishedAt)).at(-1)!;
@@ -189,12 +189,14 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
       check(`${phase}-decision-persisted`, final.interactions.some(row => row.id === decision.id && row.status === (decline ? "rejected" : "accepted")));
       check(`${phase}-service-call-count`, service.invocationCount() === callsBefore + (decline ? 0 : 1));
       if (decline) {
+        const nativeFinalReply = await finalReply(issue, final);
+        const refreshed = await read(issue);
         const connectionAfter = await context.api.get<Row>(`/api/tool-connections/${service.connectionId}`);
         const unchanged = (row: Row) => JSON.stringify({ id: row.id, companyId: row.companyId, status: row.status, enabled: row.enabled,
           installs: row.installs?.filter((install: Row) => install.targetType === "agent" && install.targetId === agent.id) });
         const checks = gradeConnectionGuidanceDecline({ caseId: "service-decline", decisionId: decision.id,
-          decisions: final.interactions as any, leadAgentId: agent.id, issueId: issue.id, replies: final.comments,
-          runs: final.taskRuns as any, marker: service.marker, calls: service.invocationCount() - callsBefore, sameConnections: unchanged(connectionBefore) === unchanged(connectionAfter) });
+          decisions: refreshed.interactions as any, leadAgentId: agent.id, issueId: issue.id, replies: refreshed.comments, nativeFinalReply,
+          runs: refreshed.taskRuns as any, marker: service.marker, calls: service.invocationCount() - callsBefore, sameConnections: unchanged(connectionBefore) === unchanged(connectionAfter) });
         await retain("service-decline-grade.json", checks);
         check("decline-truthful-explanation", checks.every(row => row.passed));
       } else {
