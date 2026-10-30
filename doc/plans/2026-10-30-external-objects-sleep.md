@@ -18,6 +18,14 @@ ready plugin with `external.objects.read`, a matching provider/object declaratio
 and no company setting that disables it. Built-in resolvers remain available
 independently of optional plugin support.
 
+A plugin result carries its selected plugin ID inside the host owner. Persistence
+rechecks that exact plugin's readiness, read capability, object declaration and
+same-company enabled setting in the result update. Another available resolver
+cannot authorize an obsolete plugin response. A rejected response releases only
+its own claim; the due row remains for a fresh allowed resolver. Plugin RPC
+payloads and public result shapes do not contain this host selection context.
+
+
 Terminal objects are passive. The existing exception remains: GitHub
 `not_found` snapshots without `data.probeVerified=true` need a repository-visibility
 probe before their terminal verdict is definitive. A null deadline retains its
@@ -94,7 +102,7 @@ reactivation in the tested process; it does not establish Cloud alarm coverage,
 host/database suspension or deployed savings.
 
 
-## Host cancellation and explicit legacy entry points
+## Host cancellation and registered ownership
 
 The resolver contract accepts an optional host `AbortSignal`. The worker passes
 its coordinator signal through refresh to the resolver. This reuses the narrow

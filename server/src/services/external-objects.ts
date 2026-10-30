@@ -346,7 +346,7 @@ async function resolveViaPluginProvider(
   db: Db,
   pluginWorkerManager: PluginWorkerManager | undefined,
   object: ExternalObjectRecord,
-): Promise<PluginExternalObjectResolveResult | null> {
+): Promise<{ pluginId: string; result: PluginExternalObjectResolveResult } | null> {
   if (!pluginWorkerManager) return null;
   const providers = await readyObjectReferencePlugins(db, object.companyId);
   for (const provider of providers) {
@@ -354,23 +354,27 @@ async function resolveViaPluginProvider(
     if (!manifest.capabilities.includes("external.objects.read")) continue;
     if (!manifestProvidesObject(manifest, object)) continue;
     try {
-      return await pluginWorkerManager.call(provider.id, "resolveExternalObject", {
+      const result = await pluginWorkerManager.call(provider.id, "resolveExternalObject", {
         companyId: object.companyId,
         providerKey: object.providerKey,
         objectType: object.objectType,
         externalId: object.externalId,
         object: objectSnapshot(object),
       });
+      return { pluginId: provider.id, result };
     } catch (err) {
       logger.warn(
         { err, pluginId: provider.id, pluginKey: provider.pluginKey, objectId: object.id },
         "plugin external object resolver failed",
       );
       return {
-        ok: false,
-        liveness: "unreachable",
-        errorCode: "plugin_resolver_failed",
-        errorMessage: err instanceof Error ? err.message : String(err),
+        pluginId: provider.id,
+        result: {
+          ok: false,
+          liveness: "unreachable",
+          errorCode: "plugin_resolver_failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        },
       };
     }
   }
@@ -402,12 +406,9 @@ export function externalObjectService(
   ];
   const resolverRegistry = createExternalObjectResolverRegistry(resolvers);
 
-  function automaticRefreshWhere(database: Db = db) {
-    const supported = resolvers.map(resolver => and(
-      eq(externalObjects.providerKey, resolver.providerKey),
-      resolver.objectType ? eq(externalObjects.objectType, resolver.objectType) : undefined,
-    )!);
-    if (opts.pluginWorkerManager) supported.push(exists(database.select({ id: plugins.id }).from(plugins).where(and(
+  function pluginRefreshWhere(database: Db, selectedPluginId?: string) {
+    return exists(database.select({ id: plugins.id }).from(plugins).where(and(
+      selectedPluginId ? eq(plugins.id, selectedPluginId) : undefined,
       eq(plugins.status, "ready"),
       sql`${plugins.manifestJson}->'capabilities' ? 'external.objects.read'`,
       sql`exists (select 1 from jsonb_array_elements(coalesce(${plugins.manifestJson}->'objectReferences', '[]'::jsonb)) as reference
@@ -418,7 +419,15 @@ export function externalObjectService(
         eq(pluginCompanySettings.companyId, externalObjects.companyId),
         eq(pluginCompanySettings.enabled, false),
       )))),
-    ))));
+    )));
+  }
+
+  function automaticRefreshWhere(database: Db = db) {
+    const supported = resolvers.map(resolver => and(
+      eq(externalObjects.providerKey, resolver.providerKey),
+      resolver.objectType ? eq(externalObjects.objectType, resolver.objectType) : undefined,
+    )!);
+    if (opts.pluginWorkerManager) supported.push(pluginRefreshWhere(database));
     return and(
       refreshableObjectWhere(), isNotNull(externalObjects.nextRefreshAt),
       supported.length ? or(...supported) : sql`false`,
@@ -863,12 +872,14 @@ export function externalObjectService(
   }
 
   async function persistRefresh(object: ExternalObjectRecord, token: string,
-    patch: Partial<typeof externalObjects.$inferInsert>, scheduled = false) {
+    patch: Partial<typeof externalObjects.$inferInsert>, scheduled = false, selectedPluginId?: string) {
     return db.transaction(async tx => {
       await notifyExternalObjectRefresh(tx, object.companyId, object.id);
       const rows = await tx.update(externalObjects).set(patch)
-        .where(and(refreshOwnerWhere(object, token), scheduled ? automaticRefreshWhere(tx as unknown as Db) : undefined)).returning();
-      if (scheduled && rows.length === 0) await tx.update(externalObjects)
+        .where(and(refreshOwnerWhere(object, token),
+          scheduled ? automaticRefreshWhere(tx as unknown as Db) : undefined,
+          selectedPluginId ? pluginRefreshWhere(tx as unknown as Db, selectedPluginId) : undefined)).returning();
+      if ((scheduled || selectedPluginId) && rows.length === 0) await tx.update(externalObjects)
         .set({ refreshStartedAt: null, refreshToken: null }).where(refreshOwnerWhere(object, token));
       return rows;
     });
@@ -881,9 +892,9 @@ export function externalObjectService(
     refreshToken: string,
   ) {
     input.signal?.throwIfAborted();
-    const pluginResult = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object), input.signal);
-    const resolver = pluginResult ? null : resolverRegistry.find(object);
-    if (!pluginResult && !resolver) {
+    const pluginResolution = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object), input.signal);
+    const resolver = pluginResolution ? null : resolverRegistry.find(object);
+    if (!pluginResolution && !resolver) {
       const [updated] = await persistRefresh(object, refreshToken, {
           liveness: object.isTerminal ? object.liveness : visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
           nextRefreshAt: addSeconds(now, DEFAULT_RETRY_AFTER_SECONDS),
@@ -895,7 +906,7 @@ export function externalObjectService(
       return { object: toObjectPayload(updated ?? object, now), refreshed: false, reason: "no_resolver" as const };
     }
 
-    const result = pluginResult ?? await observeRefreshCancellation(
+    const result = pluginResolution?.result ?? await observeRefreshCancellation(
       resolver!.resolve({ companyId: object.companyId, object, signal: input.signal }), input.signal);
     input.signal?.throwIfAborted();
     if (!result.ok) {
@@ -913,7 +924,7 @@ export function externalObjectService(
           refreshStartedAt: null,
           refreshToken: null,
           updatedAt: now,
-        }, input.scheduled);
+        }, input.scheduled, pluginResolution?.pluginId);
       if (!updated) return refreshSupersededResult(object, now);
       publishLiveEvent({
         companyId: object.companyId,
@@ -950,7 +961,7 @@ export function externalObjectService(
     const [updated] = await persistRefresh(object, refreshToken, {
           ...patch,
           lastChangedAt: objectChanged(object, { ...object, ...patch }) ? now : object.lastChangedAt,
-        }, input.scheduled);
+        }, input.scheduled, pluginResolution?.pluginId);
     if (!updated) return refreshSupersededResult(object, now);
     const next = updated ?? object;
     if (objectChanged(object, next) && input.actor) {

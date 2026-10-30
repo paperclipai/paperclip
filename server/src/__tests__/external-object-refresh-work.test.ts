@@ -257,6 +257,60 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     expect(calls).toHaveBeenCalledOnce();
   });
 
+  it.each(["company setting", "status", "uninstall", "manifest", "other company"] as const)(
+    "revalidates the selected plugin after %s changes even while the built-in fallback remains available", async change => {
+      clock(); const registry = pluginRegistryService(db);
+      const manifest: PaperclipPluginManifestV1 = {
+        id: `paperclip.selected-${randomUUID()}`, apiVersion: 1, version: "1.0.0", displayName: "Selected provider",
+        description: "Selected resolver fixture", author: "Paperclip", categories: ["connector"],
+        capabilities: ["external.objects.detect", "external.objects.read"], entrypoints: { worker: "worker.js" },
+        objectReferences: [{ providerKey: "github", displayName: "GitHub", objectTypes: ["pull_request"], urlPatterns: ["https://github.com/:owner/:repo/pull/:id"] }],
+      };
+      const plugin = await registry.install({ packageName: "selected-provider-fixture" }, manifest);
+      await registry.updateStatus(plugin!.id, { status: "ready" });
+      let finishPlugin!: (result: ExternalObjectResolveResult) => void;
+      const pluginResult = new Promise<ExternalObjectResolveResult>(resolve => { finishPlugin = resolve; });
+      let selected = false;
+      const calls = vi.fn(async (_id: string, method: string) => {
+        if (method === "detectExternalObjects") return { detections: [] };
+        selected = true; return pluginResult;
+      });
+      let finishFallback!: () => void;
+      const fallbackResult = new Promise<void>(resolve => { finishFallback = resolve; });
+      const fallback = vi.fn(async () => {
+        await fallbackResult;
+        return new Response(JSON.stringify({ state: "closed", merged: true, title: "Allowed fallback" }), { status: 200 });
+      });
+      const svc = externalObjectService(db, { pluginWorkerManager: { call: calls } as unknown as PluginWorkerManager,
+        github: { fetch: fallback, credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }) } });
+      try {
+        await start(svc); const f = await fixture();
+        await db.update(issues).set({ description: "https://github.com/acme/app/pull/42" }).where(eq(issues.id, f.issueId));
+        await svc.syncIssue(f.issueId); await settle(() => selected);
+        if (change === "company setting") await registry.upsertCompanySettings(plugin!.id, f.companyId, { enabled: false, settingsJson: {} });
+        else if (change === "status") await registry.updateStatus(plugin!.id, { status: "error" });
+        else if (change === "uninstall") await registry.uninstall(plugin!.id, true);
+        else if (change === "manifest") await registry.update(plugin!.id, { manifest: { ...manifest, capabilities: [], objectReferences: [] } });
+        else {
+          const other = await fixture();
+          await registry.upsertCompanySettings(plugin!.id, other.companyId, { enabled: false, settingsJson: {} });
+        }
+        finishPlugin({ ok: true, snapshot: { statusKey: "plugin_result", statusCategory: "succeeded", statusTone: "success", isTerminal: true } });
+        if (change === "other company") {
+          await settle(async () => (await row(f.companyId))?.statusKey === "plugin_result"); await quiet();
+          expect(fallback).not.toHaveBeenCalled();
+        } else {
+          await settle(async () => fallback.mock.calls.length > 0 || Boolean((await row(f.companyId))?.lastResolvedAt));
+          const beforeFallback = await row(f.companyId);
+          expect(beforeFallback.isTerminal).toBe(false); expect(beforeFallback.statusKey).toBeNull(); expect(beforeFallback.lastResolvedAt).toBeNull();
+          expect(fallback).toHaveBeenCalledOnce();
+          finishFallback();
+          await settle(async () => (await row(f.companyId))?.statusKey === "merged"); await quiet();
+          expect((await row(f.companyId)).displayTitle).toBe("acme/app#42: Allowed fallback");
+        }
+      } finally { finishPlugin(terminal); finishFallback(); }
+    });
+
   it("reactivates refresh after ordinary budget pause and budget raise", async () => {
     clock(); const svc = service(); provider.mockResolvedValue(active); await start(svc);
     const f = await fixture(); await svc.syncIssue(f.issueId);
