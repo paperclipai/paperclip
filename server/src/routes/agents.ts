@@ -32,6 +32,7 @@ import {
   ADAPTER_AUTH_MISSING_CHECK_CODE,
   aiConnectionBindingSchema,
   aiConnectionMetadataSchema,
+  isAiConnectionSelfAuthenticatedAdapter,
   aiRoutingModel,
   aiRuntimeConnectionBindingSchema,
   type AiConnectionBinding,
@@ -2175,6 +2176,15 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    // Self-authenticated adapters authenticate in their own adapter
+    // configuration. A binding stored for one is never installed, so the first
+    // run fails with "connection not permitted" (Greptile P1). Strip it instead
+    // of persisting it, for both explicit create input and inherited hire
+    // bindings (defaultAiConnectionForHire already refuses them).
+    if (isAiConnectionSelfAuthenticatedAdapter(adapterType)) {
+      delete normalized.aiConnection;
+      return normalized;
+    }
     if (normalized.aiConnection) return normalized;
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -3260,7 +3270,9 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
-      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
+      const aiBinding = requestedBinding && requestedBinding.mode !== "router" && !isAiConnectionSelfAuthenticatedAdapter(type)
+        ? requestedBinding
+        : undefined;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
@@ -3273,7 +3285,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      const poolBinding = isAiConnectionSelfAuthenticatedAdapter(type) ? undefined : requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
         // Omission tests the saved selection. Explicit null tests a prospective
@@ -4594,7 +4606,7 @@ export function agentRoutes(
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
-      const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
+      const managedHireConnection = managedHireBinding && !isAiConnectionSelfAuthenticatedAdapter(normalizedHireInput.adapterType) ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
         {
@@ -4873,7 +4885,7 @@ export function agentRoutes(
     });
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
-    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const managedConnection = managedBinding && !setupId && !isAiConnectionSelfAuthenticatedAdapter(createInput.adapterType) ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
     const createdAgent = await svcLifecycle.requestHire(
       companyId,
       {
@@ -5642,25 +5654,41 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
-      && !isAgentSetupDraft(existing)) {
-      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
-      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
-        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
-          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
-        requestedRuntimeConfig.aiConnection = existingBinding;
+    if (isAiConnectionSelfAuthenticatedAdapter(requestedAdapterType)) {
+      // Self-authenticated adapters never run a managed connection, so an
+      // explicit binding must not be persisted and a stale one persisted by an
+      // older version must be purged instead of being re-validated (Greptile
+      // P1): it would be reported as an uninstalled binding on a later
+      // managed-adapter switch.
+      if (requestedRuntimeConfig) delete requestedRuntimeConfig.aiConnection;
+      else if (existing.runtimeConfig.aiConnection) {
+        requestedRuntimeConfig = { ...existing.runtimeConfig };
+        delete requestedRuntimeConfig.aiConnection;
       }
     }
-    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
-      && !isAgentSetupDraft(existing)
-      && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
-      && nextAiConfig.acpxAgent === "copilot"
-      && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
-      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
-        aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+    if (!isAiConnectionSelfAuthenticatedAdapter(requestedAdapterType)) {
+      const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+      if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+        && !isAgentSetupDraft(existing)) {
+        const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+        if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
+          && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
+            requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+          requestedRuntimeConfig.aiConnection = existingBinding;
+        }
+      }
+      if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+        && !isAgentSetupDraft(existing)
+        && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
+        && nextAiConfig.acpxAgent === "copilot"
+        && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
+        requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+          aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+      }
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+    const nextAiBinding = isAiConnectionSelfAuthenticatedAdapter(requestedAdapterType)
+      ? undefined
+      : aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
       const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);

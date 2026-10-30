@@ -68,6 +68,33 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
 ]);
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
+
+/**
+ * Adapters that own their provider credentials inside their own adapter
+ * configuration (remote gateways and local CLIs with their own login). They
+ * never inherit, validate, install or run a managed AI connection.
+ */
+const SELF_AUTHENTICATED_ADAPTERS = new Set([
+  "cursor_cloud",
+  "hermes_gateway",
+  "kimi_local",
+  "cursor",
+  "openclaw_gateway",
+]);
+
+/**
+ * Harnesses Paperclip can drive with a managed connection: every adapter
+ * referenced by AI_CONNECTION_CAPABILITIES plus the fixed-binding harness list
+ * in isAiConnectionCompatible below. Keep the two sets disjoint.
+ */
+export function isAiConnectionManagedAdapter(adapterType: string): boolean {
+  return adapterType === "paperclip_runner" ||
+    ["claude_local", "codex_local", "opencode_local", "grok_local", "gemini_local", "hermes_local", "pi_local"].includes(adapterType);
+}
+
+export function isAiConnectionSelfAuthenticatedAdapter(adapterType: string): boolean {
+  return SELF_AUTHENTICATED_ADAPTERS.has(adapterType);
+}
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
 /** Existing integrations only. This table describes compatibility, never routing. */
@@ -126,13 +153,22 @@ export function isAiConnectionCompatible(
   runnerProvider?: unknown,
   acpxAgent?: unknown,
 ): boolean {
-  adapterType = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  const harness = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
   // Antigravity uses its own Google runtime sign-in or a Gemini API key.
   // Tool OAuth and API-compatible endpoints cannot authenticate this harness.
-  if (adapterType === "antigravity_runtime") return requirement.provider === "google"
+  if (harness === "antigravity_runtime") return requirement.provider === "google"
     && (requirement.method === "api_key" || requirement.method === "subscription")
     && !("routing" in requirement && requirement.routing);
-  if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
+  // Routing is a harness capability. Evaluate it before any adapter-family
+  // decision so a routed requirement stays rejected on harnesses that do not
+  // support routing, self-authenticated or not.
+  if ("routing" in requirement && requirement.routing)
+    return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, harness);
+  // Self-authenticated and unknown adapters never run a managed connection, so
+  // no managed binding is compatible with them. Callers that skip validation
+  // for self-authenticated adapters do so explicitly.
+  if (!isAiConnectionManagedAdapter(adapterType)) return false;
+  adapterType = harness;
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
   if (adapterType === "pi_local") return (requirement.method === "api_key" || ("mode" in requirement && requirement.mode === "responsible_user"))

@@ -23,6 +23,10 @@ describe("AI authentication failure recovery", () => {
     expect(aiBindingForAuthRecovery("opencode_local", { model: "anthropic/claude" })).toBeUndefined();
     expect(aiBindingForAuthRecovery("paperclip_runner", { provider: "acpx", acpxAgent: "custom" })).toBeUndefined();
   });
+  it.each(["kimi_local", "hermes_gateway", "openclaw_gateway", "cursor", "cursor_cloud"])("never offers a managed account to self-authenticated %s", (adapter) => {
+    expect(aiBindingForAuthRecovery(adapter, {}, { errorCode: "kimi_auth_required" } as never)).toBeUndefined();
+    expect(aiBindingForAuthRecovery(adapter, {})).toBeUndefined();
+  });
   it("offers Google's supported API-key method for Gemini recovery", () => {
     expect(aiBindingForAuthRecovery("gemini_local", {})).toEqual({ provider: "google", method: "api_key", mode: "responsible_user" });
   });

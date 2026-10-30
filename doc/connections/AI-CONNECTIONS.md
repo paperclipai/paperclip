@@ -59,6 +59,16 @@ the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
+Self-authenticated adapters — `hermes_gateway`, `openclaw_gateway`,
+`cursor_cloud`, `cursor`, and `kimi_local` — own their provider
+login inside the adapter configuration. They never inherit, validate, install,
+or run a managed AI connection: an explicit `runtimeConfig.aiConnection` for
+such an agent is dropped on create, hire, and update, a row persisted by an
+older release is purged on the next update and ignored by the heartbeat, and
+switching the agent to a managed harness re-validates the binding before the
+agent runs. The switch does not install a connection: the account must already
+be installed for the agent (or the company), otherwise the switch is refused.
+
 Agent account choices and legacy-adoption confirmations show the sign-in method,
 personal or company-shared scope, and available account or owner identity beside
 the connection name. Accounts with the same provider name can be distinguished
