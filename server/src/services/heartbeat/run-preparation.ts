@@ -2601,11 +2601,16 @@ export async function buildPaperclipWakePayload(input: {
         includeForAnnotationDelta: annotationDeltas.length > 0,
       })
     : null;
+  const continuation = parseObject(input.contextSnapshot.executionContinuation);
+  const continuationCoverage = parseObject(continuation.coverage);
+  const continuationTruncated =
+    continuationCoverage.kind === "truncated_task_history";
   const payloadTruncated =
     truncated ||
     issueDescriptionTruncated ||
     planReviewContext?.truncated === true ||
-    documentReviewContext?.truncated === true;
+    documentReviewContext?.truncated === true ||
+    continuationTruncated;
   const recoveryActionId = readNonEmptyString(
     input.contextSnapshot.recoveryActionId,
   );

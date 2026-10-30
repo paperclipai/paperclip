@@ -18,6 +18,18 @@ import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
+import {
+  boundExecutionContinuationEnvelope,
+  omitDeletedContinuationMessages,
+} from "./execution-continuation-budget.js";
+
+export {
+  MAX_EXECUTION_CONTINUATION_JSON_BYTES,
+  MAX_EXECUTION_CONTINUATION_OBJECTIVE_CHARS,
+  boundExecutionContinuationEnvelope,
+  capExecutionContinuationObjective,
+  omitDeletedContinuationMessages,
+} from "./execution-continuation-budget.js";
 
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
@@ -491,9 +503,22 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
-  return {
+  const liveMessages = omitDeletedContinuationMessages(messages);
+  const liveResumeMessages = resumeDelta
+    ? omitDeletedContinuationMessages(resumeDelta.messages)
+    : undefined;
+  const liveResumeDelta = liveResumeMessages
+    ? { ...resumeDelta!, messages: liveResumeMessages.messages }
+    : undefined;
+  const omittedDeletedIds = Array.from(
+    new Set([
+      ...liveMessages.omittedDeletedIds,
+      ...(liveResumeMessages?.omittedDeletedIds ?? []),
+    ]),
+  );
+  const envelope: ExecutionContinuationEnvelope = {
     ...(interruptedRunId ? { interruptedRunId } : {}),
-    ...(resumeDelta ? { resumeDelta } : {}),
+    ...(liveResumeDelta ? { resumeDelta: liveResumeDelta } : {}),
     recoveryOutcomes: reconciliations
       .filter((row) => row.evidence.executionReconciliation)
       .map((row) => ({
@@ -511,7 +536,7 @@ export async function buildExecutionContinuation(input: {
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
     objectiveSource,
-    messages,
+    messages: liveMessages.messages,
     humanResponses: interactions.flatMap(row => {
       const response = projectHumanInteractionResponse(row);
       return response ? [response] : [];
@@ -536,8 +561,10 @@ export async function buildExecutionContinuation(input: {
       .map((row) => row.id),
     coverage: {
       kind: "full_task_history",
-      throughCommentId: messages.at(-1)?.id ?? null,
+      throughCommentId: liveMessages.messages.at(-1)?.id ?? null,
       summaryThroughCommentId: null,
+      ...(omittedDeletedIds.length > 0 ? { omittedDeletedIds } : {}),
     },
   };
+  return boundExecutionContinuationEnvelope(envelope, originCommentIds);
 }
