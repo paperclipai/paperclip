@@ -212,6 +212,7 @@ export function CoordinatorTasks() {
     {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
+        collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}

@@ -59,3 +59,25 @@ test("Needs attention reads task membership without downloading decision cards",
   expect(reads.filter(url => url.pathname.endsWith("/attention/summary"))).toEqual([]);
   expect(reads.filter(url => url.pathname.endsWith("/attention") && url.searchParams.get("all") === "true")).toEqual([]);
 });
+
+test("older pages and Back keep revealed task rows and the reading position", async ({ page }) => {
+  await coordinatorPreference(page);
+  await page.goto(`/${fixture.company.issuePrefix}/issues`);
+  const rows = page.locator('[data-slot="task-row"][data-issue-id]');
+  await expect(rows).toHaveCount(100);
+  const loadPage = page.getByRole("button", { name: "Load more tasks", exact: true });
+  await loadPage.scrollIntoViewIfNeeded();
+  await expect(rows).toHaveCount(200);
+  const retained = await rows.last().elementHandle();
+  await loadPage.click();
+  await expect(rows).toHaveCount(220);
+  expect(await retained!.evaluate(node => node.isConnected)).toBe(true);
+  await rows.last().scrollIntoViewIfNeeded();
+  const before = await rows.last().boundingBox();
+  await rows.last().locator("[data-inbox-issue-link]").click();
+  await expect(page.getByTestId("issue-detail-header")).toBeVisible();
+  await page.goBack();
+  await expect(rows).toHaveCount(220);
+  const after = await rows.last().boundingBox();
+  expect(Math.abs(before!.y - after!.y)).toBeLessThan(2);
+});
