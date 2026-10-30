@@ -4288,7 +4288,7 @@ describe("sandbox git-bundle export transport", () => {
     expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
   });
 
-  it.each([[false, false], [true, false], [false, true]])("retries the native full bundle with concurrent host work %s and oversized transfer %s", async (concurrentHostCommit, oversizedTransfer) => {
+  it.each([[false, false, false], [true, false, false], [false, true, false], [false, false, true]])("restores native bundles with concurrent work %s, oversized transfer %s, oversized source %s", async (concurrentHostCommit, oversizedTransfer, oversizedSource) => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
     cleanupDirs.push(rootDir);
@@ -4324,10 +4324,20 @@ describe("sandbox git-bundle export transport", () => {
         return read(remotePath, options);
       };
     }
+    let sourceCapChecks = 0;
+    if (oversizedSource) {
+      const run = client.run.bind(client);
+      client.run = async (command, options) => {
+        if (command.includes("git-shallow.txt") && command.includes("wc -c")) sourceCapChecks++;
+        return run(command, options);
+      };
+    }
     const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(gitSpec(remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
 
     await commitInSandbox(remoteWorkspaceDir);
     const sandboxHead = await git(remoteWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    if (oversizedSource) await writeFile(path.join(remoteWorkspaceDir, ".git", "shallow"), `${sandboxHead}\n`.repeat(2000));
 
     // The host drops below the staged base commit and prunes it. The delta
     // bundle names that boundary commit as a prerequisite the host no longer
@@ -4343,6 +4353,13 @@ describe("sandbox git-bundle export transport", () => {
     await git(localWorkspaceDir, ["gc", "--prune=now"]);
     await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
 
+    if (oversizedSource) {
+      await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "WORKSPACE_RESTORE_INVALID_GIT_METADATA" });
+      expect(sourceCapChecks).toBe(1);
+      expect(capture.readFilePaths.some(p => p.endsWith("git-shallow.txt"))).toBe(false);
+      expect(await git(localWorkspaceDir, ["rev-parse", "HEAD"])).toBe(hostHead);
+      return;
+    }
     if (oversizedTransfer) {
       await expect(prepared.restoreWorkspace()).rejects.toThrow("byte limit");
       expect(shallowProgressCalls).toBe(1);

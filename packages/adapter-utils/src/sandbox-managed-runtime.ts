@@ -14,6 +14,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   buildRemoteGitDeltaBundleScript,
+  GIT_SHALLOW_METADATA_EXIT_CODE,
   GIT_SHALLOW_MAX_BYTES,
   GitShallowMetadataError,
   isMissingGitPrerequisiteError,
@@ -2053,18 +2054,28 @@ export async function prepareSandboxManagedRuntime(input: {
                   // a full, self-contained bundle from the still-live sandbox rather
                   // than discard the completed run.
                   const exportAndImport = async (forceFullBundle: boolean): Promise<string> => withWorkspaceRestoreStep("git_export", async () => {
-                    await input.client.run(
-                      `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
-                        remoteDir: workspaceRemoteDir,
-                        baseSha: gitSnapshot.headCommit,
-                        exportRef,
-                        bundlePath: remoteGitBundle,
-                        statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
-                        forceFullBundle,
-                        shallowPath: forceFullBundle ? remoteShallowPath : undefined,
-                      }))}`,
-                      { timeoutMs: input.spec.timeoutMs },
-                    );
+                    try {
+                      await input.client.run(
+                        `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
+                          remoteDir: workspaceRemoteDir,
+                          baseSha: gitSnapshot.headCommit,
+                          exportRef,
+                          bundlePath: remoteGitBundle,
+                          statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
+                          forceFullBundle,
+                          shallowPath: forceFullBundle ? remoteShallowPath : undefined,
+                        }))}`,
+                        { timeoutMs: input.spec.timeoutMs },
+                      );
+                    } catch (error) {
+                      // Restore the owned producer refusal across clients that
+                      // expose process status rather than the typed host error.
+                      const status = error as { exitCode?: unknown; code?: unknown; timedOut?: unknown } | null;
+                      if (status?.timedOut !== true && (status?.exitCode === GIT_SHALLOW_METADATA_EXIT_CODE
+                        || status?.code === GIT_SHALLOW_METADATA_EXIT_CODE))
+                        throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (> ${GIT_SHALLOW_MAX_BYTES})`);
+                      throw error;
+                    }
                     const gitExport = makeTransferProgress(
                       restoreSink,
                       "Exporting git history",

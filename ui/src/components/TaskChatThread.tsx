@@ -1831,7 +1831,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             runId: source.status === "cancelled" ? undefined : source.id,
             ...(branchUnavailable || aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
-              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
+              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive"
+                && meta?.resultJson?.workspaceRestoreFailure !== "restore_invalid_metadata",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,

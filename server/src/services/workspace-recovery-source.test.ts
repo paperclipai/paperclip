@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
+import { createHeartbeatRunState } from "./heartbeat/run-state.js";
+import { activityService } from "./activity.js";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -75,6 +78,36 @@ describe("workspace source verification diagnostics", () => {
       activity: await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId)),
     };
   }
+
+  it.each(WORKSPACE_RESTORE_FAILURE_CODES)("preserves %s through both run API projections", async code => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: code, opaque: randomBytes(100_000).toString("hex"),
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [runs, activity] = await Promise.all([
+      createHeartbeatRunState(db).getRun(f.runId),
+      activityService(db).runsForIssue(f.companyId, f.issueId),
+    ]);
+    expect(runs?.resultJson?.opaque).toBeUndefined();
+    expect({ run: runs?.resultJson?.workspaceRestoreFailure, activity: activity[0].resultJson?.workspaceRestoreFailure })
+      .toEqual({ run: code, activity: code });
+  });
+
+  it("keeps a cancelled metadata-repair hold out of the preservation index while retaining ordinary work", async () => {
+    const f = await seed();
+    const [index] = await db.execute(sql`select pg_get_expr(indpred, indrelid) as predicate
+      from pg_index where indexrelid = 'heartbeat_runs_cancelled_workspace_preservation_idx'::regclass`);
+    await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+      nativeCancellation: { dispatchState: "acknowledged" }, workspaceRestoreFailure: "restore_invalid_metadata",
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const candidates = () => db.execute(sql`select id from heartbeat_runs where id = ${f.runId}
+      and ${sql.raw(String(index.predicate))}`);
+    expect(await candidates()).toHaveLength(0);
+    await db.update(heartbeatRuns).set({ resultJson: { nativeCancellation: { dispatchState: "acknowledged" } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await candidates()).toHaveLength(1);
+  });
 
   it.each(["lease_policy_not_retained", "source_lease_not_bound"])("identifies the rejected contract: %s", async reason => {
     const f = await seed();

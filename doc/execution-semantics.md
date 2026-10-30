@@ -722,6 +722,10 @@ has a separate 15-second budget; cloning, unpacking and import share 60 seconds
 without charging probe time. Oversized or malformed metadata fails before import
 with a distinct non-retryable metadata classification. It requires file recovery
 and never uses the unsafe-archive omission path to complete an accepted result.
+The sandbox producer uses a dedicated exit status which the command client retains
+and the export owner converts back to the typed metadata error. Bounded API
+projections and cancelled-preservation selection use the shared failure allowlist;
+task chat retains its recovery notice without offering another provider turn.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the

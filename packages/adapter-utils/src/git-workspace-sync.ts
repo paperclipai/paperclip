@@ -689,9 +689,12 @@ export async function deleteLocalGitRef(input: {
   }).catch(() => undefined);
 }
 
+export const GIT_SHALLOW_METADATA_EXIT_CODE = 47;
+export const GIT_SHALLOW_METADATA_ERROR_CODE = "WORKSPACE_RESTORE_INVALID_GIT_METADATA";
+
 /** Invalid restore metadata is an integrity rejection, not a dropped transfer. */
 export class GitShallowMetadataError extends Error {
-  readonly code = "WORKSPACE_RESTORE_INVALID_GIT_METADATA";
+  readonly code = GIT_SHALLOW_METADATA_ERROR_CODE;
 }
 
 export const GIT_SHALLOW_MAX_BYTES = 64 * 1024;
@@ -864,7 +867,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
       `if [ -f "$shallow_file" ]; then`,
       `  dd if="$shallow_file" of=${shellQuote(input.shallowPath)} bs=${GIT_SHALLOW_MAX_BYTES + 1} count=1 2>/dev/null`,
       `else : > ${shellQuote(input.shallowPath)}; fi`,
-      `[ "$(wc -c < ${shellQuote(input.shallowPath)})" -le ${GIT_SHALLOW_MAX_BYTES} ] || { printf '%s\\n' 'Git shallow metadata exceeds its byte limit' >&2; exit 1; }`,
+      `[ "$(wc -c < ${shellQuote(input.shallowPath)})" -le ${GIT_SHALLOW_MAX_BYTES} ] || { printf '%s\\n' 'Git shallow metadata exceeds its byte limit' >&2; exit ${GIT_SHALLOW_METADATA_EXIT_CODE}; }`,
     ] : []),
     // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
     // baseSha as a prerequisite the importer (host) must already hold. That

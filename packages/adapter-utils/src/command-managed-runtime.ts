@@ -189,7 +189,9 @@ function formatFailedCommandOutput(result: RunProcessResult): string {
 function requireSuccessfulResult(result: RunProcessResult, action: string): void {
   if (result.exitCode === 0 && !result.timedOut) return;
   const detail = formatFailedCommandOutput(result);
-  throw new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`);
+  throw Object.assign(new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`), {
+    exitCode: result.exitCode, timedOut: result.timedOut,
+  });
 }
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {

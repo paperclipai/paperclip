@@ -404,7 +404,11 @@ the exact accepted result and completion contract; reject a rejected or unselect
 result, another allocation owner, and an active host writer. Verify no provider
 turn or wake is created, then finalize the original result once. Reject malformed
 or oversized Git metadata through native finalization: the run must fail and
-retain its file-recovery barrier, rather than successfully omitting the export. These database
+retain its file-recovery barrier, rather than successfully omitting the export.
+Exercise both an oversized sender file and an oversized transfer report. Verify
+one rejected export, no payload read after rejection, and unchanged host files.
+Reload a large-result run and its activity: the failure code and task recovery
+notice remain visible, and metadata repair offers no new provider turn. These database
 and filesystem controls do not qualify a deployed provider.
 Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the

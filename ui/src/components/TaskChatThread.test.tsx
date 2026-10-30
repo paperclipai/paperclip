@@ -1401,7 +1401,8 @@ describe("TaskChatThread runtime transcript selection", () => {
   });
 
 
-  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+  it.each((["matching", "document_only", "absent", "other_revision"] as const).flatMap(evidence =>
+    ["restore_unsafe_archive", "restore_invalid_metadata"].map(code => [evidence, code] as const)))("reports %s saved-plan evidence for %s without offering another provider turn", (evidence, code) => {
     if (evidence !== "absent") planState.data = planDocument();
     renderThread({
       issueId: "issue-1",
@@ -1414,7 +1415,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
         agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
         createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
-        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+        resultJson: { workspaceRestoreFailure: code, workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
           ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
         },
       }],
