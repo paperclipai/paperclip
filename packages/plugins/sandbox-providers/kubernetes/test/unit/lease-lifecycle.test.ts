@@ -6,8 +6,31 @@ import {
 } from "../../src/lease-lifecycle.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+const SANDBOX_VERSION = "v1beta1";
 const SANDBOX_PLURAL = "sandboxes";
+
+/**
+ * The lease-lifecycle helpers reach the Sandbox API through the orchestrator,
+ * which asks the cluster which version it serves. Every clients stub therefore
+ * needs the discovery seam; the stub cluster serves the version asserted here.
+ */
+function withDiscovery<T extends object>(clients: T): T {
+  return {
+    ...clients,
+    apis: {
+      getAPIVersions: vi.fn().mockResolvedValue({
+        groups: [
+          {
+            name: SANDBOX_GROUP,
+            versions: [
+              { groupVersion: `${SANDBOX_GROUP}/${SANDBOX_VERSION}`, version: SANDBOX_VERSION },
+            ],
+          },
+        ],
+      }),
+    },
+  };
+}
 
 function notFound(): Error {
   return Object.assign(new Error("not found"), { code: 404 });
@@ -48,7 +71,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
         }),
       },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "paperclip-acme",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -67,7 +90,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       custom: { getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
       core: { readNamespacedPod: vi.fn() },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -93,7 +116,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       },
       core: { readNamespacedPod: vi.fn() },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -114,7 +137,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       },
       core: { readNamespacedPod: vi.fn() },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -132,7 +155,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       },
       core: { readNamespacedPod: vi.fn().mockRejectedValue(notFound()) },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -155,7 +178,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
         }),
       },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -178,7 +201,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       },
     };
     await expect(
-      checkLeaseResumable(clients as never, {
+      checkLeaseResumable(withDiscovery(clients) as never, {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
@@ -201,7 +224,7 @@ describe("checkLeaseResumable (job backend)", () => {
         }),
       },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-job",
       backend: "job",
@@ -214,7 +237,7 @@ describe("checkLeaseResumable (job backend)", () => {
       batch: { readNamespacedJobStatus: vi.fn().mockRejectedValue(notFound()) },
       core: { listNamespacedPod: vi.fn() },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-job",
       backend: "job",
@@ -232,7 +255,7 @@ describe("checkLeaseResumable (job backend)", () => {
       },
       core: { listNamespacedPod: vi.fn() },
     };
-    const result = await checkLeaseResumable(clients as never, {
+    const result = await checkLeaseResumable(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-job",
       backend: "job",
@@ -256,7 +279,7 @@ describe("destroyLeaseResources", () => {
 
   it("deletes the Sandbox CR, pod, and per-run Secret (sandbox-cr backend)", async () => {
     const clients = makeClients();
-    await destroyLeaseResources(clients as never, {
+    await destroyLeaseResources(withDiscovery(clients) as never, {
       namespace: "paperclip-acme",
       name: "pc-abc",
       backend: "sandbox-cr",
@@ -284,7 +307,7 @@ describe("destroyLeaseResources", () => {
 
   it("deletes the Job instead of the Sandbox CR (job backend)", async () => {
     const clients = makeClients();
-    await destroyLeaseResources(clients as never, {
+    await destroyLeaseResources(withDiscovery(clients) as never, {
       namespace: "ns",
       name: "pc-job",
       backend: "job",
@@ -314,7 +337,7 @@ describe("destroyLeaseResources", () => {
       },
     };
     await expect(
-      destroyLeaseResources(clients as never, {
+      destroyLeaseResources(withDiscovery(clients) as never, {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
@@ -336,7 +359,7 @@ describe("destroyLeaseResources", () => {
       core: { deleteNamespacedPod: vi.fn(), deleteNamespacedSecret: vi.fn() },
     };
     await expect(
-      destroyLeaseResources(clients as never, {
+      destroyLeaseResources(withDiscovery(clients) as never, {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
