@@ -535,9 +535,13 @@ function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
 
 let cachedStore: RunLogStore | null = null;
 
+export function resolveRunLogBasePath() {
+  return process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+}
+
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const basePath = resolveRunLogBasePath();
   cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
   return cachedStore;
 }

@@ -1,9 +1,9 @@
 import { documentService } from "../services/documents.js";
 import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, caseHandoffs, cases, chatConversations, chatEndpoints, chatPublications, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues } from "@paperclipai/db";
+import { companies, agents, agentWakeupRequests, caseHandoffs, cases, chatConversations, chatEndpoints, chatPublications, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -241,6 +241,38 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await service.claimQueuedRun(before)).toBeNull();
     await quiet();
   });
+  it("waits for the company before locking the issue during an automatic claim", async () => {
+    const seeded = await run(f, { status: "queued", runtimeMode: "legacy", invocationSource: "automation" });
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id));
+    const { service } = await queue();
+    let release!: () => void;
+    let locked!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<number>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      const [row] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      locked(Number(row.pid));
+      await gate;
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update", { noWait: true });
+    });
+    const pid = await ready;
+    const claim = service.withChatControlRecoveryGate(before, "claim", async () => null);
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select count(*)::int as count from pg_stat_activity
+          where ${pid} = any(pg_blocking_pids(pid))`);
+        expect(Number(row.count)).toBeGreaterThan(0);
+      }, { timeout: 5_000, interval: 10 });
+      release();
+      await expect(holder).resolves.toBeUndefined();
+      await expect(claim).resolves.toBeNull();
+    } finally {
+      release();
+      await Promise.allSettled([holder, claim]);
+    }
+  });
+
   it("wakes when dispatch fails an unverifiable chat recovery and leaves repeated gates quiet", async () => {
     const seeded = await run(f, { status: "running", runtimeMode: "legacy", invocationSource: "automation",
       runnerProfileJson: { [CHAT_CONTROL_RECOVERY_ADMISSION_KEY]: {} },

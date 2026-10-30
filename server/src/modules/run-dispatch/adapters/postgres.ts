@@ -807,6 +807,14 @@ export function createPostgresRunDispatchAdapter(
       ) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
+      const company = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .then((rows) => rows[0] ?? null);
+      if (!company || company.status === "archived") {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
       const factsResult = await loadGateFacts(
         {
           runId: run.id,

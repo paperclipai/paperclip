@@ -1,13 +1,17 @@
+import { lstat, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import path from "node:path";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
-import { deleteCompany } from "./company-deletion.js";
+import { deleteCompany, lockCompanyLifecycle } from "./company-deletion.js";
 import { fenceActiveCompanyAgentStopsInTransaction } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import {
   companies,
   companyLogos,
@@ -18,7 +22,7 @@ import {
   heartbeatRuns,
   costEvents,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { notifyCloudOfPrimaryCompanyLifecycleChange } from "./cloud-lifecycle-sync.js";
 import {
@@ -32,6 +36,102 @@ import {
 import { environmentService } from "./environments.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { heartbeatService } from "./heartbeat.js";
+import { loadConfig } from "../config.js";
+import { resolveDefaultAgentWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveRunLogBasePath } from "./run-log-store.js";
+import { logger } from "../middleware/logger.js";
+
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+const runCleanup = promisify(execFile);
+const MANAGED_CLEANUP_SCRIPT = `
+const fs = require("node:fs/promises");
+(async () => {
+  const [expectedDev, expectedIno, ...segments] = process.argv.slice(1);
+  const root = await fs.lstat(".", { bigint: true });
+  if (String(root.dev) !== expectedDev || String(root.ino) !== expectedIno) {
+    throw new Error("Managed cleanup root changed");
+  }
+  for (const segment of segments.slice(0, -1)) {
+    const before = await fs.lstat(segment, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      throw new Error("Unsafe managed cleanup parent");
+    }
+    process.chdir(segment);
+    const after = await fs.lstat(".", { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino) {
+      throw new Error("Managed cleanup parent changed");
+    }
+  }
+  await fs.rm(segments.at(-1), { recursive: true, force: true });
+})().catch(error => {
+  if (error.code !== "ENOENT") {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+});
+`;
+
+async function removeManagedCleanupTarget(instanceRoot: string, target: string): Promise<void> {
+  const relative = path.relative(instanceRoot, target);
+  const insideInstance = relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const base = insideInstance ? instanceRoot : path.dirname(path.dirname(target));
+  const segments = path.relative(base, target).split(path.sep);
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error("Invalid managed cleanup path");
+  }
+  let canonicalBase: string;
+  try {
+    canonicalBase = await realpath(base);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const identity = await lstat(canonicalBase, { bigint: true });
+  try {
+    await runCleanup(process.execPath, ["-e", MANAGED_CLEANUP_SCRIPT, String(identity.dev), String(identity.ino), ...segments], {
+      cwd: canonicalBase,
+    });
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(`Managed-file cleanup failed for ${target}: ${stderr || "cleanup worker failed"}`);
+  }
+}
+
+async function removeCompanyManagedFiles(companyId: string, agentIds: string[]): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(companyId)) {
+    throw new Error("Invalid company id for managed-file cleanup");
+  }
+
+  if (agentIds.some((id) => !SAFE_PATH_SEGMENT.test(id))) {
+    throw new Error("Invalid agent id for managed-file cleanup");
+  }
+
+  const instanceRoot = resolvePaperclipInstanceRoot();
+  const config = loadConfig();
+  const targets = [
+    ...agentIds.map(resolveDefaultAgentWorkspaceDir),
+    path.resolve(instanceRoot, "companies", companyId),
+    path.resolve(instanceRoot, "projects", companyId),
+    path.resolve(instanceRoot, "skills", companyId),
+    path.resolve(resolveRunLogBasePath(), companyId),
+  ];
+  if (config.storageProvider === "local_disk") {
+    targets.push(path.resolve(config.storageLocalDiskBaseDir, companyId));
+  }
+
+  const results: PromiseSettledResult<void>[] = [];
+  for (let offset = 0; offset < targets.length; offset += 4) {
+    results.push(...await Promise.allSettled(
+      targets.slice(offset, offset + 4).map((target) => removeManagedCleanupTarget(instanceRoot, target)),
+    ));
+  }
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -49,11 +149,41 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
+export function companyService(
+  db: Db,
+  options: BudgetServiceHooks & {
+    removeManagedFiles?: (companyId: string, agentIds: string[]) => Promise<void>;
+    waitForRunExecutionDrain?: (runId: string) => Promise<void>;
+  } = {},
+) {
   const environmentsSvc = environmentService(db);
   const builtInAgents = builtInAgentService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+  async function getCompanyFileDeletionRunIds(tx: CompanyTx, id: string) {
+    const company = await tx
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, id))
+      .for("no key update")
+      .then((rows) => rows[0] ?? null);
+    if (!company) return null;
+    if (company.status !== "archived") {
+      throw conflict("Archive the company before deleting managed files");
+    }
+
+    const runRows = await tx
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, id));
+    if (runRows.some((run) =>
+      run.status === "scheduled_retry" || run.status === "queued" || run.status === "running"
+    )) {
+      throw conflict("Wait for company runs to finish before deleting managed files");
+    }
+    return runRows.map((run) => run.id);
+  }
 
   async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
     const [agentCount] = await tx.select({ value: count() }).from(agents).where(and(eq(agents.companyId, id), notInArray(agents.status, ["paused", "terminated", "pending_approval"])));
@@ -301,8 +431,9 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
       const budgetPublications: ActivityPublication[] = [];
-      const result = await db.transaction(async (tx) => {
+      const result = await withDedicatedDbConnection(db, (connection) => connection.transaction(async (tx) => {
         if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
+          await lockCompanyLifecycle(tx, id);
           await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
         }
         const existing = await getCompanyQuery(tx)
@@ -427,7 +558,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           unarchived: willReactivate && existing.status === "archived",
           issuePrefixRederived,
         };
-      });
+      }));
       if (!result) return null;
       publishAccountingActivities(id, budgetPublications);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
@@ -476,7 +607,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     },
 
     archive: async (id: string, actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR) => {
-      const result = await db.transaction(async (tx) => {
+      const result = await withDedicatedDbConnection(db, (connection) => connection.transaction(async (tx) => {
+        await lockCompanyLifecycle(tx, id);
         const existing = await tx
           .select({ status: companies.status })
           .from(companies)
@@ -513,7 +645,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           company: enrichCompany(hydrated),
           cascade,
         };
-      });
+      }));
       if (!result) return null;
 
       // Same doorbell rule as update(): the archive is committed, so ring
@@ -526,7 +658,39 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
       return result.company;
     },
 
-    remove: (id: string) => deleteCompany(db, id),
+    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+      if (removeOptions.deleteFiles) {
+        const heartbeat = heartbeatService(db);
+        const stableRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!stableRunIds) return null;
+        for (const runId of stableRunIds) {
+          await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
+        }
+      }
+
+      let agentIds: string[] = [];
+      const company = await deleteCompany(db, id, async (tx) => {
+        if (removeOptions.deleteFiles) {
+          await getCompanyFileDeletionRunIds(tx, id);
+          agentIds = (await tx.select({ id: agents.id }).from(agents)
+            .where(eq(agents.companyId, id))).map((agent) => agent.id);
+        }
+      });
+      if (!company) return null;
+
+      let fileCleanup: FileCleanupStatus = "not_requested";
+      if (removeOptions.deleteFiles) {
+        try {
+          await (options.removeManagedFiles ?? removeCompanyManagedFiles)(id, agentIds);
+          fileCleanup = "succeeded";
+        } catch (err) {
+          fileCleanup = "failed";
+          logger.warn({ err, companyId: id }, "company deleted but managed-file cleanup failed");
+        }
+      }
+
+      return { ...company, fileCleanup };
+    },
 
     stats: () =>
       Promise.all([

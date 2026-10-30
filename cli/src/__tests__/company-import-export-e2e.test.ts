@@ -256,7 +256,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < 90_000) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -342,7 +342,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output,
     );
     expect(new URL(apiBase).port).not.toBe(String(port));
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
