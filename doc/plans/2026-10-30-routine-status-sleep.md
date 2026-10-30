@@ -9,7 +9,9 @@ scanned every five minutes, even with no routines or only completed history.
 `routine-run-status.ts` owns the projection, custody checks and repair transaction.
 The worker loads actual mismatches in keyset pages of 50 at startup. It accepts issue hints from issue
 creation, status/origin changes, checkout/release, routine issue association,
-execution control writes and review state writes. It uses the existing
+execution control writes, review state writes and subtree status restoration.
+Bulk restoration registers each issue hint in the same transaction before its
+grouped write. Restored history does not depend on an optional agent wake. It uses the existing
 transaction-aware work notification protocol. An outer transaction owns the hint;
 a savepoint release does not wake the repair worker before commit.
 

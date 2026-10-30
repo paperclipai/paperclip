@@ -1,3 +1,4 @@
+import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -173,6 +174,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await saved(otherRun.id)).status).toBe("issue_created"); await quiet();
     await db.transaction(async tx => { await notifyRoutineExecutionStatus(tx, otherRun.linkedIssueId!); });
     await projected(otherRun.id, "completed"); await quiet(); expect(errors).toEqual([]);
+  });
+  it("projects subtree cancel and restore without waking agents, then becomes quiet", async () => {
+    const f = await fixture(), root = await dispatch(f), child = await dispatch(f);
+    await issueService(db).update(child.linkedIssueId!, { parentId: root.linkedIssueId });
+    const tree = issueTreeControlService(db), actor = { actorType: "system" as const, actorId: "routine-status-test" };
+    await start(); await quiet();
+    const cancel = await tree.createHold(f.companyId, root.linkedIssueId!, { mode: "cancel", actor });
+    expect((await tree.cancelIssueStatusesForHold(f.companyId, root.linkedIssueId!, cancel.hold.id)).updatedIssueIds.sort())
+      .toEqual([root.linkedIssueId, child.linkedIssueId].sort());
+    await projected(root.id, "failed"); await projected(child.id, "failed"); await quiet();
+    const restore = await tree.createHold(f.companyId, root.linkedIssueId!, { mode: "restore", actor });
+    const restored = await tree.restoreIssueStatusesForHold(f.companyId, root.linkedIssueId!, restore.hold.id, { actor });
+    expect(restored.updatedIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: root.linkedIssueId, status: "todo" }),
+      expect.objectContaining({ id: child.linkedIssueId, status: "todo" }),
+    ]));
+    await projected(root.id, "issue_created"); await projected(child.id, "issue_created");
+    expect(await saved(root.id)).toMatchObject({ completedAt: null, failureReason: null });
+    expect(await saved(child.id)).toMatchObject({ completedAt: null, failureReason: null });
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    await quiet(); expect(errors).toEqual([]);
   });
   it("serializes a direct status hook with later task changes before projecting the routine", async () => {
     const f = await fixture(), run = await dispatch(f); await start(); await quiet();
