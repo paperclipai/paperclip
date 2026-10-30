@@ -4624,3 +4624,45 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+### Terminal transition contract for `workspace_delivery` issues (2026-10-30)
+
+An issue may set `completionRequirement: "workspace_delivery"` (exposed on
+the create/update issue API, and as `project_workspaces.defaultCompletionRequirement`
+for new issues against a workspace -- see `ISSUE_COMPLETION_REQUIREMENTS`).
+When set, a `done` transition requires a `delivery_attestations` row scoped
+to the issue's company, id, current `completionRequirementRevision`, and
+current target fingerprint (a hash of the resolved `project_workspaces.repoUrl`
++ `repoRef`), with `outcome = "succeeded"`. The gate lives in
+`assertDeliveryAttestationSatisfied` (`server/src/services/delivery-attestations.ts`)
+and is called from `issueService(db).update()` on every `done` transition,
+so it applies regardless of entry point (REST, native runtime, etc).
+
+A `project_workspaces` row whose `repoUrl` is null resolves to no target
+fingerprint at all, so a repo-less `project_primary` folder can never produce
+or satisfy an attestation -- this is the gap this completion requirement closes
+(a workspace_delivery issue could previously be marked `done` with no
+verification that anything was actually delivered to a real repository).
+
+`completionRequirementRevision` and the target fingerprint used by
+`recordDeliveryAttestation` are always resolved from server-held state, never
+accepted from caller input, so a reporting run cannot claim a revision or
+target it did not actually run against.
+
+Setting `completionRequirement: "workspace_delivery"` on an issue today has
+no way to be satisfied through a public API yet, since `recordDeliveryAttestation`
+has no route calling it -- it exists only as an internal service function. A
+board/project actor can always unset it again to unblock completion. This is
+deliberate: wiring a route for a run to record its own attestation is left
+for follow-up work, because the prior attempt at this feature (PR #9550)
+shipped exactly that kind of route (`GET /heartbeat-runs/:runId/delivery-attestations`)
+scoped only to company membership instead of issue-level read authorization
+-- a confirmed broken object-level authorization. Any future route
+needs its own authorization review from the start; none is added here.
+
+Also deliberately deferred: automatic delivery inspection (e.g. trusting a
+local git `HEAD` as proof of delivery) -- the prior attempt's version of this
+trusted `HEAD` without checking it belonged to the declared `repoUrl`,
+satisfying the wrong repository. `recordDeliveryAttestation` here takes a
+plain succeeded/failed outcome from its caller instead, with no automatic
+inspection at all.

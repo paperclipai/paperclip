@@ -33,6 +33,7 @@ import { readNativeMonitorSource } from "./native-runtime/native-monitor-deliver
 import { readNativeContinuationSource } from "./native-runtime/native-continuation-delivery.js";
 import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTerminalCaseHandoffsForIssue } from "./heartbeat/case-handoff-lifecycle.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
+import { assertDeliveryAttestationSatisfied } from "./delivery-attestations.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
@@ -11701,6 +11702,19 @@ export function issueService(db: Db) {
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
+        }
+        if (patch.status === "done" && existing.status !== "done") {
+          const nextCompletionRequirement =
+            issueData.completionRequirement !== undefined ? issueData.completionRequirement : existing.completionRequirement;
+          const nextProjectWorkspaceId =
+            issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
+          await assertDeliveryAttestationSatisfied(tx as Db, {
+            companyId: existing.companyId,
+            issueId: id,
+            projectWorkspaceId: nextProjectWorkspaceId,
+            completionRequirement: nextCompletionRequirement,
+            completionRequirementRevision: existing.completionRequirementRevision,
+          });
         }
 
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
