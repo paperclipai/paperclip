@@ -96,9 +96,12 @@ owns authentication, conditional leases, fixture ownership, and cleanup.
 
 The Plan and Stop final-answer checks reload the owned task and bind its exact,
 unique visible reply to the final successful native run. A settled native turn
-can render its saved reply before the comments projection exists. If the run
-has an explicit presentation decision, only its selected, attributed comment
-can satisfy the check. A finish summary by itself, an earlier turn, a progress
+can render its saved reply before the comments projection exists; that path also
+requires exactly one matching final assistant message in the complete durable
+event stream, with the same company, agent, run and validated PRP source. If the run
+has a projected selected completion comment, only that attributed comment can
+satisfy the check. A pending or suppressed comment can use the same proven native
+reply path. A finish summary by itself, an earlier turn, a progress
 bubble, or a cancelled run cannot satisfy it. Private receipts record the run,
 thread anchor and observed text; classic protocol comment matchers stay strict.
 A model allowance is an accounting threshold; reused direct-provider routes do

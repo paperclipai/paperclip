@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 
 type Row = Record<string, any>;
 export interface TaskReplyObservation {
@@ -7,20 +8,40 @@ export interface TaskReplyObservation {
 
 /** Native task replies can render from a saved turn before a completion comment
  * is projected. Respect an explicit presentation decision when one exists. */
-export function taskReplyBelongsToRun(observation: TaskReplyObservation, run: Row, agentId: string, comments: Row[]) {
+export function nativeFinalReplyEvents(events: Row[], run: Row) {
+  return events.flatMap(event => {
+    const envelope = event.payload?.prpEvent, payload = envelope?.payload, item = payload?.item;
+    if (!envelope || !Number.isSafeInteger(event.seq) || event.seq < 1 || !isValidNativePrpEnvelope(envelope, event.protocolSchemaVersion)
+      || event.runId !== run.id || event.companyId !== run.companyId || event.agentId !== run.agentId
+      || envelope.runId !== run.id || envelope.sourceKind !== "runner" || event.eventType !== "item.completed" || envelope.eventType !== event.eventType
+      || typeof envelope.sourceEventId !== "string" || !envelope.sourceEventId || event.sourceEventId !== envelope.sourceEventId
+      || typeof envelope.sourceInstanceId !== "string" || !envelope.sourceInstanceId || event.sourceInstanceId !== envelope.sourceInstanceId
+      || !Number.isSafeInteger(envelope.sourceSeq) || envelope.sourceSeq < 1 || event.sourceSeq !== envelope.sourceSeq
+      || !["agentMessage", "assistant_message"].includes(payload?.kind) || payload.channel !== "final") return [];
+    const text = typeof payload.text === "string" ? payload.text : item?.text;
+    if (typeof text !== "string" || !text.trim() || typeof payload.text === "string" && typeof item?.text === "string" && payload.text !== item.text) return [];
+    return [{ seq: event.seq, sourceEventId: envelope.sourceEventId, sourceInstanceId: envelope.sourceInstanceId,
+      sourceSeq: envelope.sourceSeq, protocolSchemaVersion: event.protocolSchemaVersion, body: text.trim() }];
+  });
+}
+
+export function taskReplyBelongsToRun(observation: TaskReplyObservation, run: Row, agentId: string, comments: Row[], events: Row[] = []) {
   if (typeof run.id !== "string" || !run.id || !agentId || run.agentId !== agentId || run.status !== "succeeded" || run.runtimeMode !== "native" || !observation.body || !observation.visible) return false;
   const decision = run.resultJson?.presentationDecision;
-  if (decision !== undefined) {
-    return typeof decision?.commentId === "string" && observation.anchor === decision.commentId
-      && comments.some(comment => comment.id === decision.commentId && comment.authorAgentId === agentId
-        && comment.createdByRunId === run.id && typeof comment.body === "string" && comment.body.trim() === observation.body);
+  if (decision != null && (typeof decision !== "object" || Array.isArray(decision))) return false;
+  if (decision?.commentId != null && typeof decision.commentId !== "string") return false;
+  const projected = typeof decision?.commentId === "string" ? comments.find(comment => comment.id === decision.commentId) : null;
+  if (projected) {
+    return observation.anchor === projected.id && projected.authorAgentId === agentId
+      && projected.createdByRunId === run.id && typeof projected.body === "string" && projected.body.trim() === observation.body;
   }
-  return observation.settled && observation.nativeFinal
+  const finals = nativeFinalReplyEvents(events, run);
+  return finals.length === 1 && finals[0]!.body === observation.body && observation.settled && observation.nativeFinal
     && (observation.anchor === `${run.id}:turn` || observation.anchor?.startsWith(`${run.id}:turn:`) === true);
 }
 
-export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agentId: string, comments: Row[], expectedText?: string) {
-  const matches = all.filter(row => taskReplyBelongsToRun(row, run, agentId, comments)
+export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agentId: string, comments: Row[], expectedText?: string, events: Row[] = []) {
+  const matches = all.filter(row => taskReplyBelongsToRun(row, run, agentId, comments, events)
     && (expectedText === undefined || row.body === expectedText));
   return matches.length === 1 && (expectedText === undefined || all.filter(row => row.visible && row.body === expectedText).length === 1)
     ? matches[0]! : null;
@@ -30,7 +51,7 @@ export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agen
  * or a provider's claimed result. The caller separately validates task/run scope. */
 export async function readBoundTaskFinalReply(input: {
   page: Page; runId: string; agentId: string; expectedText?: string; deadlineAt: number;
-  load(): Promise<{ run: Row; comments: Row[] }>;
+  load(): Promise<{ run: Row; comments: Row[]; events: Row[] }>;
 }) {
   await input.page.reload();
   const replies = input.page.getByTestId("task-chat-thread").getByTestId("task-chat-agent-bubble");
@@ -43,7 +64,7 @@ export async function readBoundTaskFinalReply(input: {
   })));
   const read = async () => {
     const state = await input.load(), all = await observe();
-    const match = state.run.id === input.runId ? uniqueBoundTaskReply(all, state.run, input.agentId, state.comments, input.expectedText) : null;
+    const match = state.run.id === input.runId ? uniqueBoundTaskReply(all, state.run, input.agentId, state.comments, input.expectedText, state.events) : null;
     return { ...state, match };
   };
   const timeout = Math.min(30_000, input.deadlineAt - Date.now());
@@ -51,8 +72,9 @@ export async function readBoundTaskFinalReply(input: {
   await expect.poll(async () => {
     return Boolean((await read()).match);
   }, { timeout, intervals: [250, 500, 1000] }).toBe(true);
-  const { match, run } = await read();
+  const { match, run, events } = await read();
   if (!match) throw new Error("native_reply_changed");
+  const source = match.anchor === run.resultJson?.presentationDecision?.commentId ? "posted-comment" : "native-turn";
   return { runId: input.runId, agentId: input.agentId, observedAfterReload: true,
-    source: run.resultJson?.presentationDecision === undefined ? "native-turn" : "posted-comment", ...match };
+    source, finalEvent: source === "native-turn" ? nativeFinalReplyEvents(events, run)[0] : null, ...match };
 }

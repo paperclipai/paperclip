@@ -99,7 +99,11 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const run = [...runs].sort((a, b) => Date.parse(a.finishedAt) - Date.parse(b.finishedAt)).at(-1)!;
     await open(issue);
     const receipt = await readBoundTaskFinalReply({ page: context.page, runId: run.id, agentId: agent.id,
-      load: async () => { const latest = await read(issue); return { run: latest.taskRuns.find(row => row.id === run.id)!, comments: latest.comments }; },
+      load: async () => {
+        const [latest, events] = await Promise.all([read(issue), collectRunEvents<Row>((afterSeq, limit) =>
+          context.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`))]);
+        return { run: latest.taskRuns.find(row => row.id === run.id)!, comments: latest.comments, events };
+      },
       expectedText: marker, deadlineAt: options.deadlineAt });
     await retain(`${issue.id}-final-reply.json`, receipt);
     return receipt;
