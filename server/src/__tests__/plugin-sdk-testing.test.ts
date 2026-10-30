@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Agent, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
 describe("plugin SDK test harness", () => {
@@ -292,6 +292,105 @@ describe("plugin SDK test harness", () => {
       authorUserId: "user-1",
       authorAgentId: null,
       body: "relayed reply",
+    });
+  });
+
+  describe("agent session cancelRun", () => {
+    function sessionManifest(capabilities: PaperclipPluginManifestV1["capabilities"]): PaperclipPluginManifestV1 {
+      return {
+        id: "paperclip.test-session-cancel",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Session Cancel",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities,
+        entrypoints: { worker: "./dist/worker.js" },
+      };
+    }
+
+    function seededHarness(capabilities: PaperclipPluginManifestV1["capabilities"]) {
+      const harness = createTestHarness({ manifest: sessionManifest(capabilities) });
+      harness.seed({ agents: [{ id: "agent-1", companyId: "company-1" } as Agent] });
+      return harness;
+    }
+
+    it("cancels the in-flight run of a session and returns null once nothing is running", async () => {
+      const harness = seededHarness(["agent.sessions.create", "agent.sessions.list", "agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+      await harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", { prompt: "go" });
+
+      await expect(
+        harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1", { reason: "stop" }),
+      ).resolves.toBe("cancelled");
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).resolves.toBeNull();
+      await expect(harness.ctx.agents.sessions.list("agent-1", "company-1")).resolves.toEqual([
+        expect.objectContaining({ sessionId: session.sessionId, status: "active" }),
+      ]);
+    });
+
+    it("returns null after the session run already finished", async () => {
+      const harness = seededHarness(["agent.sessions.create", "agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+      const { runId } = await harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", {
+        prompt: "go",
+        onEvent: () => {},
+      });
+      harness.simulateSessionEvent(session.sessionId, {
+        runId,
+        seq: 1,
+        eventType: "done",
+        stream: "system",
+        message: "finished",
+        payload: null,
+      });
+
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).resolves.toBeNull();
+    });
+
+    it("still cancels an earlier turn after a later turn of the session finished", async () => {
+      const harness = seededHarness(["agent.sessions.create", "agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+      await harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", {
+        prompt: "first",
+        onEvent: () => {},
+      });
+      const { runId: laterRunId } = await harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", {
+        prompt: "second",
+        onEvent: () => {},
+      });
+      harness.simulateSessionEvent(session.sessionId, {
+        runId: laterRunId,
+        seq: 1,
+        eventType: "done",
+        stream: "system",
+        message: "finished",
+        payload: null,
+      });
+
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).resolves.toBe("cancelled");
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).resolves.toBeNull();
+    });
+
+    it("requires agent.sessions.send", async () => {
+      const harness = seededHarness(["agent.sessions.create"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).rejects.toThrow(
+        "missing required capability 'agent.sessions.send'",
+      );
+    });
+
+    it("refuses a session from another company", async () => {
+      const harness = seededHarness(["agent.sessions.create", "agent.sessions.send"]);
+      const session = await harness.ctx.agents.sessions.create("agent-1", "company-1");
+      await harness.ctx.agents.sessions.sendMessage(session.sessionId, "company-1", { prompt: "go" });
+
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-2")).rejects.toThrow(
+        `Session not found: ${session.sessionId}`,
+      );
+      await expect(harness.ctx.agents.sessions.cancelRun(session.sessionId, "company-1")).resolves.toBe("cancelled");
     });
   });
 });
