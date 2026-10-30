@@ -96,6 +96,11 @@ export function AgentHistoryDialog({
       }
     },
   });
+  const restoreError = rollback.error
+    ? rollback.error instanceof Error && rollback.error.message
+      ? rollback.error.message
+      : "Could not restore that version."
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -134,7 +139,16 @@ export function AgentHistoryDialog({
                 </span>
                 <span className="truncate text-sm text-foreground">{authorOf(revision)}</span>
                 <span className="truncate text-sm tabular-nums text-muted-foreground">{formatDate(revision.createdAt)}</span>
-                <Button variant="ghost" size="sm" className="-mr-2.5 justify-self-end" onClick={() => setPending(revision)} disabled={rollback.isPending}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-mr-2.5 justify-self-end"
+                  onClick={() => {
+                    rollback.reset();
+                    setPending(revision);
+                  }}
+                  disabled={rollback.isPending}
+                >
                   <RotateCcw />
                   Restore
                 </Button>
@@ -142,8 +156,8 @@ export function AgentHistoryDialog({
             ))}
           </div>
         )}
-        {rollback.error ? (
-          <p role="alert" className="text-sm text-destructive">{rollback.error instanceof Error ? rollback.error.message : "Could not restore that version."}</p>
+        {restoreError && pending === null ? (
+          <p role="alert" className="text-sm text-destructive">{restoreError}</p>
         ) : null}
       </DialogContent>
       <AlertDialog open={pending !== null} onOpenChange={(next) => (next ? undefined : setPending(null))}>
@@ -172,6 +186,9 @@ export function AgentHistoryDialog({
                 </span>
               ) : null}
             </div>
+          ) : null}
+          {restoreError ? (
+            <p role="alert" className="text-sm text-destructive">{restoreError}</p>
           ) : null}
           <AlertDialogFooter className="sm:justify-between">
             <AlertDialogCancel>Cancel</AlertDialogCancel>

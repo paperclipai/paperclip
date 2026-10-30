@@ -84,13 +84,20 @@ export function AgentBudgetsPanel({ agent, companyId }: { agent: BudgetAgent; co
         <p role="alert" className="text-sm text-destructive">Could not update {agent.name}'s budget. Review the amount and try again.</p>
       ) : null}
       {incidents.map((entry) => (
-        <BudgetIncidentCard
-          key={entry.id}
-          incident={entry}
-          isMutating={incident.isPending}
-          onKeepPaused={() => incident.mutate({ incidentId: entry.id, action: "keep_paused" })}
-          onRaiseAndResume={(amount) => incident.mutate({ incidentId: entry.id, action: "raise_budget_and_resume", amount })}
-        />
+        <div key={entry.id} className="space-y-2">
+          <BudgetIncidentCard
+            incident={entry}
+            isMutating={incident.isPending}
+            onKeepPaused={() => incident.mutate({ incidentId: entry.id, action: "keep_paused" })}
+            onRaiseAndResume={(amount) => incident.mutate({ incidentId: entry.id, action: "raise_budget_and_resume", amount })}
+          />
+          {incident.error && incident.variables?.incidentId === entry.id ? (
+            <p role="alert" className="text-sm text-destructive">
+              {incident.variables.action === "keep_paused" ? "Could not keep this agent paused." : "Could not raise the budget and resume."}{" "}
+              {incident.error instanceof Error && incident.error.message ? incident.error.message : "Try again."}
+            </p>
+          ) : null}
+        </div>
       ))}
       <BudgetPolicyCard
         summary={summary}

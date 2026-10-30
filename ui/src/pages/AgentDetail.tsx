@@ -11,7 +11,7 @@ import { AgentConnectionInstructions } from "@/features/connections/ConnectionIn
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
-import { characterStateForAgent } from "@paperclipai/shared";
+import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { usePageVisibility } from "../lib/page-visibility";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
@@ -152,6 +152,7 @@ import { AgentAuditTab } from "./AgentAuditTab";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
+import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
 import { InlineEditor } from "../components/InlineEditor";
 import {
   AlertDialog,
@@ -803,6 +804,7 @@ function WorkspaceOperationsSection({
 }
 
 const UNTITLED_AGENT_VIEWS: ReadonlySet<AgentDetailView> = new Set(["overview", "instructions", "budgets"]);
+const OVERVIEW_ACTIVITY_LIMIT = 200;
 
 function agentViewDescription(view: AgentDetailView, name: string): string | null {
   switch (view) {
@@ -1049,6 +1051,10 @@ export function AgentDetail() {
   });
   const saveHeaderField = async (patch: { name?: string; title?: string | null }) => {
     if (!agent) return;
+    if (configDirty || configSaving) {
+      setActionError(`Save or discard your unsaved changes before you change the ${patch.name === undefined ? "title" : "name"}.`);
+      return;
+    }
     setActionError(null);
     try {
       await headerUpdate.mutateAsync({ target: agent, patch });
@@ -1914,15 +1920,15 @@ export function AgentOverview({
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
   const activity = useQuery({
-    queryKey: ["agent-overview-activity", agent.companyId, agent.id],
-    queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: 200 }),
+    queryKey: [...queryKeys.activity(agent.companyId), "agent-overview", agent.id],
+    queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }),
   });
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
-  const activityThisWeek = (activity.data ?? []).filter((event) => new Date(event.createdAt).getTime() >= weekAgo).length;
-  const runsThisWeek = runs.filter((run) => new Date(run.createdAt).getTime() >= weekAgo);
-  const recentFailures = runs.filter((run) => run.status === "failed" && new Date(run.createdAt).getTime() >= twoDaysAgo).length;
+  const activityThisWeek = countSince(activity.data ?? [], weekAgo, OVERVIEW_ACTIVITY_LIMIT);
+  const runsThisWeek = countSince(runs, weekAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
+  const recentFailures = countSince(runs, twoDaysAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, (run) => run.status === "failed");
   const budget = agent.budgetMonthlyCents ?? 0;
   const spent = agent.spentMonthlyCents ?? 0;
   const budgetPercent = budget > 0 ? Math.round((spent / budget) * 100) : null;
@@ -1931,16 +1937,16 @@ export function AgentOverview({
       <div className="grid grid-cols-1 gap-(--agent-detail-module-gap) sm:grid-cols-2 lg:grid-cols-4">
         <AgentMetricTile
           icon={ActivityIcon}
-          value={activity.isLoading ? "–" : activityThisWeek}
+          value={activity.isLoading ? "–" : formatWindowCount(activityThisWeek)}
           label="Activity"
           description="Events this week"
           to={agentDetailHref(agentRef, "activity")}
         />
         <AgentMetricTile
           icon={PlayCircle}
-          value={runsThisWeek.length}
+          value={formatWindowCount(runsThisWeek)}
           label="Runs"
-          description={`${recentFailures} failed in the last 2 days`}
+          description={`${formatWindowCount(recentFailures)} failed in the last 2 days`}
           to={agentDetailHref(agentRef, "runs")}
         />
         <AgentMetricTile

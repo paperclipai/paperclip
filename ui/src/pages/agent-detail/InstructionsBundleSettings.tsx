@@ -16,9 +16,10 @@ type LoadState =
   | { kind: "error"; field: Field | null; message: string };
 
 export function checkExternalProfile(root: string, entry: string): { field: Field; message: string } | null {
-  if (!root.startsWith("/")) return { field: "root", message: "Use an absolute path that starts with /." };
-  if (!/\.md$/i.test(entry)) return { field: "entry", message: "The entry file needs to be a Markdown (.md) file." };
-  if (entry.includes("..")) return { field: "entry", message: "The entry file has to sit inside the root path." };
+  if (!root.startsWith("/") && !root.startsWith("~")) return { field: "root", message: "Use an absolute path that starts with / or ~." };
+  if (entry.startsWith("/") || entry.split(/[\\/]/).includes("..")) {
+    return { field: "entry", message: "The entry file has to sit inside the root path." };
+  }
   return null;
 }
 
@@ -65,22 +66,14 @@ export function InstructionsBundleSettings({
     const problem = checkExternalProfile(trimmedRoot, trimmedEntry);
     if (problem) return setLoad({ kind: "error", ...problem });
     setLoad({ kind: "loading" });
-    const previous = { mode, rootPath: mode === "external" ? rootPath : null, entryFile };
     try {
-      await agentsApi.updateInstructionsBundle(agentId, { mode: "external", rootPath: trimmedRoot, entryFile: trimmedEntry }, companyId);
+      await agentsApi.updateInstructionsBundle(
+        agentId,
+        { mode: "external", rootPath: trimmedRoot, entryFile: trimmedEntry, requireExistingEntry: true },
+        companyId,
+      );
     } catch (error) {
-      setLoad({ kind: "error", field: "root", message: errorMessage(error, `Couldn’t use ${trimmedRoot}.`) });
-      return;
-    }
-    try {
-      await agentsApi.instructionsFile(agentId, trimmedEntry, companyId);
-    } catch {
-      try {
-        await agentsApi.updateInstructionsBundle(agentId, previous, companyId);
-      } finally {
-        await refresh();
-      }
-      setLoad({ kind: "error", field: "entry", message: `Couldn’t read ${trimmedEntry} in ${trimmedRoot}.` });
+      setLoad({ kind: "error", field: null, message: errorMessage(error, `Couldn’t read ${trimmedEntry} in ${trimmedRoot}.`) });
       return;
     }
     await refresh();
@@ -111,7 +104,7 @@ export function InstructionsBundleSettings({
         <AgentPanel className="gap-4 p-(--agent-detail-module-inset)" aria-label="External management">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">External management</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">Point this agent at a directory on disk. Paperclip reads the entry file before it switches over.</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Point this agent at a directory on disk. Paperclip checks that the entry file exists before it switches over.</p>
           </div>
           <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5">

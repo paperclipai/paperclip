@@ -90,12 +90,14 @@ The agent nav has two sections: **Agent** (Overview, Identity at
 Permissions / Trust, Advanced) and **Audit** (Activity, Runs, Costs, Budgets),
 which render inside the agent, filtered to it. Skills, Tools, Channels, API Keys
 and Revisions are not in the nav but still open by URL. Edit the name and title
-in place in the header (Enter or blur saves, Escape cancels). Assign task is the
-header's one button; Run now, Pause/Resume, Clear error, **Agent history** (a
-dialog listing revisions with a confirmed Restore), Duplicate, Copy ID, Reset
-sessions and Terminate are in the actions menu. On Identity, **Advanced
-settings** → **Load profile** saves an external root and entry file only after
-reading the entry file back, and reverts with an inline error otherwise.
+in place in the header (Enter or blur saves, Escape cancels); while a tab has
+unsaved changes, the header refuses the edit and asks to save or discard first.
+Assign task is the header's one button (Finish setup while setup is pending);
+Run now, Pause/Resume, Clear error, **Agent history** (a dialog listing
+revisions with a confirmed Restore), Duplicate, Copy ID, Reset sessions and
+Terminate are in the actions menu. On Identity, **Advanced settings** →
+**Load profile** switches to an external root only when the root directory and
+entry file already exist; otherwise the server refuses and the panel shows why.
 
 Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
 [YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
