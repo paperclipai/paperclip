@@ -480,7 +480,7 @@ export function githubConnectionEventService(
     }
     const bindings = await activeBindings();
     const bots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
-    let identity = bindings[0] ?? (bots[0] ? { subject: "github-bot-events", companyId: bots[0].companyId } : null);
+    let identity: { subject: string; companyId: string } | null = bindings[0] ?? (bots[0] ? { subject: "github-bot-events", companyId: bots[0].companyId } : null);
     const hasConsumer = bindings.length > 0 || bots.length > 0;
     if (!identity) {
       const [history] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
