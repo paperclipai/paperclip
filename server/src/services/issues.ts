@@ -3847,18 +3847,19 @@ async function listIssueBlockerAttentionMap(
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
   for (const root of roots) nodesById.set(root.id, { ...root });
 
-  let frontier = roots.map((root) => root.id);
-  let truncated = false;
+  type Traversal = { nodes: Set<string>; expanded: Set<string>; frontier: string[]; truncated: boolean };
+  const traversals = new Map<string, Traversal>(roots.map(root => [root.id, {
+    nodes: new Set([root.id]), expanded: new Set<string>(), frontier: [root.id], truncated: false,
+  }]));
+  const expanded = new Set<string>();
   const pendingFinalizeBlockerIssueIds = new Set<string>();
-  for (
-    let depth = 0;
-    frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH;
-    depth += 1
-  ) {
-    const nextFrontier = new Set<string>();
+  for (let depth = 0; depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
+    const active = [...traversals.values()].filter(traversal => !traversal.truncated && traversal.frontier.length > 0);
+    if (active.length === 0) break;
+    const frontier = [...new Set(active.flatMap(traversal => traversal.frontier))].filter(id => !expanded.has(id));
 
     for (const chunk of chunkList(
-      [...new Set(frontier)],
+      frontier,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
       const readinessByIssueId = await listIssueDependencyReadinessMap(
@@ -3966,17 +3967,27 @@ async function listIssueBlockerAttentionMap(
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
         });
-        nextFrontier.add(row.blockerIssueId);
       }
+      for (const id of chunk) expanded.add(id);
     }
 
-    if (nodesById.size > BLOCKER_ATTENTION_MAX_NODES) {
-      truncated = true;
-      break;
+    for (const traversal of active) {
+      const nextFrontier = new Set<string>();
+      for (const id of traversal.frontier) {
+        traversal.expanded.add(id);
+        for (const edge of edgesByIssueId.get(id) ?? []) {
+          if (traversal.nodes.has(edge.blockerIssueId) || !nodesById.has(edge.blockerIssueId)) continue;
+          traversal.nodes.add(edge.blockerIssueId);
+          nextFrontier.add(edge.blockerIssueId);
+        }
+      }
+      traversal.truncated = traversal.nodes.size > BLOCKER_ATTENTION_MAX_NODES;
+      traversal.frontier = traversal.truncated ? [] : [...nextFrontier];
     }
-    frontier = [...nextFrontier];
   }
-  if (frontier.length > 0) truncated = true;
+  for (const traversal of traversals.values()) {
+    if (traversal.frontier.length > 0) traversal.truncated = true;
+  }
 
   const nodeIds = [...nodesById.keys()];
   const activeIssueIds = new Set<string>();
@@ -4222,6 +4233,7 @@ async function listIssueBlockerAttentionMap(
   const classifyPath = (
     nodeId: string,
     seen: Set<string>,
+    truncated: boolean,
   ): PathClassification => {
     const sample = blockerSampleIdentifier(nodesById.get(nodeId));
     if (truncated || seen.has(nodeId)) {
@@ -4326,7 +4338,7 @@ async function listIssueBlockerAttentionMap(
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
       const classified = downstream.map((edge) =>
-        classifyPath(edge.blockerIssueId, nextSeen),
+        classifyPath(edge.blockerIssueId, nextSeen, truncated),
       );
       const stalledChild = classified.find(
         (result) => result.stalled || result.sampleStalledBlockerIdentifier,
@@ -4392,8 +4404,8 @@ async function listIssueBlockerAttentionMap(
     };
   };
 
-  const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
-    if (seen.has(nodeId)) return false;
+  const pathHasLiveWork = (nodeId: string, seen: Set<string>, traversal: Traversal): boolean => {
+    if (seen.has(nodeId) || !traversal.nodes.has(nodeId)) return false;
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) return false;
     if (
@@ -4404,6 +4416,7 @@ async function listIssueBlockerAttentionMap(
     )
       return true;
 
+    if (!traversal.expanded.has(nodeId)) return false;
     const nextSeen = new Set(seen);
     nextSeen.add(nodeId);
     return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
@@ -4413,7 +4426,7 @@ async function listIssueBlockerAttentionMap(
         !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       )
         return false;
-      return pathHasLiveWork(edge.blockerIssueId, nextSeen);
+      return pathHasLiveWork(edge.blockerIssueId, nextSeen, traversal);
     });
   };
 
@@ -4426,6 +4439,7 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
+    const traversal = traversals.get(root.id)!;
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
@@ -4447,7 +4461,7 @@ async function listIssueBlockerAttentionMap(
 
     const classified = topLevelEdges.map((edge) => ({
       edge,
-      result: classifyPath(edge.blockerIssueId, new Set([root.id])),
+      result: classifyPath(edge.blockerIssueId, new Set([root.id]), traversal.truncated),
     }));
     const coveredBlockerCount = classified.filter(
       (entry) => entry.result.covered,
@@ -4530,7 +4544,7 @@ async function listIssueBlockerAttentionMap(
           sampleStalledFromChain ??
           null,
         blockingTreeLive: topLevelEdges.some((edge) =>
-          pathHasLiveWork(edge.blockerIssueId, new Set([root.id])),
+          pathHasLiveWork(edge.blockerIssueId, new Set([root.id]), traversal),
         ),
         directBlockerIssueId: sampleEntry?.edge.blockerIssueId ?? null,
         terminalBlockerIssueId,

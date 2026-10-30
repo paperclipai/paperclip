@@ -8,6 +8,7 @@ import {
   approvals,
   companies,
   createDb,
+  applyPendingMigrations,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
@@ -21,7 +22,10 @@ import {
 import { issueService } from "../services/issues.js";
 import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BLOCKER_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -36,8 +40,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
     svc = issueService(db);
   }, 20_000);
 
@@ -55,6 +60,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
