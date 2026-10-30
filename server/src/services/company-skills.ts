@@ -7210,7 +7210,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const outputDocument = await db
       .select({ body: documents.latestBody })
       .from(issueDocuments)
-      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .innerJoin(documents, and(eq(issueDocuments.documentId, documents.id), eq(documents.companyId, input.companyId)))
       .where(and(
         eq(issueDocuments.companyId, input.companyId),
         eq(issueDocuments.issueId, input.issueId),
@@ -7225,7 +7225,13 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         error: input.error ?? null,
         updatedAt: new Date(),
       })
-      .where(and(eq(companySkillTestRuns.companyId, input.companyId), eq(companySkillTestRuns.id, row.id)))
+      .where(and(
+        eq(companySkillTestRuns.companyId, input.companyId),
+        eq(companySkillTestRuns.id, row.id),
+        inArray(companySkillTestRuns.status, ["queued", "running"]),
+        isNull(companySkillTestRuns.deletedAt),
+        isNull(companySkillTestRuns.supersededAt),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
     return updated ? (await hydrateTestRuns(input.companyId, [updated]))[0] ?? null : null;

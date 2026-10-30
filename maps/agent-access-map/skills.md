@@ -225,6 +225,13 @@ native authorization, including after task-mode edits and recovery. Native tools
 allow only the harness task and admitted skills. Task creation, company browsing,
 connectors and assigned MCP tools are unavailable; native mutation receipts recheck
 the scope before replay or effects.
+Preparation reads the pinned version from the durable test row, replaces ordinary
+assignments, and enforces current skill access. Required environment skills retain
+their owner policy; a shadowed test pin fails explicitly. Recovery preserves the
+admitted selection. Preconfigured Runner homes reject managed Studio delivery.
+The [execution configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
+covers unassigned historical pins, Beta skills disabled, revoked access, recovery,
+unchanged agent assignments, and assembled heartbeat dispatch.
 
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and

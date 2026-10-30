@@ -42,12 +42,22 @@ compatible releases must preserve that projection contract.
 
 Studio tests deliver the selected saved version through the same native Runner
 path, even without a permanent agent assignment. Their `skill_test` mode remains
-explicit in the execution input. Task-bound credentials and native authorization
+explicit in the execution input. The durable test row replaces ordinary agent
+assignments with its exact version, independently of the Beta skills preference;
+required environment skills remain subject to their existing policy. A shadowed
+or inaccessible test skill fails preparation. Preconfigured Runner homes cannot
+receive this managed delivery, so Studio requires an isolated home. Task-bound
+credentials and native authorization
 retain the admitted scope through restart and task-mode edits. Native tools expose
 only the harness task and admitted skills; company browsing, task creation,
 connectors and assigned MCP tools are unavailable. A rollback image must understand
 that mode to continue an active Studio test. Settle tests before rolling back to an
 earlier image that rejects it.
+
+Native task completion publishes the Studio result and output snapshot in the
+same transaction as its status decision. Replaying a committed decision cannot
+recapture later document edits or duplicate completion activity. A successful
+provider turn alone does not complete a test whose task remains unfinished.
 
 Bundled release snapshots remain immutable. Reconciliation preserves an installed
 head; an older process must never promote its shipped bytes over another installed

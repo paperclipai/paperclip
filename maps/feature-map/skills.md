@@ -163,6 +163,9 @@ Production: Run bounded test of actual saved version with correct selected accou
 Remote Runner selection accepts the Studio test work mode and preserves its
 restricted scope; live qualification must cover the saved version delivered to
 the selected Computer, including a skill with no permanent agent assignment.
+The [execution configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
+checks that Studio's historical version replaces ordinary assignments without
+changing the agent's configuration. Use an isolated Runner home for this journey.
 Sources: Source: [SkillStudio.tsx](../../ui/src/pages/SkillStudio.tsx), [companySkills.ts](../../ui/src/api/companySkills.ts). Tests: [SkillStudio.test.tsx](../../ui/src/pages/SkillStudio.test.tsx), [company-skill-test-runs-service.test.ts](../../server/src/__tests__/company-skill-test-runs-service.test.ts)
 
 ### Documentation scope: Skills, Skill Studio, and teams

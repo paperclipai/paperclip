@@ -1,5 +1,30 @@
 # Skills on ephemeral web servers
 
+## Qualification status
+
+Implementation is in [PR #18334](https://github.com/paperclipai/paperclip/pull/18334).
+Hosted qualification uses the owned disposable
+[test tenant](https://ephemeral-skills-qa-oct-30.test.paperclip.app), external
+Postgres, S3, and a real remote Paperclip Computer. Cloud policy reserves the
+staging domain for master; the rejected staging branch request below made no
+deployment.
+
+- **Passed:** independent-process PostgreSQL/S3 failure matrix; hosted A → B → C
+  replacement with predecessor homes absent; C reads and executes B's acknowledged
+  save; historical repository pin delivery while a newer revision is installed.
+- **Passed:** latest code review at `040dad3dc3`, confidence 5/5, no unresolved
+  findings. Workspace typecheck, build, all server and Runner CI suites passed.
+- **Passed:** compatible image rollback to `6518b323` retained the newer managed
+  revisions and delivered their bytes plus the historical repository pin remotely.
+- **In progress:** deployed unassigned-skill Studio retry after fixing selection
+  and native completion. The browser CI shard passed on rerun; full CI at
+  `040dad3dc3` is green. New changes require another CI/review run.
+
+Runtime candidate `350f1b377c` contains the native Studio scope fix. The subsequent
+`040dad3dc3` commit changes only test assertions, a test database fixture and these
+notes. The chronological record below retains earlier failures and intermediate
+pending states; this section describes the current qualification status.
+
 ## Accepted contract
 
 Given the same database, object storage, secrets, and supported application
@@ -299,3 +324,38 @@ handoff, and production volume removal are outside this slice.
   external-Postgres helper; initial attempts hit exhausted embedded-Postgres
   resources and a startup timeout, retained as failures rather than passes.
   These follow-ups change only tests and evidence, not candidate runtime code.
+- Image `350f1b377c` deployed successfully in Cloud run `41115408877`, confirmed
+  by local health on deployment `d70457ab-a812-45d5-8a38-657f6bfc02de`, replica
+  `9f58192d-9207-4065-86e4-48887c6a8b3e`. A/B homes and C's marker were absent.
+- Studio test `ef0aa327-f719-44a3-bea2-1d051f2a793a`, task EPH-8
+  (`860476c5-d4bf-4619-9206-8aa18884f545`), executed successfully but delivered
+  the agent's normally assigned primary skill instead of the requested unassigned
+  fork. Its report explicitly records the mismatch. This is a failed qualification,
+  regardless of the task's Done status. The fix passes the durable Studio pin into
+  execution preparation, replacing ordinary assignments while preserving recovery
+  pins and current access checks. Hosted retry remains required.
+- The same EPH-8 heartbeat (`94eeb6ff-7d9e-49b7-bee2-0ef5f41ff8a4`) succeeded
+  and marked its task Done, but the Studio row remained queued with an empty
+  output snapshot. Native completion bypassed the REST-only success hook. Native
+  status publication now calls the existing skills owner within its transaction;
+  status, output and activity commit together. Four real-Postgres regressions pass
+  for completion/cancellation, replay from another client, transaction rollback,
+  blocked work and superseded tests. Completion uses a conditional terminal update.
+- The two selection regressions pass, including assembled dispatch of an unassigned
+  historical executable file. Server typecheck and map checks pass. A broad local
+  execution suite attempt hit timeout cascades (20 passed, 9 failed); this is not
+  counted as success. Isolated new tests passed; the full affected suite is rerunning.
+- Compatible rollback request `2363f01e-2e6b-4b72-9234-3fd0c5f22e88` deployed
+  `6518b323528b2b595c5949c3ed2c57a8d2438cb6` through Cloud run `41116892516`.
+  Deployment `5034b027-d9e2-4bd6-8efe-526d3d065d7d`, replica
+  `9ff45218-e553-4122-b411-e7052c521917`, was confirmed through local health.
+  The predecessor's `qualification-marker-d` was absent. Studio reopened the
+  unassigned fork's v3 supporting file as `unassigned-payload-C-20261030`.
+- Rollback task EPH-9 (`d5d03621-9616-4713-88ad-0ea54e4c3d53`), run
+  `7ae0b61d-0e9f-4761-914c-9dc399c0ebc8`, completed on a real remote Computer.
+  Its `rollback-skill-proof` document matches all six independently known hashes,
+  managed v7 and repository v1 IDs. It executed the unchanged script with exit 0,
+  mode 0555 and the acknowledged B payload. Durable command event sequence 293
+  was independently inspected through the tenant console and confirms those
+  bytes, hashes and actual execution. The repository rule also produced the useful
+  independent-requests `Promise.all()` recommendation.

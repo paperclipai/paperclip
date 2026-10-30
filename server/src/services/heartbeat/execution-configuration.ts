@@ -63,6 +63,8 @@ export interface HeartbeatExecutionConfigurationInput {
     acceptedPlanWakeRoutingDecision: Awaited<ReturnType<typeof resolveAcceptedPlanWakeRoutingDecision>> | null;
     taskProjectContext: Pick<typeof projects.$inferSelect, "id" | "env"> | null;
     routineEnvContext: Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getRoutineEnvForExecutionIssue"]>>;
+    /** Resolved from the durable Studio test row by task-context, never wake input. */
+    pinnedSkillTest?: { key: string; versionId: string } | null;
   };
   config: {
     sourceWorkspaceConfig: Record<string, unknown>;
@@ -88,13 +90,18 @@ export interface HeartbeatExecutionConfigurationInput {
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
   const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
   const time = createHeartbeatPreparationTiming(run.id);
-  const { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext } = input.task;
+  const { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest } = input.task;
   const { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput } = input.environment;
   const sourceWorkspaceConfig = agent.adapterType === "paperclip_runner"
     ? { ...input.config.sourceWorkspaceConfig,
         homeMode: bindHeartbeatRunnerHomeMode(parseObject(agent.adapterConfig), persistedNativeExecutionInput).homeMode }
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
+  if (preconfiguredHome && pinnedSkillTest) {
+    throw new ConfigurationIncompleteFailure("Skill tests require an isolated Runner home to deliver the saved version.", {
+      configurationIncomplete: { reason: "skill_unavailable", actionUrl: `/agents/${agent.id}/runtime` },
+    });
+  }
   const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);
   const observabilityKind = (harness: string) => harness === "codex_local" ? "codex" as const
     : harness === "claude_local" ? "claude" as const
@@ -133,7 +140,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,
     runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
   const runScopedMentionedSkillKeys =
-    preconfiguredHome ? [] : await time("configuration_mentions", () => resolveRunScopedMentionedSkillKeys({
+    preconfiguredHome || pinnedSkillTest ? [] : await time("configuration_mentions", () => resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
       issueId,
@@ -141,7 +148,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       actor: skillActor,
     }));
   const runScopedSkillKeys =
-    acceptedPlanContinuationWake &&
+    !pinnedSkillTest && acceptedPlanContinuationWake &&
     !acceptedPlanWakeRoutingDecision?.suppressAcceptedContinuation
       ? [...runScopedMentionedSkillKeys, ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
       : runScopedMentionedSkillKeys;
@@ -250,7 +257,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       return typeof saved.key === "string" && typeof saved.shadowedBy === "string" && Object.hasOwn(storedVersions, saved.shadowedBy)
         ? [{ key: saved.key, shadowedBy: saved.shadowedBy }] : [];
     }) : [];
-  const selectedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
+  const selectedConfig = pinnedSkillTest
+    ? writePaperclipSkillSyncPreference(resolvedConfig, [pinnedSkillTest])
+    : applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
   const { config: effectiveResolvedConfig, skillKeys: environmentSkills, shadowedSkills } = hasStoredVersions
     ? { config: selectedConfig, skillKeys: [], shadowedSkills: savedShadowedSkills }
     : await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig, selectedConfig);
@@ -274,6 +283,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         : skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries, {
           versionPinsEnabled: resolvedInstanceSettings.experimental.enableBetaSkills === true,
         });
+      // Studio always executes its saved revision, independently of assignment
+      // pins and the Beta skills preference. Recovery keeps the admitted map.
+      if (!hasStoredVersions && pinnedSkillTest) versionSelections.set(pinnedSkillTest.key, pinnedSkillTest.versionId);
       return await withSkillActor(skillActor, () => companySkills.withRuntimeSkillEntries(agent.companyId, {
         versionSelections, snapshotLatest: true,
         ...(hasStoredVersions
@@ -282,6 +294,12 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         selectVersions: async entries => {
           const available = hasStoredVersions ? entries.filter(entry => Object.prototype.hasOwnProperty.call(storedVersions, entry.key)) : entries;
           const availableKeys = new Set(available.map(entry => entry.key));
+          if (!hasStoredVersions && pinnedSkillTest && (!availableKeys.has(pinnedSkillTest.key)
+            || shadowedSkills?.some(skill => skill.key === pinnedSkillTest.key))) {
+            throw new ConfigurationIncompleteFailure("The skill test's pinned skill is unavailable or no longer permitted.", {
+              configurationIncomplete: { reason: "skill_unavailable", actionUrl: "/skills" },
+            });
+          }
           if (hasStoredVersions && Object.keys(storedVersions).some(key => !availableKeys.has(key))) {
             throw new ConfigurationIncompleteFailure("A pinned skill is unavailable or no longer permitted.", {
               configurationIncomplete: { reason: "skill_unavailable", actionUrl: "/skills" },
