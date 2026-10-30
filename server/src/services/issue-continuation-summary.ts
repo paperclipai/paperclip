@@ -20,6 +20,7 @@ type IssueSummaryInput = {
   description: string | null;
   status: string;
   priority: string;
+  workMode?: string | null;
 };
 
 type RunSummaryInput = {
@@ -95,6 +96,7 @@ function extractPathCandidates(...texts: Array<string | null | undefined>) {
 
 function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   if (issue.status === "done" || issue.status === "in_review") return "review";
+  if (issue.workMode) return issue.workMode;
   if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled" || run.status === "interrupted") return "implementation";
   if (issue.status === "backlog" || issue.status === "todo") return "plan";
   return "implementation";
@@ -262,6 +264,7 @@ export async function refreshIssueContinuationSummary(input: {
         description: issues.description,
         status: issues.status,
         priority: issues.priority,
+        workMode: issues.workMode,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
