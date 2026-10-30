@@ -1,8 +1,8 @@
 # Durable run logs and provider traces for disposable web servers
 
-Status: implementation and PR qualification in progress. Runtime storage and
-history migration are implemented behind explicit opt-in. Native pending-tail
-retention and production-provider qualification remain acceptance gates.
+Status: implementation and PR qualification in progress. Runtime storage,
+history migration, and canonical native source replay are implemented behind
+explicit opt-in. Production-provider qualification remains a rollout gate.
 Owner: this Codex chat, through the reviewable PR. Date: 2026-10-30.
 Revision: object-storage-first, following Dotta's operational correction on 2026-10-30.
 Source revision inspected: `0c70cedce9a803bdc201324528abb35e423e7cd0`.
@@ -68,8 +68,12 @@ provider protocol traces here are a separate, restricted diagnostic store.
 
 Do not infer cloud durability from `RunLogStore.append()` succeeding today, or
 from a trace's local `acknowledgedDebugSequence`. Neither proves remote commit.
-Do not reconstruct logs from `heartbeat_run_events`: raw/log presentation and
-structured event histories are different contracts.
+Generic stdout/stderr and raw traces cannot be reconstructed from
+`heartbeat_run_events`. The implementation investigation found a narrower
+surviving source: native control ingestion already commits the exact validated
+PRP event before ACK. Its canonical `paperclip.prp.event` log export can replay
+that existing source with an S3 cursor, without adding payload writes. This
+replaces the tentative second Runner spool below for canonical native output.
 
 ## Operational decision
 
@@ -88,7 +92,7 @@ network and storage work. Upload each newly sealed segment once instead.
 | Location | Responsibility |
 | --- | --- |
 | Browser live stream / bounded server memory | Immediate progress display; not a durable receipt |
-| Remote Runner spool, where supported | Replayable pending output across web replacement until storage receipt |
+| Existing native control event source / Runner outbox | Existing committed native records survive ACK; unacknowledged events remain replayable at the Runner |
 | S3-compatible storage | Immutable log/trace segments and bounded manifest/index pages |
 | Postgres | Existing company/run ownership, backend/reference, final status and expiry/deletion state; no per-batch writes |
 | Disposable web disk | Optional bounded buffer/read cache; never the only acknowledged copy |
@@ -212,13 +216,18 @@ preserve the pending tail after a crash. Distinguish these boundaries:
   replay retention before log projection. Inspect and qualify this exact path.
 - Live browser delivery: presentation, not permission to discard the source.
 
-Prefer a bounded remote Runner spool whose log-export retention advances only
-on a storage receipt, independently of control-protocol ACKs. That keeps the
-source available while the web server is replaced and allows batching without
-making each token await S3. This retention/cursor capability must be implemented
-and qualified; it is **not claimed to exist today**. Reuse the existing remote
-log/outbox mechanisms where they meet the contract. Do not add a new broker or
-always-on logging service without evidence that the existing mechanisms fail.
+Selected after inspecting the real ACK path: reuse the native control port's
+already-durable canonical event rows. The S3 head advances their export cursor
+atomically with the log bytes. Takeover reads later native rows in bounded
+16-row pages, verifies source identity and hash, then uses the same formatter,
+redaction and compaction as live recording. The ordinary contiguous stream adds
+no SQL. Startup, missing callback ranges, and interrupted settled archives use
+bounded recovery reads; settled repair waits for the old native lease to expire.
+This avoids a second payload copy, new per-record DB writes, and a new Runner
+retention protocol. Other stdout and raw trace bytes are not inferred from this
+source. A retained native control row remains readable after Runner cleanup.
+The existing Runner outbox retains unacknowledged records. No second spool,
+broker, always-on logging service, or full transcript checkpoint is added.
 
 An alternative is holding the existing transport ACK until a batch is published,
 but use it only if a real protocol experiment proves bounded pipelining and
@@ -442,20 +451,42 @@ claim live-provider or fleet evidence from deterministic fixtures.
   transfer, stored-object, and timing counts. It is a synthetic envelope,
   not a fleet cost forecast. The first index prototype left obsolete COW
   objects; the selected immutable binary index removes that normal growth.
-- Full workspace typecheck and build passed before the final index change;
-  affected checks are being repeated. The full Vitest run is in progress.
+- Full workspace typecheck and build passed on the rebased storage revision;
+  both are being repeated after native replay and the review fixes.
   The native Postgres package initially lacked its postinstall-created library
   symlinks; its standard hydration helper repaired that local test prerequisite.
-- The implementation does **not** change native control ACKs or retain a
-  producer's uncommitted tail outside the disposable web process. Durable log
-  receipts and live log messages follow S3 publication. Optional raw capture
-  can remain incomplete after a crash. The stronger pending-tail replay row
-  above remains unpassed; do not advertise lossless generated-output replay.
+- Native pending-tail qualification passed with the real Rust recovery fixture,
+  `PaperclipControlPlanePort`, production recorder, real Postgres and Moto. A
+  received ACK released 32 records from the Runner while S3's source cursor was
+  still zero. After `SIGKILL` and deletion of the old controller directory, B
+  exported all 64 records once while the same Runner PID continued. Snapshot and
+  Stop commands completed in 453 ms and 122 ms. The first attempt failed because
+  its new controller directory had mode 0755; the fixture now creates mode 0700.
+  Both failed and successful evidence remain in this chat's temporary artifacts.
+  This is a deterministic protocol experiment, not a live model or Railway test.
+- Durable log receipts and live log messages follow S3 publication. The native
+  export reuses existing control rows, adds no payload writes, and repairs missing
+  callback ranges. Interrupted settled archives can be repaired on normal reads
+  after the old native lease expires. Optional raw capture and server-only
+  diagnostics without a surviving source can remain incomplete after a crash.
+- Review fixes cover absent-head deletion fencing, shared capture ownership,
+  abort/drain on deletion, local expiry deadlines and multi-page cleanup, bounded
+  transient retries and admission backpressure, partial-startup cleanup, and
+  explicit trace-import cleanup markers. A source integrity failure leaves the
+  native archive's final size unknown instead of certifying a partial result.
+- Full local Vitest could not run on host embedded Postgres because concurrent
+  clusters exhausted macOS SysV semaphores. Affected suites are running against
+  isolated Docker databases. One local full typecheck attempt also lacked sandbox
+  permission for tsx IPC; the authorized rerun uses the normal workspace command.
+- PR: https://github.com/paperclipai/paperclip/pull/18327. Initial CI passed 51
+  checks with one E2E teardown lock timeout. That E2E shard passed on the next
+  revision; its Runner shard then failed the Antigravity authentication fixture.
+  These failures are retained, and fresh-head CI remains required.
 - Production remains disabled. Railway Buckets are the parent fleet's current
   S3 provider; their conditional-write, version/deletion, workload cost, remote
   capture, and sleep/wake behavior need actual-target qualification. No fleet
   environment or volume was changed.
-- Next gate: finish fresh-source storage/privacy/retention tests and PR review;
-  retain the pending-tail and actual-provider gates before any volume-free rollout.
+- Next gate: finish fresh-source checks and PR review; retain actual-provider,
+  live remote capture, and parent cutover gates before any volume-free rollout.
 - No Paperclip issue/run context was supplied. This repository plan is the state
   record; no issue work product or production migration is claimed.

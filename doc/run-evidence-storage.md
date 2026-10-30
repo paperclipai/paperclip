@@ -3,7 +3,10 @@
 The optional `s3_segments` backend stores payloads directly in S3-compatible
 storage. Postgres retains the existing run/trace references and lifecycle rows.
 It adds no payload table, per-record SQL, or database-to-object compactor.
-Structured `heartbeat_run_events` remain their existing, separate database path.
+Structured `heartbeat_run_events` retain their existing database path. Native
+events already committed there before a Runner ACK also provide the recovery
+source for an interrupted canonical native log export. No additional event copy
+or payload write is introduced.
 
 ## Configuration
 
@@ -60,8 +63,12 @@ head before returning a durability receipt. Committed reads use immutable roots,
 so publication cannot change the bytes behind an already selected snapshot.
 
 An individual store `append` resolves only after publication. Heartbeat's
-`onLog` diagnostic callback queues those bounded promises without serially
-waiting for each network batch. Live log messages and progress are published
+`onLog` diagnostic callback waits for bounded admission without serially
+waiting for each network batch. At capacity it waits for space; admission beyond
+the bounded waiting allowance is rejected without poisoning accepted batches.
+Transient network, 409, 429 and server errors receive bounded retries. A 412
+or a changed head fences the stale writer; a 409 alone does not prove ownership
+loss or conditional-write support. Live log messages and progress are published
 after storage confirmation. Finalization drains admitted writes before closing
 and hashing the stream. Logging failure reports incomplete persistence and
 leaves the final size/digest unknown rather than claiming a complete snapshot.
@@ -76,6 +83,7 @@ Defaults and fixed safeguards:
 | Segment target | 1 MiB |
 | Pending bytes per writer | 8 MiB |
 | Pending run-log bytes per process | 64 MiB |
+| Additional waiting admission | 8 MiB / 32 calls per process |
 | Concurrent run-log flushes | 4 |
 | Concurrent journal object operations | 8, with 32 queued operations |
 | Object operation/batch cancellation deadline | 15 seconds |
@@ -103,12 +111,28 @@ The live log path waits for publication before showing that output. Raw sidecar
 capture remains optional; a crash can leave an incomplete uncommitted tail, and
 only durably closed channels plus valid terminal markers qualify as complete.
 
-This backend does not change the native PRP control-protocol ACK or sparse
-controller checkpoints. Their transcript recovery limitations are documented in
-[remote continuity](testing-native-remote-continuity.md). A complete claim of
-lossless generated-output replay across arbitrary controller crashes also needs
-its qualified source-retention/ACK mechanism. The storage feature alone does not
-qualify that path, other filesystem state, or Railway HTTP handoff.
+Native PRP events have a surviving source: the control port already commits
+validated, redacted events before acknowledging them. The S3 head checkpoints
+the highest exported database event cursor with the batch's bytes. A replacement
+replays later native source rows in bounded 16-row pages, checks their identity
+and canonical hash, and exports the same `paperclip.prp.event` representation
+through normal log redaction/compaction. Late callbacks and duplicate delivery
+cannot append the same source record again. This is a canonical native export;
+generic stdout, stderr, and raw provider traces are not reconstructed from event
+rows. The control ACK and sparse checkpoint formats remain unchanged.
+
+Recovery runs before native execution reconnects. If the run settled before its
+archive finished, the normal log API, issue preview, or feedback reader can repair
+it after the native controller lease expires. Concurrent requests share recovery;
+final metadata is saved only when no later native source remains. Read-only
+customer-success inspection reads the currently published prefix. A failed
+repair leaves final size/digest unknown and preserves the existing source.
+Retained native events are not deleted by Runner cleanup. Recovery adds bounded
+reads and one final metadata update, with no new per-record SQL on the normal
+contiguous output path. Raw optional capture can still be incomplete after a crash.
+
+The [remote continuity](testing-native-remote-continuity.md) protocol and the
+parent deployment's other filesystem and HTTP handoff requirements still apply.
 
 ## Trace deletion, expiry, and sleep
 
@@ -122,7 +146,8 @@ object-version retention need a separate operator policy; an ordinary DELETE
 must not be mistaken for erasure of historical versions.
 
 The shared coordinator restores expiry/cleanup work on startup and registers
-actual deadlines. No completed-history polling is added. External trace expiry
+actual deadlines for local and external captures. New local inserts also wake it;
+expired backlogs drain in bounded pages. No completed-history polling is added. Trace expiry
 is not yet part of Cloud's durable wake contract, so outstanding trace deadlines
 conservatively block instance sleep. Removing that blocker requires qualification
 of the corresponding external wake, not a longer polling interval.
@@ -153,6 +178,10 @@ then conditionally changes the run's backend/reference. Unknown-completeness
 mirrors, missing/corrupt payloads, and active writers block publication. Existing
 trace bytes, download ordering, integrity state and original expiry are retained.
 Neither path fabricates missing historical data or extends trace retention.
+An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
+the original local sidecars, while deletion and expiry retain responsibility for
+the staged object prefix. Resume the importer to finish its verified switch.
+Ordinary local traces have no S3 cleanup dependency.
 
 Keep the volume until every retained item has been verified from a clean web
 filesystem. Rollback must use a compatible reader against the same remote state.
@@ -173,3 +202,14 @@ a loopback test backend, confirms exact replacement reads and stale-writer
 rejection, and reports requests/bytes/timing. It uses synthetic credentials and
 refuses a non-loopback target. This proves its tested transport and workload;
 production-provider qualification and actual Railway deployment remain separate.
+
+`server/scripts/qualify-native-log-recovery.ts` uses the real Rust
+`recovery-fixture` example, real Postgres, the control port, production recorder,
+and S3 backend. It kills the controller after Runner ACKs but before the S3
+cursor catches up, deletes that controller's directory, and restores sparse
+control state into a fresh controller. It checks exact source order, no duplicate
+records, the same surviving Runner PID, and control/Stop responsiveness. Build
+the example with `cargo build --locked --manifest-path packages/paperclip-runner/runner/Cargo.toml -p paperclip-runner-core --example recovery-fixture`.
+It accepts the same two explicit loopback test endpoints and creates a private
+schema and bucket. This deterministic protocol experiment does not qualify a
+live provider, remote execution environment, or production S3 vendor.

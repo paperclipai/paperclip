@@ -83,6 +83,25 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
     vi.stubEnv("RUN_LOG_S3_ENDPOINT", endpoint!);
     vi.stubEnv("RUN_LOG_S3_REGION", "us-east-1");
   }
+  it("schedules expiry when a new local trace is created after startup becomes quiet", async () => {
+    const store = providerTraceStore(db),
+      companyId = randomUUID(),
+      runId = randomUUID();
+    expect(await store.nextRetentionDeadline()).toBeNull();
+    const capture = await store.prepare({
+      companyId,
+      runId,
+      provider: "codex",
+      requestedBy: "test",
+    });
+    expect(await store.nextRetentionDeadline()).toBe(
+      new Date(capture.metadata.expiresAt).getTime(),
+    );
+    vi.stubEnv("RUN_LOG_S3_BUCKET", bucket);
+    vi.stubEnv("RUN_LOG_S3_ENDPOINT", "http://127.0.0.1:1");
+    await store.remove(runId, companyId);
+    expect(await store.nextRetentionDeadline()).toBeNull();
+  });
   it("drains more than one page of expired local files without requiring another producer", async () => {
     const companyId = randomUUID(),
       expiresAt = new Date(Date.now() - 60_000);
@@ -126,17 +145,15 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
       });
       expect(idleWorkSnapshot().active).toBe(baseline + 1);
       const other = randomUUID();
-      await db
-        .insert(providerTraceRecords)
-        .values({
-          companyId: company,
-          runId: other,
-          status: "complete",
-          provider: "codex",
-          traceRef: `s3-segments-v1:${company}/${other}/${randomUUID()}.ndjson`,
-          requestedBy: "test",
-          expiresAt: new Date(Date.now() + 3600_000),
-        });
+      await db.insert(providerTraceRecords).values({
+        companyId: company,
+        runId: other,
+        status: "complete",
+        provider: "codex",
+        traceRef: `s3-segments-v1:${company}/${other}/${randomUUID()}.ndjson`,
+        requestedBy: "test",
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
       await expect(route.remove(run, company)).rejects.toThrow("cleanup_pending");
       expect(await route.nextRetentionDeadline()).toBeLessThanOrEqual(Date.now());
       await route.remove(other, company);
@@ -147,6 +164,43 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
       await route.remove(run, company);
       expect(await route.nextRetentionDeadline()).toBeNull();
       expect(await fs.readdir(directory)).toEqual([]);
+    },
+  );
+  it.skipIf(!endpoint)(
+    "keeps an interrupted import readable locally and fences its staged remote prefix on deletion",
+    async () => {
+      external();
+      const companyId = randomUUID(),
+        runId = randomUUID(),
+        filename = `${randomUUID()}.ndjson`;
+      const traceRef = `s3-import-v1:${companyId}/${runId}/${filename}`;
+      const bytes = Buffer.from('{"kind":"frame","rawBase64":"e30="}\n');
+      await fs.writeFile(path.join(directory, filename), bytes);
+      await db
+        .insert(providerTraceRecords)
+        .values({
+          companyId,
+          runId,
+          traceRef,
+          status: "complete",
+          provider: "codex",
+          requestedBy: "test",
+          expiresAt: new Date(Date.now() + 3600_000),
+        });
+      const store = providerTraceStore(db);
+      expect((await store.download(runId, companyId))!.bytes).toEqual(bytes);
+      await store.remove(runId, companyId);
+      expect(await store.download(runId, companyId)).toBeNull();
+      expect(await store.nextRetentionDeadline()).toBeNull();
+      expect(await fs.readdir(directory)).toEqual([]);
+      const objects = await client!.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: `provider-traces/segments-v1/${companyId}/${runId}/${filename}/`,
+        }),
+      );
+      expect(objects.Contents).toHaveLength(2);
+      expect(objects.Contents!.every((object) => object.Key!.endsWith("head.json"))).toBe(true);
     },
   );
   it.skipIf(!endpoint)(

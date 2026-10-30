@@ -9,7 +9,7 @@ import type {
   ProviderTraceMetadata,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { createProviderTraceObjectStore, objectProviderTraceRef, type ProviderTraceObjectStore } from "./provider-trace-object-store.js";
+import { createProviderTraceObjectStore, objectProviderTraceRef, importingProviderTraceRef, providerTraceCleanupRef, type ProviderTraceObjectStore } from "./provider-trace-object-store.js";
 import { resolveRunLogS3 } from "./run-log-store.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logActivity } from "./activity-log.js";
@@ -34,7 +34,7 @@ function traceRoot() {
 }
 
 function tracePath(traceRef: string) {
-  const external = objectProviderTraceRef(traceRef);
+  const external = objectProviderTraceRef(traceRef) ?? importingProviderTraceRef(traceRef);
   if (external) traceRef = external[3]!;
   if (
     path.basename(traceRef) !== traceRef ||
@@ -280,13 +280,10 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       catch { return [{ kind: "trace_status", status: "incomplete", reason: "invalid_sidecar_record" }]; }
     });
   }
-  async function removeTraceFiles(traceRef: string, owner?: { companyId: string; runId: string }, signal?: AbortSignal) {
+  async function removeTraceFiles(traceRef: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (objectProviderTraceRef(traceRef)) await objectStore().remove(traceRef, signal);
-    else if (owner && process.env.RUN_LOG_S3_BUCKET && process.env.PAPERCLIP_SECRETS_MASTER_KEY
-      && /^[a-f0-9-]+\.ndjson$/.test(traceRef)) {
-      await objectStore().remove(`s3-segments-v1:${owner.companyId}/${owner.runId}/${traceRef}`, signal);
-    }
+    const cleanupRef = providerTraceCleanupRef(traceRef);
+    if (cleanupRef) await objectStore().remove(cleanupRef, signal);
     for (const filePath of [tracePath(traceRef), rehydrationTracePath(traceRef)]) {
       try {
         await fs.unlink(filePath);
@@ -319,8 +316,8 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       expired = updated;
       newlyExpired = true;
     } else if (row.expiresAt.getTime() > now.getTime()) {
-      if (row.status !== "deleted" || !objectProviderTraceRef(row.traceRef)) return null;
-      await removeTraceFiles(row.traceRef, row, signal);
+      if (row.status !== "deleted" || !providerTraceCleanupRef(row.traceRef)) return null;
+      await removeTraceFiles(row.traceRef, signal);
       const [cleaned] = await db.update(providerTraceRecords).set({ traceRef: EXPIRED_PROVIDER_TRACE_REF, updatedAt: now })
         .where(and(eq(providerTraceRecords.id, row.id), eq(providerTraceRecords.traceRef, row.traceRef))).returning();
       return cleaned ?? row;
@@ -331,7 +328,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     // marker only after both raw sidecars are absent; failures are retried by
     // later reads and cleanup passes.
     if (expired.traceRef !== EXPIRED_PROVIDER_TRACE_REF) {
-      await removeTraceFiles(expired.traceRef, expired, signal);
+      await removeTraceFiles(expired.traceRef, signal);
       await db
         .update(providerTraceRecords)
         .set({
@@ -372,7 +369,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       .where(
         and(
           or(lte(providerTraceRecords.expiresAt, now), and(eq(providerTraceRecords.status, "deleted"),
-            sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`)),
+            or(sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`, sql`${providerTraceRecords.traceRef} like 's3-import-v1:%'`))),
           or(isNull(providerTraceRecords.deletedAt), ne(providerTraceRecords.traceRef, EXPIRED_PROVIDER_TRACE_REF)),
         ),
       ).orderBy(asc(providerTraceRecords.expiresAt)).limit(100);
@@ -403,6 +400,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (existing) {
+      if (importingProviderTraceRef(existing.traceRef)) throw new Error("provider_trace_import_in_progress");
       const now = new Date();
       const expired = existing.expiresAt.getTime() <= now.getTime();
       if (expired) await expireRow(existing, now);
@@ -429,12 +427,10 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       runId: input.runId, companyId: input.companyId, status: "capturing", provider: input.provider,
       traceRef, requestedBy: input.requestedBy, expiresAt,
     };
-    const row = selected === "s3_segments"
-      ? await db.transaction(async tx => {
+    const row = await db.transaction(async tx => {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerTraceRetention);
           return (await tx.insert(providerTraceRecords).values(values).returning())[0];
-        })
-      : (await db.insert(providerTraceRecords).values(values).returning())[0];
+        });
     if (!row) throw new Error("provider_trace_metadata_create_failed");
     if (objectProviderTraceRef(traceRef)) {
       if (!input.assertWriterAuthority) throw new Error("External trace capture requires admitted writer authority");
@@ -616,7 +612,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
   async function remove(runId: string, companyId: string) {
     const row = await getByRun(runId, companyId);
     if (!row) return null;
-    if (objectProviderTraceRef(row.traceRef)) {
+    if (providerTraceCleanupRef(row.traceRef)) {
       const now = new Date();
       await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerTraceRetention);
@@ -624,12 +620,12 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
           .where(and(eq(providerTraceRecords.id, row.id), eq(providerTraceRecords.traceRef, row.traceRef)));
       });
 
-      await removeTraceFiles(row.traceRef, row);
+      await removeTraceFiles(row.traceRef);
       return (await db.update(providerTraceRecords).set({ traceRef: EXPIRED_PROVIDER_TRACE_REF, updatedAt: new Date() })
         .where(and(eq(providerTraceRecords.id, row.id), eq(providerTraceRecords.traceRef, row.traceRef))).returning())[0] ?? null;
     }
     if (row.deletedAt) return null;
-    await removeTraceFiles(row.traceRef, row);
+    await removeTraceFiles(row.traceRef);
     const now = new Date();
     return db.update(providerTraceRecords).set({ status: "deleted", deletedAt: now, updatedAt: now })
       .where(eq(providerTraceRecords.id, row.id)).returning().then(rows => rows[0] ?? null);
@@ -637,10 +633,8 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
 
   async function nextRetentionDeadline() {
     const [row] = await db.select({ at: providerTraceRecords.expiresAt, deletedAt: providerTraceRecords.deletedAt })
-      .from(providerTraceRecords).where(or(
-        sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`,
-        and(lte(providerTraceRecords.expiresAt, new Date()), ne(providerTraceRecords.traceRef, EXPIRED_PROVIDER_TRACE_REF)),
-      ))
+      .from(providerTraceRecords).where(and(ne(providerTraceRecords.traceRef, EXPIRED_PROVIDER_TRACE_REF),
+        or(isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`, sql`${providerTraceRecords.traceRef} like 's3-import-v1:%'`)))
       .orderBy(asc(sql`case when ${providerTraceRecords.deletedAt} is not null then 0 else 1 end`), asc(providerTraceRecords.expiresAt)).limit(1);
     return row ? row.deletedAt ? Date.now() : row.at.getTime() : null;
   }

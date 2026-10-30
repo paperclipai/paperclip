@@ -172,10 +172,15 @@ disk outbox. No second remote journal or new polling loop is introduced.
 The live event window keeps the latest identity, turn, result and usage anchors,
 as well as unsettled semantic inputs, through long output streams. The 4,096-event
 and 500-command limits remain. This checkpoint is intentionally not a complete
-transcript: an abrupt crash can lose display output already acknowledged but not
-yet projected to the existing run log. The same provider turn continues; recovery
-never reruns work to reconstruct display text. Tool outcomes and terminal state
-retain their durable barriers.
+transcript. With local-only logs, an abrupt crash can lose a display projection
+already acknowledged by the controller. The opt-in `s3_segments` log backend
+checkpoints its canonical native export cursor in S3 and replays missing records
+from the existing validated `heartbeat_run_events` source on takeover. This adds
+no payload writes or per-record checkpoint transactions. Generic process output
+and optional raw provider sidecars have separate durability boundaries. See
+[run evidence storage](run-evidence-storage.md). The same provider turn continues;
+recovery never reruns provider work to reconstruct display text. Tool outcomes
+and terminal state retain their durable barriers.
 
 Rollback must use a controller that understands sparse checkpoints and the signed
 recovery cursor. A v2 decoder alone is insufficient. Runners admitted before this

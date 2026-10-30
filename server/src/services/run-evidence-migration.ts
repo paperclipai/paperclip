@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
+  heartbeatRunEvents,
   nativeRunFinalizations,
   providerTraceRecords,
   type Db,
 } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createObjectByteJournal } from "./object-byte-journal.js";
-import { createProviderTraceObjectStore } from "./provider-trace-object-store.js";
+import {
+  createProviderTraceObjectStore,
+  importingProviderTraceRef,
+} from "./provider-trace-object-store.js";
 import { openLegacyRunLogForMigration, resolveRunLogS3 } from "./run-log-store.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -73,6 +77,7 @@ export async function migrateRunEvidence(
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
       status: heartbeatRuns.status,
+      runtimeMode: heartbeatRuns.runtimeMode,
       logRef: heartbeatRuns.logRef,
       bytes: heartbeatRuns.logBytes,
       sha256: heartbeatRuns.logSha256,
@@ -178,7 +183,22 @@ export async function migrateRunEvidence(
           remoteHash.update(await journal.readRange(writer.head, start, 1024 * 1024));
         if (remoteHash.digest("hex") !== digest)
           throw new Error("migration_remote_digest_mismatch");
-        writer.head = { ...writer.head, sequence };
+        const [nativeSource] =
+          run.runtimeMode === "native"
+            ? await db
+                .select({ seq: heartbeatRunEvents.seq })
+                .from(heartbeatRunEvents)
+                .where(
+                  and(
+                    eq(heartbeatRunEvents.companyId, run.companyId),
+                    eq(heartbeatRunEvents.runId, run.id),
+                    sql`${heartbeatRunEvents.sourceEventId} is not null`,
+                  ),
+                )
+                .orderBy(desc(heartbeatRunEvents.seq))
+                .limit(1)
+            : [];
+        writer.head = { ...writer.head, sequence, sourceCursor: nativeSource?.seq ?? 0 };
         await journal.close(writer);
         const [updated] = await db
           .update(heartbeatRuns)
@@ -240,11 +260,15 @@ export async function migrateRunEvidence(
       if (!SETTLED.includes(runStatus) || trace.status === "capturing")
         throw new Error("legacy_trace_writer_not_settled");
       await assertDrained(trace.runId, trace.companyId);
-      if (!/^[a-f0-9-]+\.ndjson$/.test(trace.traceRef)) throw new Error("invalid_legacy_trace_ref");
+      const importing = importingProviderTraceRef(trace.traceRef);
+      if (importing && (importing[1] !== trace.companyId || importing[2] !== trace.runId))
+        throw new Error("trace_import_binding_mismatch");
+      const filename = importing?.[3] ?? trace.traceRef;
+      if (!/^[a-f0-9-]+\.ndjson$/.test(filename)) throw new Error("invalid_legacy_trace_ref");
       const file = path.join(
         process.env.PROVIDER_TRACE_BASE_PATH ||
           path.join(resolvePaperclipInstanceRoot(), "data", "provider-traces"),
-        trace.traceRef,
+        filename,
       );
       for (const sidecar of [file, `${file}.rehydration`]) {
         const stat = await fs.stat(sidecar).catch((error) => {
@@ -269,7 +293,27 @@ export async function migrateRunEvidence(
       item.bytes = bytes.length;
       item.sha256 = digest;
       if (traceObjects) {
-        const ref = `s3-segments-v1:${trace.companyId}/${trace.runId}/${trace.traceRef}`;
+        const ref = `s3-segments-v1:${trace.companyId}/${trace.runId}/${filename}`;
+        const pendingRef = ref.replace("s3-segments-v1:", "s3-import-v1:");
+        if (!importing) {
+          const staged = await db.transaction(async (tx) => {
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerTraceRetention);
+            return tx
+              .update(providerTraceRecords)
+              .set({ traceRef: pendingRef })
+              .where(
+                and(
+                  eq(providerTraceRecords.id, trace.id),
+                  eq(providerTraceRecords.traceRef, trace.traceRef),
+                  isNull(providerTraceRecords.deletedAt),
+                  gt(providerTraceRecords.expiresAt, new Date()),
+                ),
+              )
+              .returning({ id: providerTraceRecords.id });
+          });
+          if (!staged.length) throw new Error("trace_migration_staging_conflict");
+          trace.traceRef = pendingRef;
+        }
         await traceObjects.open(
           ref,
           file,

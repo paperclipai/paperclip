@@ -20,6 +20,7 @@ export interface RunLogHandle {
   attemptId?: string;
   initialBytes?: number;
   initialSequence?: number;
+  initialSourceCursor?: number;
 }
 
 export interface RunLogReadOptions {
@@ -65,8 +66,13 @@ export interface RunLogStore {
   begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number },
   ): Promise<number>;
+  enqueue?(
+    handle: RunLogHandle,
+    event: Parameters<RunLogStore["append"]>[1],
+  ): Promise<{ committed: Promise<number> }>;
+  flush?(handle: RunLogHandle): Promise<void>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
@@ -571,6 +577,10 @@ export function getRunLogStore() {
       return writer.begin(input);
     },
     append: (handle, event) => handle.store === "s3_segments" ? external!.append(handle, event) : local.append(handle, event),
+    enqueue: (handle, event) => handle.store === "s3_segments"
+      ? external!.enqueue!(handle, event)
+      : Promise.resolve({ committed: local.append(handle, event) }),
+    flush: async handle => { if (handle.store === "s3_segments") await external!.flush!(handle); },
     finalize: handle => handle.store === "s3_segments" ? external!.finalize(handle) : local.finalize(handle),
     read: (handle, opts) => {
       if (handle.store === "s3_segments") {

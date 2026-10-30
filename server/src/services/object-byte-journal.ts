@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
 
 const MAX_INDEX_LEVEL = 52;
@@ -30,6 +31,7 @@ const headSchema = z
     generation: offset,
     end: offset,
     sequence: offset.default(0),
+    sourceCursor: offset.default(0),
     root: referenceSchema.nullable(),
     roots: z
       .array(rootSchema)
@@ -53,12 +55,30 @@ export class ObjectJournalConflictError extends Error {
 }
 export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
+}
+function isRetryable(error: unknown) {
+  const e = error as { name?: string; code?: string; $metadata?: { httpStatusCode?: number } };
+  const status = e?.$metadata?.httpStatusCode;
   return (
-    e?.name === "PreconditionFailed" ||
     e?.name === "ConditionalRequestConflict" ||
-    e?.$metadata?.httpStatusCode === 412 ||
-    e?.$metadata?.httpStatusCode === 409
+    status === 409 ||
+    status === 429 ||
+    (status !== undefined && status >= 500) ||
+    ["TimeoutError", "RequestTimeout", "NetworkingError"].includes(e?.name ?? "") ||
+    ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE"].includes(e?.code ?? "")
   );
+}
+async function retryObjectOperation<T>(operation: () => Promise<T>, signal?: AbortSignal) {
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt >= 2 || !isRetryable(error)) throw error;
+      await delay(100 * 2 ** attempt, undefined, { signal });
+    }
+  }
 }
 function isMissing(error: unknown) {
   const e = error as { name?: string; status?: number; $metadata?: { httpStatusCode?: number } };
@@ -79,28 +99,32 @@ async function qualifyConditionalWrites(provider: StorageProvider, prefix: strin
       const body = Buffer.from("paperclip-conditional-probe-v1");
       const put = provider.putObjectConditional!.bind(provider);
       try {
-        await put({
-          objectKey,
-          body,
-          contentLength: body.length,
-          contentType: "text/plain",
-          ifNoneMatch: "*",
-          signal: AbortSignal.timeout(15_000),
-        });
+        await retryObjectOperation(() =>
+          put({
+            objectKey,
+            body,
+            contentLength: body.length,
+            contentType: "text/plain",
+            ifNoneMatch: "*",
+            signal: AbortSignal.timeout(15_000),
+          }),
+        );
         for (const condition of [
           { ifNoneMatch: "*" as const },
           { ifMatch: '"paperclip-impossible-etag"' },
         ]) {
           let rejected = false;
           try {
-            await put({
-              objectKey,
-              body,
-              contentLength: body.length,
-              contentType: "text/plain",
-              ...condition,
-              signal: AbortSignal.timeout(15_000),
-            });
+            await retryObjectOperation(() =>
+              put({
+                objectKey,
+                body,
+                contentLength: body.length,
+                contentType: "text/plain",
+                ...condition,
+                signal: AbortSignal.timeout(15_000),
+              }),
+            );
           } catch (error) {
             if (!isObjectPreconditionFailure(error)) throw error;
             rejected = true;
@@ -168,7 +192,10 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       signal = signal
         ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
         : AbortSignal.timeout(15_000);
-      const result = await provider.getObject({ objectKey: key, signal });
+      const result = await retryObjectOperation(
+        () => provider.getObject({ objectKey: key, signal }),
+        signal,
+      );
       const chunks: Buffer[] = [];
       let size = 0;
       try {
@@ -218,22 +245,25 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
       : AbortSignal.timeout(15_000);
     const bytes = Buffer.from(JSON.stringify(value));
-    try {
-      const result = await putConditional({
-        objectKey: headKey,
-        body: bytes,
-        contentLength: bytes.length,
-        contentType: "application/json",
-        signal,
-        ...(etag ? { ifMatch: etag } : { ifNoneMatch: "*" as const }),
-      });
-      return { head: value, etag: result.etag };
-    } catch (error) {
-      const observed = await head(signal).catch(() => null);
-      if (observed && JSON.stringify(observed.head) === JSON.stringify(value)) return observed;
-      if (isObjectPreconditionFailure(error)) throw new ObjectJournalConflictError();
-      throw error;
-    }
+    return retryObjectOperation(async () => {
+      try {
+        const result = await putConditional({
+          objectKey: headKey,
+          body: bytes,
+          contentLength: bytes.length,
+          contentType: "application/json",
+          signal,
+          ...(etag ? { ifMatch: etag } : { ifNoneMatch: "*" as const }),
+        });
+        return { head: value, etag: result.etag };
+      } catch (error) {
+        const observed = await head(signal);
+        if (observed && JSON.stringify(observed.head) === JSON.stringify(value)) return observed;
+        if (isObjectPreconditionFailure(error) || (observed?.etag ?? null) !== etag)
+          throw new ObjectJournalConflictError();
+        throw error;
+      }
+    }, signal);
   }
   async function claim(input: {
     expectedOwner: string | null;
@@ -252,6 +282,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       generation: (current?.head.generation ?? 0) + 1,
       end: current?.head.end ?? 0,
       sequence: current?.head.sequence ?? 0,
+      sourceCursor: current?.head.sourceCursor ?? 0,
       root: current?.head.root ?? null,
       ...(current?.head.roots ? { roots: current.head.roots } : {}),
       closed: false,
@@ -290,14 +321,18 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       key = `${objectPrefix}${digest}`;
     const body = options.encode ? await options.encode(bytes) : bytes;
     try {
-      await putConditional({
-        objectKey: key,
-        body,
-        contentLength: body.length,
-        contentType: "application/octet-stream",
-        ifNoneMatch: "*",
+      await retryObjectOperation(
+        () =>
+          putConditional({
+            objectKey: key,
+            body,
+            contentLength: body.length,
+            contentType: "application/octet-stream",
+            ifNoneMatch: "*",
+            signal,
+          }),
         signal,
-      });
+      );
     } catch (error) {
       const ref = { key, sha256: digest, start, end };
       try {
@@ -379,6 +414,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     bytes: Buffer,
     signal?: AbortSignal,
     sequence = writer.head.sequence,
+    sourceCursor = writer.head.sourceCursor,
   ) {
     signal = signal
       ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
@@ -389,7 +425,9 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       bytes.length > 8 * 1024 * 1024 ||
       !Number.isSafeInteger(writer.head.end + bytes.length) ||
       !Number.isSafeInteger(sequence) ||
-      sequence < writer.head.sequence
+      sequence < writer.head.sequence ||
+      !Number.isSafeInteger(sourceCursor) ||
+      sourceCursor < writer.head.sourceCursor
     )
       throw new Error("object_journal_invalid_batch");
     const roots: Root[] = writer.head.roots
@@ -415,7 +453,11 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       }
       roots.push(root);
     }
-    return publish({ ...writer.head, end, root: null, roots, sequence }, writer.etag, signal);
+    return publish(
+      { ...writer.head, end, root: null, roots, sequence, sourceCursor },
+      writer.etag,
+      signal,
+    );
   }
 
   async function close(writer: ObjectJournalWriter, signal?: AbortSignal) {
@@ -438,6 +480,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
           }
         : {
             v: 1,
+            sourceCursor: 0,
             owner: randomUUID(),
             generation: 0,
             end: 0,

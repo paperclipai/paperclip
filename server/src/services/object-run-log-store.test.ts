@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
@@ -147,5 +147,42 @@ describe("S3 run log store", () => {
     const start = full.indexOf(Buffer.from("再")) + 1;
     const tail = await store.read(h, { offset: start, limitBytes: 1000, alignStartToRecord: true });
     expect(Buffer.from(tail.content)).toEqual(full);
+  });
+  it("backpressures admission at capacity without poisoning the writer or losing accepted output", async () => {
+    const m = memory(),
+      original = m.provider.putObjectConditional!;
+    let release!: () => void,
+      entered = false;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    m.provider.putObjectConditional = async (input) => {
+      if (input.objectKey.includes("/objects/") && !entered) {
+        entered = true;
+        await blocked;
+      }
+      return original(input);
+    };
+    const store = createObjectRunLogStore({
+      provider: m.provider,
+      keyPrefix: "logs",
+      assertWriterAuthority: async () => undefined,
+    });
+    const h = await store.begin(input);
+    const first = await store.enqueue!(h, { ...event(1), chunk: "a".repeat(7 * 1024 * 1024) });
+    await vi.waitFor(() => expect(entered).toBe(true));
+    let admitted = false;
+    const second = store.enqueue!(h, { ...event(2), chunk: "b".repeat(2 * 1024 * 1024) }).then(
+      (receipt) => {
+        admitted = true;
+        return receipt.committed;
+      },
+    );
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+    release();
+    await Promise.all([first.committed, second]);
+    await store.append(h, event(3));
+    expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
   });
 });

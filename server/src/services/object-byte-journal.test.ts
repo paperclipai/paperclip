@@ -124,6 +124,52 @@ describe("object byte journal", () => {
       [...s.objects.keys()].filter((key) => key.includes("/objects/")).sort(),
     );
   });
+  it("retries a transient head conflict without fencing its current writer", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    const original = s.provider.putObjectConditional!;
+    let conflicts = 0;
+    s.provider.putObjectConditional = async (input) => {
+      if (input.objectKey.endsWith("/head.json") && conflicts++ === 0)
+        throw Object.assign(new Error("in-flight conflict"), {
+          name: "ConditionalRequestConflict",
+          $metadata: { httpStatusCode: 409 },
+        });
+      return original(input);
+    };
+    writer = await journal.append(writer, Buffer.from("once"));
+    expect(await journal.readRange(writer.head, 0, 100)).toEqual(Buffer.from("once"));
+    expect(conflicts).toBe(2);
+  });
+  it("does not accept a provider's 409 response as proof of conditional enforcement", async () => {
+    const s = storage(),
+      original = s.provider.putObjectConditional!;
+    s.provider.putObjectConditional = async (input) => {
+      if (s.objects.has(input.objectKey))
+        throw Object.assign(new Error("conflict"), { $metadata: { httpStatusCode: 409 } });
+      return original(input);
+    };
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await expect(
+      journal.claim({ expectedOwner: null, assertAuthority: authority }),
+    ).rejects.toThrow("conflict");
+    expect(s.objects.size).toBe(0);
+  });
+  it("retries transient segment failures and acknowledges exactly one batch", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let writer = await journal.claim({ expectedOwner: null, assertAuthority: authority });
+    const original = s.provider.putObjectConditional!;
+    let failures = 2;
+    s.provider.putObjectConditional = async (input) => {
+      if (input.objectKey.includes("/objects/") && failures-- > 0)
+        throw Object.assign(new Error("temporary outage"), { $metadata: { httpStatusCode: 503 } });
+      return original(input);
+    };
+    writer = await journal.append(writer, Buffer.from("one batch"));
+    expect(await journal.readRange(writer.head, 0, 100)).toEqual(Buffer.from("one batch"));
+  });
   it("rejects corrupt published data and cancelled reads", async () => {
     const s = storage(),
       a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });

@@ -16,6 +16,18 @@ const REF = /^s3-segments-v1:([a-zA-Z0-9-]+)\/([a-zA-Z0-9-]+)\/([a-f0-9-]+\.ndjs
 export function objectProviderTraceRef(ref: string) {
   return REF.exec(ref);
 }
+export function importingProviderTraceRef(ref: string) {
+  return ref.startsWith("s3-import-v1:")
+    ? objectProviderTraceRef(ref.replace("s3-import-v1:", "s3-segments-v1:"))
+    : null;
+}
+export function providerTraceCleanupRef(ref: string) {
+  return objectProviderTraceRef(ref)
+    ? ref
+    : importingProviderTraceRef(ref)
+      ? ref.replace("s3-import-v1:", "s3-segments-v1:")
+      : null;
+}
 interface Channel {
   path: string;
   journal: ObjectByteJournal;
@@ -40,6 +52,7 @@ export function createProviderTraceObjectStore(
   if (!process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim())
     throw new Error("External traces require stable PAPERCLIP_SECRETS_MASTER_KEY");
   const captures = new Map<string, Capture>();
+  const openings = new Map<string, Promise<void>>();
   function schedule(capture: Capture) {
     if (capture.stopped || !capture.dirty || capture.timer || capture.flush || capture.error)
       return;
@@ -128,6 +141,20 @@ export function createProviderTraceObjectStore(
     assertAuthority: () => Promise<void>,
     options: { restore?: boolean } = {},
   ) {
+    const existing = openings.get(ref);
+    if (existing) return existing;
+    const opening = openCapture(ref, filePath, assertAuthority, options).finally(() =>
+      openings.delete(ref),
+    );
+    openings.set(ref, opening);
+    await opening;
+  }
+  async function openCapture(
+    ref: string,
+    filePath: string,
+    assertAuthority: () => Promise<void>,
+    options: { restore?: boolean } = {},
+  ) {
     if (captures.has(ref)) return;
     const capture: Capture = {
       channels: [],
@@ -136,30 +163,30 @@ export function createProviderTraceObjectStore(
       dirty: false,
       finishIdle: () => undefined,
     };
-    for (const source of channelsFor(ref, filePath)) {
-      const current = await source.journal.head();
-      const writer = await source.journal.claim({
-        expectedOwner: current?.head.owner ?? null,
-        assertAuthority,
-      });
-      const file = await fs.open(source.path, options.restore === false ? "a+" : "w", 0o600);
-      try {
-        await file.chmod(0o600);
-        for (
-          let start = 0;
-          options.restore !== false && start < writer.head.end;
-          start += CHUNK_BYTES
-        ) {
-          await file.write(await source.journal.readRange(writer.head, start, CHUNK_BYTES));
-        }
-      } finally {
-        await file.close();
-      }
-      capture.channels.push({ ...source, writer });
-    }
-    capture.finishIdle = beginIdleTrackedWork();
-    captures.set(ref, capture);
     try {
+      for (const source of channelsFor(ref, filePath)) {
+        const current = await source.journal.head();
+        const writer = await source.journal.claim({
+          expectedOwner: current?.head.owner ?? null,
+          assertAuthority,
+        });
+        capture.channels.push({ ...source, writer });
+        const file = await fs.open(source.path, options.restore === false ? "a+" : "w", 0o600);
+        try {
+          await file.chmod(0o600);
+          for (
+            let start = 0;
+            options.restore !== false && start < writer.head.end;
+            start += CHUNK_BYTES
+          ) {
+            await file.write(await source.journal.readRange(writer.head, start, CHUNK_BYTES));
+          }
+        } finally {
+          await file.close();
+        }
+      }
+      capture.finishIdle = beginIdleTrackedWork();
+      captures.set(ref, capture);
       for (const channel of capture.channels) {
         channel.watcher = watch(channel.path, () => {
           capture.dirty = true;
@@ -173,6 +200,13 @@ export function createProviderTraceObjectStore(
     } catch (error) {
       capture.stopped = true;
       for (const channel of capture.channels) channel.watcher?.close();
+      await Promise.allSettled(
+        capture.channels.map(async (channel) => {
+          await channel.journal.close(channel.writer);
+        }),
+      );
+      if (options.restore !== false)
+        await Promise.allSettled(capture.channels.map((channel) => fs.unlink(channel.path)));
       captures.delete(ref);
       capture.finishIdle();
       throw error;

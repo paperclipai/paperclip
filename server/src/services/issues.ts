@@ -190,6 +190,7 @@ import {
   resolveNextIssueGoalId,
 } from "./issue-goal-fallback.js";
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
@@ -6712,7 +6713,7 @@ export async function readIssueCommentRunLogText(run: {
   logStore: string | null;
   logRef: string | null;
   logBytes: number | null;
-}) {
+}, db?: Db) {
   if (!isRunLogStoreType(run.logStore) || !run.logRef) return "";
   // A timed-out finalization leaves size unknown even when earlier entries
   // exist. Read those logs within the same byte budget as a known-size log.
@@ -6728,6 +6729,7 @@ export async function readIssueCommentRunLogText(run: {
   let readTimer: NodeJS.Timeout | undefined;
 
   const readChunks = async () => {
+    if (db && storeType === "s3_segments") await recoverSettledNativeRunLog(db, store, logRef);
     while (nextOffset !== undefined) {
       controller.signal.throwIfAborted();
       const remainingBytes =
@@ -7260,7 +7262,7 @@ export function issueService(db: Db) {
           );
           await Promise.all(
             batch.map(async (run) => {
-              logByRunId.set(run.runId, await readIssueCommentRunLogText(run));
+              logByRunId.set(run.runId, await readIssueCommentRunLogText(run, db));
             }),
           );
         }

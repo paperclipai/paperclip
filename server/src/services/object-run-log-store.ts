@@ -18,6 +18,7 @@ export interface ObjectRunLogStoreOptions {
 interface PendingAppend {
   bytes: Buffer;
   sequence: number;
+  sourceCursor: number;
   resolve: (bytes: number) => void;
   reject: (error: unknown) => void;
 }
@@ -46,6 +47,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     throw new Error("Invalid object log batching limits");
   const writers = new Map<RunLogHandle, WriterState>();
   let totalPendingBytes = 0;
+  let admissionBytes = 0;
+  let admissions = 0;
+  const capacityWaiters = new Set<() => void>();
+  const capacityChanged = () => {
+    for (const wake of capacityWaiters) wake();
+    capacityWaiters.clear();
+  };
   let activeUploads = 0;
   const uploadWaiters: Array<() => void> = [];
   async function acquireUpload() {
@@ -94,7 +102,14 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
           state.writer,
           bytes,
           undefined,
-          Math.max(state.writer.head.sequence, ...batch.map((p) => p.sequence)),
+          batch.reduce(
+            (cursor, item) => Math.max(cursor, item.sequence),
+            state.writer.head.sequence,
+          ),
+          batch.reduce(
+            (cursor, item) => Math.max(cursor, item.sourceCursor),
+            state.writer.head.sourceCursor,
+          ),
         );
         for (const item of batch) item.resolve(item.bytes.length);
       } catch (error) {
@@ -108,12 +123,71 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       } finally {
         state.pendingBytes -= bytes.length;
         totalPendingBytes -= bytes.length;
+        capacityChanged();
         release();
         state.flushing = undefined;
         schedule(state);
       }
     })();
     await state.flushing;
+  }
+  async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
+    const state = writers.get(handle);
+    if (!state || state.closed) throw new Error("Object run log writer is closed");
+    if (state.failure) throw state.failure;
+    const bytes = Buffer.from(
+      `${JSON.stringify({
+        ts: event.ts,
+        attemptId: handle.attemptId,
+        stream: event.stream,
+        chunk: event.chunk,
+        ...(event.seq === undefined ? {} : { seq: event.seq }),
+      })}\n`,
+    );
+    if (bytes.length > MAX_PENDING_BYTES)
+      throw new Error("Object run log record exceeds pending-byte limit");
+    let waiting = false;
+    try {
+      while (
+        state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
+        totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
+      ) {
+        if (state.closed) throw new Error("Object run log writer is closed");
+        if (state.failure) throw state.failure;
+        if (!waiting) {
+          if (admissions >= 32 || admissionBytes + bytes.length > MAX_PENDING_BYTES)
+            throw new Error("Object run log admission capacity exceeded");
+          waiting = true;
+          admissions++;
+          admissionBytes += bytes.length;
+        }
+        for (const writer of writers.values())
+          if (writer.pending.length) void flush(writer).catch(() => undefined);
+        await new Promise<void>((resolve) => capacityWaiters.add(resolve));
+      }
+      if (state.closed) throw new Error("Object run log writer is closed");
+      if (state.failure) throw state.failure;
+      state.pendingBytes += bytes.length;
+      totalPendingBytes += bytes.length;
+      const finishIdle = beginIdleTrackedWork();
+      const committed = new Promise<number>((resolve, reject) =>
+        state.pending.push({
+          bytes,
+          sourceCursor: event.sourceCursor ?? state.writer.head.sourceCursor,
+          sequence: event.seq ?? state.writer.head.sequence,
+          resolve,
+          reject,
+        }),
+      ).finally(finishIdle);
+      if (state.pendingBytes >= segmentBytes) void flush(state).catch(() => undefined);
+      else schedule(state);
+      return { committed };
+    } finally {
+      if (waiting) {
+        admissions--;
+        admissionBytes -= bytes.length;
+      }
+    }
   }
   return {
     async begin(input) {
@@ -130,59 +204,25 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         attemptId: randomUUID(),
         initialBytes: writer.head.end,
         initialSequence: writer.head.sequence,
+        initialSourceCursor: writer.head.sourceCursor,
       };
       writers.set(handle, { journal: store, writer, pending: [], pendingBytes: 0, closed: false });
       return handle;
     },
+    enqueue,
     async append(handle, event) {
+      return (await enqueue(handle, event)).committed;
+    },
+    async flush(handle) {
       const state = writers.get(handle);
-      if (!state || state.closed) throw new Error("Object run log writer is closed");
-      if (state.failure) throw state.failure;
-      const bytes = Buffer.from(
-        `${JSON.stringify({
-          ts: event.ts,
-          attemptId: handle.attemptId,
-          stream: event.stream,
-          chunk: event.chunk,
-          ...(event.seq === undefined ? {} : { seq: event.seq }),
-        })}\n`,
-      );
-      if (
-        state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
-        totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
-      ) {
-        const error = new Error("Object run log pending-byte limit exceeded");
-        state.failure = error;
-        if (state.timer) {
-          clearTimeout(state.timer);
-          state.timer = undefined;
-        }
-        const waiting = state.pending.splice(0);
-        const size = waiting.reduce((sum, item) => sum + item.bytes.length, 0);
-        state.pendingBytes -= size;
-        totalPendingBytes -= size;
-        for (const item of waiting) item.reject(error);
-        throw error;
-      }
-      state.pendingBytes += bytes.length;
-      totalPendingBytes += bytes.length;
-      const finishIdle = beginIdleTrackedWork();
-      const committed = new Promise<number>((resolve, reject) =>
-        state.pending.push({
-          bytes,
-          sequence: event.seq ?? state.writer.head.sequence,
-          resolve,
-          reject,
-        }),
-      ).finally(finishIdle);
-      if (state.pendingBytes >= segmentBytes) void flush(state).catch(() => undefined);
-      else schedule(state);
-      return committed;
+      if (!state) throw new Error("Object run log writer not found");
+      await flush(state);
     },
     async finalize(handle) {
       const state = writers.get(handle);
       if (!state) throw new Error("Object run log writer not found");
       state.closed = true;
+      capacityChanged();
       try {
         await flush(state);
         state.writer = await state.journal.close(state.writer);

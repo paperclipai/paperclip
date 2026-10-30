@@ -27,6 +27,7 @@ import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, r
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
+import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
@@ -3204,7 +3205,7 @@ export function heartbeatService(
           message: "run started",
         });
 
-        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent } =
+        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onPersistedNativeLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
@@ -3438,6 +3439,7 @@ export function heartbeatService(
             identityRedactor,
             appendIdentityRedactedLog,
             onLog,
+            onPersistedNativeLog,
             onAdapterEvent,
             onAdapterMeta,
           },
@@ -4058,6 +4060,9 @@ export function heartbeatService(
             companyId: string;
             logStore: string | null;
             logRef: string | null;
+            runtimeMode?: string | null;
+            status?: string;
+            logBytes?: number | null;
           },
       opts?: { offset?: number; limitBytes?: number; alignStartToRecord?: boolean; signal?: AbortSignal },
     ) => {
@@ -4071,12 +4076,13 @@ export function heartbeatService(
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 
       if (!isRunLogStoreType(run.logStore)) throw notFound("Run log backend not supported");
-      const result = await runLogStore.read(
+      const result = await readRecoverableRunLog(db, runLogStore,
         {
           store: run.logStore,
           logRef: run.logRef,
         },
         opts,
+        run,
       );
 
       return {

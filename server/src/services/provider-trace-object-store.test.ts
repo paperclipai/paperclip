@@ -53,6 +53,12 @@ describe.skipIf(!endpoint)("encrypted object provider traces (S3 integration)", 
       const b = createProviderTraceObjectStore(provider),
         fileB = path.join(directory, "b.ndjson");
       expect(await b.read(ref)).toEqual(Buffer.concat([bytes, interpretation]));
+      await fs.mkdir(`${fileB}.rehydration`);
+      await expect(b.open(ref, fileB, async () => undefined)).rejects.toThrow();
+      expect(await b.settled(ref)).toBe(true);
+      await expect(fs.stat(fileB)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await b.read(ref)).toEqual(Buffer.concat([bytes, interpretation]));
+      await fs.rmdir(`${fileB}.rehydration`);
       await b.open(ref, fileB, async () => undefined);
       expect(await fs.readFile(fileB)).toEqual(bytes);
       expect(await fs.readFile(`${fileB}.rehydration`)).toEqual(interpretation);

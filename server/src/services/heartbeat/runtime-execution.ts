@@ -172,6 +172,7 @@ export interface HeartbeatRuntimeExecutionInput {
     >;
   };
   output: Pick<AdapterExecutionContext, "onLog"> & {
+    onPersistedNativeLog?: (cursor: number, chunk: string) => Promise<void>;
     onAdapterEvent: NonNullable<AdapterExecutionContext["onEvent"]>;
     onAdapterMeta: AdapterExecutionContext["onMeta"];
     identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
@@ -629,6 +630,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                 goalCheckpointSession.current = { params, displayId };
               },
               onLog,
+              onPersistedNativeLog: input.output.onPersistedNativeLog,
               onEvent: onAdapterEvent,
               instructionWorkingCopy: nativeInstructionWorkingCopy(),
 
