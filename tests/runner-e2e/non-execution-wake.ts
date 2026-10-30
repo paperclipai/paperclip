@@ -4,6 +4,16 @@ export function isBlockedUnstartedWake(run: Record<string, unknown>) {
   return run.status === "cancelled" && run.errorCode === "issue_dependencies_blocked" && run.startedAt === null;
 }
 
+/** The dispatch gate retired an obsolete assignment before any provider work. */
+export function isReassignedUnstartedWake(run: {
+  status?: unknown; errorCode?: unknown; startedAt?: unknown; nativeIssueId?: unknown;
+  resultJson?: Record<string, unknown>;
+}) {
+  return run.status === "cancelled" && run.errorCode === "issue_assignee_changed" && run.startedAt === null
+    && run.nativeIssueId == null && run.resultJson?.stopReason === "issue_assignee_changed"
+    && run.resultJson.timeoutSource === "stale_queued_run_gate" && run.resultJson.timeoutFired === false;
+}
+
 /** A terminal issue may make a queued wake obsolete before provider admission. */
 export function isTerminalUnstartedWake(
   run: Record<string, unknown>,
