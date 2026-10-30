@@ -12,20 +12,21 @@ export function taskSearchBacklogCheckbox(filters: Locator) {
     .getByRole("checkbox", { name: /^Backlog(?:\s*Backlog)?$/ });
 }
 
-async function resultIds(page: Page, tasks: readonly SearchTask[]) {
-  const ids: string[] = [];
-  for (const link of await page.locator("main#main-content a[data-inbox-issue-link]").all()) {
-    if (!await link.isVisible()) continue;
-    const href = await link.getAttribute("href");
+export async function taskSearchResultIds(page: Page, tasks: readonly SearchTask[]) {
+  // Read the matched nodes together. Indexed locators from all() can disappear
+  // between isVisible() and getAttribute() while the search replaces its rows.
+  const hrefs = await page.locator("main#main-content a[data-inbox-issue-link]").filter({ visible: true })
+    .evaluateAll(links => links.some(link => !link.isConnected) ? null : links.map(link => link.getAttribute("href")));
+  if (hrefs === null) return [];
+  return hrefs.map(href => {
     const identifier = href ? decodeURIComponent(new URL(href, page.url()).pathname.split("/").at(-1)!) : "";
-    ids.push(tasks.find(task => task.identifier === identifier || task.id === identifier)?.id ?? `unknown:${identifier}`);
-  }
-  return ids.sort();
+    return tasks.find(task => task.identifier === identifier || task.id === identifier)?.id ?? `unknown:${identifier}`;
+  }).sort();
 }
 
 async function expectResults(page: Page, tasks: readonly SearchTask[], expectedIds: readonly string[]) {
   let observed: string[] = [];
-  await expect.poll(async () => { observed = await resultIds(page, tasks); return observed; }, { timeout: 30_000 })
+  await expect.poll(async () => { observed = await taskSearchResultIds(page, tasks); return observed; }, { timeout: 30_000 })
     .toEqual([...expectedIds].sort());
   return observed;
 }

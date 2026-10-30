@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { taskSearchBacklogCheckbox } from "./product-journeys/task-search-filter.js";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { taskSearchBacklogCheckbox, taskSearchResultIds } from "./product-journeys/task-search-filter.js";
+import type { SearchTask } from "./product-journeys/task-search-evidence.js";
 
 // Reproduce the observed Radix checkbox + StatusIcon + visible text label.
 // No app server, provider, browser profile, or target credentials are involved.
@@ -31,3 +32,74 @@ for (const presentation of ["legacy", "spaced-legacy", "refreshed"] as const) {
     await expect(page.locator("#assignee-backlog")).not.toBeChecked();
   });
 }
+
+const searchTasks: SearchTask[] = ["target", "status-control", "search-control"].map((name, index) => ({
+  id: name, identifier: `QA-${index + 1}`, companyId: "company", title: name, description: `${name} context`,
+  status: index === 1 ? "done" : "backlog", assigneeUserId: "board", assigneeAgentId: null,
+}));
+const taskLink = (task: SearchTask) => `<a data-inbox-issue-link href="https://paperclip.example.test/QA/issues/${task.identifier}">${task.title}</a>`;
+
+test("task search readback survives a search rerender that removes an observed row", async ({ page }) => {
+  page.setDefaultTimeout(150); // Bound only the reproduced stale-index wait.
+  await page.setContent(`<main id="main-content">${searchTasks.map(taskLink).join("")}</main>`);
+  let transitions = 0;
+  const transition = async () => {
+    if (transitions++) return;
+    await page.locator("main#main-content").evaluate((main, html) => { main.innerHTML = html; }, searchTasks.slice(0, 2).map(taskLink).join(""));
+  };
+  // Keep all browser operations real. Place the render between the old
+  // visibility/attribute reads, or immediately before the batch read.
+  const withTransition = (source: Locator): Locator => new Proxy(source, {
+    get(object, property, receiver) {
+      if (property === "all") return async () => (await object.all()).map((row, index) => index !== 2 ? row : new Proxy(row, {
+        get(element, operation, elementReceiver) {
+          if (operation === "isVisible") return async (...args: Parameters<Locator["isVisible"]>) => {
+            const visible = await element.isVisible(...args);
+            if (visible) await transition();
+            return visible;
+          };
+          const value = Reflect.get(element, operation, elementReceiver);
+          return typeof value === "function" ? value.bind(element) : value;
+        },
+      }));
+      if (property === "filter") return (...args: Parameters<Locator["filter"]>) => withTransition(object.filter(...args));
+      if (property === "evaluateAll") return async (...args: Parameters<Locator["evaluateAll"]>) => {
+        await transition();
+        return object.evaluateAll(...args);
+      };
+      const value = Reflect.get(object, property, receiver);
+      return typeof value === "function" ? value.bind(object) : value;
+    },
+  });
+  const observedPage = new Proxy(page, {
+    get(object, property, receiver) {
+      if (property === "locator") return (...args: Parameters<Page["locator"]>) => withTransition(object.locator(...args));
+      const value = Reflect.get(object, property, receiver);
+      return typeof value === "function" ? value.bind(object) : value;
+    },
+  });
+  await expect(taskSearchResultIds(observedPage, searchTasks)).resolves.toEqual(["status-control", "target"]);
+  expect(transitions).toBe(1);
+  await expect(page.locator("a[data-inbox-issue-link]")).toHaveCount(2);
+});
+
+for (const fixture of [
+  { name: "extra owned control", html: searchTasks.map(taskLink).join(""), ids: ["search-control", "status-control", "target"] },
+  { name: "duplicate target", html: [...searchTasks.slice(0, 2), searchTasks[0]!].map(taskLink).join(""), ids: ["status-control", "target", "target"] },
+  { name: "unknown destination", html: searchTasks.slice(0, 2).map(taskLink).join("") + taskLink({ ...searchTasks[2]!, identifier: "QA-99" }), ids: ["status-control", "target", "unknown:QA-99"] },
+  { name: "wrong target destination", html: taskLink(searchTasks[1]!) + taskLink({ ...searchTasks[0]!, identifier: "QA-2" }), ids: ["status-control", "status-control"] },
+]) {
+  test(`task search snapshot preserves invalid evidence: ${fixture.name}`, async ({ page }) => {
+    await page.setContent(`<main id="main-content">${fixture.html}</main>`);
+    const ids = await taskSearchResultIds(page, searchTasks);
+    expect(ids).toEqual(fixture.ids);
+    expect(ids).not.toEqual(["status-control", "target"]);
+  });
+}
+
+test("task search snapshot retains the existing visible-link scope", async ({ page }) => {
+  await page.setContent(`<main id="main-content">${searchTasks.slice(0, 2).map(taskLink).join("")}
+    <div hidden>${taskLink(searchTasks[2]!)}</div></main>
+    ${taskLink({ ...searchTasks[2]!, identifier: "QA-99" })}`);
+  expect(await taskSearchResultIds(page, searchTasks)).toEqual(["status-control", "target"]);
+});
