@@ -53,6 +53,49 @@ class ApiError extends Error {
   }
 }
 
+function redactDiagnosticValue(value) {
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((entry) => redactDiagnosticValue(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return typeof value === "string" && value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  }
+  const out = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 25)) {
+    if (/authorization|api[_-]?key|token|secret|password|credential/i.test(key)) {
+      out[key] = "[redacted]";
+      continue;
+    }
+    out[key] = redactDiagnosticValue(raw);
+  }
+  return out;
+}
+
+function malformedSuccess(command, reason, body) {
+  return new ApiError(502, {
+    error: `Malformed Paperclip API success response for ${command}`,
+    details: {
+      reason,
+      response: redactDiagnosticValue(body),
+    },
+  });
+}
+
+function requireObjectResponse(command, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw malformedSuccess(command, "expected JSON object response", body);
+  }
+  return body;
+}
+
+function requireNonEmptyStringField(command, body, field) {
+  const value = body?.[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw malformedSuccess(command, `expected non-empty ${field}`, body);
+  }
+  return value;
+}
+
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -224,10 +267,11 @@ async function listAssigned(config, args) {
   const status = readStringFlag(args, "status") || "todo,in_progress,in_review,blocked";
   const limit = parseLimit(args);
   const issues = await apiFetch(config, "/agents/me/inbox-lite");
+  if (!Array.isArray(issues)) {
+    throw malformedSuccess("list-assigned", "expected JSON array response", issues);
+  }
   const allowedStatuses = new Set(status.split(",").map((entry) => entry.trim()).filter(Boolean));
-  const filteredIssues = Array.isArray(issues)
-    ? issues.filter((issue) => !allowedStatuses.size || allowedStatuses.has(issue?.status)).slice(0, limit)
-    : [];
+  const filteredIssues = issues.filter((issue) => !allowedStatuses.size || allowedStatuses.has(issue?.status)).slice(0, limit);
   printJson({
     command: "list-assigned",
     companyId: identity.companyId,
@@ -278,6 +322,8 @@ async function createTask(config, args) {
     mutating: true,
     body,
   });
+  requireObjectResponse("create-task", issue);
+  requireNonEmptyStringField("create-task", issue, "id");
   printJson({ command: "create-task", issue: issueSummary(issue) });
 }
 
@@ -295,6 +341,8 @@ async function comment(config, args) {
     mutating: true,
     body: commentBody,
   });
+  requireObjectResponse("comment", created);
+  requireNonEmptyStringField("comment", created, "id");
   printJson({ command: "comment", issue: issueRef, comment: commentSummary(created) });
 }
 
@@ -313,6 +361,8 @@ async function updateStatus(config, args) {
     mutating: true,
     body,
   });
+  requireObjectResponse("update-status", issue);
+  requireNonEmptyStringField("update-status", issue, "id");
   printJson({ command: "update-status", issue: issueSummary(issue) });
 }
 
