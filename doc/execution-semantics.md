@@ -1887,6 +1887,28 @@ cancellation fence qualify. No native identity, coordinator, adapter invocation,
 provider event, or process-launch evidence may exist. Environment cleanup still
 requires the same receipts. This historical proof permits explicit Retry or a
 newer saved user message; it does not replay the cancelled input.
+A conversation turn cancelled while it still prepares uses a stage proof. The
+immutable conversation-adapter claim, legacy runtime, and preparing stage must
+agree, and the controller lease must have elapsed. The stage carries the proof:
+preparation is committed with the run claim and only advances when the dispatching
+stage commits, ahead of the provider handoff, so a terminal run still preparing
+never dispatched. Such a turn therefore needs neither an unresolved runtime nor a
+retained cancellation fence — that fence is only written while the runtime is
+unresolved. The elapsed lease must belong to an earlier server boot, which proves
+the preparer is gone rather than merely unable to renew: an executor that reaches
+its own cleanup commits the settled stage and clears the lease deadline in one
+write, so a run left preparing with a lease deadline recorded is one whose
+executor never finished, and in the current boot that executor may still be
+inside an environment acquisition that is already waiting on a provider and
+cannot be interrupted. Requiring the earlier boot costs no coverage, because a
+cleanly settled run of the current boot retains no lease deadline to match. No
+process identity, native identity, coordinator, adapter invocation,
+provider event, or process-launch evidence may exist. Environment cleanup still
+requires the same receipts. The reconciliation hold for such a run retires on this
+same evidence, because a run that never dispatched can never record an
+acknowledged stop, and without that arm every later user message defers behind a
+hold nothing can retire. The same proof releases an agent pause or terminate that
+is waiting for such a run to report that it stopped.
 
 The existing bounded saved-message worker rechecks this proof after restart.
 Admission atomically settles an unclaimed coordinator and admits one fresh turn,
