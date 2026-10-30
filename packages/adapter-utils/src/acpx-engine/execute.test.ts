@@ -802,7 +802,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const context = createPromptContextFixture();
     const config = { agent, agentCommand: "node ./fixture-acp.js", cwd: root, stateDir: path.join(root, "state"), mode: "persistent" };
-    const fresh = await runExecutor(config, { context });
+    const fresh = await runExecutor(config, { context, authToken: "runtime-secret-token" });
     expect(fresh.turnInputs).toHaveLength(1);
     const prompt = String(fresh.turnInputs[0]?.text ?? "");
     expect(prompt).toContain("You are agent agent-1");
@@ -818,9 +818,13 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt.indexOf('"id":"comment-first"')).toBeLessThan(prompt.indexOf('"id":"comment-second"'));
     expect(prompt).toContain("Untrusted continuation evidence");
     expect(prompt).toContain("receipt-1");
-    const resumed = await runExecutor(config, { context, runtime: { sessionParams: fresh.result.sessionParams } });
+    expect(prompt).toContain("Paperclip runtime note:");
+    expect(prompt).toContain("Paperclip API access note:");
+    const resumed = await runExecutor(config, { context, authToken: "runtime-secret-token", runtime: { sessionParams: fresh.result.sessionParams } });
     expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
     const resumedPrompt = String(resumed.turnInputs[0]?.text ?? "");
+    expect(resumedPrompt).not.toContain("Paperclip runtime note:");
+    expect(resumedPrompt).not.toContain("Paperclip API access note:");
     expect(resumedPrompt).not.toContain("Execution contract:");
     expect(resumedPrompt).toContain(context.paperclipTaskMarkdownAssignmentCompact);
     expect(resumedPrompt).not.toContain(context.paperclipTaskCommunicationGuidance);
@@ -1797,6 +1801,26 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(materializedSkill, "leak.txt"))).toBe(false);
     expect(await pathExists(path.join(materializedSkill, "leak-dir"))).toBe(false);
     expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root: ${skillsHome}`);
+  });
+
+  it("sends ACPX Claude skill instructions only when the session starts fresh", async () => {
+    const root = await makeTempRoot();
+    const skill = await createSkill(path.join(root, "skills"), "notes");
+    const config = {
+      agent: "claude",
+      agentCommand: "node ./fixture-acp.js",
+      cwd: root,
+      stateDir: path.join(root, "state"),
+      mode: "persistent",
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    };
+    const fresh = await runExecutor(config);
+    expect(String(fresh.turnInputs[0]?.text ?? "")).toContain("Skill root: ");
+
+    const resumed = await runExecutor(config, { runtime: { sessionParams: fresh.result.sessionParams } });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    expect(String(resumed.turnInputs[0]?.text ?? "")).not.toContain("Skill root: ");
   });
 
   it.skipIf(process.platform === "win32")("revokes removed ACPX Codex skills and skips symlinked descendants", async () => {

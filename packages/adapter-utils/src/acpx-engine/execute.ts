@@ -3164,8 +3164,8 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       ? ""
       : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const paperclipEnvNote = externalChatTurn ? "" : renderPaperclipEnvNote(env);
-  const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env);
+  const paperclipEnvNote = externalChatTurn || resumedSession ? "" : renderPaperclipEnvNote(env);
+  const apiAccessNote = externalChatTurn || resumedSession ? "" : renderApiAccessNote(env);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -4974,7 +4974,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // `prepare_turn`.
         preparePhaseStart = now();
         const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
-        runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
+        runPrompt = joinPromptSections([resumedSession ? "" : prepared.skillPromptInstructions, prompt]);
         await emitAcpxLog(ctx, {
           type: "acpx.session",
           agent: prepared.acpxAgent,
