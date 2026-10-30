@@ -1,9 +1,10 @@
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { randomUUID, generateKeyPairSync, verify, createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { applyPendingMigrations, companies, connectionGrants, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { applyPendingMigrations, companies, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGitHubGrantContinuity, githubGrantContinuityDeadline } from "../services/tool-access/github-grant-continuity.js";
 import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -14,18 +15,21 @@ import { notifyGitHubCredentialChange } from "../services/github-connection-noti
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_WORK_TEST_DATABASE_URL");
-const describeDatabase = databaseUrl ? describe : describe.skip;
+const embeddedSupport = databaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const describeDatabase = embeddedSupport.supported ? describe : describe.skip;
 
 describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (simulation)", () => {
   let db: ReturnType<typeof createDb>;
+  let temporaryDatabase: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let server: Server, origin: string;
   let bindings: Array<Record<string, unknown>>, leases: number, failBindings: boolean, githubRequests: number;
   const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
   const realFetch = globalThis.fetch;
   let companyIds: string[] = [];
   beforeAll(async () => {
-    await applyPendingMigrations(databaseUrl!);
-    db = createDb(databaseUrl!, { maxConnections: 4 });
+    if (databaseUrl) await applyPendingMigrations(databaseUrl);
+    else temporaryDatabase = await startEmbeddedPostgresTestDatabase("paperclip-github-work-");
+    db = createDb(databaseUrl ?? temporaryDatabase!.connectionString, { maxConnections: 4 });
     server = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const raw = Buffer.concat(chunks).toString();
@@ -52,12 +56,12 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const address = server.address(); if (!address || typeof address === "string") throw new Error("HTTP fixture did not start");
     origin = `http://127.0.0.1:${address.port}`;
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(async () => {
     vi.restoreAllMocks(); vi.useRealTimers();
     for (const id of companyIds) await db.delete(companies).where(eq(companies.id, id)); companyIds = [];
   });
-  afterAll(async () => { server.close(); await once(server, "close"); await db.$client.end({ timeout: 1 }); });
+  afterAll(async () => { server.close(); await once(server, "close"); await db.$client.end({ timeout: 1 }); await temporaryDatabase?.cleanup(); });
 
   async function fixture(ids: string[] = []) {
     bindings = []; leases = 0; failBindings = false; githubRequests = 0;
