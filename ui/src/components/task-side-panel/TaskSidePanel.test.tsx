@@ -106,7 +106,7 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
-  TaskDocumentPanel: ({ documentKey, issueId, revisionId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
+  TaskDocumentPanel: ({ documentKey, issueId, revisionId, documentIssueId, currentIssueId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; documentIssueId?: string; currentIssueId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-gallery-owner={documentIssueId} data-current-task={currentIssueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
 }));
 
 vi.mock("./TaskWorkspaceFilePanel", () => ({
@@ -295,10 +295,15 @@ describe("TaskSidePanel", () => {
     await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" } }));
     const document = container.querySelector("[data-document-owner]");
     expect(document?.getAttribute("data-document-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-gallery-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-current-task")).toBe("task-1");
     expect(document?.getAttribute("data-revision-id")).toBe("b-v1");
     expect(document?.hasAttribute("data-initial-document")).toBe(false);
     expect(container.textContent).not.toContain("Origin task document must not leak");
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("document:task-b:plan:b-v1");
+    routeFixture.location.hash = "#document-local";
+    await render(panel());
+    expect(container.querySelector("[data-gallery-owner]")?.getAttribute("data-gallery-owner")).toBe("task-b");
   });
 
   it("preserves explicitly saved Coordinator tabs when a decision link adds its document", async () => {

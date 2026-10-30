@@ -17,7 +17,8 @@ point, and still requires the caller's exact stopped-source and workspace fences
 Provider transfer tests do not establish task admission or agent authority.
 
 Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
-zombie with the saved generation. Unknown adopted-process ownership rejects the
+zombie with the saved generation. Read-only transport retries use the existing
+shared deadline with backoff; signal requests remain single-attempt. Unknown adopted-process ownership rejects the
 probe and grants no permission to replace a runner, signal a different process,
 or replay work. Launch requires a working Node probe before detachment.
 

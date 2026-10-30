@@ -1132,6 +1132,18 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
+A native continuation may replay the same plain confirmation or checkbox key
+after receiving its accepted response. Only the run's persisted, identity-bound
+response can nominate that replay. The interaction service returns the original
+accepted record when the creator and complete request still match and no newer
+confirmation exists.
+It preserves the original source run and creates no new request or wake. Changed
+scope and all downstream execution gates still require their ordinary authority.
+The native tool receipt remains recoverable. Reuse of an accepted cross-run
+receipt rechecks the original outcome and newer confirmations before returning it.
+Governed tool, secret, connection, and quality-review confirmations keep their
+separate lifecycle rules and do not use this replay path.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
@@ -1520,8 +1532,11 @@ Every continuation carries the triggering request, ordered user direction, inter
 ### Remote runner process evidence
 
 A failed remote health request does not prove that runnerd stopped. Read-only
-process checks retry transient transport failures up to three times within one
-30-second budget. Missing or changed identity, an unknown process generation,
+process checks retry transient transport failures within one 30-second budget,
+with backoff from 250 milliseconds to two seconds between failed reads. Fast
+failures do not exhaust that budget after three attempts. Each read uses at
+most ten seconds of the remaining budget. Signals still have one attempt when
+their acknowledgement is lost. Missing or changed identity, an unknown process generation,
 and exhausted health reads retain uncertainty. They do not authorize a signal,
 replacement launch, or provider replay. Confirmed predecessor exit permits the
 transport to attempt recovery within its existing reconnect deadline. Repeated

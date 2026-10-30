@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeChatFeature, type ChatFeatureObservation } from "./chat-feature-scoring.js";
+import { chatFeatureExecutionRuns, gradeChatFeature, type ChatFeatureObservation } from "./chat-feature-scoring.js";
 import { chatFeatureScenarios, readChatFeatureScenarios } from "./chat-feature-cases.js";
 import { runnerMatrix } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
@@ -32,10 +32,41 @@ function outcome(delegated = false): ChatFeatureObservation {
   return input;
 }
 const failures = (input: ChatFeatureObservation) => gradeChatFeature(input).checks.filter(check => !check.passed).map(check => check.id);
+function withSupersededWake(input = outcome(true)) {
+  input.runs.push({ id: "old-assignment", companyId: "company", agentId: "ceo", status: "cancelled", runtimeMode: "legacy",
+    startedAt: null, errorCode: "issue_assignee_changed", contextSnapshot: { issueId: "task" },
+    resultJson: { stopReason: "issue_assignee_changed", timeoutSource: "stale_queued_run_gate", timeoutFired: false } });
+  return input;
+}
 
 describe("chat feature saved-state oracle", () => {
   it.each([false, true])("accepts a complete %s delegation outcome", delegated => {
     expect(failures(outcome(delegated))).toEqual([]);
+  });
+  it("accepts a completed delegation after an obsolete assignment wake was cancelled before execution", () => {
+    const input = withSupersededWake();
+    expect(failures(input)).toEqual([]);
+    expect(chatFeatureExecutionRuns(input).map(run => run.id)).toEqual(["handoff", "writing", "delivery"]);
+    expect(input.runs).toHaveLength(4);
+  });
+  it("keeps an unfinished delegation failed after a harmless queued cancellation", () => {
+    const input = withSupersededWake();
+    input.runs.splice(1, 2);
+    input.tasks[0]!.status = "todo";
+    input.documents = [];
+    input.comments.pop();
+    expect(chatFeatureExecutionRuns(input).map(run => run.id)).toEqual(["handoff"]);
+    expect(failures(input)).toEqual(expect.arrayContaining(["worker-executed", "grounded-worker-document", "completion-source-response"]));
+  });
+  it.each([
+    { startedAt: "2026-10-26T10:00:15Z" }, { startedAt: undefined }, { errorCode: "cancelled" },
+    { companyId: "foreign" }, { agentId: "unrelated" }, { contextSnapshot: { issueId: "other-task" } },
+    { contextSnapshot: { issueId: "chat" } }, { resultJson: {} }, { nativeIssueId: "task" },
+  ])("rejects cancelled work without proof of an obsolete unstarted handoff: %j", patch => {
+    const input = withSupersededWake();
+    Object.assign(input.runs.at(-1)!, patch);
+    expect(chatFeatureExecutionRuns(input)).toHaveLength(4);
+    expect(failures(input)).toContain("bounded-native-work");
   });
   it.each([
     ["duplicate task", (o: ChatFeatureObservation) => o.tasks.push({ ...o.tasks[0]!, id: "duplicate" }), "one-assigned-task"],
@@ -76,12 +107,12 @@ describe("chat feature saved-state oracle", () => {
 });
 
 describe("chat feature selection", () => {
-  it("registers only the two authored queries as explicit local subscription cells", () => {
+  it("registers the two authored queries as explicit local subscription and OpenCode cells", () => {
     const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features");
-    expect(cells).toHaveLength(2);
+    expect(cells).toHaveLength(4);
     for (const cell of cells) {
       expect(cell.environment.id).toBe("local");
-      expect(cell.requiredCredentials).toEqual(["CODEX_AUTH_JSON"]);
+      expect(cell.requiredCredentials).toEqual([cell.profile.id === "runner-opencode" ? "OPENROUTER_API_KEY" : "CODEX_AUTH_JSON"]);
       expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
       expect(cell.task.buildPrompt("nonce")).toBe(chatFeatureScenarios.find(row => row.id === `tasks.${cell.task.id}`)!.query);
       expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);

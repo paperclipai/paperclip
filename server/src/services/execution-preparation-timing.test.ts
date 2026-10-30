@@ -46,7 +46,8 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
     await expect(createRunPreparationTiming("run", "native.controller")("backend_setup", () => 42)).resolves.toBe(42);
     await expect(withRunWorkspaceFinalizationTiming("run", () => 42)).resolves.toBe(42);
     for (const phase of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission", "execution.budget_reservation",
-      "skills.inventory", "skills.inventory.wait", "skills.cache.acquire", "skills.version.materialize", "skills.consume"] as const) {
+      "skills.inventory", "skills.inventory.wait", "skills.cache.acquire", "skills.version.materialize", "skills.consume",
+      "workspace_sync.seed_read_copy", "workspace_sync.seed_read_hash", "workspace_sync.seed_read_touch"] as const) {
       const result = {};
       const work = vi.fn(() => {
         recordRepositoryObjectCacheDetail({ outcome: "hit", referenceSupplied: true });
