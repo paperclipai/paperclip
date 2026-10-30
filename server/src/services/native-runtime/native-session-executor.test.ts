@@ -75,6 +75,7 @@ import { agentInstructionWorkingCopies } from "@paperclipai/db";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
+  NativeSessionCloseUnrecoverableError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
 } from "../../vendor/paperclip-runner/index.js";
@@ -9201,6 +9202,102 @@ describe("native warm session supervision", () => {
       await closeIdleWarmNativeSessionsForRestart();
     });
 
+    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound"] as const)(
+      "handles a permanently rejected plugin close during reset (%s)", async mode => {
+        const { base, next, run } = fixture(`identity-poisoned-close-${mode}`);
+        const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
+          normalizedSessionId: base.session.normalizedSessionId!, turnId: "turn", itemId: "item" };
+        let stopped = false;
+        const task = vi.fn(async (operation: any) => {
+          if (operation.kind === "describe") return { kind: "description", taskId: "old-task", launchPreparationVersion: 1,
+            projectAuthCheckVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+          if (operation.kind === "stop") stopped = true;
+          if (operation.kind === "status") return { kind: "status", taskId: "old-task", phase: stopped ? "cancelled" : "running", executionStopped: stopped };
+          if (operation.kind === "complete" && mode === "unconfirmed") throw new Error("handoff unconfirmed");
+          return { kind: "accepted", taskId: "old-task" };
+        });
+        const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+        let owner!: ReturnType<typeof createOwner>;
+        const ownerFactory = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => {
+          owner = createOwner({ ...input, adoptIdentity: identity });
+          return owner;
+        });
+        onTestFinished(() => ownerFactory.mockRestore());
+        // Bind through the production backend so the receipt belongs to this
+        // exact session object. The task boundary supplies the stop proof.
+        const backend = await createRunnerdBackend({ db: leaseDb(base),
+          execution: { ...base, session: { ...base.session, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } },
+          runnerInstanceId: "runner", runnerIngressAuthorized: true,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
+        const registration = await owner.registration({} as never, base.binding.runId);
+        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed") : new NativeSessionCloseUnrecoverableError();
+        let closePromise: Promise<void> | undefined;
+        const close = vi.fn(() => closePromise ??= (async () => {
+          await registration.release();
+          await registration.checkpoint("unsettled").catch(() => undefined);
+          throw failure;
+        })());
+        const session = { close };
+        if (mode !== "unbound") backend.bindManagedSession(session as never);
+        const collectStopped = vi.fn(async () => {
+          expect(owner.isRetired()).toBe(true);
+          if (mode === "collection-failed") throw new Error("file collection failed");
+        });
+        const retirementFailed = vi.fn(async () => {});
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          await options.onSession?.(session); return result;
+        }).mockImplementationOnce(async options => {
+          expect(options.existingSession).toBeUndefined();
+          expect(collectStopped).toHaveBeenCalled();
+          return result;
+        });
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner",
+            instructionWorkingCopy: { hasChanges: async () => false, collectStopped, retirementFailed } });
+          // First poison the retained owner through the real configuration
+          // retirement path. An explicit reset must not need a process restart.
+          const changed = { ...base, binding: { ...base.binding, runId: `${base.binding.runId}-changed` } };
+          await expect(executePaperclipNativeSession({ db: leaseDb(changed), execution: changed,
+            runnerInstanceId: "runner", refreshTools: true })).rejects.toThrow(failure.message);
+          expect(close).toHaveBeenCalledOnce();
+          expect(collectStopped).not.toHaveBeenCalled();
+          expect(retirementFailed).toHaveBeenCalledOnce();
+          retirementFailed.mockClear();
+          const replacement = mode === "same-session" ? { ...next, session: base.session }
+            : mode === "same-id-provider" ? { ...next, session: base.session,
+                provider: { kind: "opencode" as const, model: "openai/test", permissionMode: "allow" as const } } : next;
+          const attempt = () => mode === "same-session"
+            ? executePaperclipNativeSession({ db: leaseDb(replacement), execution: replacement, runnerInstanceId: "runner", refreshTools: true })
+            : run(replacement);
+          if (mode === "retired") {
+            await attempt();
+            expect(state.execute).toHaveBeenCalledTimes(2);
+            expect(retirementFailed).not.toHaveBeenCalled();
+          } else {
+            // Both attempts see the same rejected promise, just as the real
+            // transport does; no mock succeeds on the second close.
+            const expected = mode === "collection-failed" ? "file collection failed" : failure.message;
+            await expect(attempt()).rejects.toThrow(expected);
+            await expect(attempt()).rejects.toThrow(expected);
+            expect(state.execute).toHaveBeenCalledTimes(1);
+            if (mode !== "collection-failed") expect(collectStopped).not.toHaveBeenCalled();
+            else {
+              collectStopped.mockResolvedValue(undefined);
+              await attempt();
+              expect(state.execute).toHaveBeenCalledTimes(2);
+            }
+          }
+          expect(task.mock.calls.filter(([operation]) => operation.kind === "stop")).toHaveLength(1);
+          expect(task.mock.calls.some(([operation]) => operation.kind === "read_state")).toBe(false);
+        } finally {
+          collectStopped.mockResolvedValue(undefined);
+          close.mockResolvedValue(undefined);
+          await closeIdleWarmNativeSessionsForRestart();
+          ownerFactory.mockRestore();
+        }
+      },
+    );
+
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
       const close = vi.fn().mockRejectedValueOnce(new Error("containment unavailable")).mockResolvedValue(undefined);
@@ -12675,7 +12772,7 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
