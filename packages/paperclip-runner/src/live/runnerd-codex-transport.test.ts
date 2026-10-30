@@ -6004,17 +6004,28 @@ it.each([
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
       const preparedStates: (typeof core.store.state)[] = [];
-      const commit = core.store.commit.bind(core.store);
-      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
-        commit(candidate);
-        // Capture the durable old epoch at publication. The authenticated
-        // successor may activate before attachRun observes the completed command.
+      const capturePreparedState = () => {
         if (
-          candidate.identity.runId === oldIdentity.runId &&
-          candidate.warmTransition?.phase === "prepared"
+          core.store.state.identity.runId === oldIdentity.runId &&
+          core.store.state.warmTransition?.phase === "prepared"
         ) {
           preparedStates.push(structuredClone(core.store.state));
         }
+      };
+      const commit = core.store.commit.bind(core.store);
+      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+        commit(candidate);
+        // Capture complete-state publications in the old epoch. The
+        // authenticated successor may activate before attachRun observes the
+        // completed command.
+        capturePreparedState();
+      });
+      const save = core.store.save.bind(core.store);
+      vi.spyOn(core.store, "save").mockImplementation(() => {
+        save();
+        // Event ACKs mutate the current journal and persist with save(), not
+        // commit(candidate). Capture those durable old-epoch snapshots too.
+        capturePreparedState();
       });
       if (observer === "after-activation") {
         const getCommand = core.getCommand.bind(core);
@@ -6106,36 +6117,127 @@ it.each([
         expect(rotations).toHaveLength(1);
         expect(preparedStates.length).toBeGreaterThan(0);
         const retired = preparedStates[0]!;
-        if (observer === "after-activation") {
-          expect(rotations[0]!.identity.runId).toBe("run-warm-ack-next");
-          expect(
-            rotations[0]!.committedEvents.some(
-              (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-            ),
-          ).toBe(false);
-        }
-        const attachedEvent = retired.committedEvents.find(
-          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-        )!;
-        expect(attachedEvent.logicalEffectCount).toBe(1);
-        expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
-          attachedEvent.sourceSeq,
-        );
-        expect(
-          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
-        ).toEqual([
+        const predecessorTypes = [
           "session.resumed",
           "session.capabilities.updated",
           "session.goal.snapshot",
-          "run.attached",
-        ]);
+        ];
+        const predecessorIndex = retired.committedEvents.findIndex(
+          (entry, index) =>
+            entry.eventType === predecessorTypes[0] &&
+            retired.committedEvents[index + 1]?.eventType ===
+              predecessorTypes[1] &&
+            retired.committedEvents[index + 2]?.eventType ===
+              predecessorTypes[2],
+        );
+        expect(predecessorIndex).toBeGreaterThanOrEqual(0);
+        const predecessorSequence = retired.committedEvents.slice(
+          predecessorIndex,
+          predecessorIndex + predecessorTypes.length,
+        );
+        expect(predecessorSequence.map((entry) => entry.eventType)).toEqual(
+          predecessorTypes,
+        );
         expect(
-          retired.committedEvents.every(
+          predecessorSequence.every(
             (entry) => entry.envelope.runId === oldIdentity.runId,
           ),
         ).toBe(true);
+        expect(predecessorSequence[2]!.sourceSeq).toBeLessThan(
+          heldEvent!.sourceSeq,
+        );
+
+        const containsAttachedEvent = (record: typeof retired) =>
+          record.committedEvents.some(
+            (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+          );
+        let attachedRecord: typeof retired;
+        if (observer === "after-activation") {
+          // The attach-result observer can wake after activation. The event
+          // still belongs to the old run identity; the successor journal must
+          // not be mistaken for the preserved record that owns its predecessors.
+          expect(rotations[0]!.identity.runId).toBe("run-warm-ack-next");
+          expect(containsAttachedEvent(rotations[0]!)).toBe(false);
+          expect(
+            rotations[0]!.committedEvents.some(
+              (entry) =>
+                predecessorTypes.includes(entry.eventType) &&
+                entry.envelope.runId === oldIdentity.runId,
+            ),
+          ).toBe(false);
+          let preparedAttachment: typeof retired | undefined;
+          let liveSuccessor: typeof retired | undefined;
+          await vi.waitFor(
+            () => {
+              preparedAttachment = [...preparedStates]
+                .reverse()
+                .find(containsAttachedEvent);
+              liveSuccessor = cores[cores.length - 1]!.store.state;
+              const attachedInSuccessor =
+                containsAttachedEvent(liveSuccessor);
+              // Activation may happen before attachRun observes the command,
+              // while its durable event can still be committed by the old
+              // prepared epoch. Accept either durable owner, never a guess
+              // based on which observer happened to wake first.
+              expect(Boolean(preparedAttachment) || attachedInSuccessor).toBe(
+                true,
+              );
+              expect(Boolean(preparedAttachment)).not.toBe(attachedInSuccessor);
+            },
+            { timeout: 10_000 },
+          );
+          if (preparedAttachment) {
+            expect(preparedAttachment.identity.runId).toBe(oldIdentity.runId);
+            attachedRecord = preparedAttachment;
+          } else {
+            expect(liveSuccessor!.identity.runId).toBe("run-warm-ack-next");
+            expect(
+              liveSuccessor!.committedEvents.some(
+                (entry) =>
+                  predecessorTypes.includes(entry.eventType) &&
+                  entry.envelope.runId === oldIdentity.runId,
+              ),
+            ).toBe(false);
+            attachedRecord = liveSuccessor!;
+          }
+        } else {
+          // In the ordinary ordering, the old epoch durably commits the
+          // attachment before rotation; the successor must not duplicate it.
+          expect(rotations[0]!.identity.runId).toBe(oldIdentity.runId);
+          await vi.waitFor(
+            () => {
+              expect(
+                preparedStates.some(containsAttachedEvent),
+              ).toBe(true);
+              expect(
+                containsAttachedEvent(cores[cores.length - 1]!.store.state),
+              ).toBe(false);
+            },
+            { timeout: 10_000 },
+          );
+          attachedRecord = preparedStates.find(containsAttachedEvent)!;
+        }
+        const attachedIndex = attachedRecord.committedEvents.findIndex(
+          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+        );
+        expect(attachedIndex).toBeGreaterThanOrEqual(0);
+        const attachedEvent = attachedRecord.committedEvents[attachedIndex]!;
+        expect(attachedEvent.logicalEffectCount).toBe(1);
+        expect(attachedEvent.envelope.runId).toBe(oldIdentity.runId);
+        if (attachedRecord.identity.runId === oldIdentity.runId) {
+          // Every selected old-epoch snapshot, including a later prepared
+          // snapshot, must retain the durable ACK for this source event.
+          expect(attachedRecord.ackedSourceSeq).toBeGreaterThanOrEqual(
+            attachedEvent.sourceSeq,
+          );
+        } else {
+          // The new epoch has a fresh cursor; the old source sequence does not
+          // apply there, so verify the selected destination is the successor.
+          expect(attachedRecord.identity.runId).toBe("run-warm-ack-next");
+        }
+        expect(attachedEvent.eventType).toBe("run.attached");
         if (mode === "lost-ack") {
-          expect(retired.connectionCount).toBeGreaterThanOrEqual(2);
+          expect(attachedRecord.connectionCount).toBeGreaterThanOrEqual(2);
           expect(effects.get(heldEvent!.sourceEventId)?.deliveries).toBe(2);
         } else {
           expect(effects.get(heldEvent!.sourceEventId)?.deliveries).toBe(1);
