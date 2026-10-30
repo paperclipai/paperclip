@@ -1,3 +1,4 @@
+import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
@@ -501,6 +502,7 @@ type IssueResolutionContext = {
   companyId: string;
   status: string;
   executionRunId: string | null;
+  hiddenAt?: Date | null;
   workMode: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -2074,6 +2076,32 @@ export function issueThreadInteractionService(
     );
     return states;
   }
+  async function mergedPullRequestConfirmationCandidates(scope?: MergeConfirmationScope) {
+    const text = sql`concat_ws(' ', ${issueThreadInteractions.title}, ${issueThreadInteractions.summary},
+      ${issueThreadInteractions.payload}->>'prompt', ${issueThreadInteractions.payload}->>'acceptLabel',
+      ${issueThreadInteractions.payload}->>'detailsMarkdown', ${issueThreadInteractions.payload}->'target'->>'key',
+      ${issueThreadInteractions.payload}->'target'->>'label', ${issueThreadInteractions.payload}->'target'->>'href')`;
+    const rows = await db.select({ interaction: issueThreadInteractions, issue: {
+      id: issues.id, companyId: issues.companyId, projectId: issues.projectId, goalId: issues.goalId,
+      status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+    } }).from(issueThreadInteractions).innerJoin(issues, and(
+      eq(issueThreadInteractions.issueId, issues.id), eq(issueThreadInteractions.companyId, issues.companyId),
+    )).where(and(
+      eq(issueThreadInteractions.kind, "request_confirmation"), eq(issueThreadInteractions.status, "pending"),
+      isNull(issues.hiddenAt), sql`${issues.status} NOT IN ('done', 'cancelled')`,
+      scope ? eq(issueThreadInteractions.companyId, scope.companyId) : undefined,
+      scope?.issueId ? eq(issueThreadInteractions.issueId, scope.issueId) : undefined,
+      scope?.interactionId ? eq(issueThreadInteractions.id, scope.interactionId) : undefined,
+      sql`${text} ~* '(merge|merging)'`,
+      sql`${text} ~* '(github\\.com/[^ /]+/[^ /]+/pull/[1-9][0-9]*|[a-z0-9_.-]+/[a-z0-9_.-]+#[1-9][0-9]*)'`,
+      sql`NOT EXISTS (SELECT 1 FROM ${toolActionRequests} WHERE ${toolActionRequests.interactionId} = ${issueThreadInteractions.id})`,
+    ));
+    return rows.flatMap(row => {
+      const references = getMergeConfirmationPullRequestReferences(row.interaction);
+      return references.length ? [{ ...row, references }] : [];
+    });
+  }
+
   async function getIdempotentInteraction(args: {
     issueId: string;
     companyId: string;
@@ -2271,6 +2299,7 @@ export function issueThreadInteractionService(
           companyId: issues.companyId,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          hiddenAt: issues.hiddenAt,
           workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -2308,6 +2337,10 @@ export function issueThreadInteractionService(
           "interaction_already_resolved",
           "Interaction has already been resolved",
         );
+      }
+      if (args.actor.systemId === "system:pr-merged" &&
+          (issueContext.hiddenAt || getMergeConfirmationPullRequestReferences(lockedCurrent).length === 0)) {
+        throw conflict("Merge confirmation is no longer actionable");
       }
       await assertRequestConfirmationResolutionAllowedUnderLock(
         tx as unknown as Db,
@@ -2979,6 +3012,7 @@ export function issueThreadInteractionService(
       await emitInteractionResolvedTelemetry(db, interaction);
       return interaction;
     },
+    mergedPullRequestConfirmationCandidates,
     sweepMergedPullRequestConfirmations: async (
       mergedHints: Array<{
         companyId: string;
@@ -2986,51 +3020,17 @@ export function issueThreadInteractionService(
         repo: string;
         number: number;
       }> = [],
+      scope?: MergeConfirmationScope,
+      signal?: AbortSignal,
     ) => {
-      const rows = await db
-        .select({
-          interaction: issueThreadInteractions,
-          issue: {
-            id: issues.id,
-            companyId: issues.companyId,
-            projectId: issues.projectId,
-            goalId: issues.goalId,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-          },
-        })
-        .from(issueThreadInteractions)
-        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
-        .where(
-          and(
-            eq(issueThreadInteractions.kind, "request_confirmation"),
-            eq(issueThreadInteractions.status, "pending"),
-          ),
-        );
-
-      const candidates = rows.flatMap((row) => {
-        const references = getMergeConfirmationPullRequestReferences(
-          row.interaction,
-        );
-        return references.length > 0 ? [{ ...row, references }] : [];
-      });
-      if (candidates.length === 0) {
-        return { checked: rows.length, candidates: 0, accepted: 0, woken: 0 };
-      }
-
-      const candidateIds = candidates.map(({ interaction }) => interaction.id);
-      const linkedToolActions = await db
-        .select({ interactionId: toolActionRequests.interactionId })
-        .from(toolActionRequests)
-        .where(inArray(toolActionRequests.interactionId, candidateIds));
-      const toolActionInteractionIds = new Set(
-        linkedToolActions
-          .map((row) => row.interactionId)
-          .filter((value): value is string => Boolean(value)),
-      );
-      const eligible = candidates.filter(
-        ({ interaction }) => !toolActionInteractionIds.has(interaction.id),
-      );
+      const candidates = await mergedPullRequestConfirmationCandidates(scope ??
+        (mergedHints.length === 1 ? { companyId: mergedHints[0]!.companyId } : undefined));
+      const eligible = mergedHints.length ? candidates.filter(candidate => mergedHints.some(hint =>
+        hint.companyId === candidate.issue.companyId && candidate.references.some(reference =>
+          hint.owner.toLowerCase() === reference.owner.toLowerCase() &&
+          hint.repo.toLowerCase() === reference.repo.toLowerCase() && hint.number === reference.number),
+      )) : candidates;
+      if (eligible.length === 0) return { checked: 0, candidates: 0, accepted: 0, woken: 0 };
 
       const checkedAt = now().getTime();
       const cacheTtlMs = opts.pullRequestCacheTtlMs ?? 5 * 60 * 1000;
@@ -3065,6 +3065,9 @@ export function issueThreadInteractionService(
       const refreshedStates = await resolvePullRequestStates([
         ...uniqueReferences.values(),
       ]);
+      if (scope && [...refreshedStates.values()].some(state => state === "unknown")) {
+        throw new Error("Merge confirmation provider state is unavailable");
+      }
       for (const [key, state] of refreshedStates) {
         setBoundedPullRequestCacheEntry(pullRequestStateCache, key, {
           state,
@@ -3075,6 +3078,7 @@ export function issueThreadInteractionService(
       let accepted = 0;
       let woken = 0;
       for (const candidate of eligible) {
+        if (signal?.aborted) break;
         const allMerged = candidate.references.every((reference) => {
           const key = `${candidate.issue.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
           return pullRequestStateCache.get(key)?.state === "merged";
@@ -3111,12 +3115,16 @@ export function issueThreadInteractionService(
         if (resolved.interaction.status !== "accepted") continue;
         accepted += 1;
 
-        const wakeIssue = resolved.continuationIssue ?? candidate.issue;
+        const wakeIssue = resolved.continuationIssue ?? await db.select({
+          id: issues.id, assigneeAgentId: issues.assigneeAgentId, status: issues.status,
+        }).from(issues).where(and(eq(issues.id, candidate.issue.id),
+          eq(issues.companyId, candidate.issue.companyId), isNull(issues.hiddenAt))).then(rows => rows[0]);
         const shouldWake =
           resolved.interaction.continuationPolicy === "wake_assignee" ||
           resolved.interaction.continuationPolicy === "wake_assignee_on_accept";
         if (
           !opts.wakeup ||
+          !wakeIssue ||
           !shouldWake ||
           !wakeIssue.assigneeAgentId ||
           isTerminalIssueStatus(wakeIssue.status)
@@ -3158,7 +3166,7 @@ export function issueThreadInteractionService(
       }
 
       return {
-        checked: rows.length,
+        checked: candidates.length,
         candidates: eligible.length,
         accepted,
         woken,
@@ -3909,6 +3917,7 @@ export function issueThreadInteractionService(
           } else {
             await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
           }
+          if (data.kind === "request_confirmation") await notifyMergeConfirmationWork(tx, { companyId: issue.companyId, issueId: issue.id });
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({

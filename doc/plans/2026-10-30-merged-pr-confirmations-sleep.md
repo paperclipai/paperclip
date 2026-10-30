@@ -1,0 +1,83 @@
+# Merged pull request confirmation scheduling
+
+The merged-PR confirmation duty previously ran from every heartbeat maintenance
+callback, including when there were no merge requests. It loaded all pending
+confirmation cards and then applied the merge-only parser in memory.
+
+The interaction service still owns merge-only eligibility, provider access,
+automatic acceptance, current resolver authority, audit, and continuation.
+The worker registers the existing scoped-deadline helper with a dedicated delivery
+topic. Shared scheduling receives interaction/company identities and deadlines;
+it receives no GitHub payloads. No database migration is required.
+
+## Durable truth and producers
+
+Pending `request_confirmation` interaction rows remain the durable work source.
+The candidate query excludes terminal and hidden issues, linked tool actions,
+and text without merge intent or a PR reference. The existing fail-closed parser
+then excludes additional actions, governed actions, and document/attachment targets.
+No accepted or cancelled history keeps a deadline alive.
+
+Ordinary creation registers the topic before inserting a confirmation in its
+transaction. Existing confirmation-resolution notifications invalidate its issue
+before acceptance, rejection, withdrawal, supersession, and administrative expiry.
+Issue status and visibility changes invalidate that issue before their update.
+The signal helper joins caller-owned outer transactions; nested savepoint release
+is not a commit. Startup reconstructs existing candidates. Direct tool, secret,
+and OAuth interaction inserts do not create eligible merge-only work. Company
+portability does not import pending interaction rows.
+
+The supported writer model is the instance's ordinary service/API process.
+Independent SQL writers must use the same transaction-aware notification contract
+or explicitly invalidate/restart the owning worker. Process-local notifications
+do not establish a cross-replica ingress guarantee. No permanent database listener
+or empty recovery scan is added.
+
+## External observation and retries
+
+The existing normalized `applyPullRequestEvent` to
+`sweepMergedPullRequestConfirmations` seam remains available. A normalized merge
+hint checks matching references in its company; unrelated tenants and PRs do not
+cause provider reads. Existing provider/binding authorization remains unchanged.
+
+A pending candidate can reference a PR whose external changes have no dependable
+webhook coverage. Each such candidate retains a five-minute observation deadline.
+Resolution, withdrawal, supersession, hiding, or terminal issue state removes the
+obligation. Provider/read failures and unknown states retain the candidate, using
+the existing scoped helper's 30-second exponential backoff capped at five minutes.
+These retries do not scan completed history. Removing candidate reconciliation
+requires a proven durable delivery/replay guarantee for every referenced PR,
+including the first event after idle and supported non-Cloud installations.
+
+This is candidate-backed external observation. It does not eliminate all polling,
+register a Cloud wake alarm, or prove that the host/database suspends. Existing
+sleep-safety blockers remain in force.
+
+## Acceptance evidence
+
+Focused tests use real PostgreSQL, the actual service producers, transaction
+signals, coordinator, scheduler, acceptance transaction, and persisted audit and
+chat continuation outbox. GitHub state and the direct heartbeat wake callback are
+controlled simulation boundaries. The tests do not claim live GitHub delivery or
+real agent execution.
+
+Cases cover empty/configured idle and retained terminal history with no recurring
+SQL/provider work across old cadence windows; the first ordinary creation;
+outer commit/rollback; exact candidate and failure deadlines; withdrawal;
+provider failure across drain; standby/resume; restart; tenant-scoped and duplicate
+merge hints; latest/superseded cards during provider observation; hidden/terminal
+issues; URL targets; no-continuation policy; and shutdown during an in-flight read.
+Existing startup and normalized GitHub event tests exercise the changed consumers.
+
+## Existing limitations outside this migration
+
+Direct non-chat continuation still uses the existing postcommit `wakeup` call.
+If that call fails after acceptance commits, the previous periodic sweep also
+skipped the accepted row and did not reconstruct the missing wake. This migration
+preserves that behavior; a general durable interaction-continuation contract is
+a separate follow-up. Real chat bindings retain the existing transactional
+`interaction_wakeup` outbox, verified through ordinary creation and acceptance.
+
+The separate review-authority issue tracked in public issue #17704 and PR #17711
+remains owned there. The worker isolates candidate failures and preserves current
+review authorization; it does not grant a system actor new review authority.

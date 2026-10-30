@@ -97,6 +97,7 @@ export const DELIVERY_QUEUES = {
   browser: "browser-use",
   email: "email-channels",
   museMaintenance: "muse-maintenance",
+  mergedPullRequestConfirmations: "merged-pull-request-confirmations",
   mcpEvents: "mcp-events",
   dotEvents: "dot-events",
   grokDispatch: "grok-dispatch",
