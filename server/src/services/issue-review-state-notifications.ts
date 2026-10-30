@@ -5,7 +5,7 @@ import { notifyNativeReviewResponse } from "./native-review-response-notificatio
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 
 export async function notifyIssueReviewState(tx: object, scope: { companyId: string; issueId?: string; runId?: string; agentId?: string }) {
-  await notifyRoutineExecutionStatus(tx, scope.issueId);
+  await notifyRoutineExecutionStatus(tx, scope.issueId, scope.companyId);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
   await notifyExternalConversationSettlement(tx, scope);
   await notifyNativeReviewResponse(tx, scope);

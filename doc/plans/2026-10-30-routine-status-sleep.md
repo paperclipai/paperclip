@@ -7,14 +7,16 @@ scanned every five minutes, even with no routines or only completed history.
 ## Ownership and trigger
 
 `routine-run-status.ts` owns the projection, custody checks and repair transaction.
-The worker loads actual mismatches at startup. It accepts issue hints from issue
+The worker loads actual mismatches in keyset pages of 50 at startup. It accepts issue hints from issue
 creation, status/origin changes, checkout/release, routine issue association,
 execution control writes and review state writes. It uses the existing
 transaction-aware work notification protocol. An outer transaction owns the hint;
 a savepoint release does not wake the repair worker before commit.
 
-A standard execution must name the same routine, invocation, company and linked
-task. Plugin-managed executions may use their declared custom origin. Repair
+An execution must retain reciprocal task/invocation links in the same company
+and belong to a routine in that company. This is the existing routine status
+owner contract. Origin labels can change when a plugin declaration changes or
+is removed; retained reciprocal links preserve historical execution custody. Repair
 locks the routine and task and rechecks the linked invocation before writing.
 It preserves skipped/coalesced history and unrelated dispatch failures. A task
 that resumes clears an execution-task transient failure through the same owner
@@ -33,8 +35,9 @@ history leave no recurring worker SQL. The existing Cloud and heartbeat schedule
 enablement gates remain in place. Ordinary routine scheduling is unchanged.
 
 Supported app writers register `notifyRoutineExecutionStatus(tx, issueId)` before
-their mutation. Common execution writers without an issue hint request debt
-reconstruction. Backups and independent SQL import/repair tools must restore
+their mutation. Common execution writers without an issue hint request debt reconstruction only
+for their recorded company. Projection debt settles even when that company is
+paused; company activity does not create or cancel this obligation. Backups and independent SQL import/repair tools must restore
 before startup or call that same transaction contract; process-local hints do
 not observe independent SQL or another process. No permanent listener or periodic
 configured-routine scan is added.

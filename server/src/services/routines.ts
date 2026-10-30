@@ -2002,6 +2002,8 @@ export function routineService(
   }
 
 
+  let statusReconcileCursor: string | undefined;
+
   async function syncRunStatusForIssue(issueId: string, executor: Db = db) {
     return syncRoutineRunStatusForIssue(executor, issueId);
   }
@@ -3246,7 +3248,8 @@ export function routineService(
 
     reconcileExecutionRunStatuses: async (): Promise<{ scanned: number; settled: number; deferred: number }> => {
       const service = routineExecutionStatusService(db);
-      const candidates = await service.load();
+      const candidates = await service.load(undefined, statusReconcileCursor);
+      statusReconcileCursor = candidates.length === 50 ? candidates.at(-1)!.id : undefined;
       let settled = 0, deferred = 0;
       for (const candidate of candidates) {
         try {

@@ -1,7 +1,7 @@
-import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyRoutineExecutionStatus, type RoutineExecutionStatusScope } from "./routine-execution-status-notifications.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, pluginManagedResources, routineRuns, routines } from "@paperclipai/db";
+import { issues, routineRuns, routines } from "@paperclipai/db";
 
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
@@ -141,17 +141,11 @@ export async function syncRoutineRunStatusForIssue(executor: Db, issueId: string
 }
 
 
-export function routineExecutionOriginCondition() {
-  return or(sql`${issues.originId} = ${routineRuns.routineId}::text`, sql`exists (
-    select 1 from ${pluginManagedResources} resource
-    where resource.company_id = ${routineRuns.companyId}
-      and resource.resource_kind = 'routine' and resource.resource_id = ${routineRuns.routineId}
-      and resource.defaults_json -> 'issueTemplate' ->> 'originId' = ${issues.originId}
-  )`);
-}
+export const ROUTINE_EXECUTION_STATUS_PAGE_SIZE = 50;
 
 export function routineExecutionStatusDebtCondition() {
-  const transientFailure = sql`(${routineRuns.triggerPayload} -> 'transientFailure' ->> 'code' = ${EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE}
+  const transientFailure = sql`((${routineRuns.triggerPayload} -> 'transientFailure' ->> 'code' = ${EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE}
+      and ${routineRuns.triggerPayload} -> 'transientFailure' ->> 'status' in ('blocked', 'cancelled'))
     or ${routineRuns.failureReason} in ('Execution issue moved to blocked', 'Execution issue moved to cancelled'))`;
   return or(
     and(eq(routineRuns.status, "issue_created"), inArray(issues.status, ["done", "blocked", "cancelled"])),
@@ -165,15 +159,18 @@ export function routineExecutionStatusDebtCondition() {
 }
 
 export function routineExecutionStatusService(db: Db) {
-  async function load(issueId?: string) {
+  async function load(scope?: RoutineExecutionStatusScope, afterId?: string) {
     return db.select({ id: routineRuns.id, companyId: routineRuns.companyId,
       issueId: issues.id, routineId: routineRuns.routineId })
       .from(routineRuns)
       .innerJoin(routines, and(eq(routines.id, routineRuns.routineId), eq(routines.companyId, routineRuns.companyId)))
       .innerJoin(issues, and(eq(issues.id, routineRuns.linkedIssueId), eq(issues.companyId, routineRuns.companyId),
-        eq(issues.originKind, "routine_execution"), sql`${issues.originRunId} = ${routineRuns.id}::text`, routineExecutionOriginCondition()))
-      .where(and(routineExecutionStatusDebtCondition(), ...(issueId ? [eq(issues.id, issueId)] : [])))
-      .orderBy(routineRuns.id);
+        eq(issues.originKind, "routine_execution"), sql`${issues.originRunId} = ${routineRuns.id}::text`))
+      .where(and(routineExecutionStatusDebtCondition(),
+        ...(scope?.issueId ? [eq(issues.id, scope.issueId)] : []),
+        ...(scope?.companyId ? [eq(routineRuns.companyId, scope.companyId)] : []),
+        ...(afterId ? [sql`${routineRuns.id} > ${afterId}::uuid`] : [])))
+      .orderBy(routineRuns.id).limit(ROUTINE_EXECUTION_STATUS_PAGE_SIZE);
   }
   async function settle(candidate: Awaited<ReturnType<typeof load>>[number]) {
     return db.transaction(async tx => {
@@ -190,7 +187,7 @@ export function routineExecutionStatusService(db: Db) {
         .innerJoin(issues, eq(issues.id, routineRuns.linkedIssueId))
         .where(and(eq(routineRuns.id, candidate.id), eq(routineRuns.companyId, candidate.companyId),
           eq(routineRuns.routineId, candidate.routineId), eq(routineRuns.linkedIssueId, issue.id),
-          routineExecutionOriginCondition(), routineExecutionStatusDebtCondition())).for("update", { of: routineRuns });
+          routineExecutionStatusDebtCondition())).for("update", { of: routineRuns });
       if (!run) return false;
       return (await syncRoutineRunStatusForIssue(tx as unknown as Db, issue.id)) !== null;
     });

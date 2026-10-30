@@ -1,3 +1,5 @@
+import { writeExecutionControl } from "../services/execution-control-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +123,56 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.transaction(async tx => { await notifyRoutineExecutionStatus(tx, run.linkedIssueId!); await notifyRoutineExecutionStatus(tx, run.linkedIssueId!); });
     await settled(); await quiet();
     expect(await saved(run.id)).toEqual(before); expect((await saved(otherRun.id)).status).toBe("issue_created"); expect(errors).toEqual([]);
+  });
+  it.each(["changed", "removed"])("keeps historical custom-origin custody after its plugin declaration is %s", async mode => {
+    const f = await fixture(), pluginKey = `routine-history-${randomUUID()}`, originId = `operation:${randomUUID()}`;
+    const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: pluginKey, version: "0.1.0",
+      manifestJson: { id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Routine test", description: "Routine test",
+        author: "Paperclip", categories: ["automation"], capabilities: ["routines.managed"], entrypoints: { worker: "./worker.js" } } }).returning();
+    const [resource] = await db.insert(pluginManagedResources).values({ companyId: f.companyId, pluginId: plugin.id, pluginKey,
+      resourceKind: "routine", resourceKey: "history", resourceId: f.routine.id, defaultsJson: { issueTemplate: { originId } } }).returning();
+    const run = await dispatch(f);
+    expect((await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!)))[0].originId).toBe(originId);
+    if (mode === "changed") await db.update(pluginManagedResources).set({ defaultsJson: { issueTemplate: { originId: "new-origin" } } }).where(eq(pluginManagedResources.id, resource.id));
+    else await db.delete(pluginManagedResources).where(eq(pluginManagedResources.id, resource.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, run.linkedIssueId!));
+    await start(); await projected(run.id, "completed"); await quiet(); expect(errors).toEqual([]);
+  });
+  it("reconstructs more than one page and does not lose a committed issue hint behind the startup cursor", async () => {
+    const f = await fixture(), ids = Array.from({ length: 53 }, () => randomUUID()).sort();
+    const issueIds = ids.map(() => randomUUID());
+    await db.insert(issues).values(ids.map((id, index) => ({ id: issueIds[index], companyId: f.companyId, title: "Legacy execution",
+      status: index === 0 ? "todo" : "done", originKind: "routine_execution", originRunId: id, originId: f.routine.id })));
+    await db.insert(routineRuns).values(ids.map((id, index) => ({ id, companyId: f.companyId, routineId: f.routine.id,
+      source: "schedule", linkedIssueId: issueIds[index], status: "issue_created" })));
+    const service = routineExecutionStatusService(db), load = service.load;
+    let entered!: () => void, release!: () => void;
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    const releaseGate = new Promise<void>(resolve => { release = resolve; });
+    const loaded = vi.spyOn(service, "load").mockImplementationOnce(async (scope, afterId) => {
+      const page = await load(scope, afterId); expect(page).toHaveLength(50); entered(); await releaseGate; return page;
+    });
+    const starting = start(service); await enteredGate;
+    await issueService(db).update(issueIds[0]!, { status: "done" }); release(); await starting;
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(async () => expect((await db.select().from(routineRuns)).every(row => row.status === "completed")).toBe(true));
+    expect(loaded.mock.calls.some(([scope, afterId]) => scope === undefined && afterId !== undefined)).toBe(true);
+    expect(loaded.mock.calls.some(([scope]) => scope?.issueId === issueIds[0])).toBe(true);
+    await quiet(); expect(errors).toEqual([]);
+  });
+  it("scopes shared execution writes to their company and settles paused-company projection debt", async () => {
+    const f = await fixture(), other = await fixture(), run = await dispatch(f), otherRun = await dispatch(other);
+    const service = routineExecutionStatusService(db), load = vi.spyOn(service, "load");
+    await start(service); await quiet(); load.mockClear();
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, f.companyId));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, otherRun.linkedIssueId!));
+    await writeExecutionControl(db, DELIVERY_QUEUES.executionStatus,
+      tx => tx.update(issues).set({ status: "done" }).where(eq(issues.id, run.linkedIssueId!)), { companyId: f.companyId });
+    await projected(run.id, "completed");
+    expect(load.mock.calls.every(([scope]) => scope?.companyId === f.companyId)).toBe(true);
+    expect((await saved(otherRun.id)).status).toBe("issue_created"); await quiet();
+    await db.transaction(async tx => { await notifyRoutineExecutionStatus(tx, otherRun.linkedIssueId!); });
+    await projected(otherRun.id, "completed"); await quiet(); expect(errors).toEqual([]);
   });
   it("waits for the real outer transaction and forgets a rolled-back nested status write", async () => {
     const f = await fixture(), run = await dispatch(f); await start(); await quiet();
