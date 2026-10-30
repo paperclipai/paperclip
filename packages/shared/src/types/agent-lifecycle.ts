@@ -15,6 +15,8 @@ export interface AgentLifecycleOperation {
   retryAt?: string;
   /** A failed configuration check waits for configuration repair or an explicit retry. */
   retryRequired?: boolean;
+  /** Failed generic host verification tests for this saved configuration. */
+  verificationFailures?: number;
   attempts: number;
   responsibleUserId?: string | null;
 }

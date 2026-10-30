@@ -7,6 +7,7 @@ import { createAgentLifecycle, configureAgentLifecycle } from "../../../services
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { startAgentLifecycle } from "../index.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
+import { createLifecycleWorker } from "../application/worker.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 
@@ -78,9 +79,48 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     runHost.mockResolvedValue("complete");
     await createAgentLifecycle(db).retry(agent.id);
     expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("verificationFailures");
     expect((await current(agent.id)).lifecycleOperation!.id).toBe(agent.lifecycleOperation!.id);
     await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+  });
+
+  it("does not spend verification retries on claims deferred before the host test", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Deferred verification", status: "paused",
+      lifecycleState: "verifying", lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 } }).returning();
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    let allowed = true;
+    let deferBeforeHost = true;
+    const runHost = vi.fn(async () => { throw Object.assign(new Error("test failed"), { code: "harness_test_failed" }); });
+    const work = createLifecycleWorker({ ...store, async claim(...args) {
+      const claimed = await store.claim(...args);
+      if (claimed && deferBeforeHost) allowed = false;
+      return claimed;
+    } }, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost }, () => {}, () => allowed);
+    workers.push(work);
+    const due = async () => {
+      allowed = true;
+      await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
+      await work.process(agent.id);
+    };
+    await due(); await due();
+    expect(runHost).not.toHaveBeenCalled();
+    expect((await current(agent.id)).lifecycleOperation).toMatchObject({ attempts: 2 });
+    expect((await current(agent.id)).lifecycleOperation).not.toHaveProperty("verificationFailures");
+    deferBeforeHost = false;
+    await due();
+    expect((await current(agent.id)).lifecycleOperation).toMatchObject({ attempts: 3, verificationFailures: 1 });
+    expect((await current(agent.id)).lifecycleOperation?.retryRequired).toBeUndefined();
+    // Another deferred claim preserves the already recorded failed test.
+    deferBeforeHost = true; await due();
+    expect((await current(agent.id)).lifecycleOperation?.verificationFailures).toBe(1);
+    deferBeforeHost = false;
+    await due();
+    expect((await current(agent.id)).lifecycleOperation?.retryRequired).toBeUndefined();
+    await due();
+    expect(runHost).toHaveBeenCalledTimes(3);
+    expect((await current(agent.id)).lifecycleOperation).toMatchObject({ verificationFailures: 3, retryRequired: true });
   });
 
   it("recovers from a generic failed test before the automatic retry budget is exhausted", async () => {
@@ -104,6 +144,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await lifecycle.updateConfiguration(agent.id, { adapterConfig: { command: process.execPath } });
     const changed = await current(agent.id);
     expect(changed.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(changed.lifecycleOperation).not.toHaveProperty("verificationFailures");
     expect(changed.lifecycleOperation!.id).not.toBe(agent.lifecycleOperation!.id);
     await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("ready");

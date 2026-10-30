@@ -34,7 +34,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
     if (agent.lifecycleOperation?.leaseUntil && Date.parse(agent.lifecycleOperation.leaseUntil) > Date.now()) return agent;
     await effects.notifyWork(tx);
     const [updated] = await tx.update(agents).set({ lifecycleError: null,
-      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'retryRequired' - 'leaseOwner' - 'leaseUntil'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
+      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'retryRequired' - 'verificationFailures' - 'leaseOwner' - 'leaseUntil'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
     return updated;
   }
   if (command === "resume" && !["ready", "paused", "pausing", "resuming"].includes(agent.lifecycleState)) transition(agent.lifecycleState, command);
@@ -179,9 +179,12 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       return rows.length > 0;
     },
     async defer(agent, owner, error, now, options) {
-      const retry = options?.retryRequired && agent.lifecycleState === "verifying"
+      const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && agent.lifecycleState === "verifying"
         ? { retryRequired: true }
         : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+      if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
+        retry.verificationFailures = options.verificationFailures;
+      }
       const rows = await db.update(agents).set({
         lifecycleError: error,
         lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired')

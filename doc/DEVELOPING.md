@@ -905,8 +905,11 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 
 Lifecycle verification stops automatic attempts after missing authentication,
 an unavailable model or command, an invalid working directory, or unexpected
-probe output. A generic failed test gets up to three verification attempts
-before automatic checks stop. The agent stays in `verifying`
+probe output. A generic failed test gets up to three failures before automatic
+checks stop. The saved `verificationFailures` count only advances when the host
+verification test fails; claims deferred before the test do not spend that budget.
+An explicit retry or execution configuration change resets that count.
+The agent stays in `verifying`
 with execution paused and a safe error message. Its saved lifecycle operation
 records `retryRequired`; process restarts and queue scans retain that wait.
 Changing execution configuration or using **Retry now** clears it and runs the

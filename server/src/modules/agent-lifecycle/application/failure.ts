@@ -23,7 +23,7 @@ const configurationFailures = new Set([
 export function lifecycleVerificationNeedsRetry(context: LifecycleFailure, error: unknown): boolean {
   const code = lifecycleFailureCode(error) ?? "";
   return context.phase === "verifying" && context.stage === "host"
-    && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.attempts ?? 0) >= 3));
+    && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3));
 }
 
 export function lifecycleFailureCode(error: unknown): string | undefined {

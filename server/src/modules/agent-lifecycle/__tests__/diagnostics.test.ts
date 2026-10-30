@@ -75,9 +75,9 @@ describe("lifecycle failure diagnostics", () => {
   });
 
   it("allows two automatic retries of a generic failed test before waiting for repair", () => {
-    for (const attempts of [1, 2, 3, 8_000]) {
-      const context = { stage: "host" as const, phase: "verifying" as const, attempts };
-      expect(lifecycleVerificationNeedsRetry(context, { code: "harness_test_failed" })).toBe(attempts >= 3);
+    for (const verificationFailures of [1, 2, 3, 8_000]) {
+      const context = { stage: "host" as const, phase: "verifying" as const, attempts: 8_000, verificationFailures };
+      expect(lifecycleVerificationNeedsRetry(context, { code: "harness_test_failed" })).toBe(verificationFailures >= 3);
     }
   });
 
