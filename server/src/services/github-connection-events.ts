@@ -10,7 +10,7 @@ import {
   toolConnections,
   type Db,
 } from "@paperclipai/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import {
   logActivity,
   publishActivity,
@@ -456,6 +456,7 @@ export function githubConnectionEventService(
         eq(connectionEventDeliveries.companyId, companyId),
         eq(connectionEventDeliveries.provider, event.provider),
         eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        ne(connectionEventDeliveries.status, "processed"),
       ));
       throw error;
     }

@@ -31,10 +31,13 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   let db: ReturnType<typeof createDb>;
   let temporaryDatabase: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let server: Server, origin: string;
+  let leaseTimes: number[] = [];
   let bindings: Array<Record<string, unknown>>, leases: number, failBindings: boolean, githubRequests: number;
   const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
   let releaseRefresh: (() => void) | undefined, refreshArrived: (() => void) | undefined;
   let refreshGate: Promise<void> | undefined;
+  let heldBindingCompany: string | undefined, bindingGate: Promise<void> | undefined;
+  let bindingArrived: (() => void) | undefined, bindingClosed: (() => void) | undefined;
   const realFetch = globalThis.fetch;
   let companyIds: string[] = [];
   beforeAll(async () => {
@@ -70,11 +73,16 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
           res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ sealed: { v: 1, alg: algorithm, purpose, provider: "github", profile: "github.code", epk: epk.toString("base64url"), iv: iv.toString("base64url"), ct: ct.toString("base64url") } })); return;
         }
         if (req.url!.endsWith("/events/lease")) {
-          leases++; res.setHeader("content-type", "application/json");
+          leases++; leaseTimes.push(Date.now()); res.setHeader("content-type", "application/json");
           res.end(JSON.stringify({ events: [], ...(claims.ewv === 1 ? { eventWakeVersion: 1 } : {}) })); return;
         }
         expect(claims.sh).toBe(createHash("sha256").update(body.binding).digest("base64url"));
         bindings.push(JSON.parse(body.binding));
+        if (claims.cid === heldBindingCompany) {
+          res.writeHead(200, { "content-type": "application/json" }); res.write("{");
+          res.once("close", () => bindingClosed?.()); bindingArrived?.(); await bindingGate;
+          res.end("}"); return;
+        }
         res.writeHead(failBindings ? 503 : 200, { "content-type": "application/json" }).end("{}"); return;
       }
       githubRequests++;
@@ -94,7 +102,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   afterAll(async () => { server.close(); await once(server, "close"); await db.$client.end({ timeout: 1 }); await temporaryDatabase?.cleanup(); });
 
   async function fixture(ids: string[] = []) {
-    bindings = []; leases = 0; failBindings = false; githubRequests = 0;
+    bindings = []; leases = 0; leaseTimes = []; failBindings = false; githubRequests = 0;
     const companyId = randomUUID(); companyIds.push(companyId);
     const [company] = await db.insert(companies).values({ id: companyId, name: "GitHub work test", issuePrefix: `GW${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}` }).returning();
     const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: randomUUID(), name: "GitHub", type: "mcp_server", status: "active" }).returning();
@@ -219,6 +227,39 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     } finally { releaseRefresh?.(); await result; refreshGate = undefined; refreshArrived = undefined; vi.unstubAllEnvs(); }
   });
 
+  it("bounds a held Cloud body without releasing revocation admission, while another company progresses and restart retains removal debt", async () => {
+    const f = await fixture([]), other = await fixture([]);
+    for (const row of [f, other]) await db.update(connectionGrants).set({ providerTenant: {
+      ...row.grant.providerTenant, github: { ...row.grant.providerTenant!.github!, bindingSync: { id: randomUUID(), removeInstallationIds: ["101"] } },
+    } }).where(eq(connectionGrants.id, row.grant.id));
+    const latest = async (id: string) => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, id)))[0]!;
+    heldBindingCompany = f.company.id;
+    let release!: () => void;
+    bindingGate = new Promise<void>(resolve => { release = resolve; });
+    const arrived = new Promise<void>(resolve => { bindingArrived = resolve; });
+    const closed = new Promise<void>(resolve => { bindingClosed = resolve; });
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const deadlines = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(ms === 15_000 ? 3_000 : ms));
+    let completed = false;
+    const attempt = f.service.syncGitHubGrantBindings(f.connection, await latest(f.grant.id));
+    const outcome = attempt.then(value => ({ value, error: null }), error => ({ value: null, error })).finally(() => { completed = true; });
+    try {
+      await arrived;
+      const otherResult = await other.service.syncGitHubGrantBindings(other.connection, await latest(other.grant.id));
+      expect(otherResult.providerTenant!.github!.bindingSync).toBeUndefined();
+      await db.update(companies).set({ name: "Unrelated company changed while body held" }).where(eq(companies.id, other.company.id));
+      expect(completed).toBe(false);
+      expect((await outcome).error).toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
+      await closed;
+      expect(deadlines).toHaveBeenCalledWith(15_000);
+      expect((await latest(f.grant.id)).providerTenant!.github!.bindingSync!.removeInstallationIds).toEqual(["101"]);
+      heldBindingCompany = undefined; release();
+      const restarted = createGitHubGrantContinuity(db, f.dependencies);
+      expect(await restarted.sweepGitHubConnectionContinuity(f.company.id)).toMatchObject({ due: 1, refreshed: 1, failed: 0 });
+      expect((await latest(f.grant.id)).providerTenant!.github!.bindingSync).toBeUndefined();
+    } finally { heldBindingCompany = undefined; release(); await outcome; bindingGate = undefined; bindingArrived = undefined; bindingClosed = undefined; }
+  });
+
   it("lease acquire and cleanup cannot replace a concurrent webhook metadata revision", async () => {
     const f = await fixture(["101"]);
     let interleave = true;
@@ -257,7 +298,9 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const [unrelatedConnection] = await db.update(toolConnections).set({ config: {}, transportConfig: {}, transport: "rest_api", authKind: "none", credentialRefs: [], credentialSecretRefs: [] }).where(eq(toolConnections.id, other.connection.id)).returning();
     await db.update(connectionGrants).set({ credentialSecretRefs: [] }).where(eq(connectionGrants.id, other.grant.id));
     const api = toolAccessService(db);
-    const load = vi.spyOn(f.service, "githubConnectionContinuitySchedule");
+    const loadTimes: number[] = [];
+    const schedule = f.service.githubConnectionContinuitySchedule.bind(f.service);
+    const load = vi.spyOn(f.service, "githubConnectionContinuitySchedule").mockImplementation(companyId => { loadTimes.push(Date.now()); return schedule(companyId); });
     const sweep = vi.spyOn(f.service, "sweepGitHubConnectionContinuity");
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true });
     const continuity = registerGitHubConnectionContinuityWork(db, coordinator, f.service, () => true);
@@ -266,7 +309,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       await Promise.all([continuity.ready, events.ready]);
       await vi.waitFor(() => expect(leases).toBe(1));
       await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
-      load.mockClear(); sweep.mockClear();
+      load.mockClear(); loadTimes.length = 0; sweep.mockClear();
       for (let i = 0; i < 30; i++) {
         await db.transaction(async tx => { await notifyToolConnectionHealth(tx, other.connection); await notifyChatEndpointConfiguration(tx, { id: randomUUID(), provider: "discord" }); });
         await api.updateConnection(unrelatedConnection!.id, { name: `Unrelated patch ${i}` });
@@ -274,13 +317,19 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       await vi.advanceTimersByTimeAsync(10_000);
       expect(load).not.toHaveBeenCalled(); expect(sweep).not.toHaveBeenCalled(); expect(leases).toBe(1);
       for (let index = 0; index < 30; index++) await db.transaction(async tx => { await notifyGitHubCredentialChange(tx, f.connection); });
-      expect(leases).toBe(1);
+      expect(leases).toBeLessThanOrEqual(2);
       await vi.advanceTimersByTimeAsync(6_000);
       await vi.waitFor(() => expect(load).toHaveBeenCalledWith(f.company.id));
       expect(load.mock.calls.every(([companyId]) => companyId === f.company.id)).toBe(true);
       expect(sweep).not.toHaveBeenCalled();
-      await vi.waitFor(() => expect(leases).toBe(2));
-      expect(load).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(leases).toBeGreaterThanOrEqual(2));
+      // The first hint can run immediately; changes during it get one spaced pass.
+      expect(leases).toBeLessThanOrEqual(3); expect(load.mock.calls.length).toBeLessThanOrEqual(2);
+      if (loadTimes.length === 2) expect(loadTimes[1]! - loadTimes[0]!).toBeGreaterThanOrEqual(5_000);
+      if (leaseTimes.length === 3) expect(leaseTimes[2]! - leaseTimes[1]!).toBeGreaterThanOrEqual(5_000);
+      const quiet = { leases, loads: load.mock.calls.length };
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect({ leases, loads: load.mock.calls.length }).toEqual(quiet);
     } finally { await events.stop(); await continuity.stop(); await coordinator.stop(); }
   });
 

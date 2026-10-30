@@ -47,6 +47,18 @@ grant. Binding-only retries use the existing credential refresh lease and curren
 secret resolver without repeating account/repository discovery. The initial OAuth
 callback uses the same saved debt and settlement path after connection activation.
 
+Cloud binding calls retain the grant, its connection, and a company share lock.
+That admission fence prevents a concurrent disable, revoke, or archive from
+finishing before an already-admitted registration call. The API has no remote
+revision fence that could safely replace those locks with two short transactions.
+Each HTTP request and response body has a physical 15-second abort deadline.
+Four calls run in an awaited batch; a failed batch leaves the saved debt and
+releases the transaction after all four outcomes settle. Other companies can
+continue through separate pool connections. Slow successful multi-batch passes
+can delay writes to the same grant/connection and company status changes; the
+schema permits up to 100 active and 100 removed installation IDs. This is not an
+instance-wide lock or an idle hold.
+
 Credential expiry remains enforced by the existing use path. Scheduled continuity
 checks run one hour before recorded access expiry or after the existing 30-day
 continuity window. A successful renewal that leaves the credential short-lived
