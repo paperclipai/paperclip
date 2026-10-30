@@ -16,6 +16,7 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  Project,
 } from "@paperclipai/shared";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type {
@@ -3037,6 +3038,32 @@ describe("IssueDetail", () => {
 
     pendingListRequest.resolve([]);
     await flushReact();
+  });
+
+  it.each([false, true])("keeps the panel stable while projects are still loading (Classic: %s)", async classic => {
+    const pendingProjects = createDeferred<Project[]>();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: classic });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockProjectsApi.list.mockReturnValue(pendingProjects.promise);
+    const renderDetail = () => <QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>;
+    try {
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      await flushReact();
+      const panelOpenCount = mockOpenPanel.mock.calls.length;
+      expect(panelOpenCount).toBeGreaterThan(0);
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+    } finally {
+      const beforeCompletion = mockOpenPanel.mock.calls.length;
+      pendingProjects.resolve([]);
+      await waitForAssertion(() => expect(mockOpenPanel.mock.calls.length).toBeGreaterThan(beforeCompletion));
+    }
+    const settledCount = mockOpenPanel.mock.calls.length;
+    await act(async () => root.render(renderDetail()));
+    await flushReact();
+    expect(mockOpenPanel).toHaveBeenCalledTimes(settledCount);
   });
 
   it("does not load or render decision sections in the issue header", async () => {

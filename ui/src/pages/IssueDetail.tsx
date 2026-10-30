@@ -382,6 +382,7 @@ import {
   type IssueRecentComments,
   type IssueDocumentSummary,
   type IssueWorkProduct,
+  type Project,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
@@ -400,6 +401,7 @@ import {
 // (loading/idle), which destabilizes downstream memos and panel keys that
 // depend on it. Reusing one shared reference keeps those values stable.
 const EMPTY_ISSUES: Issue[] = [];
+const EMPTY_PROJECTS: Project[] = [];
 
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
@@ -3729,7 +3731,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => authApi.getSession(),
   });
 
-  const { data: projects } = useQuery({
+  const { data: projects = EMPTY_PROJECTS } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -3781,7 +3783,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const fileViewerEnabled =
     instanceExperimentalSettings?.enableExperimentalFileViewer === true;
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects,
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
@@ -3946,7 +3948,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           issueLinkState={resolvedIssueDetailState ?? location.state}
           subtasks={childIssues}
           createdTasks={createdTasks}
-          projects={projects ?? []}
+          projects={projects}
           isLoading={createdTasksQuery.isLoading || childIssuesLoading}
           hasError={hasError}
           onRetry={() => {
