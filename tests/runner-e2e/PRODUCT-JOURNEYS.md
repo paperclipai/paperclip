@@ -45,6 +45,10 @@ the production controls. The oracle compares the complete visible task identity
 set at each step, verifies the exact saved company, owner, title, description and
 status, and checks all three tasks have no native runs. It reopens the target after
 reload and browser Back, and leaves the target visible for the harness screenshot.
+The combined Tasks shell reapplies its named view's status preset on mount, so
+the journey first proves the checkbox filter, then selects the normal Backlog
+view and enters the same search again before checking reload/Back persistence.
+Coordinator and legacy task lists keep their supported saved-filter behavior.
 It does not depend on row order or an otherwise empty company. This selection is
 manual until a separate target owner records a fresh pass and admits it to a daily
 plan; adding the shared journey does not qualify any deployed target.

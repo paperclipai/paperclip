@@ -14,8 +14,10 @@ async function resultIds(page: Page, tasks: readonly SearchTask[]) {
 }
 
 async function expectResults(page: Page, tasks: readonly SearchTask[], expectedIds: readonly string[]) {
-  await expect.poll(() => resultIds(page, tasks), { timeout: 30_000 }).toEqual([...expectedIds].sort());
-  return resultIds(page, tasks);
+  let observed: string[] = [];
+  await expect.poll(async () => { observed = await resultIds(page, tasks); return observed; }, { timeout: 30_000 })
+    .toEqual([...expectedIds].sort());
+  return observed;
 }
 
 async function openFilters(page: Page) {
@@ -68,8 +70,8 @@ export async function taskSearchFilter(context: JourneyContext, session: TargetS
   await page.goto(`${api.origin}/${company.issuePrefix}/issues`);
   await expect(page.locator("main#main-content")).toBeVisible();
   const search = page.getByRole("textbox", { name: "Search tasks", exact: true });
-  // Both supported task shells expose their normal All tasks view here.
-  const views = page.getByRole("button", { name: /^(Change view — currently |Task view: )/ });
+  // Select the task collection through its normal view control when present.
+  const views = page.getByRole("button", { name: /^(Change view — currently |Task view: )/ }).first();
   await expect(views.or(search).first()).toBeVisible();
   if (await views.isVisible()) {
     await views.click();
@@ -88,6 +90,17 @@ export async function taskSearchFilter(context: JourneyContext, session: TargetS
   await statusFilters.getByRole("checkbox", { name: "Backlog", exact: true }).check();
   await page.keyboard.press("Escape");
   const filteredIds = await expectResults(page, tasks, [target.id]);
+
+  // The combined Tasks shell defines status through its named view on mount.
+  // Its Backlog view preserves the chosen status across reload/Back navigation.
+  const namedView = page.getByRole("button", { name: /^Change view — currently / }).first();
+  if (await namedView.isVisible()) {
+    await namedView.click();
+    await page.getByRole("menuitem", { name: /^Backlog/ }).click();
+    await expect(search).toHaveValue("");
+    await search.fill(marker);
+    await expectResults(page, tasks, [target.id]);
+  }
 
   await page.reload();
   await expect(search).toHaveValue(marker);
