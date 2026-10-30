@@ -25,7 +25,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
-import { companySearchService, companySearchUpdatedWithinMs } from "./company-search.js";
+import { companySearchService } from "./company-search.js";
 import { issueService } from "./issues.js";
 import { SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 import {
@@ -47,7 +47,6 @@ import {
 type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
 type StatusCardRow = typeof statusCards.$inferSelect;
-type WatchedIssue = CompanySearchIssueSummary & { scopeExpiresAt?: Date | null };
 type StatusCardReadOptions = { issueReadCondition?: SQL<boolean> };
 
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -590,22 +589,15 @@ export function statusCardService(
     return loadIssueSummaries(card.companyId, card.mentionedIssueIds ?? [], options);
   }
 
-  async function executeQueries(card: StatusCardRow, options: StatusCardReadOptions = {}) {
-    const issueMap = new Map<string, WatchedIssue>();
+  async function executeQueries(card: StatusCardRow, options: StatusCardReadOptions = {}, onNextMembershipChange?: (at: Date | null) => void) {
+    const issueMap = new Map<string, CompanySearchIssueSummary>();
     for (const storedQuery of card.queries) {
       const query = companySearchQuerySchema.parse(storedQuery);
       const response = await searchSvc.search(card.companyId, query, {
-        issueReadCondition: options.issueReadCondition,
+        issueReadCondition: options.issueReadCondition, onNextMembershipChange,
       });
       for (const result of response.results) {
-        if (result.type !== "issue" || !result.issue) continue;
-        const duration = companySearchUpdatedWithinMs(query.updatedWithin);
-        const expiry = duration === null ? null : new Date(new Date(result.issue.updatedAt).getTime() + duration + 1);
-        const previous = issueMap.get(result.issue.id);
-        issueMap.set(result.issue.id, { ...result.issue, scopeExpiresAt: previous
-          ? previous.scopeExpiresAt == null || expiry === null ? null
-            : new Date(Math.max(previous.scopeExpiresAt.getTime(), expiry.getTime()))
-          : expiry });
+        if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);
       }
     }
     // Issues mentioned in the latest summary join the watched set alongside the
@@ -615,11 +607,7 @@ export function statusCardService(
       (card.mentionedIssueIds ?? []).filter((issueId) => !issueMap.has(issueId)),
       options,
     );
-    for (const issue of mentioned) issueMap.set(issue.id, { ...issue, scopeExpiresAt: null });
-    for (const id of card.mentionedIssueIds ?? []) {
-      const issue = issueMap.get(id);
-      if (issue) issue.scopeExpiresAt = null;
-    }
+    for (const issue of mentioned) issueMap.set(issue.id, issue);
     const snapshot = [...issueMap.values()];
     if (snapshot.length === 0) return snapshot;
     const latestHumanComments = await db
@@ -643,11 +631,10 @@ export function statusCardService(
     return snapshot.map((issue) => ({ ...issue, latestHumanCommentAt: commentByIssueId.get(issue.id) ?? null }));
   }
 
-  function nextEvaluationAt(card: StatusCardRow, snapshot: WatchedIssue[], now: Date) {
+  function nextEvaluationAt(card: StatusCardRow, membershipAt: Date | null, now: Date) {
     const interval = nextStatusCardEvaluationAt(card.refreshPolicy, now);
-    if (card.refreshPolicy.mode !== "reactive" || !card.refreshPolicy.triggers.membershipChanges) return interval;
-    const expiries = snapshot.flatMap(issue => issue.scopeExpiresAt && issue.scopeExpiresAt > now ? [issue.scopeExpiresAt.getTime()] : []);
-    return expiries.length ? new Date(Math.min(...expiries)) : null;
+    return card.refreshPolicy.mode === "reactive" && (card.refreshPolicy.triggers.membershipChanges || card.refreshPolicy.triggers.anyUpdate)
+      ? membershipAt : interval;
   }
 
   async function requestRefresh(cardId: string, input: {
@@ -670,13 +657,14 @@ export function statusCardService(
     }
 
     const now = input.now ?? new Date();
-    const snapshot = await executeQueries(card);
+    let membershipAt: Date | null = null;
+    const snapshot = await executeQueries(card, {}, at => { if (at && (!membershipAt || at < membershipAt)) membershipAt = at; });
     const fingerprint = buildStatusCardFingerprint(snapshot);
     const allChanges = diffStatusCardFingerprint(card.fingerprint as StatusCardFingerprint | null, fingerprint);
     const changes = filterStatusCardChanges(allChanges, card.refreshPolicy);
     const trigger = input.trigger ?? "manual";
     const forceRun = trigger === "manual" || trigger === "restore";
-    const nextEvalAt = nextEvaluationAt(card, snapshot, now);
+    const nextEvalAt = nextEvaluationAt(card, membershipAt, now);
     if (!forceRun && changes.length === 0) {
       const [next] = await mutate(card.companyId, tx => tx.update(statusCards).set({
         pendingChangeCount: 0,
@@ -797,9 +785,12 @@ export function statusCardService(
     return { card: next, generatingIssue: generationIssue!, alreadyGenerating: deduplicated, enqueued: true, kind, changes };
   }
 
-  async function tickDueStatusCards(now = new Date(), reactiveCompanies?: ReadonlySet<string> | "all" | "changed") {
-    const reactiveScope = reactiveCompanies === "all" ? isNull(statusCards.nextEvalAt) : reactiveCompanies === "changed" ? sql`true` : reactiveCompanies?.size
+  async function tickDueStatusCards(now = new Date(), reactiveCompanies?: ReadonlySet<string> | "changed", reconstruct = false) {
+    const changedScope = reactiveCompanies === "changed" ? sql`true` : reactiveCompanies?.size
       ? inArray(statusCards.companyId, [...reactiveCompanies]) : sql`false`;
+    // Startup restores every disarmed reactive scope. A concurrent committed
+    // source hint can additionally preempt its company's saved future deadline.
+    const reactiveScope = or(reconstruct ? isNull(statusCards.nextEvalAt) : undefined, changedScope);
     const due = await db.select({ card: statusCards }).from(statusCards)
       .innerJoin(companies, eq(companies.id, statusCards.companyId))
       .where(and(eq(companies.status, "active"), isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId),
@@ -808,6 +799,7 @@ export function statusCardService(
       .then(rows => rows.map(row => row.card));
     const enqueued: Array<{ cardId: string; generatingIssue: typeof issues.$inferSelect }> = [];
     let evaluated = 0;
+    const deferredCompanyIds = new Set<string>();
     for (const candidate of due) {
       // nextEvalAt is both a retry lease and an evaluation deadline. A source
       // event may preempt a genuine future deadline, so serialize scheduler
@@ -817,7 +809,7 @@ export function statusCardService(
         const [lock] = await lockTx.execute<{ acquired: boolean }>(
           sql`select pg_try_advisory_xact_lock(hashtextextended(${candidate.id}, 0)) as acquired`,
         );
-        if (!lock?.acquired) return;
+        if (!lock?.acquired) { deferredCompanyIds.add(candidate.companyId); return; }
         const claimUntil = new Date(now.getTime() + 5 * 60 * 1000);
         const [claimed] = await mutate(candidate.companyId, tx => tx.update(statusCards).set({ nextEvalAt: claimUntil })
           .where(and(eq(statusCards.id, candidate.id), isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId),
@@ -836,7 +828,7 @@ export function statusCardService(
         }
       });
     }
-    return { evaluated, enqueued };
+    return { evaluated, enqueued, deferredCompanyIds };
   }
 
   async function writeSummary(cardId: string, input: WriteStatusCardSummary, actor: StatusCardWriter) {
@@ -866,7 +858,8 @@ export function statusCardService(
       const mentionedIssueIds = await resolveMentionedIssueIds(current.companyId, input.markdown);
       // Current watched membership: compiled-query matches plus the issues this
       // summary mentions.
-      const watchedSnapshot = await executeQueries({ ...current, mentionedIssueIds });
+      let membershipAt: Date | null = null;
+      const watchedSnapshot = await executeQueries({ ...current, mentionedIssueIds }, {}, at => { if (at && (!membershipAt || at < membershipAt)) membershipAt = at; });
       const watchedNow = buildStatusCardFingerprint(watchedSnapshot);
       let snapshot: StatusCardFingerprint;
       if (payloadFingerprint) {
@@ -940,7 +933,7 @@ export function statusCardService(
         lastChangeAt: null,
         nextEvalAt: current.refreshPolicy.mode === "reactive" &&
           filterStatusCardChanges(diffStatusCardFingerprint(snapshot, watchedNow), current.refreshPolicy).length > 0
-          ? now : nextEvaluationAt(current, watchedSnapshot, now),
+          ? now : nextEvaluationAt(current, membershipAt, now),
         updatedAt: now,
       }).where(and(eq(statusCards.id, current.id), eq(statusCards.generatingIssueId, input.generationIssueId))).returning();
       if (!next) throw conflict("Status-card generation was superseded by a newer task");

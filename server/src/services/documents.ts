@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -238,6 +239,7 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          await notifyStatusCardIssueChange(tx, issue.companyId);
           const now = new Date();
           const existing = await tx
             .select({
@@ -592,6 +594,7 @@ export function documentService(db: Db) {
         });
       }
       await db.transaction(async (tx) => {
+        for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
         await insertRowsInChunks(tx, documents, documentRows);
         await insertRowsInChunks(tx, documentRevisions, revisionRows);
         await insertRowsInChunks(tx, issueDocuments, linkRows);
@@ -662,6 +665,7 @@ export function documentService(db: Db) {
           })
           .returning();
 
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx
           .update(documents)
           .set({
@@ -818,6 +822,7 @@ export function documentService(db: Db) {
         }
 
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
         return {

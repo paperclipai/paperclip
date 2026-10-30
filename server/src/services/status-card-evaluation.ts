@@ -18,17 +18,18 @@ export function statusCardEvaluationService(db: Db, heartbeat: IssueAssignmentWa
   let reconstructReactive = true;
   let allChanges = false;
   const changes = new Set<string>();
-  let enabled = false;
+  let enabled: boolean | null = null;
+  let retryAt: number | null = null;
 
   return {
     changed(hints?: ReadonlySet<string>) {
       for (const hint of hints ?? ["*"]) {
-        if (hint === "*" || hint === "changes:*") allChanges = true;
+        if (hint === "*" || hint === "changes:*") { allChanges = true; if (hint === "*") enabled = null; }
         else if (hint.startsWith("changes:")) changes.add(hint.slice("changes:".length));
       }
     },
     async run(signal: AbortSignal) {
-      enabled = (await settings.getExperimental()).enableStatusCards === true;
+      if (enabled === null) enabled = (await settings.getExperimental()).enableStatusCards === true;
       if (!enabled || signal.aborted) return;
       const reconstruct = reconstructReactive;
       const evaluateAllChanges = allChanges;
@@ -37,7 +38,9 @@ export function statusCardEvaluationService(db: Db, heartbeat: IssueAssignmentWa
       reconstructReactive = false;
       allChanges = false;
       try {
-        const result = await cards.tickDueStatusCards(new Date(), evaluateAllChanges ? "changed" : reconstruct && companiesChanged.size === 0 ? "all" : companiesChanged);
+        const result = await cards.tickDueStatusCards(new Date(), evaluateAllChanges ? "changed" : companiesChanged, reconstruct);
+        retryAt = result.deferredCompanyIds.size ? Date.now() + 30_000 : null;
+        for (const companyId of result.deferredCompanyIds) changes.add(companyId);
         const assignments = await Promise.allSettled(result.enqueued.map(async ({ cardId, generatingIssue }) => {
           // Once generated, dispatch or cancel even if shutdown begins: leaving
           // an unassigned claimed card is not a completed sweep.
@@ -74,7 +77,8 @@ export function statusCardEvaluationService(db: Db, heartbeat: IssueAssignmentWa
         .where(and(eq(companies.status, "active"), isNull(statusCards.archivedAt),
           isNull(statusCards.generatingIssueId), isNotNull(statusCards.nextEvalAt)))
         .orderBy(asc(statusCards.nextEvalAt)).limit(1);
-      return next?.at?.getTime() ?? null;
+      const deadline = next?.at?.getTime() ?? null;
+      return retryAt === null ? deadline : Math.min(deadline ?? Infinity, retryAt);
     },
   };
 }

@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
@@ -269,6 +270,7 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
+    await notifyStatusCardIssueChange(tx, issue.companyId);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx
@@ -389,6 +391,7 @@ export async function settleConversationTurn(
       issue.conversationState === conversationState
     )
       return true;
+    await notifyStatusCardIssueChange(tx, issue.companyId);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
