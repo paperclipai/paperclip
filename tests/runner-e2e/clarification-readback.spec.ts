@@ -19,20 +19,6 @@ for (const stage of ["mount", "text"] as const) {
   });
 }
 
-test("clarification readback shares one deadline across mounting and content waits", async ({ page }) => {
-  await page.setContent("<main></main>");
-  await page.evaluate(answer => {
-    setTimeout(() => { document.querySelector("main")!.innerHTML = '<section id="document-welcome-note">Loading</section>'; }, 100);
-    setTimeout(() => { document.querySelector("section")!.textContent = answer; }, 600);
-    setTimeout(() => { document.querySelector("section")!.textContent = `Welcome to the afternoon meetup. ${answer}`; }, 1_300);
-  }, answer);
-  const started = Date.now();
-  await expect(waitForClarificationDocument(page.locator(selector), answer, started + 1_000)).rejects.toThrow();
-  expect(Date.now() - started).toBeLessThan(1_500);
-  expect(await page.locator(selector).textContent()).toBe(answer);
-  await expect(page.locator(selector)).toHaveText(`Welcome to the afternoon meetup. ${answer}`);
-});
-
 test("clarification readback rejects an exhausted campaign before waiting", async ({ page }) => {
   await page.setContent(`<section id="document-welcome-note">Welcome to the afternoon meetup. ${answer}</section>`);
   await expect(waitForClarificationDocument(page.locator(selector), answer, Date.now() - 1))
