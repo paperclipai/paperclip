@@ -949,6 +949,19 @@ Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
 
+Backup health warns when the newest `.sql.gz` file has a gzip trailer that
+reports zero uncompressed bytes, even if the archive is recent. The health
+check reads gzip framing only. It does not
+prove that a backup can be restored; verify important recovery points with a
+separate restore test.
+
+The backup writer uses a temporary `.part.gz` file and publishes the final
+`.sql.gz` name only after compression and optional verification complete.
+Health and retention ignore files that are still being written.
+An empty `pg_dump` stream triggers the JavaScript backup fallback in the default
+`auto` mode instead of publishing a 20 byte gzip file. In forced `pg_dump`
+mode, the backup fails without publishing an archive.
+
 ## Secret storage
 
 Paperclip stores secret metadata and versions in:

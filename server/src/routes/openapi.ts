@@ -1917,6 +1917,7 @@ registry.registerPath({
                   "database_backup_check_failed",
                   "database_backup_last_failure",
                   "database_backup_missing",
+                  "database_backup_invalid",
                   "database_backup_stale",
                 ]),
                 message: z.string(),

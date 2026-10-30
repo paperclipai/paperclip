@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -354,6 +354,7 @@ async function runPgDumpBackup(opts: {
     pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
   ]);
+  if (statSync(opts.backupFile).size <= 20) throw new Error("pg_dump produced an empty archive");
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -550,7 +551,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  const pendingBackupFile = `${backupFile}.${randomUUID()}.part.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
+  const publishBackup = async () => {
+    linkSync(pendingBackupFile, backupFile);
+    unlinkSync(pendingBackupFile);
+    const directory = await openFile(opts.backupDir, "r");
+    try { await directory.sync(); } finally { await directory.close(); }
+  };
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -560,13 +568,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: pendingBackupFile,
           connectTimeout,
         });
         dumped = true;
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        if (existsSync(pendingBackupFile)) {
+          try { unlinkSync(pendingBackupFile); } catch { /* ignore */ }
         }
         if (backupEngine === "pg_dump") {
           throw error;
@@ -580,8 +588,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         // pg_dump succeeds, archive verification or persistence failures
         // must retain their original error and must not reuse a closed writer.
         await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        await opts.verifyBeforePrune?.(backupFile);
+        const sizeBytes = statSync(pendingBackupFile).size;
+        await opts.verifyBeforePrune?.(pendingBackupFile);
+        await publishBackup();
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return { backupFile, sizeBytes, prunedCount };
       }
@@ -1061,12 +1070,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
+    const gzWriteStream = createWriteStream(pendingBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
 
-    const sizeBytes = statSync(backupFile).size;
-    await opts.verifyBeforePrune?.(backupFile);
+    const sizeBytes = statSync(pendingBackupFile).size;
+    if (sizeBytes <= 20) throw new Error("Database backup archive has no SQL payload");
+    await opts.verifyBeforePrune?.(pendingBackupFile);
+    await publishBackup();
+    unlinkSync(sqlFile);
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
@@ -1076,8 +1087,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     };
   } catch (error) {
     await writer.abort();
-    if (existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
+    if (existsSync(pendingBackupFile)) {
+      try { unlinkSync(pendingBackupFile); } catch { /* ignore */ }
     }
     if (existsSync(sqlFile)) {
       try { unlinkSync(sqlFile); } catch { /* ignore */ }

@@ -82,6 +82,7 @@ function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): Da
     database_backup_check_failed: "Database backup health check failed.",
     database_backup_last_failure: "Database backup failure marker is present.",
     database_backup_missing: "No recent database backup was found.",
+    database_backup_invalid: "Latest database backup is invalid or empty.",
     database_backup_stale: "Latest database backup is stale.",
   };
   return {
