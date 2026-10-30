@@ -2,7 +2,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -20,6 +20,7 @@ import { knownRunCostCents } from "./budget-exposure.js";
 import { createLiveRunUsageProjection, liveRunUsageCostCents } from "./budget-live-usage.js";
 import { budgetServiceInTransaction } from "./budgets.js";
 
+const receiptIdSchema = z.string().uuid();
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
 const usage = z.object({ inputTokens: token, outputTokens: token, cachedInputTokens: token.optional(), cacheWriteTokens: token.optional() });
@@ -190,6 +191,7 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
     try { names = await fs.readdir(directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [...recovered]; throw error; }
     let moved = false;
+    const vanishedIds = new Set<string>();
     for (const name of names.filter(name => name.endsWith(".json"))) {
       const file = path.join(directory, name);
       if (recovered.has(file)) continue;
@@ -197,13 +199,24 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
       if (indexed !== undefined && (indexed?.companyId !== input.companyId || indexed?.runId !== input.runId)) continue;
       let raw: unknown;
       try {
-        const info = await fs.lstat(file);
-        if (!info.isFile() || info.size > 1024 * 1024) continue;
-        raw = JSON.parse(await fs.readFile(file, "utf8"));
+        const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || info.size > 1024 * 1024) continue;
+          raw = JSON.parse(await handle.readFile("utf8"));
+        } finally { await handle.close(); }
       } catch (error) {
         // The background replayer can move/remove a file while we scan. Invalid
         // JSON remains on disk for its normal recovery/error reporting path.
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") { moved = true; continue; }
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          // A normal publication is removed only after its journal transaction
+          // commits. Retry names can represent an unpersisted renamed receipt.
+          const id = name.slice(0, -5);
+          if (receiptIdSchema.safeParse(id).success) vanishedIds.add(id.toLowerCase());
+          else moved = true;
+          continue;
+        }
+        if ((error as NodeJS.ErrnoException).code === "ELOOP") continue;
         if (error instanceof SyntaxError) continue;
         throw error;
       }
@@ -215,6 +228,15 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
       // would lose the only durable evidence if the later ledger write fails.
       recovered.add(file);
       if (!options.retainFiles) await fs.rm(file, { force: true });
+    }
+    // Resolve vanished publications together instead of holding the accounting
+    // lock across a sequential journal query for every concurrent removal.
+    const ids = [...vanishedIds];
+    for (let offset = 0; offset < ids.length; offset += 1000) {
+      const batch = ids.slice(offset, offset + 1000);
+      const journaled = await db.select({ id: runUsageReceipts.id }).from(runUsageReceipts)
+        .where(sql`${runUsageReceipts.id} = any(${sql.param(batch)}::uuid[])`);
+      if (journaled.length !== batch.length) moved = true;
     }
     if (!moved) return [...recovered];
   }
