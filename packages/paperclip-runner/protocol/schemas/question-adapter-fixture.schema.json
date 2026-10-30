@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/question-adapter-fixture.schema.json",
+  "title": "Harness question adapter conformance fixture",
+  "type": "object",
+  "required": ["schema", "adapter", "nativeRequest", "canonicalQuestionSet", "canonicalResponse", "nativeResponse"],
+  "properties": {
+    "schema": { "const": "paperclip.question_adapter_fixture.v1" },
+    "adapter": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "nativeRequest": {},
+    "canonicalQuestionSet": { "$ref": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json" },
+    "canonicalResponse": { "$ref": "https://paperclip.dev/schemas/prp/v1/question-response.schema.json" },
+    "nativeResponse": {}
+  },
+  "additionalProperties": false
+}

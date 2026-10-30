@@ -17,9 +17,9 @@ export function execGitSync(
     ...options,
     env: {
       ...process.env,
+      ...(options.env ?? {}),
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
-      ...(options.env ?? {}),
     },
   });
 }

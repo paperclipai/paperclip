@@ -1,0 +1,61 @@
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "@playwright/test";
+
+const storybookPort = Number(process.env.STORYBOOK_VISUAL_PORT ?? 6106);
+const testDir = dirname(fileURLToPath(import.meta.url));
+const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
+  ? isAbsolute(process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
+    ? process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
+    : resolve(testDir, "..", "..", process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
+  : join(testDir, ".snapshots");
+
+// Visual snapshot suite for the design-token extraction run: screenshots every
+// built Storybook story in both themes and compares against the external Phase
+// 0 baseline downloaded by scripts/storybook-visual-baseline.mjs.
+export default defineConfig({
+  testDir: ".",
+  projects: [
+    // The reproduction trial has a dedicated fixed-clock/browser contract and
+    // requires its frozen first-submission PNG via TRIAL_REFERENCE_PNG.
+    { name: "stories", testIgnore: ["agent-personas.spec.ts", "task-list-reproduction-trial.spec.ts"] },
+    {
+      name: "agent-personas", testMatch: "agent-personas.spec.ts", fullyParallel: false,
+      snapshotPathTemplate: `${snapshotDir}/agent-personas/{arg}{ext}`,
+      use: {
+        viewport: { width: 1200, height: 900 },
+        launchOptions: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
+      },
+    },
+  ],
+  outputDir: "./test-results",
+  timeout: 60_000,
+  retries: 1,
+  workers: 4,
+  fullyParallel: true,
+  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
+  expect: {
+    toHaveScreenshot: {
+      animations: "disabled",
+      caret: "hide",
+      scale: "css",
+      maxDiffPixels: 0,
+    },
+  },
+  snapshotPathTemplate: `${snapshotDir}/{arg}{ext}`,
+  use: {
+    browserName: "chromium",
+    viewport: { width: 1200, height: 800 },
+    deviceScaleFactor: 1,
+    // JS-driven tickers/timers key off prefers-reduced-motion for
+    // deterministic captures (CSS animations are already disabled).
+    reducedMotion: "reduce",
+    baseURL: process.env.STORYBOOK_TEST_BASE_URL ?? `http://localhost:${storybookPort}`,
+  },
+  webServer: process.env.STORYBOOK_TEST_BASE_URL ? undefined : {
+    command: `node ../../scripts/serve-storybook-static.mjs --port ${storybookPort}`,
+    url: `http://localhost:${storybookPort}/index.json`,
+    reuseExistingServer: true,
+    timeout: 30_000,
+  },
+});

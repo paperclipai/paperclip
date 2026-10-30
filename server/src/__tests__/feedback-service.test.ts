@@ -1,6 +1,7 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -8,14 +9,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   agents,
-  applyPendingMigrations,
   companies,
   companySkills,
   costEvents,
   createDb,
   documents,
   documentRevisions,
-  ensurePostgresDatabase,
   feedbackExports,
   feedbackVotes,
   heartbeatRuns,
@@ -25,91 +24,36 @@ import {
   issues,
 } from "@paperclipai/db";
 import { feedbackService } from "../services/feedback.ts";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.ts";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
-}
-
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-service-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, dataDir, instance };
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres feedback service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-describe("feedbackService.saveIssueVote", () => {
+describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof feedbackService>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let tempDirs: string[] = [];
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
+    const started = await startEmbeddedPostgresTestDatabase("paperclip-feedback-service-");
     db = createDb(started.connectionString);
     svc = feedbackService(db);
-    instance = started.instance;
-    dataDir = started.dataDir;
-  }, 20_000);
+    tempDb = started;
+  }, 120_000);
 
   afterEach(async () => {
     await db.delete(feedbackExports);
@@ -134,10 +78,7 @@ describe("feedbackService.saveIssueVote", () => {
 
   afterAll(async () => {
     await closeDbClient(db);
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   async function seedIssueWithAgentComment() {
@@ -518,6 +459,36 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.exportId).toBeNull();
   });
 
+  it("keeps a stored sharing preference when the settings row still carries retired keys", async () => {
+    const { issueId, commentId } = await seedIssueWithAgentComment();
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: { feedbackDataSharingPreference: "not_allowed", keyboardShortcuts: true },
+      experimental: {},
+    });
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    expect(result.persistedSharingPreference).toBeNull();
+
+    const settings = await db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "default"))
+      .then((rows) => rows[0] ?? null);
+
+    expect(settings?.general).toMatchObject({
+      feedbackDataSharingPreference: "not_allowed",
+    });
+  });
+
   it("enables sharing metadata on the first consented vote and upserts subsequent votes", async () => {
     const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
 
@@ -679,7 +650,7 @@ describe("feedbackService.saveIssueVote", () => {
     });
   });
 
-  it("builds a detailed sanitized shared bundle with issue and agent context", async () => {
+  it("builds a sanitized shared bundle without reading external instruction roots", async () => {
     const { companyId, issueId, targetCommentId, runId } = await seedIssueWithRichAgentComment();
 
     await svc.saveIssueVote({
@@ -723,8 +694,12 @@ describe("feedbackService.saveIssueVote", () => {
     expect(sourceRun?.id).toBe(runId);
     expect(JSON.stringify(sourceRun)).toContain("gpt-5.4");
     expect(skillItems?.[1]?.sourceLocator).toBe("https://github.com/octo/research/tree/main/skills/public-skill");
-    expect(String(instructions?.entryBody)).toContain("[REDACTED]");
-    expect(String(instructions?.entryBody)).not.toContain("secret-value");
+    expect(instructions).toBeNull();
+    expect(runtime?.configuredInstructionsBundleMode).toBe("external");
+    expect(runtime?.configuredInstructionsFilePath).toBeNull();
+    expect(runtime?.configuredInstructionsRootPath).toBeNull();
+    expect(JSON.stringify(bundle)).not.toContain("secret-value");
+    expect(JSON.stringify(bundle)).not.toContain("private-workspace");
   });
 
   it("keeps earlier local votes local when a later vote enables sharing", async () => {
@@ -827,6 +802,8 @@ describe("feedbackService.saveIssueVote", () => {
       sessionId,
     });
 
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.feedback, notified);
     await flushingSvc.saveIssueVote({
       issueId,
       targetType: "issue_comment",
@@ -835,7 +812,12 @@ describe("feedbackService.saveIssueVote", () => {
       authorUserId: "user-1",
       allowSharing: true,
     });
-    await flushingSvc.flushPendingFeedbackTraces();
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    // The route and worker may request a flush together after the commit.
+    await Promise.all([flushingSvc.flushPendingFeedbackTraces(), flushingSvc.flushPendingFeedbackTraces()]);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
 
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
     const bundle = uploadTraceBundle.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
@@ -1177,6 +1159,30 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toContain("telemetry unavailable");
     expect(traces[0]?.exportedAt).toBeNull();
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves aborted and unstarted exports available for recovery after shutdown", async () => {
+    const first = await seedIssueWithAgentComment();
+    const second = await seedIssueWithAgentComment();
+    const shutdown = new AbortController();
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "saved" })
+      .mockImplementationOnce(async (_bundle, signal: AbortSignal) => {
+        shutdown.abort(new Error("shutdown"));
+        signal.throwIfAborted();
+      });
+    const flushingSvc = feedbackService(db, { shareClient: { uploadTraceBundle } });
+    for (const item of [first, second]) {
+      await flushingSvc.saveIssueVote({ issueId: item.issueId, targetType: "issue_comment",
+        targetId: item.commentId, vote: "up", authorUserId: "user-1", allowSharing: true });
+    }
+    expect(await flushingSvc.flushPendingFeedbackTraces({ signal: shutdown.signal }))
+      .toMatchObject({ attempted: 1, sent: 0, failed: 1 });
+    const rows = await db.select().from(feedbackExports);
+    expect(rows.filter(row => row.status === "failed")).toHaveLength(1);
+    expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    expect(await flushingSvc.flushPendingFeedbackTraces()).toMatchObject({ attempted: 2, sent: 2, failed: 0 });
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
   });
 
   it("marks pending shared traces as failed when no feedback export backend is configured", async () => {

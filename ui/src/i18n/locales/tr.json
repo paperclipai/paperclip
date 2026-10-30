@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "İlk şirketinizi oluşturun",
+      "description": "Bir şirket oluşturarak başlayın.",
+      "newCompany": "Yeni Şirket"
+    }
+  }
+}

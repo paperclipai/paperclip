@@ -1,0 +1,565 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import express, { type Request } from "express";
+import request from "supertest";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import {
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
+} from "@paperclipai/db";
+import { actorMiddleware, cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
+import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./idle-admission.js";
+import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+
+// Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
+// supports the chained call shapes used by resolveCloudTenantActor (values /
+// onConflictDo* / returning().then() / delete().where()), plus the
+// select().from(table).where() reads: instanceSettings for the owner-elevation
+// flag resolution through instanceSettingsService, and companyMemberships for
+// the user's own membership rows (rows configurable via membershipQueryRows,
+// where-conditions captured in selectWheres). The chain is awaitable so
+// directly-awaited statements resolve.
+function createFakeDb(options: {
+  membershipRow?: { companyId: string; membershipRole: string; status: string };
+  membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
+  settingsRow?: Record<string, unknown> | null;
+  selectThrows?: boolean;
+  beforeWrite?: (table: unknown) => Promise<void>;
+  unchangedMembership?: boolean;
+} = {}) {
+  const settingsRow =
+    options.settingsRow === undefined
+      ? {
+          id: "00000000-0000-0000-0000-000000000001",
+          singletonKey: "default",
+          defaultEnvironmentId: null,
+          general: {},
+          experimental: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }
+      : options.settingsRow;
+  const insertedTables: unknown[] = [];
+  const deletedTables: unknown[] = [];
+  const selectWheres: Array<{ table: unknown; condition: unknown; locked?: boolean }> = [];
+  function writeChain(table: unknown) {
+    let values: unknown;
+    const chain: Record<string, unknown> = {};
+    chain.values = (value: unknown) => { values = value; return chain; };
+    chain.onConflictDoUpdate = () => chain;
+    chain.onConflictDoNothing = () => chain;
+    chain.where = () => chain;
+    chain.returning = async () => {
+      await options.beforeWrite?.(table);
+      return options.unchangedMembership && table === companyMemberships ? [] : [options.membershipRow ?? values];
+    };
+    chain.then = (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve().then(() => options.beforeWrite?.(table)).then(resolve, reject);
+    return chain;
+  }
+  const db = {
+    transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
+    insert: (table: unknown) => {
+      insertedTables.push(table);
+      return writeChain(table);
+    },
+    delete: (table: unknown) => {
+      deletedTables.push(table);
+      return writeChain(table);
+    },
+    select: () => {
+      return {
+        from: (table: unknown) => ({
+          where: (condition: unknown) => {
+            // Only settings lookup is degradable. Membership locking and
+            // permission seeding must still work in the fail-closed flag test.
+            if (options.selectThrows && table === instanceSettings) {
+              throw new Error("select unavailable");
+            }
+            const selected: (typeof selectWheres)[number] = { table, condition };
+            selectWheres.push(selected);
+            const rows =
+              table === instanceSettings && settingsRow
+                ? [settingsRow]
+                : table === companyMemberships
+                  ? (options.membershipQueryRows ?? [])
+                  : [];
+            let locked = false;
+            const result = {
+              for: () => { locked = true; selected.locked = true; return result; },
+              then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
+                // The optional cross-company read can fail independently of
+                // the primary membership transaction, which must succeed.
+                const query = options.selectThrows && table === companyMemberships && !locked
+                  ? Promise.reject(new Error("select unavailable"))
+                  : Promise.resolve(rows);
+                return query.then(resolve, reject);
+              },
+            };
+            return result;
+          },
+        }),
+      };
+    },
+  } as unknown as Db;
+  return { db, insertedTables, deletedTables, selectWheres };
+}
+
+function settingsRowWith(experimental: Record<string, unknown>) {
+  return {
+    id: "00000000-0000-0000-0000-000000000001",
+    singletonKey: "default",
+    defaultEnvironmentId: null,
+    general: {},
+    experimental,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+function fakeReq(headers: Record<string, string>): Request {
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return { header: (name: string) => lower[name.toLowerCase()] } as unknown as Request;
+}
+
+const VALID_HEADERS = {
+  "x-paperclip-cloud-tenant-token": "test-server-token",
+  "x-paperclip-cloud-user-id": "user-123",
+  "x-paperclip-cloud-user-email": "Owner@Example.com",
+  "x-paperclip-cloud-stack-id": "stack-abc",
+  "x-paperclip-cloud-stack-role": "owner",
+};
+
+const MANAGED_CONFIG_FLAG_ON = JSON.stringify({
+  v: 1,
+  mode: "cloud",
+  catalogVersion: "test",
+  features: { enableOwnerInstanceAdmin: true },
+  plugins: { autoInstall: [] },
+});
+
+const MANAGED_CONFIG_FLAG_OFF = JSON.stringify({
+  v: 1,
+  mode: "cloud",
+  catalogVersion: "test",
+  features: { enableOwnerInstanceAdmin: false },
+  plugins: { autoInstall: [] },
+});
+
+describe("resolveCloudTenantActor (shared-pool hardening)", () => {
+  beforeEach(() => {
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+  });
+  afterEach(() => {
+    stopTaskDrain();
+    delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    delete process.env.PAPERCLIP_MANAGED_CONFIG;
+  });
+
+  it("does not grant instance admin by default (flag off)", async () => {
+    const { db, insertedTables } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor).not.toBeNull();
+    expect(actor!.isInstanceAdmin).toBe(false);
+    expect(insertedTables).not.toContain(instanceUserRoles);
+  });
+
+  it("stays scoped to exactly the stack's company when the user has no other membership rows", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor!.companyIds).toHaveLength(1);
+    expect(actor!.memberships).toHaveLength(1);
+    expect(actor?.memberships?.[0]?.companyId).toBe(actor?.companyIds?.[0]);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("owner");
+    expect(actor!.source).toBe("cloud_tenant");
+  });
+
+  it("purges stale instance_admin rows left by pre-hardening deployments", async () => {
+    const { db, deletedTables } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor).not.toBeNull();
+    expect(deletedTables).toContain(instanceUserRoles);
+  });
+
+  it("still upserts the user, company, and membership", async () => {
+    const { db, insertedTables } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(insertedTables).toContain(authUsers);
+    expect(insertedTables).toContain(companies);
+    expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it.each(["/api/health", "/api/instance/task-drain"])("counts unfinished authentication on exempt %s requests", async (path) => {
+    let enterWrite!: () => void, finishWrite!: () => void;
+    const entered = new Promise<void>(resolve => { enterWrite = resolve; });
+    const pending = new Promise<void>(resolve => { finishWrite = resolve; });
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async () => { enterWrite(); await pending; } });
+    const server = express();
+    server.use(idleAdmissionMiddleware);
+    server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+    const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+    server.get("/api/health", (_req, res) => res.sendStatus(204));
+    server.get("/api/instance/task-drain", async (_req, res) => {
+      res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
+        Date.now, hold.ownerId, async () => "none"));
+    });
+    trackIdleRequestHandlers(server);
+    const accepted = request(server).get(path).set(VALID_HEADERS).then(response => response);
+    try {
+      await entered;
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      const during = await request(server).get("/api/instance/task-drain").expect(200);
+      expect(during.body.backgroundWork).toBe("unknown");
+    } finally {
+      finishWrite();
+      await accepted;
+    }
+    expect(insertedTables).toEqual(expect.arrayContaining([authUsers, companies, companyMemberships]));
+    expect(idleWorkSnapshot().active).toBe(0);
+    const after = await request(server).get("/api/instance/task-drain").expect(200);
+    expect(after.body.backgroundWork).toBe("none");
+  });
+
+  it("releases failed control authentication and preserves Express error handling", async () => {
+    const { db } = createFakeDb({ beforeWrite: async () => { throw new Error("fixture write failed"); } });
+    const server = express();
+    server.use(idleAdmissionMiddleware);
+    server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+    server.get("/api/health", (_req, res) => res.sendStatus(204));
+    server.use((_err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.sendStatus(500));
+    trackIdleRequestHandlers(server);
+    await request(server).get("/api/health").set(VALID_HEADERS).expect(500);
+    expect(idleWorkSnapshot().active).toBe(0);
+    await request(server).get("/api/health").expect(204);
+  });
+
+  it("resyncs an A to B to A context transition inside the debounce window", async () => {
+    const { db, insertedTables } = createFakeDb();
+    const contextA = VALID_HEADERS;
+    const contextB = { ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" };
+
+    await resolveCloudTenantActor(db, fakeReq(contextA));
+    await resolveCloudTenantActor(db, fakeReq(contextB));
+    await resolveCloudTenantActor(db, fakeReq(contextA));
+
+    expect(insertedTables.filter((table) => table === authUsers)).toHaveLength(3);
+    expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
+  });
+
+  it("coalesces concurrent identical syncs while keeping authority reads and stale-admin purges per request", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const { db, insertedTables, deletedTables, selectWheres } = createFakeDb({
+      beforeWrite: async table => { if (table === authUsers) { entered(); await blocked; } },
+    });
+    const requests = Array.from({ length: 20 }, () => resolveCloudTenantActor(db, fakeReq(VALID_HEADERS)));
+    await started;
+    expect(insertedTables.filter(table => table === authUsers)).toHaveLength(1);
+    release();
+    const actors = await Promise.all(requests);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+    expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
+    expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
+  });
+
+  it("serializes concurrent A to B to A without sharing the wrong role", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let writes = 0;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (table === authUsers && ++writes === 1) { entered(); await blocked; }
+    } });
+    const first = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    await started;
+    const second = resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }));
+    const third = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    release();
+    const actors = await Promise.all([first, second, third]);
+    expect(actors.map(actor => actor?.memberships?.[0]?.membershipRole)).toEqual(["owner", "member", "owner"]);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(3);
+  });
+
+  it("does not block another user behind a slow user's synchronization", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let firstWrite = true;
+    const { db } = createFakeDb({ beforeWrite: async table => {
+      if (table === authUsers && firstWrite) { firstWrite = false; entered(); await blocked; }
+    } });
+    const slow = resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    await started;
+    try {
+      const other = await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-user-id": "other-user" }));
+      expect(other?.userId).toBe("other-user");
+    } finally {
+      release();
+      await slow;
+    }
+  });
+
+  it("does not debounce a failed partial context transition or its repair", async () => {
+    let fail = false;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (fail && table === companyMemberships) throw new Error("partial sync failed");
+    } });
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    fail = true;
+    await expect(resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" })))
+      .rejects.toThrow("partial sync failed");
+    fail = false;
+    const repaired = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(repaired?.memberships?.[0]?.membershipRole).toBe("owner");
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(3);
+  });
+
+  it("retries a shared transient failure and completes default grants once", async () => {
+    let failed = false;
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async table => {
+      if (!failed && table === companyMemberships) {
+        failed = true;
+        throw Object.assign(new Error("synthetic connection loss"), { code: "CONNECTION_CLOSED" });
+      }
+    } });
+    const actors = await Promise.all(Array.from({ length: 10 }, () => resolveCloudTenantActor(db, fakeReq(VALID_HEADERS))));
+    expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+    expect(insertedTables.filter(table => table === principalPermissionGrants)).toHaveLength(1);
+  });
+
+  it("keeps default-grant repair and the input role when a guarded upsert returns no row", async () => {
+    const { db, insertedTables } = createFakeDb({ unchangedMembership: true });
+    const actor = await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }));
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+    expect(insertedTables).toContain(principalPermissionGrants);
+  });
+
+  it("does not share completed syncs across databases or companies", async () => {
+    const first = createFakeDb();
+    const second = createFakeDb();
+    await Promise.all([resolveCloudTenantActor(first.db, fakeReq(VALID_HEADERS)), resolveCloudTenantActor(second.db, fakeReq(VALID_HEADERS))]);
+    await resolveCloudTenantActor(first.db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-id": "stack-other" }));
+    expect(first.insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+    expect(second.insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+  });
+
+  it("resyncs when the requested company name changes", async () => {
+    const { db, insertedTables } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-name": "First" }));
+    await resolveCloudTenantActor(db, fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-name": "Second" }));
+    expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+  });
+
+  it("resumes membership and grant repair after the existing five-second debounce expires", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const { db, insertedTables } = createFakeDb();
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
+      clock.mockReturnValue(now + 5_001);
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(2);
+      expect(insertedTables.filter(table => table === principalPermissionGrants)).toHaveLength(2);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("returns null when the server token is unset", async () => {
+    delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor).toBeNull();
+  });
+
+  it("resolves identically from a raw upgrade-request header map via the shim", async () => {
+    // Websocket upgrades hand us IncomingMessage.headers (lowercased keys,
+    // possibly string[] values), not an Express Request. The shim must feed
+    // resolveCloudTenantActor the same way Express header() does.
+    const { db } = createFakeDb();
+    const rawHeaders: Record<string, string | string[] | undefined> = {};
+    for (const [k, v] of Object.entries(VALID_HEADERS)) rawHeaders[k.toLowerCase()] = v;
+    rawHeaders["x-paperclip-cloud-user-name"] = ["Cloud Owner", "ignored-duplicate"];
+    const actor = await resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders(rawHeaders));
+    expect(actor).not.toBeNull();
+    expect(actor!.userId).toBe("user-123");
+    expect(actor!.userName).toBe("Cloud Owner");
+    expect(actor!.companyIds).toHaveLength(1);
+  });
+
+  it("maps a non-owner stack role through to the membership without elevating", async () => {
+    const { db } = createFakeDb({
+      membershipRow: { companyId: "company-y", membershipRole: "member", status: "active" },
+    });
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(actor!.isInstanceAdmin).toBe(false);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+  });
+
+  it.each(["admin", "member", "support"])(
+    "grants experimental settings access only to the admin stack role (%s)",
+    async (stackRole) => {
+      const { db, insertedTables } = createFakeDb();
+      const actor = await resolveCloudTenantActor(
+        db,
+        fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+      );
+      expect(actor?.canManageExperimentalSettings).toBe(stackRole === "admin");
+      expect(actor?.isInstanceAdmin).toBe(false);
+      expect(insertedTables).not.toContain(instanceUserRoles);
+    },
+  );
+
+  it("removes experimental settings access on the next request after a stack admin is demoted", async () => {
+    const { db } = createFakeDb();
+    const admin = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "admin" }),
+    );
+    const member = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(admin?.canManageExperimentalSettings).toBe(true);
+    expect(member?.canManageExperimentalSettings).toBe(false);
+  });
+
+  describe("company membership union", () => {
+    // The primary company id is derived from the stack id; resolve it once
+    // through the same code path instead of duplicating the hash here.
+    async function resolvePrimaryCompanyId() {
+      const { db } = createFakeDb();
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      return actor!.companyIds![0]!;
+    }
+
+    it("unions the pinned primary with the user's own active membership rows, primary first and deduped", async () => {
+      const primaryCompanyId = await resolvePrimaryCompanyId();
+      const { db } = createFakeDb({
+        membershipQueryRows: [
+          // The user's own row for the primary company comes back from the
+          // query too — it must not appear twice.
+          { companyId: primaryCompanyId, membershipRole: "owner", status: "active" },
+          { companyId: "company-imported", membershipRole: "member", status: "active" },
+        ],
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.companyIds).toEqual([primaryCompanyId, "company-imported"]);
+      expect(actor!.memberships).toEqual([
+        { companyId: primaryCompanyId, membershipRole: "owner", status: "active" },
+        { companyId: "company-imported", membershipRole: "member", status: "active" },
+      ]);
+    });
+
+    it("loads memberships with the session path's exact own-user active-status filter", async () => {
+      const { db, selectWheres } = createFakeDb();
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
+      expect(membershipSelects).toHaveLength(2);
+      // The first read locks the primary membership before its upsert; the
+      // second loads the user's active memberships for request authorization.
+      // Rows for other users and rows in any non-active status are excluded
+      // by the query itself: the filter binds exactly this user id and the
+      // "active" status — the same condition the session path applies.
+      expect(membershipSelects[1]!.condition).toEqual(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, "user-123"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    });
+
+    it("degrades to the primary company when the membership read fails", async () => {
+      const { db } = createFakeDb({ selectThrows: true });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor).not.toBeNull();
+      expect(actor!.companyIds).toHaveLength(1);
+      expect(actor!.memberships).toHaveLength(1);
+    });
+  });
+
+  describe("owner instance-admin elevation (enableOwnerInstanceAdmin)", () => {
+    it("elevates the owner while the flag is enabled, still without any role row", async () => {
+      const { db, insertedTables, deletedTables } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(true);
+      expect(actor!.source).toBe("cloud_tenant");
+      // Elevation is computed, never persisted: no instance_user_roles insert,
+      // and the stale-row purge still runs on every authentication.
+      expect(insertedTables).not.toContain(instanceUserRoles);
+      expect(deletedTables).toContain(instanceUserRoles);
+    });
+
+    it("does not elevate the owner while the flag is disabled", async () => {
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: false }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(false);
+    });
+
+    it.each(["member", "admin", "support"] as const)(
+      "never elevates the %s stack role even with the flag enabled",
+      async (stackRole) => {
+        const { db } = createFakeDb({
+          membershipRow: { companyId: "company-y", membershipRole: "member", status: "active" },
+          settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+        });
+        const actor = await resolveCloudTenantActor(
+          db,
+          fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+        );
+        expect(actor).not.toBeNull();
+        expect(actor!.isInstanceAdmin).toBe(false);
+      },
+    );
+
+    it("resolves the flag through the managed overlay: overlay on elevates over a DB value of off", async () => {
+      process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_FLAG_ON;
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: false }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(true);
+    });
+
+    it("resolves the flag through the managed overlay: overlay off wins over a DB value of on", async () => {
+      process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_FLAG_OFF;
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(false);
+    });
+
+    it("fails closed when the settings read errors: actor resolves without elevation", async () => {
+      const { db, deletedTables } = createFakeDb({ selectThrows: true });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor).not.toBeNull();
+      expect(actor!.isInstanceAdmin).toBe(false);
+      expect(deletedTables).toContain(instanceUserRoles);
+    });
+  });
+});

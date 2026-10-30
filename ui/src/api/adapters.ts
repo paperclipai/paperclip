@@ -4,14 +4,40 @@
 
 import { api } from "./client";
 
+/**
+ * The safe scalar login fields the server projects for an adapter that declares
+ * an interactive login capability. The projection carries no function member and
+ * no secret. The form reads it to pick the login flow and the login panel.
+ */
+export interface AdapterLoginProjection {
+  panelMode: "displayed_code" | "submitted_browser_code";
+  timeoutPolicy: "caller_bounded" | "fixed";
+}
+
 export interface AdapterCapabilities {
   supportsInstructionsBundle: boolean;
   supportsSkills: boolean;
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
+  supportsAcp: boolean;
+  /** Present only when the adapter declares an interactive login capability. */
+  login?: AdapterLoginProjection;
+}
+
+export interface AcpTargetDescriptor {
+  agentId: string;
+  skillsMode: "ephemeral" | "unsupported";
+  prerequisites: {
+    nodeRange?: string;
+    packages?: string[];
+  };
 }
 
 export interface AdapterInfo {
+  /** Exact operator-authorized candidates for the requested company and target. */
+  candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
+  supportedRunners?: import("@paperclipai/shared").AgentRunner[];
+  defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -19,6 +45,7 @@ export interface AdapterInfo {
   loaded: boolean;
   disabled: boolean;
   capabilities: AdapterCapabilities;
+  acp?: AcpTargetDescriptor;
   /** Installed version (for external npm adapters) */
   version?: string;
   /** Package name (for external adapters) */
@@ -40,7 +67,14 @@ export interface AdapterInstallResult {
 
 export const adaptersApi = {
   /** List all registered adapters (built-in + external). */
-  list: () => api.get<AdapterInfo[]>("/adapters"),
+  list: (context?: { companyId: string; environmentId?: string | null }) => {
+    const query = new URLSearchParams();
+    if (context) {
+      query.set("companyId", context.companyId);
+      if (context.environmentId) query.set("environmentId", context.environmentId);
+    }
+    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`);
+  },
 
   /** Install an external adapter from npm or a local path. */
   install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>

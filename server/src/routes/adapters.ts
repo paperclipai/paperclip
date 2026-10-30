@@ -29,6 +29,7 @@ import {
   unregisterServerAdapter,
   isOverridePaused,
   setOverridePaused,
+  waitForExternalAdapters,
 } from "../adapters/registry.js";
 import {
   listAdapterPlugins,
@@ -41,12 +42,53 @@ import {
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
+import type {
+  AdapterLoginPanelMode,
+  AdapterLoginTimeoutPolicy,
+} from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { badRequest, forbidden } from "../errors.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
+import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
+import type { AgentRunnerAvailability } from "@paperclipai/shared";
+import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 
 const execFileAsync = promisify(execFile);
+let warnedMalformedAntigravityAdmission = false;
+
+/**
+ * Floor: on cloud-managed instances adapter code is bundled into the platform
+ * image; fetching and loading external adapter packages at runtime stays off
+ * for every actor, including instance admins. Adapter code executes in the
+ * server process, so a runtime install would let an instance admin read the
+ * platform trust anchors from the process environment (mirrors the
+ * bundled-only plugin install floor in plugin-install-guard.ts).
+ */
+function assertAdapterCodeInstallAllowed() {
+  if (isCloudManagedInstance()) {
+    throw forbidden("Adapter installation is platform-managed on cloud-managed instances", {
+      code: "adapter_install_platform_managed",
+    });
+  }
+}
+
+/**
+ * Floor: when the hosting operator hides the Adapters settings surface
+ * (`instance.adapters` in PAPERCLIP_HIDDEN_SETTINGS), adapter management
+ * writes are rejected alongside it. Reads stay open — adapter metadata is
+ * consumed by agent-creation UIs outside the hidden page.
+ */
+function assertAdapterManagementVisible() {
+  if (getHiddenSettings().has("instance.adapters")) {
+    throw forbidden("Adapter management is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -61,14 +103,33 @@ interface AdapterInstallRequest {
   version?: string;
 }
 
+/**
+ * The safe scalar login fields the adapter listing projects to the client. It
+ * carries only the panel mode and the timeout policy. It carries no function
+ * member and no secret. The user interface reads it to pick the login flow and
+ * the login panel. Every login runs on a real pseudo-terminal, so the projection
+ * carries no transport field.
+ */
+interface AdapterLoginProjection {
+  panelMode: AdapterLoginPanelMode;
+  timeoutPolicy: AdapterLoginTimeoutPolicy;
+}
+
 interface AdapterCapabilities {
   supportsInstructionsBundle: boolean;
   supportsSkills: boolean;
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
+  supportsAcp: boolean;
+  /**
+   * The projected login capability. It is present only when the adapter
+   * declares an interactive login capability. It is absent otherwise.
+   */
+  login?: AdapterLoginProjection;
 }
 
-interface AdapterInfo {
+interface AdapterInfo extends AgentRunnerAvailability {
+  candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -76,6 +137,7 @@ interface AdapterInfo {
   loaded: boolean;
   disabled: boolean;
   capabilities: AdapterCapabilities;
+  acp?: ServerAdapterModule["acp"];
   /** True when an external plugin has replaced a built-in adapter of the same type. */
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
@@ -113,16 +175,31 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
   }
 }
 
-function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+/**
+ * Build the client capability view for one adapter. The login projection carries
+ * only the safe scalar fields; it drops the function members and the completion
+ * claim, so the response holds no secret and no code.
+ */
+export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+  const login = adapter.loginCapability;
   return {
     supportsInstructionsBundle: adapter.supportsInstructionsBundle ?? false,
     supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
     supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
     requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
+    supportsAcp: Boolean(adapter.acp),
+    ...(login
+      ? {
+          login: {
+            panelMode: login.panelMode,
+            timeoutPolicy: login.timeoutPolicy,
+          },
+        }
+      : {}),
   };
 }
 
-function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
+function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>, target?: RunnerTarget): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
     type: adapter.type,
@@ -132,6 +209,8 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),
+    ...agentRunnerAvailability(adapter.type, target),
+    ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.
@@ -185,7 +264,11 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes() {
+export function adapterRoutes(options: {
+  getNativeRunnerEnabled?: () => Promise<boolean>;
+  getOpenAiDotEnabled?: () => Promise<boolean>;
+  resolveRunnerTarget?: (companyId: string, environmentId?: string) => Promise<RunnerTarget>;
+} = {}) {
   const router = Router();
 
   /**
@@ -201,15 +284,49 @@ export function adapterRoutes() {
     // instance-admin only because they affect the whole server runtime.
     assertBoardOrgAccess(_req);
 
+    const companyId = _req.query.companyId;
+    const environmentId = _req.query.environmentId;
+    if ((companyId !== undefined && (typeof companyId !== "string" || !companyId.trim()))
+      || (environmentId !== undefined && (typeof environmentId !== "string" || !environmentId.trim()))) {
+      throw badRequest("companyId and environmentId must be nonempty strings.");
+    }
+    if (environmentId !== undefined && companyId === undefined) throw badRequest("companyId is required when selecting an environment.");
+    let target: RunnerTarget | undefined;
+    if (typeof companyId === "string") {
+      assertCompanyAccess(_req, companyId);
+      if (!options.resolveRunnerTarget) throw badRequest("Scoped adapter discovery is unavailable.");
+      target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+    }
+    await waitForExternalAdapters();
+
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
       listAdapterPlugins().map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
+    // One shared implementation, with independent provider rollouts. Explicit
+    // adapter-admin disabling still applies to both choices.
 
-    const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
-      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
-    ).sort((a, b) => a.type.localeCompare(b.type));
+    let candidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
+    if (typeof companyId === "string" && target?.driver === "local") {
+      // An expired optional preview must not hide the ordinary adapter catalog.
+      // Execution and model discovery still perform strict admission checks.
+      try { candidate = resolveAntigravityCandidateAdmission({ companyId }); }
+      catch (error) {
+        candidate = undefined;
+        // Expiry is ordinary catalog state. Invalid trusted startup JSON needs
+        // one operator diagnostic, without logging its payload or error.
+        if (!warnedMalformedAntigravityAdmission && error instanceof Error && error.message === "Invalid Antigravity candidate admission") {
+          warnedMalformedAntigravityAdmission = true;
+          logger.warn({ code: "ANTIGRAVITY_CANDIDATE_ADMISSION_INVALID" }, "Invalid Google Antigravity preview authorization");
+        }
+      }
+    }
+    const result: AdapterInfo[] = registeredAdapters.map((adapter) => ({
+      ...buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),
+      ...(candidate && adapter.type === "paperclip_runner" && !disabledSet.has(adapter.type) && !externalRecords.has(adapter.type)
+        ? { candidateHarnesses: [{ agent: "antigravity" as const, model: candidate.model }] } : {}),
+    })).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);
   });
@@ -226,6 +343,8 @@ export function adapterRoutes() {
    */
   router.post("/adapters/install", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterCodeInstallAllowed();
+    assertAdapterManagementVisible();
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -294,17 +413,16 @@ export function adapterRoutes() {
       // Load and register the adapter (use canonicalName for path resolution)
       const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
 
-      // Check if this type conflicts with a built-in adapter
-      if (BUILTIN_ADAPTER_TYPES.has(adapterModule.type)) {
-        res.status(409).json({
-          error: `Adapter type "${adapterModule.type}" is a built-in adapter and cannot be overwritten.`,
-        });
-        return;
-      }
+      // External adapters may intentionally override built-in adapter types.
+      // registerServerAdapter preserves the built-in as a fallback so pausing or
+      // removing the override restores the original implementation.
 
-      // Check if already registered (indicates a reinstall/update)
+      // Check if already registered (indicates a reinstall/update).
+      // For built-in types the registry always returns the built-in, so we
+      // additionally require an existing external plugin record to
+      // distinguish a true reinstall from a first-time override.
       const existing = findServerAdapter(adapterModule.type);
-      const isReinstall = existing !== null;
+      const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
         unregisterServerAdapter(adapterModule.type);
         logger.info({ type: adapterModule.type }, "Unregistered existing adapter for replacement");
@@ -348,6 +466,21 @@ export function adapterRoutes() {
     }
   });
 
+  router.get("/adapters/:type", async (req, res) => {
+    assertBoardOrgAccess(req);
+
+    const adapterType = req.params.type;
+    const adapter = findServerAdapter(adapterType);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
+      return;
+    }
+
+    const externalRecord = getAdapterPluginByType(adapterType);
+    const disabledSet = new Set(getDisabledAdapterTypes());
+    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
+  });
+
   /**
    * PATCH /api/adapters/:type
    *
@@ -358,6 +491,8 @@ export function adapterRoutes() {
    */
   router.patch("/adapters/:type", async (req, res) => {
     assertInstanceAdmin(req);
+
+    assertAdapterManagementVisible();
 
     const adapterType = req.params.type;
     const { disabled } = req.body as { disabled?: boolean };
@@ -394,6 +529,8 @@ export function adapterRoutes() {
   router.patch("/adapters/:type/override", async (req, res) => {
     assertInstanceAdmin(req);
 
+    assertAdapterManagementVisible();
+
     const adapterType = req.params.type;
     const { paused } = req.body as { paused?: boolean };
 
@@ -421,6 +558,7 @@ export function adapterRoutes() {
    */
   router.delete("/adapters/:type", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterManagementVisible();
 
     const adapterType = req.params.type;
 
@@ -429,8 +567,9 @@ export function adapterRoutes() {
       return;
     }
 
-    // Prevent removal of built-in adapters
-    if (BUILTIN_ADAPTER_TYPES.has(adapterType)) {
+    // Prevent removal of built-in adapters, unless this built-in type is
+    // currently backed by an external adapter plugin override.
+    if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !getAdapterPluginByType(adapterType)) {
       res.status(403).json({
         error: `Cannot remove built-in adapter "${adapterType}".`,
       });
@@ -496,6 +635,7 @@ export function adapterRoutes() {
    */
   router.post("/adapters/:type/reload", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterManagementVisible();
 
     const type = req.params.type;
 
@@ -548,6 +688,8 @@ export function adapterRoutes() {
   // package name, but without the risk of losing the store record.
   router.post("/adapters/:type/reinstall", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterCodeInstallAllowed();
+    assertAdapterManagementVisible();
 
     const type = req.params.type;
 

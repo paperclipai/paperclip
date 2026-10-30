@@ -7,6 +7,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -36,6 +37,7 @@ export const issueWorkProducts = pgTable(
     healthStatus: text("health_status").notNull().default("unknown"),
     summary: text("summary"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

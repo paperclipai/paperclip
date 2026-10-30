@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- canvas -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- 8px grid guides -->
+  <g data-region="grid" stroke="#e6e6e6" stroke-width="0.5" fill="none">
+    <path d="M 16 0 V 812" stroke="#d33" stroke-dasharray="2 4" />
+    <path d="M 359 0 V 812" stroke="#d33" stroke-dasharray="2 4" />
+    <!-- safe-area top (status bar 44px) and bottom (home indicator 34px) -->
+    <line x1="0" y1="44" x2="375" y2="44" />
+    <line x1="0" y1="778" x2="375" y2="778" />
+  </g>
+
+  <!-- replace this comment with your mobile wireframe primitives.
+       Mobile defaults:
+         - 16px outer margin (content width 343)
+         - 48px tap target minimum
+         - status-bar reserve 0-44, home-indicator reserve 778-812
+   -->
+</svg>

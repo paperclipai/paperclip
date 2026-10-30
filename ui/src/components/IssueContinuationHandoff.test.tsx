@@ -38,6 +38,9 @@ function createHandoffDocument(): IssueDocument {
     createdByUserId: null,
     updatedByAgentId: "agent-1",
     updatedByUserId: null,
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
     createdAt: new Date("2026-04-19T12:00:00.000Z"),
     updatedAt: new Date("2026-04-19T12:05:00.000Z"),
   };
@@ -72,7 +75,7 @@ describe("IssueContinuationHandoff", () => {
     expect(container.textContent).not.toContain("Resume from the activity tab.");
 
     const copyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Copy"));
+      .find((button) => button.getAttribute("aria-label") === "Continue with an agent");
     expect(copyButton).toBeTruthy();
 
     await act(async () => {
@@ -81,6 +84,7 @@ describe("IssueContinuationHandoff", () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(handoff.body);
     expect(container.textContent).toContain("Copied");
+    expect(document.querySelector('pre[aria-label="Setup prompt"]')?.textContent).toBe(handoff.body);
 
     await act(async () => {
       root.unmount();

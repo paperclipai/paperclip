@@ -10,6 +10,8 @@ on:
         type: choice
         options:
           - canary
+          - nightly
+          - beta
           - latest
       host_port:
         description: Host port for the Docker smoke container
@@ -20,6 +22,11 @@ on:
         description: Artifact name for uploaded diagnostics
         required: false
         default: release-smoke
+        type: string
+      qualification_source_sha:
+        description: Optional immutable source SHA for provider-free native package qualification
+        required: false
+        default: ""
         type: string
   workflow_call:
     inputs:
@@ -34,23 +41,98 @@ on:
         required: false
         default: release-smoke
         type: string
+      qualification_source_sha:
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  smoke:
+  # The Docker smoke below can never exercise the background-service leg of
+  # onboarding: containers have no service manager, so v2026.824.0 shipped a
+  # service install that crash-looped on a missing shim while every
+  # golden-path check stayed green. Run the same published artifact directly
+  # on the runner VM's systemd and require the installed service to end up
+  # serving.
+  smoke_service:
+    if: inputs.qualification_source_sha == ''
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Start a user systemd session
+        # The hosted runner has no login session for the runner user, so
+        # `systemctl --user` cannot reach a user manager until lingering
+        # starts one. Export the session address for the steps below.
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do
+            [[ -S "/run/user/$uid/bus" ]] && break
+            sleep 1
+          done
+          [[ -S "/run/user/$uid/bus" ]]
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$uid"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus"
+          } >> "$GITHUB_ENV"
+
+      - name: Onboard with the background service
+        env:
+          PAPERCLIPAI_VERSION: ${{ inputs.paperclip_version }}
+          DATA_DIR: ${{ runner.temp }}/service-smoke-data
+          SMOKE_CLEANUP: "false"
+        run: ./scripts/service-onboard-smoke.sh
+
+      - name: Capture service diagnostics
+        if: always()
+        run: |
+          {
+            systemctl --user --no-pager status paperclipai.service || true
+            journalctl --user -u paperclipai.service --no-pager || true
+          } > "$RUNNER_TEMP/paperclipai-service.log" 2>&1
+
+      - name: Upload service diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-service
+          path: ${{ runner.temp }}/paperclipai-service.log
+          retention-days: 14
+
+  smoke:
+    if: inputs.qualification_source_sha == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # Fixed here rather than read back out of the harness, so the `always()`
+    # diagnostics steps below still know the container's name when the launch
+    # step is the thing that failed. Reading it back was why a failing smoke
+    # uploaded no Docker logs at all.
+    env:
+      SMOKE_CONTAINER_NAME: release-smoke-onboard
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -58,30 +140,31 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+      - name: Verify runner Chrome
+        # Release smoke also runs headless on GitHub's Ubuntu image, so use the
+        # runner's preinstalled Chrome instead of a Playwright browser download.
+        run: google-chrome --version
 
       - name: Launch Docker smoke harness
         run: |
-          metadata_file="$RUNNER_TEMP/release-smoke.env"
           HOST_PORT="${{ inputs.host_port }}" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
           PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
+          SMOKE_READY_TIMEOUT_SECONDS=420 \
           SMOKE_DETACH=true \
-          SMOKE_METADATA_FILE="$metadata_file" \
+          SMOKE_METADATA_FILE="${{ runner.temp }}/release-smoke.env" \
+          SMOKE_LOG_FILE="${{ runner.temp }}/docker-onboard-smoke.log" \
           ./scripts/docker-onboard-smoke.sh
           set -a
-          source "$metadata_file"
+          source "${{ runner.temp }}/release-smoke.env"
           set +a
           {
             echo "SMOKE_BASE_URL=$SMOKE_BASE_URL"
             echo "SMOKE_ADMIN_EMAIL=$SMOKE_ADMIN_EMAIL"
             echo "SMOKE_ADMIN_PASSWORD=$SMOKE_ADMIN_PASSWORD"
-            echo "SMOKE_CONTAINER_NAME=$SMOKE_CONTAINER_NAME"
             echo "SMOKE_DATA_DIR=$SMOKE_DATA_DIR"
             echo "SMOKE_IMAGE_NAME=$SMOKE_IMAGE_NAME"
             echo "SMOKE_PAPERCLIPAI_VERSION=$SMOKE_PAPERCLIPAI_VERSION"
-            echo "SMOKE_METADATA_FILE=$metadata_file"
           } >> "$GITHUB_ENV"
 
       - name: Run release smoke Playwright suite
@@ -89,30 +172,214 @@ jobs:
           PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
           PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
           PAPERCLIP_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:release-smoke
 
       - name: Capture Docker logs
         if: always()
         run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker logs "$SMOKE_CONTAINER_NAME" >"$RUNNER_TEMP/docker-onboard-smoke.log" 2>&1 || true
+          log_file="${{ runner.temp }}/docker-onboard-smoke.log"
+          # A live container has the fuller story, so prefer it. When the
+          # harness already tore the container down it wrote this file on its
+          # way out, and that copy is kept rather than clobbered.
+          if docker inspect "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1; then
+            docker logs "$SMOKE_CONTAINER_NAME" >"$log_file" 2>&1 || true
           fi
+          # Never leave the upload with nothing to say. An absent log reads as
+          # a missing artifact; a file saying the container was gone reads as
+          # the diagnosis it is.
+          if [[ ! -s "$log_file" ]]; then
+            echo "No Docker logs captured: container '$SMOKE_CONTAINER_NAME' left no log dump and is no longer present." >"$log_file"
+          fi
+          echo "Captured $(wc -l <"$log_file") log lines to $log_file"
 
       - name: Upload diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
           path: |
             ${{ runner.temp }}/docker-onboard-smoke.log
-            ${{ env.SMOKE_METADATA_FILE }}
+            ${{ runner.temp }}/release-smoke.env
             tests/release-smoke/playwright-report/
             tests/release-smoke/test-results/
+          # The capture step above guarantees the log file, so an empty upload
+          # means the diagnostics wiring itself broke — which is worth failing
+          # over rather than burying in a warning nobody reads.
+          if-no-files-found: error
           retention-days: 14
 
       - name: Stop Docker smoke container
         if: always()
+        run: docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  qualification_daemons:
+    if: inputs.qualification_source_sha != ''
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ inputs.qualification_source_sha }}
+      runner_binaries_only: true
+
+  qualification_pack:
+    if: inputs.qualification_source_sha != ''
+    needs: qualification_daemons
+    name: Assemble and verify public Linux packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.qualification_source_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: ${{ needs.qualification_daemons.outputs.runner_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-runner-inputs
+          merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.qualification_daemons.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.qualification_daemons.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind the immutable Linux producer source
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
         run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+      - name: Build normal workspace outputs and public CLI
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm build
+          bash scripts/build-npm.sh --skip-checks --skip-typecheck
+          mv cli/package.dev.json cli/package.json
+      - name: Assemble exact-source daemons before server packing
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+        run: |
+          pack_args=()
+          if [[ -d "$RUNNER_TEMP/release-provider-pack-inputs" ]]; then pack_args=("$RUNNER_TEMP/release-provider-pack-inputs"); fi
+          node packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs \
+            assemble-daemons "$RUNNER_TEMP/release-runner-inputs" "$SOURCE_SHA" "${pack_args[@]}"
+          cp -R packages/paperclip-runner/dist/bin/. server/dist/vendor/paperclip-runner/bin/
+          if [[ -d packages/paperclip-runner/dist/remote-provider-packs ]]; then
+            cp -R packages/paperclip-runner/dist/remote-provider-packs server/dist/vendor/paperclip-runner/
           fi
+      - name: Verify clean public installation and retain the same package bytes
+        env:
+          PAPERCLIP_RUNNER_PUBLIC_PACKS_DIR: ${{ runner.temp }}/public-runner-packs
+        run: node scripts/verify-grok-npm-install.mjs
+      - name: Locate completed package assembly
+        id: pack_identity
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -s "$RUNNER_TEMP/public-runner-packs/manifest.json" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Retain completed package assembly even after a later Linux failure
+        if: ${{ !cancelled() && steps.pack_identity.outputs.available == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.artifact_name }}-public-packages
+          path: ${{ runner.temp }}/public-runner-packs/
+          if-no-files-found: error
+          retention-days: 14
+
+  qualification_native:
+    if: ${{ !cancelled() && inputs.qualification_source_sha != '' && needs.qualification_daemons.result == 'success' }}
+    needs: [qualification_daemons, qualification_pack]
+    name: Clean installed package (${{ matrix.target }})
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.qualification_daemons.outputs.native_consumer_matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.qualification_source_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.artifact_name }}-public-packages
+          path: ${{ runner.temp }}/public-runner-packs
+      - name: Install only the existing verifier tooling
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+      - name: Checkout immutable ARM qualification tooling
+        if: ${{ matrix.target == 'linux-arm64' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .qualification-tooling
+          sparse-checkout: scripts/prepare-linux-arm64-qualification.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Prepare Linux ARM sandbox prerequisites
+        if: ${{ matrix.target == 'linux-arm64' }}
+        timeout-minutes: 5
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+          TOOLING_REPOSITORY: ${{ job.workflow_repository }}
+          TOOLING_WORKFLOW_REF: ${{ job.workflow_ref }}
+          TOOLING_WORKFLOW_PATH: ${{ job.workflow_file_path }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "$TOOLING_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$(git -C .qualification-tooling rev-parse HEAD)" == "$TOOLING_SHA" ]] || exit 1
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const directory = join(process.env.RUNNER_TEMP, 'paperclip-arm-bwrap-prerequisite');
+          mkdirSync(directory, { recursive: true });
+          const helper = '.qualification-tooling/scripts/prepare-linux-arm64-qualification.sh';
+          writeFileSync(join(directory, 'qualification-identity.json'), JSON.stringify({
+            productSourceSha: process.env.SOURCE_SHA,
+            toolingSourceSha: process.env.TOOLING_SHA,
+            toolingRepository: process.env.TOOLING_REPOSITORY,
+            toolingWorkflowRef: process.env.TOOLING_WORKFLOW_REF,
+            toolingWorkflowPath: process.env.TOOLING_WORKFLOW_PATH,
+            helperSha256: createHash('sha256').update(readFileSync(helper)).digest('hex'),
+          }, null, 2) + '\n');
+          NODE
+          bash .qualification-tooling/scripts/prepare-linux-arm64-qualification.sh
+      - name: Verify host identity and actual clean npm consumer
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$(node -p 'process.platform + "-" + process.arch')" == "$TARGET" ]] || exit 1
+          mode=--mac-consumer
+          if [[ "$TARGET" == linux-arm64 ]]; then mode=--linux-arm64-consumer; fi
+          node scripts/verify-grok-npm-install.mjs "$mode" \
+            "$RUNNER_TEMP/public-runner-packs" "$SOURCE_SHA" "$RUNNER_TEMP/native-public-install.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ${{ inputs.artifact_name }}-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/native-public-install.json
+            ${{ runner.temp }}/paperclip-arm-bwrap-prerequisite/
+          if-no-files-found: warn
+          retention-days: 14

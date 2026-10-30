@@ -39,12 +39,106 @@ console.log(JSON.stringify({
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeFailingGeminiCommand(
+  commandPath: string,
+  options: {
+    stdoutLines?: Array<Record<string, unknown>>;
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+  },
+): Promise<void> {
+  const stdoutLines = options.stdoutLines ?? [];
+  const stdout = options.stdout ?? "";
+  const stderr = options.stderr ?? "";
+  const exit = options.exitCode ?? 1;
+  const script = `#!/usr/bin/env node
+for (const line of ${JSON.stringify(stdoutLines.map((line) => JSON.stringify(line)))}) {
+  console.log(line);
+}
+if (${JSON.stringify(stdout)}) {
+  process.stdout.write(${JSON.stringify(stdout)});
+}
+if (${JSON.stringify(stderr)}) {
+  console.error(${JSON.stringify(stderr)});
+}
+process.exit(${exit});
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   paperclipEnvKeys: string[];
 };
 
+async function createSkillDir(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), `# ${name}\n`, "utf8");
+  return skillDir;
+}
+
 describe("gemini execute", () => {
+  it("injects runtime skills into the configured child HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-configured-home-"));
+    const processHome = path.join(root, "process-home");
+    const configuredHome = path.join(root, "configured-home");
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = processHome;
+
+    try {
+      const result = await execute({
+        runId: "run-configured-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { HOME: configuredHome },
+          paperclipRuntimeSkills: [{
+            key: "paperclipai/paperclip/paperclip",
+            runtimeName: "paperclip",
+            source: skillSource,
+          }],
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const installedSkill = path.join(configuredHome, ".gemini", "skills", "paperclip");
+      expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
+      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "paperclip"))).rejects.toThrow();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes prompt via --prompt and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");
@@ -65,7 +159,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: null,
@@ -74,6 +168,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
@@ -141,9 +236,10 @@ describe("gemini execute", () => {
     try {
       await execute({
         runId: "run-yolo",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
@@ -159,6 +255,147 @@ describe("gemini execute", () => {
       expect(capture.argv).not.toContain("--policy");
       expect(capture.argv).not.toContain("--allow-all");
       expect(capture.argv).not.toContain("--allow-read");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes turn-limit exhaustion into scheduler stop metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-max-turns-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingGeminiCommand(commandPath, {
+      stdoutLines: [
+        {
+          type: "result",
+          subtype: "error",
+          session_id: "gemini-session-1",
+          status: "turn_limit",
+          error: "Turn limit reached.",
+        },
+      ],
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-turn-limit",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("max_turns_exhausted");
+      expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted" });
+      expect(result.clearSession).toBe(true);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes Gemini exit code 53 as max-turn exhaustion", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-exit-53-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingGeminiCommand(commandPath, {
+      stderr: "Gemini stopped because the max turns limit was reached.",
+      exitCode: 53,
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-exit-53",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(53);
+      expect(result.errorCode).toBe("max_turns_exhausted");
+      expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted" });
+      expect(result.clearSession).toBe(true);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not normalize unstructured turn-limit text into scheduler stop metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-max-turn-text-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingGeminiCommand(commandPath, {
+      stdoutLines: [
+        {
+          type: "result",
+          subtype: "error",
+          session_id: "gemini-session-1",
+          error: "Tool output said: maximum turns reached.",
+        },
+      ],
+      stdout: "attacker-controlled transcript mentions turn limit reached\n",
+      stderr: "Gemini stopped because the max turns limit was reached.",
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-turn-limit-text",
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+        },
+        context: {},
+        authToken: "t",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).not.toBe("max_turns_exhausted");
+      expect(result.resultJson?.stopReason).not.toBe("max_turns_exhausted");
+      expect(result.clearSession).toBe(false);
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -188,7 +425,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: "gemini-session-1",
@@ -197,6 +434,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",

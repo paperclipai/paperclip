@@ -1,6 +1,8 @@
 import type {
   PluginDataResult,
   PluginActionFn,
+  HostLocation,
+  HostNavigation,
   PluginHostContext,
   PluginStreamResult,
   PluginToastFn,
@@ -112,6 +114,57 @@ export function usePluginAction(key: string): PluginActionFn {
  */
 export function useHostContext(): PluginHostContext {
   const impl = getSdkUiRuntimeValue<() => PluginHostContext>("useHostContext");
+  return impl();
+}
+
+// ---------------------------------------------------------------------------
+// useHostNavigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Navigate within the Paperclip host without forcing a full document reload.
+ *
+ * Use `linkProps()` for links so browser-native behavior still works:
+ * modifier-click, middle-click, copy-link, and open-in-new-tab all use the
+ * returned real `href`.
+ *
+ * @example
+ * ```tsx
+ * function WikiSidebarLink() {
+ *   const hostNavigation = useHostNavigation();
+ *   return <a {...hostNavigation.linkProps("/wiki")}>Wiki</a>;
+ * }
+ * ```
+ */
+export function useHostNavigation(): HostNavigation {
+  const impl = getSdkUiRuntimeValue<() => HostNavigation>("useHostNavigation");
+  return impl();
+}
+
+// ---------------------------------------------------------------------------
+// useHostLocation
+// ---------------------------------------------------------------------------
+
+/**
+ * Observe the current host router location.
+ *
+ * Returns a snapshot of the active `pathname`, `search`, and `hash`. The
+ * component re-renders when any of these change (e.g. after the host router
+ * pushes a new entry, or after the browser back/forward gestures). Use this
+ * for URL-driven plugin UI such as a takeover sidebar with section-aware
+ * active state.
+ *
+ * @example
+ * ```tsx
+ * function WikiSection() {
+ *   const { pathname } = useHostLocation();
+ *   const section = pathname.split("/").filter(Boolean).at(-1) ?? "wiki";
+ *   return <div>Active section: {section}</div>;
+ * }
+ * ```
+ */
+export function useHostLocation(): HostLocation {
+  const impl = getSdkUiRuntimeValue<() => HostLocation>("useHostLocation");
   return impl();
 }
 

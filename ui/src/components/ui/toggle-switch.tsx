@@ -8,12 +8,20 @@ export interface ToggleSwitchProps
   size?: "default" | "lg";
 }
 
+/*
+ * Custom API (checked/onCheckedChange button, no Radix dep) with the shadcn
+ * radix-luma Switch's capsule form: border-2 track, oval thumb, bg-input
+ * off-state. Deliberate deviation from the registry: the on-state is the
+ * status-system green (var(--status-task-done)), not bg-primary — user
+ * ruling, DECISION-SHEET "toggle form" note. Do not swap for the registry
+ * Switch without revisiting that ruling (C7).
+ */
 export const ToggleSwitch = React.forwardRef<
   HTMLButtonElement,
   ToggleSwitchProps
 >(
   (
-    { checked, onCheckedChange, size = "default", className, disabled, ...props },
+    { checked, onCheckedChange, size = "default", className, disabled, onClick, ...props },
     ref,
   ) => {
     const isLg = size === "lg";
@@ -27,28 +35,29 @@ export const ToggleSwitch = React.forwardRef<
         data-slot="toggle"
         disabled={disabled}
         className={cn(
-          "relative inline-flex shrink-0 items-center rounded-full transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          "relative inline-flex shrink-0 items-center rounded-full border-2 transition-all outline-none",
+          "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
           "disabled:cursor-not-allowed disabled:opacity-50",
-          // Track: larger on mobile (<640px), standard on desktop
-          isLg ? "h-7 w-12 sm:h-6 sm:w-11" : "h-6 w-10 sm:h-5 sm:w-9",
-          checked ? "bg-green-600" : "bg-muted",
+          isLg ? "h-6 w-12" : "h-5 w-11",
+          checked
+            ? "border-(--status-task-done) bg-(--status-task-done)"
+            : "border-transparent bg-input/90",
           className,
         )}
-        onClick={() => onCheckedChange(!checked)}
         {...props}
+        // Run the caller's onClick first (e.g. stopPropagation in a clickable
+        // row) but always fire the toggle — spreading `props` must not clobber
+        // the state change, so this handler stays after the spread.
+        onClick={(event) => {
+          onClick?.(event);
+          onCheckedChange(!checked);
+        }}
       >
         <span
           className={cn(
-            "pointer-events-none inline-block rounded-full bg-white shadow-sm transition-transform",
-            // Thumb
-            isLg ? "size-5.5 sm:size-5" : "size-4.5 sm:size-3.5",
-            // Slide position
-            checked
-              ? isLg
-                ? "translate-x-5 sm:translate-x-5"
-                : "translate-x-5 sm:translate-x-4.5"
-              : "translate-x-0.5",
+            "pointer-events-none inline-block rounded-full bg-background shadow-sm transition-transform not-dark:bg-clip-padding dark:bg-foreground",
+            isLg ? "h-5 w-7" : "h-4 w-6",
+            checked ? "translate-x-4" : "translate-x-0",
           )}
         />
       </button>

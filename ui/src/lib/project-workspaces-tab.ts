@@ -2,6 +2,17 @@ import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
 
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
+export type ProjectWorkspaceLinkedIssue = Pick<Issue, "id" | "identifier" | "title" | "updatedAt"> & {
+  status: string;
+  priority: string;
+  description?: string | null;
+  blockerAttention?: Issue["blockerAttention"];
+  projectId?: string | null;
+  project?: Issue["project"];
+  originKind?: Issue["originKind"];
+  originId?: string | null;
+};
+
 export interface ProjectWorkspaceSummary {
   key: string;
   kind: "execution_workspace" | "project_workspace";
@@ -18,7 +29,8 @@ export interface ProjectWorkspaceSummary {
   primaryServiceUrl: string | null;
   primaryServiceUrlRunning: boolean;
   hasRuntimeConfig: boolean;
-  issues: Issue[];
+  linkedIssueCount: number;
+  issues: ProjectWorkspaceLinkedIssue[];
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -123,6 +135,7 @@ export function buildProjectWorkspaceSummaries(input: {
           executionWorkspace.config?.workspaceRuntime
           ?? projectWorkspacesById.get(executionWorkspace.projectWorkspaceId ?? issue.projectWorkspaceId ?? "")?.runtimeConfig?.workspaceRuntime,
         ),
+        linkedIssueCount: nextIssues.length,
         issues: nextIssues,
       });
       continue;
@@ -151,6 +164,7 @@ export function buildProjectWorkspaceSummaries(input: {
       executionWorkspaceStatus: null,
       ...runtimeSummary,
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
+      linkedIssueCount: nextIssues.length,
       issues: nextIssues,
     });
   }
@@ -177,6 +191,7 @@ export function buildProjectWorkspaceSummaries(input: {
       executionWorkspaceStatus: null,
       ...runtimeSummary,
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
+      linkedIssueCount: 0,
       issues: [],
     });
   }

@@ -1,3 +1,13 @@
+import { freshWorkspaceSchema } from "./workspace-provider.js";
+import { workspaceProviderBindingSchema } from "@paperclipai/shared";
+import { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } from "./workspace-provider.js";
+import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
+import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
+import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { createInvocationTracer } from "./invocation-tracer.js";
+import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -34,6 +44,9 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
+import type { ResourceLifecycleEvent } from "./types.js";
+import fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -41,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AskUserQuestionsInteraction,
   PaperclipPluginManifestV1,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "@paperclipai/shared";
@@ -65,6 +79,7 @@ import type {
 } from "./types.js";
 import type {
   JsonRpcId,
+  JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
   InitializeParams,
@@ -75,11 +90,46 @@ import type {
   RunJobParams,
   GetDataParams,
   PerformActionParams,
+  PluginPerformActionActorContext,
+  PluginPerformActionContext,
   ExecuteToolParams,
+  DetectExternalObjectsParams,
+  ResolveExternalObjectParams,
+  RefreshExternalObjectsParams,
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
+  PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
 import {
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
@@ -96,6 +146,7 @@ import {
   isJsonRpcErrorResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  encodeChannelBytes,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -167,6 +218,47 @@ interface EventRegistration {
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
+function realpathOrResolvedPath(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
+/**
+ * Order-independent structural equality for two plugin config objects.
+ *
+ * Config arrives as parsed JSON, so plain `JSON.stringify` comparison is
+ * sensitive to key ordering across independent saves. Canonicalizing with
+ * recursively sorted object keys makes an idempotent replay of the same config
+ * compare equal regardless of serialization order.
+ */
+function configsEqual(a: unknown, b: unknown): boolean {
+  return canonicalize(a) === canonicalize(b);
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, v]) => `${JSON.stringify(key)}:${canonicalize(v)}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
+  const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
+  const entryPath = realpathOrResolvedPath(entry);
+  return thisFile === entryPath;
+}
+
 // ---------------------------------------------------------------------------
 // startWorkerRpcHost
 // ---------------------------------------------------------------------------
@@ -215,9 +307,7 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  const thisFile = path.resolve(fileURLToPath(moduleUrl));
-  const entryPath = path.resolve(entry);
-  if (thisFile === entryPath) {
+  if (isWorkerEntrypoint(entry, moduleUrl)) {
     startWorkerRpcHost({ plugin });
   }
 }
@@ -254,16 +344,34 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   let running = true;
   let initialized = false;
+  const idleDrain = createPluginIdleDrain();
+  const unsettledHostCalls = new Map<string | number, () => void>();
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
+  // The company whose config was last applied via configChanged. Used to fail
+  // closed when a single-tenant plugin would be collapsed onto a second,
+  // distinct company's config. `null` until the first company-scoped delivery.
+  let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
+  const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
+    && (manifest?.capabilities.includes("environment.drivers.register") === true
+      || manifest?.capabilities.includes("workspaces.manage") === true);
+  const invocationTracer = createInvocationTracer(
+    canRecordSpans,
+    span => { void callHostRaw("span.record", span).catch(() => undefined); },
+  );
+  const { withSpan } = invocationTracer;
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
   const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
-  const actionHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const actionHandlers = new Map<
+    string,
+    (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
+  >();
   const toolHandlers = new Map<string, {
     declaration: Pick<import("@paperclipai/shared").PluginToolDeclaration, "displayName" | "description" | "parametersSchema">;
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
@@ -293,7 +401,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   /**
    * Send a typed JSON-RPC request to the host and await the response.
    */
-  function callHost<M extends WorkerToHostMethodName>(
+  function callHost<M extends WorkerToHostMethodName>(method: M, params: WorkerToHostMethods[M][0], timeoutMs?: number): Promise<WorkerToHostMethods[M][1]> {
+    const operation = method === "agents.getRuntimeIdentity" || method === "agents.getRuntime" ? "identity.read"
+      : method === "config.get" ? "config.read" : method === "entities.list" ? "progress.read"
+      : method === "entities.upsert" ? "progress.write" : undefined;
+    return operation ? withSpan(`plugin.host.${operation}`, () => callHostRaw(method, params, timeoutMs))
+      : callHostRaw(method, params, timeoutMs);
+  }
+
+  function callHostRaw<M extends WorkerToHostMethodName>(
     method: M,
     params: WorkerToHostMethods[M][0],
     timeoutMs?: number,
@@ -308,6 +424,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         nextOutboundId = 1;
       }
       const id = nextOutboundId++;
+      // Keep the token after an RPC timeout. Only an actual host response
+      // proves that a host-side write has finished.
+      unsettledHostCalls.set(id, idleDrain.begin());
       const timeout = timeoutMs ?? rpcTimeoutMs;
       let settled = false;
 
@@ -343,9 +462,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       });
 
       try {
-        const request = createRequest(method, params, id);
+        const activeInvocation = invocationContextStorage.getStore();
+        const request = {
+          ...createRequest(method, params, id),
+          ...(activeInvocation ? { paperclipInvocationId: activeInvocation.id } : {}),
+        };
         sendMessage(request);
       } catch (err) {
+        unsettledHostCalls.get(id)?.();
+        unsettledHostCalls.delete(id);
         settle(reject, err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -356,7 +481,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   function notifyHost(method: string, params: unknown): void {
     try {
-      sendMessage(createNotification(method, params));
+      const activeInvocation = invocationContextStorage.getStore();
+      sendMessage({
+        ...createNotification(method, params),
+        ...(activeInvocation ? { paperclipInvocationId: activeInvocation.id } : {}),
+      });
     } catch {
       // Swallow — the host may have closed stdin
     }
@@ -374,12 +503,67 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       config: {
-        async get() {
-          return callHost("config.get", {} as Record<string, never>);
+        async get(companyId?: string) {
+          return callHost("config.get", companyId ? { companyId } : {});
+        },
+      },
+
+      localFolders: {
+        declarations() {
+          if (!manifest) throw new Error("Plugin context accessed before initialization");
+          return manifest.localFolders ?? [];
+        },
+
+        async configure(input) {
+          return callHost("localFolders.configure", {
+            companyId: input.companyId,
+            folderKey: input.folderKey,
+            path: input.path,
+            access: input.access,
+            requiredDirectories: input.requiredDirectories,
+            requiredFiles: input.requiredFiles,
+          });
+        },
+
+        async status(companyId: string, folderKey: string) {
+          return callHost("localFolders.status", { companyId, folderKey });
+        },
+
+        async list(companyId: string, folderKey: string, options = {}) {
+          return callHost("localFolders.list", {
+            companyId,
+            folderKey,
+            relativePath: options.relativePath,
+            recursive: options.recursive,
+            maxEntries: options.maxEntries,
+          });
+        },
+
+        async readText(companyId: string, folderKey: string, relativePath: string) {
+          return callHost("localFolders.readText", { companyId, folderKey, relativePath });
+        },
+
+        async writeTextAtomic(companyId: string, folderKey: string, relativePath: string, contents: string) {
+          return callHost("localFolders.writeTextAtomic", {
+            companyId,
+            folderKey,
+            relativePath,
+            contents,
+          });
+        },
+
+        async deleteFile(companyId: string, folderKey: string, relativePath: string) {
+          return callHost("localFolders.deleteFile", { companyId, folderKey, relativePath });
         },
       },
 
       events: {
+        async listLifecycle(companyId: string, limit?: number, afterId?: string) {
+          return callHost("events.listLifecycle", { companyId, limit, afterId });
+        },
+        async acknowledgeLifecycle(companyId: string, eventId: string) {
+          await callHost("events.acknowledgeLifecycle", { companyId, eventId });
+        },
         on(
           name: string,
           filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>),
@@ -476,8 +660,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       secrets: {
-        async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+        async resolve(secretRef, options = {}): Promise<string> {
+          return callHost("secrets.resolve", {
+            secretRef,
+            companyId: options.companyId,
+            configPath: options.configPath,
+          });
         },
       },
 
@@ -549,6 +737,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       projects: {
+        async resolveGitCredential(projectId, workspaceId, companyId) {
+          return callHost("projects.resolveGitCredential", { projectId, workspaceId, companyId });
+        },
         async list(input) {
           return callHost("projects.list", {
             companyId: input.companyId,
@@ -559,6 +750,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async get(projectId: string, companyId: string) {
           return callHost("projects.get", { projectId, companyId });
+        },
+        async getInstanceSecrets(projectId, companyId) {
+          return callHost("projects.getInstanceSecrets", { projectId, companyId });
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -571,6 +765,70 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async getWorkspaceForIssue(issueId: string, companyId: string) {
           return callHost("projects.getWorkspaceForIssue", { issueId, companyId });
+        },
+
+        managed: {
+          async get(projectKey: string, companyId: string) {
+            return callHost("projects.managed.get", { projectKey, companyId });
+          },
+          async reconcile(projectKey: string, companyId: string) {
+            return callHost("projects.managed.reconcile", { projectKey, companyId });
+          },
+          async reset(projectKey: string, companyId: string) {
+            return callHost("projects.managed.reset", { projectKey, companyId });
+          },
+        },
+      },
+
+      executionWorkspaces: {
+        async get(workspaceId: string, companyId: string) {
+          return callHost("executionWorkspaces.get", { workspaceId, companyId });
+        },
+      },
+
+      routines: {
+        managed: {
+          async get(routineKey: string, companyId: string) {
+            return callHost("routines.managed.get", { routineKey, companyId });
+          },
+          async reconcile(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.reconcile", { routineKey, companyId, ...overrides });
+          },
+          async reset(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.reset", { routineKey, companyId, ...overrides });
+          },
+          async update(routineKey: string, companyId: string, patch: { status?: string }) {
+            return callHost("routines.managed.update", { routineKey, companyId, ...patch });
+          },
+          async run(
+            routineKey: string,
+            companyId: string,
+            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+          ) {
+            return callHost("routines.managed.run", { routineKey, companyId, ...overrides });
+          },
+        },
+      },
+
+      skills: {
+        managed: {
+          async get(skillKey: string, companyId: string) {
+            return callHost("skills.managed.get", { skillKey, companyId });
+          },
+          async reconcile(skillKey: string, companyId: string) {
+            return callHost("skills.managed.reconcile", { skillKey, companyId });
+          },
+          async reset(skillKey: string, companyId: string) {
+            return callHost("skills.managed.reset", { skillKey, companyId });
+          },
         },
       },
 
@@ -594,8 +852,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             assigneeAgentId: input.assigneeAgentId,
             originKind: input.originKind,
+            originKindPrefix: input.originKindPrefix,
             originId: input.originId,
             status: input.status,
+            includePluginOperations: input.includePluginOperations,
             limit: input.limit,
             offset: input.offset,
           });
@@ -620,6 +880,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             assigneeUserId: input.assigneeUserId,
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
+            assigneeAdapterOverrides: input.assigneeAdapterOverrides,
+            surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,
             originRunId: input.originRunId,
@@ -693,8 +955,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
-          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
+        async createComment(
+          issueId: string,
+          body: string,
+          companyId: string,
+          options?: { authorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.createComment", {
+            issueId,
+            body,
+            companyId,
+            authorAgentId: options?.authorAgentId,
+            actorUserId: options?.actorUserId,
+          });
         },
 
         async createInteraction(issueId: string, interaction, companyId: string, options?: { authorAgentId?: string }) {
@@ -755,6 +1028,59 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             },
             authorAgentId: options?.authorAgentId,
           }) as Promise<RequestConfirmationInteraction>;
+        },
+
+        async requestCheckboxConfirmation(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<RequestCheckboxConfirmationInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "request_checkbox_confirmation",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<RequestCheckboxConfirmationInteraction>;
+        },
+
+        async listInteractions(issueId: string, companyId: string) {
+          return callHost("issues.listInteractions", { issueId, companyId });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          companyId: string,
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            interactionId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+          });
+        },
+
+        async listAttachments(issueId: string, companyId: string) {
+          return callHost("issues.listAttachments", { issueId, companyId });
+        },
+
+        async getAttachmentContent(
+          attachmentId: string,
+          companyId: string,
+          options?: { maxBytes?: number | null },
+        ) {
+          return callHost("issues.getAttachmentContent", {
+            attachmentId,
+            companyId,
+            maxBytes: options?.maxBytes ?? null,
+          });
         },
 
         documents: {
@@ -829,7 +1155,40 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      approvals: {
+        async list(input: { companyId: string; status?: string | null }) {
+          return callHost("approvals.list", {
+            companyId: input.companyId,
+            status: input.status,
+          });
+        },
+
+        async get(approvalId: string, companyId: string) {
+          return callHost("approvals.get", { approvalId, companyId });
+        },
+
+        async decide(
+          approvalId: string,
+          input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+          companyId: string,
+        ) {
+          return callHost("approvals.decide", {
+            approvalId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            decisionNote: input.decisionNote,
+          });
+        },
+      },
+
       agents: {
+        async getRuntimeIdentity(agentId, companyId) {
+          return callHost("agents.getRuntimeIdentity", { agentId, companyId });
+        },
+        async getRuntime(agentId, companyId, environmentId, installEnvironmentSkills) {
+          return callHost("agents.getRuntime", { agentId, companyId, ...(environmentId ? { environmentId } : {}), ...(installEnvironmentSkills ? { installEnvironmentSkills: true } : {}) });
+        },
         async list(input) {
           return callHost("agents.list", {
             companyId: input.companyId,
@@ -853,6 +1212,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }) {
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
+        },
+
+        managed: {
+          async get(agentKey: string, companyId: string) {
+            return callHost("agents.managed.get", { agentKey, companyId });
+          },
+
+          async reconcile(agentKey: string, companyId: string) {
+            return callHost("agents.managed.reconcile", { agentKey, companyId });
+          },
+
+          async reset(agentKey: string, companyId: string) {
+            return callHost("agents.managed.reset", { agentKey, companyId });
+          },
         },
 
         sessions: {
@@ -933,6 +1306,85 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      access: {
+        members: {
+          async list(input) {
+            return callHost("access.members.list", {
+              companyId: input.companyId,
+              includeArchived: input.includeArchived,
+            });
+          },
+
+          async get(memberId: string, companyId: string) {
+            return callHost("access.members.get", { memberId, companyId });
+          },
+
+          async update(memberId: string, patch, companyId: string) {
+            return callHost("access.members.update", { memberId, patch, companyId });
+          },
+        },
+
+        invites: {
+          async list(input) {
+            return callHost("access.invites.list", {
+              companyId: input.companyId,
+              state: input.state,
+              limit: input.limit,
+              offset: input.offset,
+            });
+          },
+
+          async create(input) {
+            return callHost("access.invites.create", {
+              companyId: input.companyId,
+              allowedJoinTypes: input.allowedJoinTypes,
+              humanRole: input.humanRole,
+              defaultsPayload: input.defaultsPayload,
+              agentMessage: input.agentMessage,
+            });
+          },
+
+          async revoke(inviteId: string, companyId: string) {
+            return callHost("access.invites.revoke", { inviteId, companyId });
+          },
+        },
+      },
+
+      authorization: {
+        grants: {
+          async list(input) {
+            return callHost("authorization.grants.list", input);
+          },
+          async set(input) {
+            return callHost("authorization.grants.set", input);
+          },
+        },
+
+        policies: {
+          async summary(companyId: string) {
+            return callHost("authorization.policies.summary", { companyId });
+          },
+          async get(input) {
+            return callHost("authorization.policies.get", input);
+          },
+          async update(input) {
+            return callHost("authorization.policies.update", input);
+          },
+          async previewAssignment(input) {
+            return callHost("authorization.policies.previewAssignment", input);
+          },
+          async explainAssignment(input) {
+            return callHost("authorization.policies.explainAssignment", input);
+          },
+        },
+
+        audit: {
+          async search(input) {
+            return callHost("authorization.audit.search", input);
+          },
+        },
+      },
+
       data: {
         register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
           dataHandlers.set(key, handler);
@@ -940,7 +1392,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       actions: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(
+          key: string,
+          handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+        ): void {
           actionHandlers.set(key, handler);
         },
       },
@@ -964,6 +1419,90 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           },
         };
       })(),
+
+      execution: {
+        log(stream: "stdout" | "stderr", chunk: string): void {
+          // Emit one incremental output chunk of the active execute call.
+          // `notifyHost` stamps the active invocation id from the invocation
+          // context, so the host correlates the chunk to the host-owned execute
+          // route for that call. The notification carries no company id; the
+          // host binds the company from its own execute route. A chunk sent with
+          // no active invocation carries no id and the host drops it.
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost("execute.log", { stream, chunk });
+        },
+      },
+
+      loginPty: {
+        output(hostRouteId: string, workerSessionId: string, chunk: string): void {
+          // Forward one raw output chunk of a live login pseudo-terminal. The
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host can hold more than one concurrent login
+          // pseudo-terminal per worker and binds the chunk to its own route
+          // while that route is open. The host drops an unknown, a stale, or a
+          // mismatched identifier and never logs the raw bytes. This
+          // notification carries no invocation id, because it fires after the
+          // open reply returns.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
+        },
+        exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a live login pseudo-terminal. The host
+          // resolves its own route's wait promise by the host route identifier
+          // and the bound worker session identifier while that route is open.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(LOGIN_PTY_EXIT_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
+      duplexChannel: {
+        data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void {
+          // Forward one raw data chunk of a persistent duplex channel. The
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host routes the chunk to the exact live pair while
+          // the route is open. The host drops an unknown or a mismatched pair and
+          // never logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          //
+          // JSON-RPC travels as JSON text, which carries no binary type, so this
+          // is the one point where the chunk crosses from `Uint8Array` to the
+          // wire-safe base64 form. See `ChannelBytesWireValue` in protocol.ts.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            chunk: encodeChannelBytes(chunk),
+          });
+        },
+        exit(
+          hostRouteId: string,
+          workerSessionId: string,
+          exitCode: number | null,
+          transportClosed?: boolean,
+        ): void {
+          // Forward the child exit of a persistent duplex channel. The host
+          // resolves the open route's wait promise by the exact live pair while
+          // the route is open. `transportClosed` carries the exit discriminator, so
+          // the host tells a real process exit from a reason-less transport close.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_EXIT_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+            transportClosed: transportClosed === true,
+          });
+        },
+      },
 
       tools: {
         register(
@@ -1004,6 +1543,61 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           notifyHost("log", { level: "debug", message, meta });
         },
       },
+
+      tracer: {
+        withSpan,
+        now: invocationTracer.now,
+        isRecording: invocationTracer.isRecording,
+        recordSpan: invocationTracer.recordSpan,
+        startSpan(
+          name: string,
+          options?: { attributes?: Record<string, string | number | boolean> },
+        ) {
+          // Read the active host trace context from the per-call invocation
+          // channel. Only providers permitted to record receipts collect spans;
+          // other plugins and tracing-off invocations keep no-op behavior.
+          const recordSpan = invocationTracer.captureRecorder();
+          const spanInvocation = invocationContextStorage.getStore();
+          const hasTraceContext = canRecordSpans();
+          const attributes: Record<string, string | number | boolean> = {
+            ...(options?.attributes ?? {}),
+          };
+          // Capture the real start time once when the span opens. The host uses
+          // it as the span start time, so the span shows its true native width.
+          const spanNow = invocationTracer.clock();
+          const startTimeMs = spanNow();
+          let status: { code: number; message?: string } | undefined;
+          let ended = false;
+          return {
+            setAttribute(key: string, value: string | number | boolean): void {
+              attributes[key] = value;
+            },
+            setStatus(next: { code: number; message?: string }): void {
+              status = next;
+            },
+            end(): void {
+              if (ended) return;
+              ended = true;
+              if (!hasTraceContext || invocationContextStorage.getStore()?.id !== spanInvocation?.id) return;
+              // Capture the real end time once at the first end call. The host
+              // uses the pair to record the span with its true wall-clock width.
+              const endTimeMs = spanNow();
+              // Send the finished span to the host once. The host re-clamps the
+              // name and the attributes, mints the parentage from its own
+              // invocation record, and records the span through the real tracer.
+              // Fire-and-forget: a span must never block or fail plugin work.
+              const receipt = {
+                name,
+                attributes,
+                ...(status ? { status } : {}),
+                startTimeMs,
+                endTimeMs,
+              };
+              if (!recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
+            },
+          };
+        },
+      },
     };
   }
 
@@ -1019,10 +1613,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    * Dispatches to the correct handler based on the method name.
    */
   async function handleHostRequest(request: JsonRpcRequest): Promise<void> {
-    const { id, method, params } = request;
+    if (request.method === "environmentSyncOut") {
+      return withEnvironmentSyncErrorCapture(() => handleHostRequestInScope(request));
+    }
+    return handleHostRequestInScope(request);
+  }
 
+  async function handleHostRequestInScope(request: JsonRpcRequest): Promise<void> {
+    const { id, method, params } = request;
+    let done: (() => void) | undefined;
     try {
-      const result = await dispatchMethod(method, params);
+      if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
+        done = idleDrain.begin();
+      }
+      const invoke = () => withSpan("plugin.worker", () => dispatchMethod(method, params));
+      const result = request.paperclipInvocation
+        ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
+        : await invoke();
       sendMessage(createSuccessResponse(id, result ?? null));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1034,7 +1641,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
-      sendMessage(createErrorResponse(id, errorCode, errorMessage));
+      sendMessage(createErrorResponse(id, errorCode, errorMessage,
+        method === "environmentAcquireLease" || method === "environmentDestroyLease"
+          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+    } finally {
+      done?.();
     }
   }
 
@@ -1043,6 +1655,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   async function dispatchMethod(method: string, params: unknown): Promise<unknown> {
     switch (method) {
+      case "prepareIdleSleep": {
+        const hold = params as { ownerId: string; expiresAt: number };
+        const backgroundWork = !initialized || sessionEventCallbacks.size > 0
+          ? "present"
+          : await idleDrain.prepare(hold, plugin.definition.onIdleDrain?.bind(plugin.definition));
+        return { ...hold, backgroundWork };
+      }
+      case "releaseIdleSleep":
+        idleDrain.release((params as { ownerId: string }).ownerId);
+        return;
       case "initialize":
         return handleInitialize(params as InitializeParams);
 
@@ -1078,6 +1700,116 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "executeTool":
         return handleExecuteTool(params as ExecuteToolParams);
+      case "detectExternalObjects":
+        return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "workspaceOperation": {
+        if (!plugin.definition.onWorkspaceOperation) throw methodNotImplemented("workspaceOperation");
+        const input = pluginWorkspaceParamsSchema.parse(params);
+        return parseWorkspaceProviderResult(input, await plugin.definition.onWorkspaceOperation(input));
+      }
+      case "resourceLifecycle":
+        if (!plugin.definition.onResourceLifecycle) throw methodNotImplemented("resourceLifecycle");
+        return plugin.definition.onResourceLifecycle(params as ResourceLifecycleEvent);
+      case "agentLifecycle":
+        if (!plugin.definition.onAgentLifecycle) throw methodNotImplemented("agentLifecycle");
+        return plugin.definition.onAgentLifecycle(params as AgentLifecycleRequest);
+      case "routeAiConnection":
+        if (!plugin.definition.onRouteAiConnection) throw methodNotImplemented("routeAiConnection");
+        return plugin.definition.onRouteAiConnection(params as AiConnectionRouterRequest);
+      case "resolveExternalObject":
+        return handleResolveExternalObject(params as ResolveExternalObjectParams);
+      case "refreshExternalObjects":
+        return handleRefreshExternalObjects(params as RefreshExternalObjectsParams);
+
+      case "environmentValidateConfig":
+        return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
+
+      case "environmentTask": {
+        if (!plugin.definition.onEnvironmentTask) throw methodNotImplemented("environmentTask");
+        const input = params as PluginEnvironmentTaskParams;
+        if (input.workspace !== undefined) workspaceProviderBindingSchema.parse(input.workspace);
+        if (input.fresh !== undefined) freshWorkspaceSchema.parse(input.fresh);
+        const operation = environmentTaskOperationSchema.parse(input.operation);
+        return parseEnvironmentTaskResult(operation, input.taskId, await plugin.definition.onEnvironmentTask({ ...input, operation }));
+      }
+
+      case "environmentProbe":
+        return handleEnvironmentProbe(params as PluginEnvironmentProbeParams);
+
+      case "environmentAcquireLease":
+        return handleEnvironmentAcquireLease(params as PluginEnvironmentAcquireLeaseParams);
+
+      case "environmentResumeLease":
+        return handleEnvironmentResumeLease(params as PluginEnvironmentResumeLeaseParams);
+
+      case "environmentReleaseLease":
+        return handleEnvironmentReleaseLease(params as PluginEnvironmentReleaseLeaseParams);
+      case "environmentStopLease":
+        if (!plugin.definition.onEnvironmentStopLease) throw methodNotImplemented("environmentStopLease");
+        return plugin.definition.onEnvironmentStopLease(params as PluginEnvironmentReleaseLeaseParams);
+
+      case "environmentDestroyLease":
+        return handleEnvironmentDestroyLease(params as PluginEnvironmentDestroyLeaseParams);
+
+      case "environmentInspectLease":
+        if (!plugin.definition.onEnvironmentInspectLease) throw methodNotImplemented("environmentInspectLease");
+        return plugin.definition.onEnvironmentInspectLease(params as PluginEnvironmentInspectLeaseParams);
+
+      case "environmentRealizeWorkspace":
+        return handleEnvironmentRealizeWorkspace(params as PluginEnvironmentRealizeWorkspaceParams);
+
+      case "environmentExecute":
+        return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+
+      case "environmentRunnerIngressEndpoint":
+        return handleEnvironmentRunnerIngressEndpoint(
+          params as PluginEnvironmentRunnerIngressEndpointParams,
+        );
+
+      case "environmentSyncIn":
+        return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
+
+      case "environmentSyncOut":
+        return handleEnvironmentSyncOut(params as PluginEnvironmentSyncOutParams);
+
+      case "environmentStartInteractiveSetup":
+        return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
+
+      case "environmentGetInteractiveSetup":
+        return handleEnvironmentGetInteractiveSetup(params as PluginEnvironmentGetInteractiveSetupParams);
+
+      case "environmentCaptureTemplate":
+        return handleEnvironmentCaptureTemplate(params as PluginEnvironmentCaptureTemplateParams);
+
+      case "environmentCancelInteractiveSetup":
+        return handleEnvironmentCancelInteractiveSetup(params as PluginEnvironmentCancelInteractiveSetupParams);
+
+      case "environmentDeleteTemplate":
+        return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
+
+      case "loginPtyOpen":
+        return handleLoginPtyOpen(params as PluginLoginPtyOpenParams);
+
+      case "loginPtyInput":
+        return handleLoginPtyInput(params as PluginLoginPtyInputParams);
+
+      case "loginPtyStop":
+        return handleLoginPtyStop(params as PluginLoginPtyStopParams);
+
+      case "loginPtyClose":
+        return handleLoginPtyClose(params as PluginLoginPtyCloseParams);
+
+      case "duplexChannelOpen":
+        return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
+
+      case "duplexChannelWrite":
+        return handleDuplexChannelWrite(params as PluginDuplexChannelWriteParams);
+
+      case "duplexChannelStop":
+        return handleDuplexChannelStop(params as PluginDuplexChannelStopParams);
+
+      case "duplexChannelClose":
+        return handleDuplexChannelClose(params as PluginDuplexChannelCloseParams);
 
       default:
         throw Object.assign(
@@ -1097,6 +1829,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
 
     manifest = params.manifest;
+    if (manifest.workspaceProvider && (!plugin.definition.onWorkspaceOperation || !plugin.definition.onResourceLifecycle)) {
+      throw new Error("Workspace provider requires workspace operations and project lifecycle handlers");
+    }
     currentConfig = params.config;
     databaseNamespace = params.databaseNamespace ?? null;
 
@@ -1111,7 +1846,44 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onConfigChanged) supportedMethods.push("configChanged");
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
+    if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
+    if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onWorkspaceOperation) supportedMethods.push("workspaceOperation");
+    if (plugin.definition.onResourceLifecycle) supportedMethods.push("resourceLifecycle");
+    if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");
+    if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");
+    if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
+    if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
+    if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
+    if (plugin.definition.onEnvironmentTask) supportedMethods.push("environmentTask");
+    if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
+    if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
+    if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
+    if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
+    if (plugin.definition.onEnvironmentStopLease) supportedMethods.push("environmentStopLease");
+    if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
+    if (plugin.definition.onEnvironmentInspectLease) supportedMethods.push("environmentInspectLease");
+    if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
+    if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      supportedMethods.push("environmentRunnerIngressEndpoint");
+    }
+    if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
+    if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
+    if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
+    if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
+    if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
+    if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
+    if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
+    if (plugin.definition.onLoginPtyOpen) supportedMethods.push("loginPtyOpen");
+    if (plugin.definition.onLoginPtyInput) supportedMethods.push("loginPtyInput");
+    if (plugin.definition.onLoginPtyStop) supportedMethods.push("loginPtyStop");
+    if (plugin.definition.onLoginPtyClose) supportedMethods.push("loginPtyClose");
+    if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
+    if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
+    if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
+    if (plugin.definition.onDuplexChannelClose) supportedMethods.push("duplexChannelClose");
 
     return { ok: true, supportedMethods };
   }
@@ -1154,10 +1926,52 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   }
 
   async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {
+    const incomingCompanyId = params.companyId ?? null;
+
+    // Fail-closed cross-tenant guard.
+    //
+    // A worker is spawned once per plugin (not per company), so a proactive
+    // plugin that keeps a single worker-global config would silently collapse
+    // onto whichever company's config was delivered last if configChanged is
+    // called for more than one distinct company — for example the startup
+    // config replay fanning out every stored company's config, or two operators
+    // saving configs for different companies. That is a cross-tenant identity /
+    // secret confusion bug (one company's bot token applied to another's work).
+    //
+    // Reject the second, distinct company unless the plugin explicitly declares
+    // it handles multiple companies in one worker (multiCompanyConfig). An
+    // idempotent replay of the *same* config for a different company id is
+    // harmless (single-tenant plugins commonly have duplicate scope rows that
+    // all embed the same config), so it is allowed.
+    if (
+      !plugin.definition.multiCompanyConfig &&
+      incomingCompanyId !== null &&
+      configCompanyId !== null &&
+      configCompanyId !== incomingCompanyId &&
+      !configsEqual(params.config, currentConfig)
+    ) {
+      throw Object.assign(
+        new Error(
+          `configChanged: refusing to overwrite configuration for company ` +
+            `"${configCompanyId}" with a different configuration for company ` +
+            `"${incomingCompanyId}". This plugin is single-tenant and cannot ` +
+            `safely serve multiple companies from one worker. If multi-company ` +
+            `support is intended, set multiCompanyConfig: true on the plugin ` +
+            `definition and key per-company state on context.companyId.`,
+        ),
+        { code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG },
+      );
+    }
+
     currentConfig = params.config;
+    if (incomingCompanyId !== null) {
+      configCompanyId = incomingCompanyId;
+    }
 
     if (plugin.definition.onConfigChanged) {
-      await plugin.definition.onConfigChanged(params.config);
+      await plugin.definition.onConfigChanged(params.config, {
+        companyId: incomingCompanyId,
+      });
     }
   }
 
@@ -1228,11 +2042,36 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler(
-      params.renderEnvironment === undefined
-        ? params.params
-        : { ...params.params, renderEnvironment: params.renderEnvironment },
-    );
+    return handler({
+      ...params.params,
+      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+    });
+  }
+
+  function stringOrNull(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
+    return value === "user" || value === "agent" || value === "system" ? value : "system";
+  }
+
+  function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
+    const rawActor = params.actorContext && typeof params.actorContext === "object"
+      ? params.actorContext
+      : null;
+    const actor = Object.freeze({
+      type: actorTypeOrSystem(rawActor?.type),
+      userId: stringOrNull(rawActor?.userId),
+      agentId: stringOrNull(rawActor?.agentId),
+      runId: stringOrNull(rawActor?.runId),
+      companyId: stringOrNull(rawActor?.companyId),
+    });
+    return Object.freeze({
+      actor,
+      companyId: actor.companyId,
+    });
   }
 
   async function handlePerformAction(params: PerformActionParams): Promise<unknown> {
@@ -1241,9 +2080,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw new Error(`No action handler registered for key "${params.key}"`);
     }
     return handler(
-      params.renderEnvironment === undefined
-        ? params.params
-        : { ...params.params, renderEnvironment: params.renderEnvironment },
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      actionContextFromParams(params),
     );
   }
 
@@ -1253,6 +2095,206 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw new Error(`No tool handler registered for "${params.toolName}"`);
     }
     return entry.fn(params.parameters, params.runContext);
+  }
+
+  async function handleDetectExternalObjects(params: DetectExternalObjectsParams) {
+    if (!plugin.definition.onDetectExternalObjects) {
+      throw methodNotImplemented("detectExternalObjects");
+    }
+    return plugin.definition.onDetectExternalObjects(params);
+  }
+
+  async function handleResolveExternalObject(params: ResolveExternalObjectParams) {
+    if (!plugin.definition.onResolveExternalObject) {
+      throw methodNotImplemented("resolveExternalObject");
+    }
+    return plugin.definition.onResolveExternalObject(params);
+  }
+
+  async function handleRefreshExternalObjects(params: RefreshExternalObjectsParams) {
+    if (!plugin.definition.onRefreshExternalObjects) {
+      throw methodNotImplemented("refreshExternalObjects");
+    }
+    return plugin.definition.onRefreshExternalObjects(params);
+  }
+
+  function methodNotImplemented(method: string): Error & { code: number } {
+    return Object.assign(
+      new Error(`${method} is not implemented by this plugin`),
+      { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
+    );
+  }
+
+  async function handleEnvironmentValidateConfig(
+    params: PluginEnvironmentValidateConfigParams,
+  ) {
+    if (!plugin.definition.onEnvironmentValidateConfig) {
+      throw methodNotImplemented("environmentValidateConfig");
+    }
+    return plugin.definition.onEnvironmentValidateConfig(params);
+  }
+
+  async function handleEnvironmentProbe(params: PluginEnvironmentProbeParams) {
+    if (!plugin.definition.onEnvironmentProbe) {
+      throw methodNotImplemented("environmentProbe");
+    }
+    return plugin.definition.onEnvironmentProbe(params);
+  }
+
+  async function handleEnvironmentAcquireLease(params: PluginEnvironmentAcquireLeaseParams) {
+    if (!plugin.definition.onEnvironmentAcquireLease) {
+      throw methodNotImplemented("environmentAcquireLease");
+    }
+    return plugin.definition.onEnvironmentAcquireLease(params);
+  }
+
+  async function handleEnvironmentResumeLease(params: PluginEnvironmentResumeLeaseParams) {
+    if (!plugin.definition.onEnvironmentResumeLease) {
+      throw methodNotImplemented("environmentResumeLease");
+    }
+    return plugin.definition.onEnvironmentResumeLease(params);
+  }
+
+  async function handleEnvironmentReleaseLease(params: PluginEnvironmentReleaseLeaseParams) {
+    if (!plugin.definition.onEnvironmentReleaseLease) {
+      throw methodNotImplemented("environmentReleaseLease");
+    }
+    return plugin.definition.onEnvironmentReleaseLease(params);
+  }
+
+  async function handleEnvironmentDestroyLease(params: PluginEnvironmentDestroyLeaseParams) {
+    if (!plugin.definition.onEnvironmentDestroyLease) {
+      throw methodNotImplemented("environmentDestroyLease");
+    }
+    return plugin.definition.onEnvironmentDestroyLease(params);
+  }
+
+  async function handleEnvironmentRealizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams) {
+    if (!plugin.definition.onEnvironmentRealizeWorkspace) {
+      throw methodNotImplemented("environmentRealizeWorkspace");
+    }
+    return plugin.definition.onEnvironmentRealizeWorkspace(params);
+  }
+
+  async function handleEnvironmentExecute(params: PluginEnvironmentExecuteParams) {
+    if (!plugin.definition.onEnvironmentExecute) {
+      throw methodNotImplemented("environmentExecute");
+    }
+    return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ) {
+    if (!plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      throw methodNotImplemented("environmentRunnerIngressEndpoint");
+    }
+    return plugin.definition.onEnvironmentRunnerIngressEndpoint(params);
+  }
+
+  async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {
+    if (!plugin.definition.onEnvironmentSyncIn) {
+      throw methodNotImplemented("environmentSyncIn");
+    }
+    return plugin.definition.onEnvironmentSyncIn(params);
+  }
+
+  async function handleEnvironmentSyncOut(params: PluginEnvironmentSyncOutParams) {
+    if (!plugin.definition.onEnvironmentSyncOut) {
+      throw methodNotImplemented("environmentSyncOut");
+    }
+    return plugin.definition.onEnvironmentSyncOut(params);
+  }
+
+  async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentStartInteractiveSetup) {
+      throw methodNotImplemented("environmentStartInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentStartInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentGetInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentGetInteractiveSetup) {
+      throw methodNotImplemented("environmentGetInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentGetInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentCaptureTemplate(params: PluginEnvironmentCaptureTemplateParams) {
+    if (!plugin.definition.onEnvironmentCaptureTemplate) {
+      throw methodNotImplemented("environmentCaptureTemplate");
+    }
+    return plugin.definition.onEnvironmentCaptureTemplate(params);
+  }
+
+  async function handleEnvironmentCancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentCancelInteractiveSetup) {
+      throw methodNotImplemented("environmentCancelInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentCancelInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentDeleteTemplate(params: PluginEnvironmentDeleteTemplateParams) {
+    if (!plugin.definition.onEnvironmentDeleteTemplate) {
+      throw methodNotImplemented("environmentDeleteTemplate");
+    }
+    return plugin.definition.onEnvironmentDeleteTemplate(params);
+  }
+
+  async function handleLoginPtyOpen(params: PluginLoginPtyOpenParams) {
+    if (!plugin.definition.onLoginPtyOpen) {
+      throw methodNotImplemented("loginPtyOpen");
+    }
+    return plugin.definition.onLoginPtyOpen(params);
+  }
+
+  async function handleLoginPtyInput(params: PluginLoginPtyInputParams) {
+    if (!plugin.definition.onLoginPtyInput) {
+      throw methodNotImplemented("loginPtyInput");
+    }
+    return plugin.definition.onLoginPtyInput(params);
+  }
+
+  async function handleLoginPtyStop(params: PluginLoginPtyStopParams) {
+    if (!plugin.definition.onLoginPtyStop) {
+      throw methodNotImplemented("loginPtyStop");
+    }
+    return plugin.definition.onLoginPtyStop(params);
+  }
+
+  async function handleLoginPtyClose(params: PluginLoginPtyCloseParams) {
+    if (!plugin.definition.onLoginPtyClose) {
+      throw methodNotImplemented("loginPtyClose");
+    }
+    return plugin.definition.onLoginPtyClose(params);
+  }
+
+  async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {
+    if (!plugin.definition.onDuplexChannelOpen) {
+      throw methodNotImplemented("duplexChannelOpen");
+    }
+    return plugin.definition.onDuplexChannelOpen(params);
+  }
+
+  async function handleDuplexChannelWrite(params: PluginDuplexChannelWriteParams) {
+    if (!plugin.definition.onDuplexChannelWrite) {
+      throw methodNotImplemented("duplexChannelWrite");
+    }
+    return plugin.definition.onDuplexChannelWrite(params);
+  }
+
+  async function handleDuplexChannelStop(params: PluginDuplexChannelStopParams) {
+    if (!plugin.definition.onDuplexChannelStop) {
+      throw methodNotImplemented("duplexChannelStop");
+    }
+    return plugin.definition.onDuplexChannelStop(params);
+  }
+
+  async function handleDuplexChannelClose(params: PluginDuplexChannelCloseParams) {
+    if (!plugin.definition.onDuplexChannelClose) {
+      throw methodNotImplemented("duplexChannelClose");
+    }
+    return plugin.definition.onDuplexChannelClose(params);
   }
 
   // -----------------------------------------------------------------------
@@ -1291,6 +2333,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   function handleHostResponse(response: JsonRpcResponse): void {
     const id = response.id;
     if (id === null || id === undefined) return;
+
+    unsettledHostCalls.get(id)?.();
+    unsettledHostCalls.delete(id);
 
     const pending = pendingRequests.get(id);
     if (!pending) return;
@@ -1347,14 +2392,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       });
     } else if (isJsonRpcNotification(message)) {
       // Dispatch host→worker push notifications
-      const notif = message as { method: string; params?: unknown };
-      if (notif.method === "agents.sessions.event" && notif.params) {
+      const notif = message as JsonRpcNotification & { method: string; params?: unknown };
+      const runNotification = async (fn: () => void | Promise<void>) => {
+        const done = idleDrain.begin();
+        try {
+          await (notif.paperclipInvocation ? invocationContextStorage.run(notif.paperclipInvocation, fn) : fn());
+        } finally { done(); }
+      };
+      if (notif.method === "releaseIdleSleep" && notif.params) {
+        idleDrain.release((notif.params as { ownerId: string }).ownerId);
+      } else if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
-        if (cb) cb(event);
+        if (cb) void runNotification(() => cb(event)).catch((err) => {
+          notifyHost("log", {
+            level: "error",
+            message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        });
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
-        handleOnEvent(notif.params as OnEventParams).catch((err) => {
+        Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
           notifyHost("log", {
             level: "error",
             message: `Failed to handle event notification: ${err instanceof Error ? err.message : String(err)}`,
@@ -1370,6 +2428,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function cleanup(): void {
     running = false;
+    idleDrain.close();
 
     // Close readline
     if (readline) {

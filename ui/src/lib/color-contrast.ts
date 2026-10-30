@@ -68,23 +68,18 @@ function composite(
   };
 }
 
-const TEXT_LIGHT = "#f8fafc";
-const TEXT_DARK = "#111827";
-
 /**
- * Pick a readable text color for a solid background.
- * Uses WCAG contrast ratios to choose between light and dark text.
+ * Shared readable-text pair (slate-50 / gray-900) for "pick light or dark
+ * text over an arbitrary background" logic. Byte-identical values were
+ * previously duplicated in lib/worktree-branding.ts (DECISION-SHEET.md A2);
+ * this is the single source. NOT the same thing as ThemeContext.tsx's
+ * <meta theme-color> pair (#18181b/#ffffff), which stays separate.
  */
-export function pickTextColorForSolidBg(hexColor: string): string {
-  const rgb = hexToRgb(hexColor);
-  if (!rgb) return TEXT_LIGHT;
-  const bgLum = relativeLuminance(rgb.r, rgb.g, rgb.b);
-  const whiteLum = relativeLuminance(248, 250, 252);
-  const blackLum = relativeLuminance(17, 24, 39);
-  return contrastRatio(bgLum, whiteLum) >= contrastRatio(bgLum, blackLum)
-    ? TEXT_LIGHT
-    : TEXT_DARK;
-}
+export const READABLE_TEXT_LIGHT = "#f8fafc";
+export const READABLE_TEXT_DARK = "#111827";
+
+const TEXT_LIGHT = READABLE_TEXT_LIGHT;
+const TEXT_DARK = READABLE_TEXT_DARK;
 
 /**
  * Pick a readable text color for a semi-transparent pill background.

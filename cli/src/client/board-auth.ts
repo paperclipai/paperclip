@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
@@ -58,6 +58,11 @@ function toStringOrNull(value: unknown): string | null {
 
 function normalizeApiBase(apiBase: string): string {
   return apiBase.trim().replace(/\/+$/, "");
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  const v = value?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 export function resolveBoardAuthStorePath(overridePath?: string): string {
@@ -143,6 +148,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+class BoardAuthRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfterMs: number | null) { super(message); }
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   if (init?.body !== undefined && !headers.has("content-type")) {
@@ -163,31 +172,37 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : `Request failed: ${response.status}`;
-    throw new Error(message);
+    const retryAfter = response.headers.get("retry-after")?.trim();
+    const seconds = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) : null;
+    const delay = seconds === null ? Date.parse(retryAfter ?? "") - Date.now() : seconds * 1000;
+    throw new BoardAuthRequestError(message, response.status, Number.isFinite(delay) && delay > 0 ? delay : null);
   }
 
   return response.json() as Promise<T>;
 }
 
-export function openUrl(url: string): boolean {
-  const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
+export async function openUrl(url: string): Promise<boolean> {
+  const { command, args } =
+    process.platform === "darwin"
+      ? { command: "open", args: [url] }
+      : process.platform === "win32"
+        ? { command: "cmd", args: ["/c", "start", "", url] }
+        : { command: "xdg-open", args: [url] };
+
+  return new Promise<boolean>((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(command, args, { detached: true, stdio: "ignore" });
+    } catch {
+      resolve(false);
+      return;
     }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => {
       child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+      resolve(true);
+    });
+  });
 }
 
 export async function loginBoardCli(params: {
@@ -198,6 +213,8 @@ export async function loginBoardCli(params: {
   command?: string;
   storePath?: string;
   print?: boolean;
+  openBrowser?: boolean;
+  publicBaseUrl?: string;
 }): Promise<{ token: string; approvalUrl: string; userId?: string | null }> {
   const apiBase = normalizeApiBase(params.apiBase);
   const createUrl = `${apiBase}/api/cli-auth/challenges`;
@@ -213,24 +230,44 @@ export async function loginBoardCli(params: {
     }),
   });
 
-  const approvalUrl = challenge.approvalUrl ?? `${apiBase}${challenge.approvalPath}`;
+  const publicBase = params.publicBaseUrl?.trim() || process.env.PAPERCLIP_PUBLIC_URL?.trim();
+  const approvalUrl = publicBase
+    ? `${normalizeApiBase(publicBase)}${challenge.approvalPath}`
+    : challenge.approvalUrl ?? `${apiBase}${challenge.approvalPath}`;
+
   if (params.print !== false) {
     console.error(pc.bold("Board authentication required"));
     console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
   }
 
-  const opened = openUrl(approvalUrl);
-  if (params.print !== false && opened) {
-    console.error(pc.dim("Opened the approval page in your browser."));
+  const wantBrowser = params.openBrowser !== false && !isTruthyEnv(process.env.PAPERCLIP_NO_BROWSER);
+  const opened = wantBrowser ? await openUrl(approvalUrl) : false;
+  if (params.print !== false) {
+    const browserMessage = !wantBrowser
+      ? "Browser open skipped — open the URL above to approve."
+      : opened
+        ? "Opened the approval page in your browser."
+        : "Couldn't open a browser automatically — open the URL above to approve.";
+    console.error(pc.dim(browserMessage));
   }
 
   const expiresAtMs = Date.parse(challenge.expiresAt);
   const pollMs = Math.max(500, challenge.suggestedPollIntervalMs || 1000);
+  if (!Number.isFinite(expiresAtMs)) throw new Error("CLI auth challenge returned an invalid expiry.");
 
-  while (Number.isFinite(expiresAtMs) ? Date.now() < expiresAtMs : true) {
-    const status = await requestJson<ChallengeStatusResponse>(
-      `${apiBase}/api${challenge.pollPath}?token=${encodeURIComponent(challenge.token)}`,
-    );
+  while (Date.now() < expiresAtMs) {
+    let status: ChallengeStatusResponse;
+    try {
+      status = await requestJson<ChallengeStatusResponse>(
+        `${apiBase}/api${challenge.pollPath}?token=${encodeURIComponent(challenge.token)}`,
+      );
+    } catch (error) {
+      if (!(error instanceof BoardAuthRequestError) || error.status !== 429) throw error;
+      const remainingMs = expiresAtMs - Date.now();
+      if (remainingMs <= 0) break;
+      await sleep(Math.min(Math.max(pollMs, error.retryAfterMs ?? pollMs), remainingMs));
+      continue;
+    }
 
     if (status.status === "approved") {
       const me = await requestJson<{ userId: string; user?: { id: string } | null }>(

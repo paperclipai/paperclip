@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/runner-workflow-eval-case.v1.schema.json",
+  "title": "RunnerWorkflowEvalCase v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "title", "version", "tags", "providers", "steps", "assertions"],
+  "properties": {
+    "schema": { "const": "paperclip.runner.workflow-eval-case.v1" },
+    "id": { "enum": ["final-response", "rich-activity", "verification-policy", "governed-interaction", "steering-causality", "planning-lifecycle", "review-lifecycle", "delegation-return", "completion-robustness", "restart-recovery", "cancellation-permissions", "trace-lineage"] },
+    "title": { "type": "string", "minLength": 1 },
+    "version": { "const": 1 },
+    "tags": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "providers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["codex", "opencode", "acpx"] } },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "type": "object", "additionalProperties": false, "required": ["kind", "taskMode"], "properties": { "kind": { "const": "run_start" }, "taskMode": { "enum": ["ask", "execute", "plan"] } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "interaction"], "properties": { "kind": { "const": "interaction_response" }, "interaction": { "enum": ["questions", "suggest_tasks", "checkbox", "item_verdicts"] }, "partial": { "type": "boolean" } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "delivery"], "properties": { "kind": { "const": "steer" }, "delivery": { "enum": ["queued", "active_turn"] }, "duplicate": { "type": "boolean" } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "decision"], "properties": { "kind": { "const": "review_decision" }, "decision": { "enum": ["approve", "reject"] } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "decision"], "properties": { "kind": { "const": "permission_decision" }, "decision": { "enum": ["allow_once", "accept_for_session", "deny"] } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "actor"], "properties": { "kind": { "const": "cancel" }, "actor": { "enum": ["operator", "control_plane"] } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "phase"], "properties": { "kind": { "const": "process_restart" }, "phase": { "enum": ["provider_turn", "semantic_result", "finalization"] } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "childProvider"], "properties": { "kind": { "const": "child_completion" }, "childProvider": { "enum": ["codex", "opencode", "acpx"] } } }
+        ]
+      }
+    },
+    "assertions": { "type": "object" }
+  }
+}

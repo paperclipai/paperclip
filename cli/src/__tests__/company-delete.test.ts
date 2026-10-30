@@ -19,12 +19,13 @@ function makeCompany(overrides: Partial<Company>): Company {
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: null,
     logoAssetId: null,
     logoUrl: null,
+    defaultResponsibleUserId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+    interactionResolverGovernance: overrides.interactionResolverGovernance ?? {},
   };
 }
 

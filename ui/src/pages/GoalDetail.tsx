@@ -6,7 +6,7 @@ import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
@@ -15,6 +15,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -49,20 +50,18 @@ export function GoalPropertiesToggleButton({
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { openNewGoal } = useDialog();
+  const { openNewGoal } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const {
-    data: goal,
-    isLoading,
-    error
-  } = useQuery({
+  const goalQuery = useQuery({
     queryKey: queryKeys.goals.detail(goalId!),
     queryFn: () => goalsApi.get(goalId!),
     enabled: !!goalId
   });
+  const { data: goal, isLoading, error } = goalQuery;
+  const goalView = useQueryView(goalQuery);
   const resolvedCompanyId = goal?.companyId ?? selectedCompanyId;
 
   const { data: allGoals } = useQuery({
@@ -72,8 +71,8 @@ export function GoalDetail() {
   });
 
   const { data: allProjects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId!),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived: true }),
     enabled: !!resolvedCompanyId
   });
 
@@ -99,7 +98,7 @@ export function GoalDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(
         resolvedCompanyId,
         file,
@@ -135,8 +134,10 @@ export function GoalDetail() {
     return () => closePanel();
   }, [goal]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (isLoading || goalView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (goalView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this goal" onRetry={goalView.retry} retrying={goalView.isFetching} />;
+  }
   if (!goal) return null;
 
   return (

@@ -1,22 +1,24 @@
-# Agent Instruction Templates
+# Role instruction examples
 
-Use this reference when hiring or creating agents. Start from an existing pattern when the requested role is close, then adapt the text to the company, reporting line, adapter, workspace, permissions, and task type.
+These are optional starting points for a short role paragraph. Choose the
+responsibility that fits the requested hire; a matching template is not required.
 
-These templates are intentionally separate from the main Paperclip heartbeat skill so the core wake procedure stays short.
+| Example | Responsibility |
+| --- | --- |
+| [Coder](agents/coder.md) | Software implementation and maintenance |
+| [QA](agents/qa.md) | Product verification and reproducible findings |
+| [UX Designer](agents/uxdesigner.md) | User experience, interaction design, accessibility, and design-system coherence |
+| [Security Engineer](agents/securityengineer.md) | Security reviews, threat modeling, and remediation |
 
-## Index
+Copy only the example's `AGENTS.md` body into the hire's managed instruction
+bundle. Replace its name and company placeholders. Adapt the responsibility
+when the role differs. For other roles, use the
+[baseline role guide](baseline-role-guide.md).
 
-| Template | Use when hiring | Typical adapter |
-|---|---|---|
-| [`Coder`](agents/coder.md) | Software engineers who implement code, debug issues, write tests, and coordinate with QA/CTO | `codex_local`, `claude_local`, `cursor`, or another coding adapter |
-| [`QA`](agents/qa.md) | QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings | `claude_local` or another browser-capable adapter |
-| [`UX Designer`](agents/uxdesigner.md) | Product designers who produce UX specs, review interface quality, and evolve the design system | `codex_local`, `claude_local`, or another adapter with repo/design context |
+Keep configuration such as role, title, reporting line, permissions, adapter,
+and installed skills in the hire payload. Preserve company-specific instructions
+provided by the requester. Do not append a Paperclip operating procedure,
+generic harness rules, prescribed collaborators, or a list of domain concepts.
 
-## How To Apply A Template
-
-1. Open the matching reference in `references/agents/`.
-2. Copy that template into the new agent's instruction bundle, usually `AGENTS.md`. For hire requests using local managed-bundle adapters, this usually means setting the adapted template as `adapterConfig.promptTemplate`; Paperclip materializes it into `AGENTS.md`.
-3. Replace placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and URLs.
-4. Remove tools or workflows the target adapter cannot use.
-5. Keep the Paperclip heartbeat requirement and task-comment requirement.
-6. Add role-specific skills or reference files only when they are actually installed or bundled.
+Use the [draft-review checklist](draft-review-checklist.md) to check the actual
+configuration and any instructions before submitting the hire.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Kill all "Google Chrome for Testing" processes (agent headless browsers).
+# Kill all agent headless browser processes.
 #
 # Usage:
 #   scripts/kill-agent-browsers.sh        # kill all
@@ -22,14 +22,14 @@ while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $2}')
   pids+=("$pid")
   lines+=("$line")
-done < <(ps aux | grep 'Google Chrome for Testing' | grep -v grep || true)
+done < <(ps aux | grep -E 'Google Chrome for Testing|chrome-headless-shell' | grep -v grep || true)
 
 if [[ ${#pids[@]} -eq 0 ]]; then
-  echo "No Google Chrome for Testing processes found."
+  echo "No agent headless browser processes found."
   exit 0
 fi
 
-echo "Found ${#pids[@]} Google Chrome for Testing process(es):"
+echo "Found ${#pids[@]} agent headless browser process(es):"
 echo ""
 
 for i in "${!pids[@]}"; do

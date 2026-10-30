@@ -2,6 +2,7 @@ import { Command } from "commander";
 import type { ActivityEvent } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
   printOutput,
@@ -14,6 +15,7 @@ interface ActivityListOptions extends BaseClientOptions {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  payloadJson?: string;
 }
 
 export function registerActivityCommands(program: Command): void {
@@ -36,7 +38,7 @@ export function registerActivityCommands(program: Command): void {
           if (opts.entityId) params.set("entityId", opts.entityId);
 
           const query = params.toString();
-          const path = `/api/companies/${ctx.companyId}/activity${query ? `?${query}` : ""}`;
+          const path = `${apiPath`/api/companies/${ctx.companyId}/activity`}${query ? `?${query}` : ""}`;
           const rows = (await ctx.api.get<ActivityEvent[]>(path)) ?? [];
 
           if (ctx.json) {
@@ -68,4 +70,41 @@ export function registerActivityCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+
+  addCommonClientOptions(
+    activity
+      .command("create")
+      .description("Create a company activity log entry")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("--payload-json <json>", "CreateActivity JSON payload")
+      .action(async (opts: ActivityListOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/activity`, parseJson(opts.payloadJson ?? "{}"));
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    activity
+      .command("issue")
+      .description("List activity for an issue")
+      .argument("<issueId>", "Issue ID")
+      .action(async (issueId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get(apiPath`/api/issues/${issueId}/activity`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
 }

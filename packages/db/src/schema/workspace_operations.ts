@@ -12,16 +12,20 @@ import {
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { issues } from "./issues.js";
 
 export const workspaceOperations = pgTable(
   "workspace_operations",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, {
       onDelete: "set null",
     }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, {
+      onDelete: "set null",
+    }),
+    issueId: uuid("issue_id").references(() => issues.id, {
       onDelete: "set null",
     }),
     phase: text("phase").notNull(),
@@ -51,6 +55,12 @@ export const workspaceOperations = pgTable(
     companyWorkspaceStartedIdx: index("workspace_operations_company_workspace_started_idx").on(
       table.companyId,
       table.executionWorkspaceId,
+      table.startedAt,
+    ),
+    companyWorkspaceIssueStartedIdx: index("workspace_operations_company_workspace_issue_started_idx").on(
+      table.companyId,
+      table.executionWorkspaceId,
+      table.issueId,
       table.startedAt,
     ),
   }),

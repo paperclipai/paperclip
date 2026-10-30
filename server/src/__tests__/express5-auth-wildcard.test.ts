@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 /**
  * Regression test for https://github.com/paperclipai/paperclip/issues/2898
@@ -29,33 +29,28 @@ describe("Express 5 /api/auth wildcard route", () => {
     };
   }
 
-  it("matches a shallow auth sub-path (sign-in/email)", async () => {
-    const { app } = buildApp();
-    const res = await request(app).post("/api/auth/sign-in/email");
-    expect(res.status).toBe(200);
-  });
-
-  it("matches a deep auth sub-path (callback/credentials/sign-in)", async () => {
-    const { app } = buildApp();
-    const res = await request(app).get(
-      "/api/auth/callback/credentials/sign-in"
-    );
-    expect(res.status).toBe(200);
-  });
-
-  it("does not match unrelated paths outside /api/auth", async () => {
-    // Confirm the route is not over-broad — requests to other API paths
-    // must fall through to 404 and not reach the better-auth handler.
+  it("matches auth sub-paths without matching unrelated API paths", async () => {
     const { app, getCallCount } = buildApp();
-    const res = await request(app).get("/api/other/endpoint");
-    expect(res.status).toBe(404);
-    expect(getCallCount()).toBe(0);
-  });
 
-  it("invokes the handler for every matched sub-path", async () => {
-    const { app, getCallCount } = buildApp();
-    await request(app).post("/api/auth/sign-out");
-    await request(app).get("/api/auth/session");
+    await expect(request(app).post("/api/auth/sign-in/email")).resolves.toMatchObject({
+      status: 200,
+    });
+    await expect(request(app).get("/api/auth/callback/credentials/sign-in")).resolves.toMatchObject({
+      status: 200,
+    });
     expect(getCallCount()).toBe(2);
+
+    await expect(request(app).get("/api/other/endpoint")).resolves.toMatchObject({
+      status: 404,
+    });
+    expect(getCallCount()).toBe(2);
+
+    await expect(request(app).post("/api/auth/sign-out")).resolves.toMatchObject({
+      status: 200,
+    });
+    await expect(request(app).get("/api/auth/session")).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(getCallCount()).toBe(4);
   });
 });

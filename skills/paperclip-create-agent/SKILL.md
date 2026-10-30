@@ -17,68 +17,108 @@ You need either:
 - board access, or
 - agent permission `can_create_agents=true` in your company
 
-If you do not have this permission, escalate to your CEO or board.
+If you do not have this permission, keep the current task assigned to yourself
+and identify the missing hiring authority. A CEO or manager title does not grant
+hiring permission. Do not reassign the task or create an escalation task to bypass
+the denial. Use the applicable approval flow when available; otherwise save a
+human-input interaction on the current task with `resolverPolicy: "human_only"`
+and `continuationPolicy: "wake_assignee"`, then leave it `in_review`. Use the
+complete human-input payload in the `paperclip` skill; when the requesting user
+owns the decision, address it with their actual `addresseeUserId`. A human answer
+does not itself grant permission: recheck authorization before any hire.
 
 ## Workflow
 
-1. Confirm identity and company context.
+### Choose the API transport
+
+On **Paperclip Runner**, use the advertised Paperclip tools. Use `get_task_context`
+and `list_agents` for identity and team context, then `search_api` to discover the
+configuration, instruction-template, icon, and `agent-hires` endpoints used below.
+Call the discovered operations with `call_api`; the server supplies company and
+authentication context. Read the returned schemas before drafting the hire.
+
+The shell examples below apply to adapters that receive `PAPERCLIP_API_URL` and
+`PAPERCLIP_API_KEY`. Paperclip Runner does not supply those variables. Do not
+search workspace files for a server address or credentials to recreate that path.
+If `search_api` / `call_api` are unavailable, report that hiring requires the
+operator to enable runner API tools for this company. Preserve the proposed hire
+in the conversation; do not claim an agent was created or substitute a temporary
+subagent for the requested permanent hire.
+
+### 1. Confirm identity and company context
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-2. Discover available adapter configuration docs for this Paperclip instance.
+### 2. Discover adapter configuration for this Paperclip instance
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
-```
 
-3. Read adapter-specific docs (example: `claude_local`).
-
-```sh
+# Then the specific adapter you plan to use, e.g. claude_local:
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-4. Compare existing agent configurations in your company.
+### 3. Compare existing agent configurations
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-5. Read the reusable agent instruction templates before drafting the hire. If the role matches an existing pattern, start from that template and adapt it to the company, manager, adapter, and workspace.
+Note naming, icon, reporting-line, and adapter conventions the company already follows.
 
-Reference:
-`skills/paperclip-create-agent/references/agent-instruction-templates.md`
+### 4. Describe the role
 
-Agent-specific templates:
-`skills/paperclip-create-agent/references/agents/`
+Use a short role paragraph for a new agent: its identity and the responsibility
+it owns. The [role examples](references/agent-instruction-templates.md) are
+optional starting points; for other roles, use the
+[baseline role guide](references/baseline-role-guide.md).
 
-6. Discover allowed agent icons and pick one that matches the role.
+Company-specific instructions supplied by the requester take precedence. Do not
+expand a role description into a generic operating manual. The harness supplies
+Paperclip coordination, skill discovery, and task lifecycle guidance; repository
+instructions and installed skills carry applicable work procedures. Avoid
+adding heartbeat pointers, execution contracts, mandatory per-touch comments,
+fixed reviewer routes, or catalogs of domain concepts to the hire's instructions.
+
+Keep reporting lines in `reportsTo`, capabilities in `capabilities`, and skills
+in `desiredSkills`. Add instruction detail only for a concrete company or role
+requirement that those fields, the task, repository instructions, or installed
+skills do not already express.
+
+### 5. Discover allowed agent icons
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-7. Draft the new hire config:
-- role/title/name
-- icon (required in practice; use one from `/llms/agent-icons.txt`)
+### 6. Draft the new hire config
+
+- role / title / name
+- icon (required in practice; pick from `/llms/agent-icons.txt`)
 - reporting line (`reportsTo`)
 - adapter type
-- optional `desiredSkills` from the company skill library when this role needs installed skills on day one
+- `desiredSkills` from the company skill library when this role needs installed skills on day one
+- if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
+- if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
-- run prompt in adapter config (`promptTemplate` where applicable)
-- for coding or execution agents, include the Paperclip execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries.
-- instruction text such as `AGENTS.md`, using a reusable template when one fits; for local managed-bundle adapters, put the adapted `AGENTS.md` content in `adapterConfig.promptTemplate` unless you are a board user intentionally managing bundle paths/files
+- when supplying role instructions from step 4, send them as top-level `instructionsBundle.files["AGENTS.md"]` for managed-bundle adapters. Otherwise use the server default. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 
-8. Submit hire request.
+### 7. Review the draft against the quality checklist
+
+Before submitting, walk the draft-review checklist end-to-end and fix any item that does not pass:
+`skills/paperclip-create-agent/references/draft-review-checklist.md`
+
+### 8. Submit hire request
 
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
@@ -94,14 +134,16 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
+    "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"
   }'
 ```
 
-9. Handle governance state:
-- if response has `approval`, hire is `pending_approval`
-- monitor and discuss on approval thread
+### 9. Handle governance state
+
+- if the response has `approval`, the hire is `pending_approval`
+- monitor and discuss on the approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
 
 ```sh
@@ -134,28 +176,38 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
 ```
 
 For each linked issue, either:
-- close it if approval resolved the request, or
+- close it if the approval resolved the request, or
 - comment in markdown with links to the approval and next actions.
 
-## Quality Bar
+## References
 
-Before sending a hire request:
+- Optional role examples: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
+- Individual role templates: `skills/paperclip-create-agent/references/agents/`
+- Short role drafting guide: `skills/paperclip-create-agent/references/baseline-role-guide.md`
+- Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
+- Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
 
-- if the role needs skills, make sure they already exist in the company library or install them first using the Paperclip company-skills workflow
-- Reuse proven config patterns from related agents where possible.
-- Reuse a proven instruction template when the role matches one in `skills/paperclip-create-agent/references/agent-instruction-templates.md` or `skills/paperclip-create-agent/references/agents/`; update placeholders and remove irrelevant guidance before submitting the hire.
-- Set a concrete `icon` from `/llms/agent-icons.txt` so the new hire is identifiable in org and task views.
-- Avoid secrets in plain text unless required by adapter behavior.
-- Ensure reporting line is correct and in-company.
-- Ensure prompt is role-specific and operationally scoped.
-- Keep timer heartbeats opt-in. Most hires should rely on assignment/on-demand wakeups unless the job explicitly needs a schedule.
-- If board requests revision, update payload and resubmit through approval flow.
+## Harness and runner selection
 
-For endpoint payload shapes and full examples, read:
-`skills/paperclip-create-agent/references/api-reference.md`
+Choose the underlying harness in `adapterType`, such as `codex_local` or
+`claude_local`. New Codex agents use Paperclip Runner automatically on supported
+execution targets. New Claude Code agents use Paperclip Runner on Apple Silicon,
+Intel Mac, Linux x64 and Linux ARM64 with supported glibc. Unknown or unsupported
+targets retain Legacy. Darwin SSH also defaults to Legacy; native execution
+requires an explicit runner choice and matching remote assets. The native Claude profile is
+`provider: acpx`, `acpxAgent: claude`, with ordinary model `claude-opus-5-5`.
+Explicit models and existing saved runners remain intact. The saved response
+may therefore have `adapterType: paperclip_runner` and a resolved provider;
+use that returned configuration for later reads and edits.
 
-For the reusable `AGENTS.md` starting point index, read:
-`skills/paperclip-create-agent/references/agent-instruction-templates.md`
+The optional creation field `runner` accepts `auto`, `paperclip`, or `legacy`.
+Use `legacy` when the user needs CLI settings the native runtime cannot honor.
+For Claude this includes Chrome, custom commands/state paths, warm-process
+controls, confinement and turn limits. Native Claude uses existing API-key and
+subscription connections. Its configured effort requires provider acknowledgment. Setup and authentication errors never silently change runners.
+Existing agents keep their saved execution after unrelated edits. An approved
+hire uses the configuration reviewed by the board. `inheritRuntimeFrom: caller`
+keeps its existing runtime inheritance and credential restrictions.
 
-For the individual agent templates, read:
-`skills/paperclip-create-agent/references/agents/`
+CLI equivalents: `paperclipai agent create --runner legacy --payload-json ...`
+and `paperclipai agent hire --runner legacy --payload-json ...`.

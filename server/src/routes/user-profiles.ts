@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -17,6 +17,7 @@ import type {
   UserProfileWindowStats,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { visibleIssueCondition } from "../services/issue-visibility.js";
 import { assertCompanyAccess } from "./authz.js";
 
 type CompanyUserRow = {
@@ -60,34 +61,57 @@ function userSlugCandidates(row: CompanyUserRow) {
   return [...candidates];
 }
 
+function userSlugSql(value: SQLWrapper) {
+  // Match JavaScript's ASCII slug after Unicode lowercasing, independently of
+  // the database locale. Only İ and K lowercase to ASCII from outside ASCII;
+  // İ also leaves a combining dot, which becomes a separator. Replace whole
+  // multibyte strings before ASCII-only translate so SQL_ASCII databases do
+  // not translate individual UTF-8 bytes. translate also drops both quotes.
+  return sql<string>`btrim(regexp_replace(translate(replace(replace(${value}, 'İ', 'i-'), 'K', 'k'),
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ''"', 'abcdefghijklmnopqrstuvwxyz') collate "C",
+    '[^a-z0-9]+', '-', 'g'), '-')`;
+}
+
 async function resolveCompanyUser(db: Db, companyId: string, rawSlug: string): Promise<CompanyUserRow | null> {
   const slug = slugifyUserPart(rawSlug);
   if (!slug) return null;
 
-  const rows = await db
-    .select({
-      id: companyMemberships.id,
-      principalId: companyMemberships.principalId,
-      status: companyMemberships.status,
-      membershipRole: companyMemberships.membershipRole,
-      createdAt: companyMemberships.createdAt,
-      userId: authUsers.id,
-      name: authUsers.name,
-      email: authUsers.email,
-      image: authUsers.image,
-    })
-    .from(companyMemberships)
-    .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
-    .where(
-      and(
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.principalType, "user"),
-      ),
-    )
-    .orderBy(desc(companyMemberships.updatedAt))
-    .limit(200);
+  const select = () => db.select({
+    id: companyMemberships.id,
+    principalId: companyMemberships.principalId,
+    status: companyMemberships.status,
+    membershipRole: companyMemberships.membershipRole,
+    createdAt: companyMemberships.createdAt,
+    userId: authUsers.id,
+    name: authUsers.name,
+    email: authUsers.email,
+    image: authUsers.image,
+  })
+      .from(companyMemberships)
+      .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId));
+  const scope = and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"));
+  const order = [desc(companyMemberships.updatedAt), desc(companyMemberships.id)];
 
-  return rows.find((row) => userSlugCandidates(row).includes(slug)) ?? null;
+  // Known-user links use principal IDs. Prefer an indexed exact identity over
+  // a namesake's display slug, including older memberships beyond row 200.
+  const [exact] = await select()
+    .where(and(scope, inArray(companyMemberships.principalId, [...new Set([rawSlug, slug])])))
+    .orderBy(desc(sql`${companyMemberships.principalId} = ${rawSlug}`), ...order)
+    .limit(1);
+  if (exact) return exact;
+
+  // A normalized non-UUID ID cannot be reversed. Search all supported aliases
+  // in one bounded result instead of fetching/sorting successive member pages.
+  const [match] = await select()
+    .where(and(scope, or(
+      eq(userSlugSql(authUsers.name), slug),
+      eq(userSlugSql(sql`split_part(${authUsers.email}, '@', 1)`), slug),
+      eq(userSlugSql(authUsers.email), slug),
+      eq(userSlugSql(companyMemberships.principalId), slug),
+    )))
+    .orderBy(...order)
+    .limit(1);
+  return match ?? null;
 }
 
 function userIssueInvolvementSql(companyId: string, userId: string) {
@@ -147,7 +171,7 @@ async function loadWindowStats(
       assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) then ${issues.id} end)::int`,
     })
     .from(issues)
-    .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+    .where(and(eq(issues.companyId, companyId), visibleIssueCondition()));
 
   const commentConditions = [
     eq(issueComments.companyId, companyId),
@@ -252,7 +276,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
     .where(
       and(
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
         eq(issues.status, "done"),
         gte(issues.completedAt, firstDay),
         userIssueInvolvementSql(companyId, userId),
@@ -333,7 +357,7 @@ export function userProfileRoutes(db: Db) {
         .where(
           and(
             eq(issues.companyId, companyId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
             userIssueInvolvementSql(companyId, userId),
           ),
         )

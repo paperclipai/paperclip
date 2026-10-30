@@ -1,12 +1,22 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
+  DEFAULT_DATABASE_APPLICATION_NAME,
   applyPendingMigrations,
+  closeRegisteredClients,
+  createDb,
+  ensurePostgresDatabase,
   inspectMigrations,
+  resetPostgresDatabase,
 } from "./client.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
@@ -29,6 +39,52 @@ async function migrationHash(migrationFile: string): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+const userVisibleUpdatedAtTables = new Set([
+  "companies",
+  "heartbeat_runs",
+  "issue_comments",
+  "issues",
+  "routine_runs",
+  "routines",
+]);
+
+const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
+  [
+    "0105_instance_scoped_environments.sql",
+    new Set(["issues"]),
+  ],
+  [
+    "0131_repair_run_responsible_user_context_refs.sql",
+    new Set(["heartbeat_runs"]),
+  ],
+  [
+    "0135_repair_run_responsible_user_updated_at_sweep.sql",
+    new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
+  ],
+]);
+
+function findUserVisibleUpdatedAtBackfillViolations(
+  migrationFile: string,
+  content: string,
+): string[] {
+  const allowedTables = migrationUpdatedAtUpdateAllowlist.get(migrationFile) ?? new Set<string>();
+  const violations: string[] = [];
+
+  for (const statement of content.split("--> statement-breakpoint")) {
+    const updateMatch = statement.match(/\bUPDATE\s+"([^"]+)"/i);
+    if (!updateMatch) continue;
+
+    const tableName = updateMatch[1];
+    if (!userVisibleUpdatedAtTables.has(tableName)) continue;
+    if (!/\bSET\b[\s\S]*"updated_at"\s*=/i.test(statement)) continue;
+    if (allowedTables.has(tableName)) continue;
+
+    violations.push(`${migrationFile}: UPDATE "${tableName}" sets updated_at`);
+  }
+
+  return violations;
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -42,13 +98,354 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+describeEmbeddedPostgres("createDb pool defaults", () => {
+  it("names its backends and closes them once idle", async () => {
+    const url = await createTempDatabase();
+    const observer = postgres(url, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => {
+      await observer.end({ timeout: 1 });
+    });
+
+    const backendsNamed = async (name: string) => {
+      const rows = await observer`
+        select count(*)::int as count from pg_stat_activity where application_name = ${name}
+      `;
+      return rows[0]?.count ?? 0;
+    };
+
+    const db = createDb(url);
+    cleanups.push(async () => {
+      await db.$client.end({ timeout: 1 });
+    });
+    const [self] = await db.$client`select application_name from pg_stat_activity where pid = pg_backend_pid()`;
+    expect(self?.application_name).toBe(DEFAULT_DATABASE_APPLICATION_NAME);
+
+    const shortLived = createDb(url, { applicationName: "paperclip-idle-test", idleTimeoutSeconds: 1 });
+    cleanups.push(async () => {
+      await shortLived.$client.end({ timeout: 1 });
+    });
+    await shortLived.$client`select 1`;
+    expect(await backendsNamed("paperclip-idle-test")).toBe(1);
+
+    // The driver closes the idle connection after `idle_timeout`; without the
+    // option (the driver default) the backend would stay until the process
+    // exits. Wait past the timeout, then poll PostgreSQL's own view.
+    const deadline = Date.now() + 10_000;
+    let remaining = await backendsNamed("paperclip-idle-test");
+    while (remaining > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      remaining = await backendsNamed("paperclip-idle-test");
+    }
+    expect(remaining).toBe(0);
+  }, 30_000);
+});
+
+describeEmbeddedPostgres("resetPostgresDatabase", () => {
+  it("recreates an existing database so stale tables are removed", async () => {
+    const connectionString = await createTempDatabase();
+    const adminUrl = new URL(connectionString);
+    const databaseName = adminUrl.pathname.replace(/^\//, "");
+    adminUrl.pathname = "/postgres";
+
+    const setupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await setupSql.unsafe(`CREATE TABLE stale_reseed_target_only (id integer PRIMARY KEY)`);
+    } finally {
+      await setupSql.end();
+    }
+
+    await resetPostgresDatabase(adminUrl.toString(), databaseName);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const rows = await verifySql.unsafe<{ stale_table: string | null }[]>(
+        `SELECT to_regclass('public.stale_reseed_target_only')::text AS stale_table`,
+      );
+      expect(rows[0]?.stale_table).toBeNull();
+    } finally {
+      await verifySql.end();
+    }
+  }, 30_000);
+});
+
+type MergedHistoryEntry = { idx: number; version: string; when: number; tag: string; breakpoints: boolean };
+const mergedMasterTail = [
+  { file: "0344_wide_blue_marvel.sql", when: 1791930226792, hash: "2df2e0b867f9ed65eb931b342e7f31fe8c59901da3108466c069b68cb3892f16" },
+  { file: "0345_luxuriant_carmella_unuscione.sql", when: 1791978393174, hash: "d1b360d9e6acf060a67e91b5d6dc3952f9804da3d512c7097a928b30360f6426" },
+  { file: "0346_cloudy_whiplash.sql", when: 1791989860950, hash: "a77d0b71eb96b4de14bbc60f5e5f00043bffacc09905ffc782f5f0cb818c4252" },
+] as const;
+const canonicalMasterTail = [
+  { file: "0347_flippant_imperial_guard.sql", when: 1792100545989, hash: "e159aba238be8e27e16adec236adee0febe29191ff1b4cf9cbb8d254910f4f8f" },
+  { file: "0348_agent_skill_runtime_hooks.sql", when: 1792101163248, hash: "22115f83622ba83f2f494a4637f3ce404afbdf8717a5dea106421223e64d0b93" },
+] as const;
+const mergedMuseTail = [
+  { file: "0349_oval_dragon_lord.sql", oldFile: "0344_perpetual_eternity.sql", when: 1791904391794, hash: "5c422698d40da1d6cdc587134553e371f7c807ce9617e07d7ff77eb05810ae49" },
+  { file: "0350_friendly_rhodey.sql", oldFile: "0345_lumpy_celestials.sql", when: 1791904404725, hash: "a9373b52e02fa985bf10c15da91f6681c49d8726d94d5d68fd77e5802fd47a68" },
+  { file: "0351_hard_albert_cleary.sql", oldFile: "0346_powerful_epoch.sql", when: 1791904422315, hash: "65f4f08c6a8fed7396db491e0691e693636f48c4ca4fa63cd2057af38039861a" },
+  { file: "0352_special_warbound.sql", oldFile: "0347_big_meggan.sql", when: 1791904430408, hash: "1d2d5834fd499b60a43778d6d14b2520e3e2980258b8c0997d80cb95465f4abf" },
+  { file: "0353_skinny_gamma_corps.sql", oldFile: "0348_foamy_lightspeed.sql", when: 1791905947460, hash: "1a379bc03d80c34815546bb9f50bf1408ccf156f4a1df2d86edb0a01acdc55c0" },
+] as const;
+
+describeEmbeddedPostgres("merged Muse migration histories", () => {
+  async function schemaShape(sql: ReturnType<typeof postgres>) {
+    const columns = await sql`
+      SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default
+      FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position
+    `;
+    const indexes = await sql`
+      SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename, indexname
+    `;
+    const constraints = await sql`
+      SELECT t.relname AS table_name, c.conname, pg_get_constraintdef(c.oid, true) AS definition
+      FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' ORDER BY t.relname, c.conname
+    `;
+    return { columns: Array.from(columns), indexes: Array.from(indexes), constraints: Array.from(constraints) };
+  }
+
+  async function historyRows(sql: ReturnType<typeof postgres>) {
+    return Array.from(await sql`SELECT id, hash, created_at::text AS created_at FROM drizzle.__drizzle_migrations ORDER BY id`);
+  }
+
+  async function replayHistoricalSchema(sql: ReturnType<typeof postgres>, entries: Array<{ file: string; oldFile?: string; when: number; hash: string }>) {
+    await sql`CREATE SCHEMA drizzle`;
+    await sql`CREATE TABLE drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`;
+    let createdAt = 0;
+    for (const entry of entries) {
+      const content = await fs.promises.readFile(new URL(entry.oldFile ? `./__fixtures__/muse-preview-migrations/${entry.oldFile}` : `./migrations/${entry.file}`, import.meta.url), "utf8");
+      expect(createHash("sha256").update(content).digest("hex")).toBe(entry.hash);
+      createdAt = Math.max(createdAt + 1, entry.when);
+      const applyMigration = async (executor: Pick<ReturnType<typeof postgres>, "unsafe">) => {
+        for (const statement of content.split("--> statement-breakpoint")) {
+          if (!statement.trim()) continue;
+          await executor.unsafe(statement.replace(/^(\s*ALTER TABLE "[^"]+" DROP CONSTRAINT) (?!IF EXISTS\b)/i, "$1 IF EXISTS "));
+        }
+        await executor.unsafe("INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)", [entry.hash, createdAt]);
+      };
+      const requiresTopLevel = /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(content)
+        || /^\s*COMMIT\s*;/im.test(content);
+      if (requiresTopLevel) await applyMigration(sql);
+      else await sql.begin(async transaction => { await applyMigration(transaction); });
+    }
+  }
+
+  async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
+    const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
+    const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
+    const [agent] = await sql`
+      INSERT INTO agents (company_id, name, adapter_type, adapter_config)
+      VALUES (${company.id}, 'Retained Muse', 'paperclip_runner', '{"provider":"muse"}'::jsonb) RETURNING id
+    `;
+    const [task] = await sql`
+      INSERT INTO issues (company_id, title, assignee_agent_id)
+      VALUES (${company.id}, 'Retained task', ${agent.id}) RETURNING id
+    `;
+    const [run] = await sql`
+      INSERT INTO heartbeat_runs (company_id, agent_id, invocation_source, trigger_detail, status, runtime_mode, native_issue_id, context_snapshot)
+      VALUES (${company.id}, ${agent.id}, 'assignment', 'system', 'failed', 'native', ${task.id},
+        ${JSON.stringify({ paperclipIssue: { id: task.id }, issueId: task.id })}::jsonb) RETURNING id
+    `;
+    await sql`INSERT INTO "user" (id, name, email, created_at, updated_at) VALUES (${userId}, 'Migration operator', ${`${userId}@example.test`}, now(), now())`;
+    await sql`INSERT INTO mcp_oauth_clients (id, name, redirect_uris) VALUES (${clientId}, 'Synthetic migration client', '["https://example.test/callback"]'::jsonb)`;
+    const [grant] = await sql`
+      INSERT INTO mcp_oauth_grants (company_id, user_id, client_id, resource, purpose, agent_id, scopes)
+      VALUES (${company.id}, ${userId}, ${clientId}, 'https://example.test/api/muse/v1', 'agent', ${agent.id}, '["paperclip:agent","offline_access"]'::jsonb) RETURNING id
+    `;
+    const [binding] = withMuse ? await sql`
+      INSERT INTO muse_agent_bindings (company_id, agent_id, operator_id, grant_id, status)
+      VALUES (${company.id}, ${agent.id}, ${userId}, ${grant.id}, 'connected') RETURNING id
+    ` : [];
+    return async () => {
+      const [companyRow] = await sql`SELECT to_jsonb(c) AS row FROM companies c WHERE id = ${company.id}`;
+      const [taskRow] = await sql`SELECT to_jsonb(t) AS row FROM issues t WHERE id = ${task.id}`;
+      const [runRow] = await sql`SELECT to_jsonb(r) AS row FROM heartbeat_runs r WHERE id = ${run.id}`;
+      const [grantRow] = await sql`SELECT to_jsonb(g) AS row FROM mcp_oauth_grants g WHERE id = ${grant.id}`;
+      const [bindingRow] = binding ? await sql`SELECT to_jsonb(b) AS row FROM muse_agent_bindings b WHERE id = ${binding.id}` : [];
+      return { company: companyRow.row, task: taskRow.row, run: runRow.row, grant: grantRow.row, binding: bindingRow?.row ?? null };
+    };
+  }
+
+  it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
+    const referenceUrl = await createTempDatabase();
+    const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
+    adminUrl.pathname = "/postgres";
+    await ensurePostgresDatabase(adminUrl.toString(), databaseName);
+    adminUrl.pathname = `/${databaseName}`;
+    const connectionString = adminUrl.toString();
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    const reference = postgres(referenceUrl, { max: 1, onnotice: () => {} });
+    try {
+      const journal = JSON.parse(await fs.promises.readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8")) as { entries: MergedHistoryEntry[] };
+      const common = await Promise.all(journal.entries.filter(entry => entry.idx <= 343).map(async entry => ({
+        entry, file: `${entry.tag}.sql`, when: entry.when, hash: await migrationHash(`${entry.tag}.sql`),
+      })));
+      const prefixIdentity = common.map(({ entry, hash }) => [entry.idx, entry.version, entry.when, entry.tag, entry.breakpoints, hash]);
+      expect(createHash("sha256").update(JSON.stringify(prefixIdentity)).digest("hex")).toBe("18063d01d91c172c556ee0bc7e84eaa35dc7c4b00b07e817c471cdf392393454");
+      for (const entry of [...mergedMasterTail, ...canonicalMasterTail]) {
+        expect(await migrationHash(entry.file)).toBe(entry.hash);
+        expect(journal.entries.find(candidate => `${candidate.tag}.sql` === entry.file)?.when).toBe(entry.when);
+      }
+      for (const entry of mergedMuseTail) {
+        expect(await migrationHash(entry.file)).not.toBe(entry.hash);
+        expect(journal.entries.some(candidate => `${candidate.tag}.sql` === entry.file)).toBe(true);
+      }
+      if (baseline !== "fresh") await replayHistoricalSchema(sql, [...common, ...(baseline === "master0346" ? mergedMasterTail : mergedMuseTail)]);
+      const beforeHistory = baseline === "fresh" ? [] : await historyRows(sql);
+      const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
+      const beforeRows = await retainedRows?.();
+      const state = await inspectMigrations(connectionString);
+      expect(state.status).toBe("needsMigrations");
+      const laterMigrations = journal.entries.filter(entry => entry.idx > 353).map(entry => `${entry.tag}.sql`);
+      const expectedPending = baseline === "master0346" ? [...[...canonicalMasterTail, ...mergedMuseTail].map(entry => entry.file), ...laterMigrations]
+        : baseline === "muse0348" ? [...[...mergedMasterTail, ...canonicalMasterTail, ...mergedMuseTail].map(entry => entry.file), ...laterMigrations]
+        : journal.entries.map(entry => `${entry.tag}.sql`);
+      expect(state).toMatchObject({ pendingMigrations: expectedPending });
+      if (baseline === "muse0348") {
+        expect(Number(beforeHistory.at(-1)!.created_at)).toBeGreaterThan(mergedMuseTail.at(-1)!.when);
+        expect(beforeHistory.slice(-5).map(row => row.hash)).toEqual(mergedMuseTail.map(entry => entry.hash));
+        expect(mergedMuseTail.map(entry => entry.oldFile)).toEqual([
+          "0344_perpetual_eternity.sql", "0345_lumpy_celestials.sql", "0346_powerful_epoch.sql", "0347_big_meggan.sql", "0348_foamy_lightspeed.sql",
+        ]);
+      }
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      const afterHistory = await historyRows(sql);
+      expect(afterHistory).toHaveLength(journal.entries.length + (baseline === "muse0348" ? mergedMuseTail.length : 0));
+      expect(afterHistory.slice(0, beforeHistory.length)).toEqual(beforeHistory);
+      for (const entry of [...mergedMasterTail, ...canonicalMasterTail]) expect(afterHistory.filter(row => row.hash === entry.hash)).toHaveLength(1);
+      for (const entry of mergedMuseTail) {
+        expect(afterHistory.filter(row => row.hash === entry.hash)).toHaveLength(baseline === "muse0348" ? 1 : 0);
+        const currentHash = await migrationHash(entry.file);
+        expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
+      }
+      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      const indexes = await sql`
+        SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname IN (
+          'heartbeat_runs_company_ctx_paperclip_issue_created_idx', 'heartbeat_runs_company_origin_issue_idx', 'grok_dispatch_assignment_kind_idx'
+        ) ORDER BY c.relname
+      `;
+      expect(indexes).toHaveLength(3);
+      for (const index of indexes) expect(index).toMatchObject({ indisvalid: true, indisready: true });
+      expect(indexes.find(index => index.relname === "heartbeat_runs_company_origin_issue_idx")!.definition).toContain("COALESCE");
+      const finalShape = await schemaShape(sql);
+      expect(finalShape).toEqual(await schemaShape(reference));
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      expect(await historyRows(sql)).toEqual(afterHistory);
+      expect(await schemaShape(sql)).toEqual(finalShape);
+      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+    } finally {
+      await Promise.all([sql.end(), reference.end()]);
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+});
+
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("upgrades an older clone whose replaced connection constraint is already absent", async () => {
+    const clusterUrl = new URL(await createTempDatabase());
+    const databaseName = "missing_connection_constraint";
+    clusterUrl.pathname = "/postgres";
+    await ensurePostgresDatabase(clusterUrl.toString(), databaseName);
+    clusterUrl.pathname = "/" + databaseName;
+    const connectionString = clusterUrl.toString();
+    const prefixFolder = await fs.promises.mkdtemp(join(tmpdir(), "paperclip-migration-prefix-"));
+    cleanups.push(() => fs.promises.rm(prefixFolder, { recursive: true, force: true }));
+    await fs.promises.mkdir(join(prefixFolder, "meta"));
+    const journal = JSON.parse(await fs.promises.readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8"));
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 255);
+    await fs.promises.writeFile(join(prefixFolder, "meta/_journal.json"), JSON.stringify(journal));
+    for (const entry of journal.entries) {
+      await fs.promises.copyFile(new URL(`./migrations/${entry.tag}.sql`, import.meta.url), join(prefixFolder, `${entry.tag}.sql`));
+    }
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await migrate(drizzle(sql), { migrationsFolder: prefixFolder });
+      await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_transport_check"`;
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      const [constraint] = await sql<{ definition: string }[]>`
+        SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+        WHERE conrelid = 'tool_connections'::regclass AND conname = 'tool_connections_transport_check'
+      `;
+      expect(constraint?.definition).toContain("chat_sdk");
+      expect(constraint?.definition).toContain("runtime_auth");
+    } finally { await sql.end(); }
+  }, 30_000);
+
+  it("upgrades renumbered recovery migrations and replays their schema idempotently", async () => {
+    const connectionString = await createTempDatabase();
+    const recoveryFiles = [
+      "0250_exotic_dakota_north.sql", "0251_narrow_mastermind.sql",
+      "0252_friendly_kate_bishop.sql", "0253_real_firebrand.sql",
+      "0254_military_calypso.sql",
+    ];
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // An instance may have applied this identical SQL under the pre-rebase
+      // numbers, before the new session-goal and tool-action migrations existed.
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        await sql`UPDATE "drizzle"."__drizzle_migrations" SET created_at = 1788825600000 WHERE hash = ${hash}`;
+        const source = await fs.promises.readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
+        for (const statement of source.split("--> statement-breakpoint")) {
+          if (statement.trim()) await sql.unsafe(statement);
+        }
+      }
+      for (const file of ["0248_small_manta.sql", "0249_fast_silverclaw.sql"]) {
+        const hash = await migrationHash(file);
+        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+      }
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        const rows = await sql`SELECT id FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+        expect(rows).toHaveLength(1);
+      }
+      const indexes = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'heartbeat_runs_native_replacement_predecessor_uq'`;
+      expect(indexes).toHaveLength(1);
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
+  it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
+    const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
+      withFileTypes: true,
+    });
+    const violations: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".sql")) continue;
+      const content = await fs.promises.readFile(
+        new URL(`./migrations/${entry.name}`, import.meta.url),
+        "utf8",
+      );
+      violations.push(...findUserVisibleUpdatedAtBackfillViolations(entry.name, content));
+    }
+
+    expect(violations).toEqual([]);
+    expect(
+      findUserVisibleUpdatedAtBackfillViolations(
+        "9999_bad_backfill.sql",
+        `
+          UPDATE "issues" AS i
+          SET "responsible_user_id" = 'owner-user',
+              "updated_at" = now()
+          WHERE i."responsible_user_id" IS NULL;
+        `,
+      ),
+    ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -101,7 +498,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -145,7 +541,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -175,7 +570,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -247,7 +641,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -341,7 +734,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -407,7 +799,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -473,7 +864,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
 
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -540,5 +930,1352 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       }
     },
     20_000,
+  );
+
+  it(
+    "replays the built-in managed resources migration after the legacy 0136 journal entry",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+
+      const builtInResourcesHash = await migrationHash(
+        "0140_built_in_managed_resources.sql",
+      );
+      const legacyBuiltInResourcesHash = createHash("sha256")
+        .update("legacy 0136_built_in_managed_resources.sql")
+        .digest("hex");
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${builtInResourcesHash}'`,
+        );
+        await sql.unsafe(
+          `
+            INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at")
+            VALUES ('${legacyBuiltInResourcesHash}', 1783555200000)
+          `,
+        );
+        await sql.unsafe(`
+          ALTER TABLE "built_in_managed_resources"
+          DROP CONSTRAINT IF EXISTS "built_in_managed_resources_company_id_companies_id_fk"
+        `);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_company_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_resource_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_company_bundle_resource_uq"`);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0140_built_in_managed_resources.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          foreign_key_exists: boolean;
+          company_index_exists: boolean;
+          resource_index_exists: boolean;
+          unique_index_exists: boolean;
+        }[]>(`
+          SELECT
+            EXISTS (
+              SELECT 1
+              FROM "pg_constraint" c
+              JOIN "pg_class" t ON t.oid = c.conrelid
+              JOIN "pg_namespace" n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public'
+                AND t.relname = 'built_in_managed_resources'
+                AND c.conname = 'built_in_managed_resources_company_id_companies_id_fk'
+            ) AS "foreign_key_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_company_idx'
+            ) AS "company_index_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_resource_idx'
+            ) AS "resource_index_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_company_bundle_resource_uq'
+            ) AS "unique_index_exists"
+        `);
+        expect(rows[0]).toEqual({
+          foreign_key_exists: true,
+          company_index_exists: true,
+          resource_index_exists: true,
+          unique_index_exists: true,
+        });
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0134 without bumping issue updated_at for inbox archives",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserHash = await migrationHash(
+          "0134_run_responsible_user_invariant.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000120',
+            'Migration Inbox Co',
+            'TST120',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000121',
+            '00000000-0000-0000-0000-000000000120',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000122',
+            '00000000-0000-0000-0000-000000000120',
+            'Archived issue needing responsible user backfill',
+            'todo',
+            NULL,
+            '2026-03-26T10:00:00.000Z',
+            '2026-03-26T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issue_inbox_archives" (
+            "id",
+            "company_id",
+            "issue_id",
+            "user_id",
+            "archived_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000123',
+            '00000000-0000-0000-0000-000000000120',
+            '00000000-0000-0000-0000-000000000122',
+            'owner-user',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0134_run_responsible_user_invariant.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          responsible_user_id: string | null;
+          updated_at: Date;
+          inbox_archive_still_current: boolean;
+        }[]>(`
+          SELECT
+            i."responsible_user_id",
+            i."updated_at",
+            EXISTS (
+              SELECT 1
+              FROM "issue_inbox_archives" AS archive
+              WHERE archive."company_id" = i."company_id"
+                AND archive."issue_id" = i."id"
+                AND archive."user_id" = 'owner-user'
+                AND archive."archived_at" >= i."updated_at"
+            ) AS "inbox_archive_still_current"
+          FROM "issues" AS i
+          WHERE i."id" = '00000000-0000-0000-0000-000000000122'
+        `);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.responsible_user_id).toBe("owner-user");
+        expect(rows[0]?.updated_at.toISOString()).toBe("2026-03-26T10:00:00.000Z");
+        expect(rows[0]?.inbox_archive_still_current).toBe(true);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0135 to repair updated_at sweeps and no-op when clean",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+
+      const repairSweepHash = await migrationHash(
+        "0135_repair_run_responsible_user_updated_at_sweep.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000240',
+            'Clean Migration Co',
+            'CLN134',
+            '2026-04-01T09:00:00.000Z',
+            '2026-04-02T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000241',
+            '00000000-0000-0000-0000-000000000240',
+            'Clean issue should not be touched',
+            'todo',
+            '2026-04-01T10:00:00.000Z',
+            '2026-04-02T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterCleanReplay = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const cleanRows = await afterCleanReplay.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '00000000-0000-0000-0000-000000000241'
+        `);
+        expect(cleanRows[0]?.updated_at.toISOString()).toBe("2026-04-02T10:00:00.000Z");
+
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Migration Co',
+            'SWP134',
+            '2026-01-01T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000251',
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Agent',
+            'general',
+            'process',
+            '2026-01-02T00:00:00.000Z',
+            '2026-01-02T00:00:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          SELECT
+            ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+            '00000000-0000-0000-0000-000000000250',
+            'Swept issue ' || gs::text,
+            'todo',
+            '2026-02-01T00:00:00.000Z'::timestamptz + (gs::text || ' minutes')::interval,
+            '2026-04-03T12:00:00.123456Z'
+          FROM generate_series(1, 101) AS gs
+        `);
+        await afterCleanReplay.unsafe(`
+          UPDATE "issues"
+          SET
+            "status" = 'done',
+            "completed_at" = '2026-04-03T12:00:00.123456Z'
+          WHERE "id" = '10000000-0000-0000-0000-000000000003'
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issue_comments" ("id", "company_id", "issue_id", "body", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000252',
+            '00000000-0000-0000-0000-000000000250',
+            '10000000-0000-0000-0000-000000000001',
+            'Latest pre-sweep activity',
+            '2026-03-01T15:30:00.000Z',
+            '2026-03-02T16:45:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000253',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000251',
+            'completed',
+            '2026-02-10T10:00:00.000Z',
+            '2026-02-10T10:30:00.000Z',
+            '2026-02-10T09:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "last_output_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000256',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000251',
+            'running',
+            '2026-02-10T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-10T10:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routines" (
+            "id",
+            "company_id",
+            "title",
+            "last_triggered_at",
+            "last_enqueued_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000254',
+            '00000000-0000-0000-0000-000000000250',
+            'Swept routine',
+            '2026-03-20T10:00:00.000Z',
+            '2026-03-21T11:00:00.000Z',
+            '2026-02-11T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routines" (
+            "id",
+            "company_id",
+            "title",
+            "last_triggered_at",
+            "last_enqueued_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000257',
+            '00000000-0000-0000-0000-000000000250',
+            'Same-timestamp active routine',
+            '2026-03-20T10:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-11T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routine_runs" (
+            "id",
+            "company_id",
+            "routine_id",
+            "source",
+            "status",
+            "completed_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000255',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000254',
+            'schedule',
+            'completed',
+            '2026-02-12T12:00:00.000Z',
+            '2026-02-12T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routine_runs" (
+            "id",
+            "company_id",
+            "routine_id",
+            "source",
+            "status",
+            "triggered_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000258',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000257',
+            'schedule',
+            'running',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-12T13:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Timestamp Co',
+            'CTS134',
+            '2026-01-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000261',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Agent',
+            'general',
+            'process',
+            '2026-01-05T00:10:00.000Z',
+            '2026-01-05T00:10:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '20000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident timestamp issue should not be touched',
+            'todo',
+            '2026-02-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000262',
+            '00000000-0000-0000-0000-000000000260',
+            '00000000-0000-0000-0000-000000000261',
+            'completed',
+            '2026-02-05T10:00:00.000Z',
+            '2026-02-05T10:30:00.000Z',
+            '2026-02-05T09:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterCleanReplay.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterRepair = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const repairedRows = await afterRepair.unsafe<{
+          subject: string;
+          updated_at: Date;
+        }[]>(`
+          SELECT 'company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000250'
+          UNION ALL
+          SELECT 'issue_with_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+          UNION ALL
+          SELECT 'issue_without_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000002'
+          UNION ALL
+          SELECT 'issue_with_state_activity' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000003'
+          UNION ALL
+          SELECT 'heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000253'
+          UNION ALL
+          SELECT 'heartbeat_run_with_output' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000256'
+          UNION ALL
+          SELECT 'other_company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000260'
+          UNION ALL
+          SELECT 'other_heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000262'
+          UNION ALL
+          SELECT 'other_issue' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '20000000-0000-0000-0000-000000000001'
+          UNION ALL
+          SELECT 'routine' AS subject, "updated_at"
+          FROM "routines"
+          WHERE "id" = '00000000-0000-0000-0000-000000000254'
+          UNION ALL
+          SELECT 'routine_with_activity' AS subject, "updated_at"
+          FROM "routines"
+          WHERE "id" = '00000000-0000-0000-0000-000000000257'
+          UNION ALL
+          SELECT 'routine_run' AS subject, "updated_at"
+          FROM "routine_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000255'
+          UNION ALL
+          SELECT 'routine_run_with_trigger' AS subject, "updated_at"
+          FROM "routine_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000258'
+          ORDER BY subject
+        `);
+        const repaired = Object.fromEntries(
+          repairedRows.map((row) => [row.subject, row.updated_at.toISOString()]),
+        );
+        expect(repaired).toEqual({
+          company: "2026-01-01T00:00:00.000Z",
+          heartbeat_run: "2026-02-10T10:30:00.000Z",
+          heartbeat_run_with_output: "2026-04-03T12:00:00.123Z",
+          issue_with_comment: "2026-03-02T16:45:00.000Z",
+          issue_with_state_activity: "2026-04-03T12:00:00.123Z",
+          issue_without_comment: "2026-02-01T00:02:00.000Z",
+          other_company: "2026-04-03T12:00:00.123Z",
+          other_heartbeat_run: "2026-04-03T12:00:00.123Z",
+          other_issue: "2026-04-03T12:00:00.123Z",
+          routine: "2026-03-21T11:00:00.000Z",
+          routine_run_with_trigger: "2026-04-03T12:00:00.123Z",
+          routine_with_activity: "2026-04-03T12:00:00.123Z",
+          routine_run: "2026-02-12T12:00:00.000Z",
+        });
+
+        await afterRepair.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterRepair.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterSecondRun = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const secondRunRows = await afterSecondRun.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+        `);
+        expect(secondRunRows[0]?.updated_at.toISOString()).toBe("2026-03-02T16:45:00.000Z");
+      } finally {
+        await afterSecondRun.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays the run responsible user repair migration when heartbeat run issue refs are identifiers",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserRepairHash = await migrationHash(
+          "0131_repair_run_responsible_user_context_refs.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES ('00000000-0000-0000-0000-000000000130', 'Migration Test Co', 'TST130', now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000131',
+            '00000000-0000-0000-0000-000000000130',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000132',
+            '00000000-0000-0000-0000-000000000130',
+            'Migration Agent',
+            'general',
+            'process',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "identifier",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000133',
+            '00000000-0000-0000-0000-000000000130',
+            'Identifier referenced issue',
+            'todo',
+            'issue-user',
+            'TST130-1',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "responsible_user_id",
+            "context_snapshot",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000134',
+            '00000000-0000-0000-0000-000000000130',
+            '00000000-0000-0000-0000-000000000132',
+            'completed',
+            NULL,
+            '{"issueId":"TST130-1"}'::jsonb,
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserRepairHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runs = await verifySql.unsafe<{ responsible_user_id: string | null }[]>(`
+          SELECT "responsible_user_id"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000134'
+        `);
+        expect(runs).toEqual([{ responsible_user_id: "issue-user" }]);
+
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "preserves legacy runs while adding native persistence and replay-safe status versioning",
+    async () => {
+      const clusterUrl = await createTempDatabase();
+      await ensurePostgresDatabase(clusterUrl, "native_legacy");
+      const legacyUrl = new URL(clusterUrl);
+      legacyUrl.pathname = "/native_legacy";
+      const connectionString = legacyUrl.href;
+      cleanups.push(() => closeRegisteredClients(connectionString));
+      const directory = await fs.promises.mkdtemp(join(tmpdir(), "paperclip-native-prior-migrations-"));
+      cleanups.push(() => fs.promises.rm(directory, { recursive: true, force: true }));
+      const migrationsRoot = new URL("./migrations/", import.meta.url);
+      const journal = JSON.parse(await fs.promises.readFile(new URL("meta/_journal.json", migrationsRoot), "utf8"));
+      const priorEntries = journal.entries.filter((entry: { idx: number }) => entry.idx < 227);
+      await fs.promises.mkdir(join(directory, "meta"));
+      for (const entry of priorEntries) {
+        await fs.promises.copyFile(new URL(`${entry.tag}.sql`, migrationsRoot), join(directory, `${entry.tag}.sql`));
+      }
+      await fs.promises.writeFile(join(directory, "meta/_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
+
+      const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const eventSequenceUniquenessHash = await migrationHash(
+        "0235_heartbeat_run_event_sequence_uniqueness.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      const companyId = "10000000-0000-4000-8000-000000000227";
+      const agentId = "20000000-0000-4000-8000-000000000227";
+      const runId = "30000000-0000-4000-8000-000000000227";
+      const issueId = "40000000-0000-4000-8000-000000000227";
+      const contractId = "50000000-0000-4000-8000-000000000227";
+      const resultId = "60000000-0000-4000-8000-000000000227";
+      const assessmentId = "70000000-0000-4000-8000-000000000227";
+      const decisionId = "80000000-0000-4000-8000-000000000227";
+      const otherCompanyId = "11000000-0000-4000-8000-000000000227";
+      const otherAgentId = "21000000-0000-4000-8000-000000000227";
+      const otherRunId = "31000000-0000-4000-8000-000000000227";
+      const otherIssueId = "41000000-0000-4000-8000-000000000227";
+      const otherContractId = "51000000-0000-4000-8000-000000000227";
+      const otherResultId = "61000000-0000-4000-8000-000000000227";
+      const otherAssessmentId = "71000000-0000-4000-8000-000000000227";
+      const otherDecisionId = "81000000-0000-4000-8000-000000000227";
+
+      try {
+        // Build the real pre-native schema. Downgrading the latest schema by
+        // dropping its unique index is invalid once later tenant FKs use it.
+        await migrate(drizzle(sql), { migrationsFolder: directory });
+        expect(await sql`SELECT to_regclass('public.native_run_results') AS native_results`).toEqual([{ native_results: null }]);
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Native persistence fixture', 'NPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${agentId}, ${companyId}, 'Legacy migration agent')
+        `;
+        await sql`
+          INSERT INTO heartbeat_runs (id, company_id, agent_id, status)
+          VALUES (${runId}, ${companyId}, ${agentId}, 'succeeded')
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${issueId}, ${companyId}, 'Legacy migration issue', 'in_progress')
+        `;
+        await sql.unsafe(`
+          INSERT INTO heartbeat_run_events
+            (company_id, run_id, agent_id, seq, event_type, stream, level, message, payload, created_at)
+          VALUES
+            ('${companyId}', '${runId}', '${agentId}', 1, 'legacy.start', 'system', 'info', 'one', '{"bytes":"alpha-1"}'::jsonb, '2026-08-01T00:00:01.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stdout', 'info', 'first-five', '{"bytes":"beta-5a"}'::jsonb, '2026-08-01T00:00:02.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stderr', 'warn', 'duplicate-five', '{"bytes":"gamma-5b"}'::jsonb, '2026-08-01T00:00:03.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 9, 'legacy.end', 'system', 'info', 'nine', '{"bytes":"delta-9"}'::jsonb, '2026-08-01T00:00:04.000Z')
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const events = await verifySql.unsafe<{
+          seq: string;
+          event_type: string;
+          stream: string;
+          level: string;
+          message: string;
+          payload: { bytes: string };
+          created_at: Date;
+        }[]>(`
+          SELECT seq, event_type, stream, level, message, payload, created_at
+          FROM heartbeat_run_events
+          WHERE run_id = '${runId}'
+          ORDER BY id
+        `);
+        // 0235 preserves every legacy event while moving only duplicate
+        // sequence values above the old run maximum before installing the
+        // durable (run_id, seq) uniqueness invariant.
+        expect(events.map((event) => Number(event.seq))).toEqual([1, 5, 10, 9]);
+        expect(events.map(({ seq: _seq, ...event }) => ({
+          ...event,
+          created_at: event.created_at.toISOString(),
+        }))).toEqual([
+          {
+            event_type: "legacy.start",
+            stream: "system",
+            level: "info",
+            message: "one",
+            payload: { bytes: "alpha-1" },
+            created_at: "2026-08-01T00:00:01.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stdout",
+            level: "info",
+            message: "first-five",
+            payload: { bytes: "beta-5a" },
+            created_at: "2026-08-01T00:00:02.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stderr",
+            level: "warn",
+            message: "duplicate-five",
+            payload: { bytes: "gamma-5b" },
+            created_at: "2026-08-01T00:00:03.000Z",
+          },
+          {
+            event_type: "legacy.end",
+            stream: "system",
+            level: "info",
+            message: "nine",
+            payload: { bytes: "delta-9" },
+            created_at: "2026-08-01T00:00:04.000Z",
+          },
+        ]);
+
+        const runs = await verifySql.unsafe<{ runtime_mode: string; next_event_seq: string }[]>(`
+          SELECT runtime_mode, next_event_seq
+          FROM heartbeat_runs
+          WHERE id = '${runId}'
+        `);
+        expect(runs.map((run) => ({
+          runtimeMode: run.runtime_mode,
+          nextEventSeq: Number(run.next_event_seq),
+        }))).toEqual([{ runtimeMode: "legacy", nextEventSeq: 11 }]);
+
+        const nativeRowsBefore = await verifySql.unsafe<{ table_name: string; row_count: number }[]>(`
+          SELECT 'completion_contracts' AS table_name, count(*)::int AS row_count FROM completion_contracts
+          UNION ALL SELECT 'native_run_results', count(*)::int FROM native_run_results
+          UNION ALL SELECT 'native_run_finalizations', count(*)::int FROM native_run_finalizations
+          UNION ALL SELECT 'work_assessments', count(*)::int FROM work_assessments
+          UNION ALL SELECT 'status_decisions', count(*)::int FROM status_decisions
+          UNION ALL SELECT 'status_decision_effects', count(*)::int FROM status_decision_effects
+          ORDER BY table_name
+        `);
+        expect(nativeRowsBefore.every((row) => row.row_count === 0)).toBe(true);
+
+        await verifySql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${otherCompanyId}, 'Other native persistence fixture', 'ONP')
+        `;
+        await verifySql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${otherAgentId}, ${otherCompanyId}, 'Other native migration agent')
+        `;
+        await verifySql`
+          INSERT INTO heartbeat_runs (
+            id, company_id, agent_id, status, native_issue_id, completion_contract_id
+          ) VALUES (
+            ${otherRunId}, ${otherCompanyId}, ${otherAgentId}, 'succeeded',
+            ${otherIssueId}, ${otherContractId}
+          )
+        `;
+        await verifySql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${otherIssueId}, ${otherCompanyId}, 'Other native issue', 'in_progress')
+        `;
+        await verifySql`
+          UPDATE heartbeat_runs
+          SET native_issue_id = ${issueId}, completion_contract_id = ${contractId}
+          WHERE id = ${runId}
+        `;
+
+        await expect(verifySql`
+          INSERT INTO completion_contracts (
+            company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${companyId}, ${otherIssueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'cross-company-contract-sha', 'system', 'migration-test'
+          )
+        `).rejects.toThrow(/completion_contracts_issue_company_fk/);
+
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${contractId}, ${companyId}, ${issueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'contract-sha', 'system', 'migration-test'
+          )
+        `;
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${otherContractId}, ${otherCompanyId}, ${otherIssueId}, 1,
+            'paperclip.completion-contract.v1', 'policy-v1', 'low', 'server', 'review',
+            ${JSON.stringify({ criteria: [] })}::jsonb, 'other-contract-sha',
+            'system', 'migration-test'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherRunId}, ${contractId},
+            'cross-company-run', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-run-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherContractId},
+            'cross-company-contract', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-contract-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${resultId}, ${companyId}, ${issueId}, ${runId}, ${contractId},
+            'result-fingerprint', 'valid', ${JSON.stringify({ summary: "done" })}::jsonb, 'result-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${otherResultId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, 'other-result-fingerprint', 'valid',
+            ${JSON.stringify({ summary: "other" })}::jsonb, 'other-result-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${otherResultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-assessment-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_result_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${otherCompanyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-trigger-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_trigger_actor_company_check/);
+
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${assessmentId}, ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'assessment-input-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${otherAssessmentId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, ${otherResultId}, 'run_terminal', ${otherCompanyId},
+            'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'other-assessment-input-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decisions (
+            company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherAssessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'cross-company-decision-sha'
+          )
+        `).rejects.toThrow(/status_decisions_assessment_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${decisionId}, ${companyId}, ${issueId}, ${runId}, ${assessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'decision-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${otherDecisionId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherAssessmentId}, 1, 'policy-v1', 'in_progress', 'done',
+            'native_result_accepted', ${JSON.stringify({ toStatus: "done" })}::jsonb,
+            'other-decision-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherDecisionId}, 0, 'update_issue_status',
+            'issue', 'cross-company-decision-effect', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `).rejects.toThrow(/status_decision_effects_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${decisionId}, 0, 'update_issue_status',
+            'issue', 'decision-effect-1', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId},
+            ${assessmentId}, ${otherDecisionId}
+          )
+        `).rejects.toThrow(/native_run_finalizations_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId}, ${assessmentId}, ${decisionId}
+          )
+        `;
+
+        await verifySql`UPDATE issues SET title = 'Renamed legacy issue' WHERE id = ${issueId}`;
+        await verifySql`UPDATE issues SET status = 'done' WHERE id = ${issueId}`;
+        const issues = await verifySql.unsafe<{ status: string; status_version: string }[]>(`
+          SELECT status, status_version
+          FROM issues
+          WHERE id = '${issueId}'
+        `);
+        expect(issues.map((issue) => ({
+          status: issue.status,
+          statusVersion: Number(issue.status_version),
+        }))).toEqual([{ status: "done", statusVersion: 1 }]);
+
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${eventSequenceUniquenessHash}`;
+      } finally {
+        await verifySql.end();
+      }
+
+      await expect(applyPendingMigrations(connectionString)).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+
+      const replaySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const replayed = await replaySql.unsafe<{
+          status_version: string;
+          next_event_seq: string;
+          trigger_count: number;
+          finalization_count: number;
+        }[]>(`
+          SELECT
+            issue.status_version,
+            run.next_event_seq,
+            (
+              SELECT count(*)::int
+              FROM pg_trigger
+              WHERE tgname = 'paperclip_issue_status_version_trigger'
+                AND NOT tgisinternal
+            ) AS trigger_count,
+            (
+              SELECT count(*)::int
+              FROM native_run_finalizations
+              WHERE run_id = '${runId}'
+            ) AS finalization_count
+          FROM issues issue
+          CROSS JOIN heartbeat_runs run
+          WHERE issue.id = '${issueId}' AND run.id = '${runId}'
+        `);
+        expect(replayed.map((row) => ({
+          statusVersion: Number(row.status_version),
+          nextEventSeq: Number(row.next_event_seq),
+          triggerCount: row.trigger_count,
+          finalizationCount: row.finalization_count,
+        }))).toEqual([{
+          statusVersion: 1,
+          nextEventSeq: 11,
+          triggerCount: 1,
+          finalizationCount: 1,
+        }]);
+        await replaySql`UPDATE issues SET assignee_agent_id = ${agentId} WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 2 }]);
+        await replaySql`UPDATE issues SET status = 'backlog', assignee_agent_id = null,
+          assignee_user_id = 'handoff-owner' WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        const assignmentVersionHash = await migrationHash("0358_issue_assignment_status_version.sql");
+        await replaySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${assignmentVersionHash}`;
+        await applyPendingMigrations(connectionString);
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        expect(await replaySql`SELECT count(*)::int AS count FROM pg_trigger
+          WHERE tgname = 'paperclip_issue_assignment_version_trigger' AND NOT tgisinternal`)
+          .toEqual([{ count: 1 }]);
+        await replaySql`UPDATE issues SET assignee_user_id = null WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 4 }]);
+      } finally {
+        await replaySql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "replays the idempotent provider trace migration",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const hash = await migrationHash(
+        "0234_provider_trace_records.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await expect(
+        applyPendingMigrations(connectionString),
+      ).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+    },
+    30_000,
+  );
+
+  it(
+    "removes retired model profiles from live records and configuration revisions",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const hash = await migrationHash("0236_remove_cheap_model_profiles.sql");
+      const companyId = "10000000-0000-4000-8000-000000000236";
+      const agentId = "20000000-0000-4000-8000-000000000236";
+      const issueId = "30000000-0000-4000-8000-000000000236";
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Model profile migration fixture', 'MPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name, runtime_config)
+          VALUES (
+            ${agentId},
+            ${companyId},
+            'Legacy model profile agent',
+            '{"heartbeat":{"enabled":true},"modelProfiles":{"cheap":{"model":"legacy"}}}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, assignee_adapter_overrides)
+          VALUES (
+            ${issueId},
+            ${companyId},
+            'Legacy model profile issue',
+            '{"modelProfile":"cheap","workingDirectory":"/workspace"}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO agent_config_revisions (
+            company_id,
+            agent_id,
+            changed_keys,
+            before_config,
+            after_config
+          )
+          VALUES (
+            ${companyId},
+            ${agentId},
+            '["runtimeConfig"]'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-before"}},"heartbeat":{"enabled":true}}}'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-after"}},"heartbeat":{"enabled":false}}}'::jsonb
+          )
+        `;
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const [result] = await verifySql.unsafe<{
+          runtime_config: Record<string, unknown>;
+          assignee_adapter_overrides: Record<string, unknown> | null;
+          before_config: Record<string, unknown>;
+          after_config: Record<string, unknown>;
+        }[]>(`
+          SELECT
+            agent.runtime_config,
+            issue.assignee_adapter_overrides,
+            revision.before_config,
+            revision.after_config
+          FROM agents agent
+          JOIN issues issue ON issue.company_id = agent.company_id
+          JOIN agent_config_revisions revision ON revision.agent_id = agent.id
+          WHERE agent.id = '${agentId}' AND issue.id = '${issueId}'
+        `);
+
+        expect(result.runtime_config).toEqual({ heartbeat: { enabled: true } });
+        expect(result.assignee_adapter_overrides).toEqual({ workingDirectory: "/workspace" });
+        expect(result.before_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: true } },
+        });
+        expect(result.after_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: false } },
+        });
+      } finally {
+        await verifySql.end();
+      }
+    },
+    30_000,
   );
 });

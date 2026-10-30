@@ -150,6 +150,23 @@ describe("plugin SDK orchestration contract", () => {
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
   });
 
+  it("supports generic plugin operation issue visibility in the test harness", async () => {
+    const companyId = randomUUID();
+    const harness = createTestHarness({
+      manifest: manifest(["issues.create"]),
+    });
+
+    const created = await harness.ctx.issues.create({
+      companyId,
+      title: "Background operation",
+      surfaceVisibility: "plugin_operation",
+      originId: "operation-1",
+    });
+
+    expect(created.originKind).toBe("plugin:paperclip.test-orchestration:operation");
+    expect(created.originId).toBe("operation-1");
+  });
+
   it("enforces checkout and wakeup capabilities in the test harness", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

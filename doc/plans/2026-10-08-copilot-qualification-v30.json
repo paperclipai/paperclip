@@ -1,0 +1,70 @@
+{
+  "schema": "paperclip.copilot.qualification-summary/v1",
+  "recordedAt": "2026-10-08T12:31:43.458335+00:00",
+  "sourceRevision": "c4b5d40bcfd51e6cacccc1ea1343305b05735641",
+  "profileVersion": 30,
+  "profileDigest": "sha256:e21c4a43a937ae84e94726ef93227e8b931fa5547876ff0c5ecff304656d81e9",
+  "copilotVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "product": {
+    "passed": 20,
+    "local": 10,
+    "daytona": 10,
+    "cleanupPassed": true,
+    "automaticRetries": 0,
+    "resultHashes": {
+      "copilot-protection.runner-acpx-copilot.local.attached-async-settlement": "sha256:08ca542b48656ef60a36f4c700f29df59607b830574e1b88f0c603927a25e0c9",
+      "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write": "sha256:146c01ce7ab530b8c5f5217a18b9d1982fae3b0750a6f98eb9ca62133949aa12",
+      "native-active-stop.runner-acpx-copilot.local.pending-permission-stop": "sha256:7033b9d8f82a3af9b6ba18a5d1a8b561222c59ec110de2c3c050599eea6e3e4a",
+      "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death": "sha256:68877ebd94c1e71e8b8993fb4b6430a163b8bec344442b8e32f11a7ec3cb018e",
+      "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn": "sha256:7e9a282cee656b1732440f3b2c2a3f46d20616d6ae361e3a2fca28aff9a4b9e1",
+      "extended-harnesses.runner-acpx-copilot.local.hello-complete": "sha256:6ef6ffbc1095a4eb8b6bf3d12d1a4bd992d9cbb950cbaafdaad3def717958a24",
+      "extended-harnesses.runner-acpx-copilot.local.file-edit-validate": "sha256:c5f566b8ac29569313d6f37de1b48b27f39eb82f9b3f7f0f25f4e125c32d0d0b",
+      "extended-harnesses.runner-acpx-copilot.local.question-resume-complete": "sha256:7670ab0eec5d4c561658c2aa6341809357d8e2d0edd1cf1d3a48d1a02fd9249a",
+      "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete": "sha256:f2a277571046f33032c53d9e9726720280f03d9383573b8bc1342ff7d3249612",
+      "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume": "sha256:e1acb10539eb006a6974ac1366fe3395c1fe742fc8d85da2ad766dd0f2f1f261",
+      "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement": "sha256:fd219eadb5d5a70ec9d192a194064b529c6a8a709272cb24f7cf78905e683e7c",
+      "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write": "sha256:9243b5b4c2ee04cae99855443df579ba14923f29f14108f0dd05c94076f88e8d",
+      "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop": "sha256:f8f7e07016d450ea0476154c266b482fcfd9feee41bf0f39eb9d297e5fa13cf0",
+      "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death": "sha256:979a95e226c1ab5ef31178b70961de5fb4c6a54dfc5979166bc6f2d2983cc583",
+      "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn": "sha256:cea972b23f46ed063d49582788d634d628ee86e2dc870d87e5ae0085f0a20fae",
+      "extended-harnesses.runner-acpx-copilot.daytona.hello-complete": "sha256:7eaaed3c36257773b05c6701edd29d1ae5636b0892b6f64e503224453ff21766",
+      "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate": "sha256:9d06532c52675743a1481675dc28e5e7c8052faed4007d3c0bcdeb7860c4cac3",
+      "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete": "sha256:ecc1c077842cb841888fad0ad492e02f4736e41170b33f00917220acdb074cdc",
+      "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete": "sha256:e092f188a545135cb7c715fa8ce5b86c9d987dd1ca1e0e0d37545c8f79b1cc9d",
+      "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume": "sha256:951b248c0ba78c134dbb96fbf359eb173fe0c37637797ff2b6efbff4e7c8abef"
+    }
+  },
+  "protocol": {
+    "passed": 7,
+    "assertions": 46,
+    "cleanupPassed": true
+  },
+  "ordinaryInstallationCanaries": {
+    "local": {
+      "passed": true,
+      "qualificationOverrides": []
+    },
+    "daytona": {
+      "passed": true,
+      "qualificationOverrides": [],
+      "artifactSha256": "sha256:f027a4aa09e216e60de84748477ecefcc10e46fa8efd80340316fbf6641edfe0",
+      "allOwnedSandboxesAbsent": true,
+      "oneFinalResponse": true,
+      "acceptedCompletionEvidence": true
+    }
+  },
+  "publicImage": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:2ccfe999e7794ea1577e581840743a466663143c4303a518e06b3f1e0faa58fb",
+  "billingEntity": "github",
+  "nativeUsd": null,
+  "retainedFailures": [
+    "Historical roster prerequisite rejected before provider launch",
+    "Daytona controller-local artifact path prerequisite rejected before provider launch",
+    "Local evidence collector initially read only its first event page",
+    "Manual metadata Test intentionally archived its sandbox; the owned archive was subsequently deleted"
+  ],
+  "ciPassed": false,
+  "reviewPassed": false,
+  "shipped": false,
+  "scope": "Completed v30 qualification. Master recovery compatibility is evaluated separately; this record does not qualify changed runtime bytes."
+}

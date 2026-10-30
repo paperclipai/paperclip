@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
 # Paperclip Agent Evals - Phase 0: Promptfoo Bootstrap
 #
 # Tests narrow heartbeat behaviors across models with deterministic assertions.
@@ -9,7 +10,7 @@
 #   promptfoo view  # open results in browser
 #
 # Validate config before committing:
-#   promptfoo validate
+#   npx promptfoo@latest validate -c promptfooconfig.yaml
 #
 # Requires OPENROUTER_API_KEY or individual provider keys.
 

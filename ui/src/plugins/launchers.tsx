@@ -25,6 +25,8 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { describeError, isTransientError } from "@/api/errors";
+import { queryViewKind } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -68,9 +70,12 @@ type UsePluginLaunchersFilters = {
 };
 
 type UsePluginLaunchersResult = {
+  /** The last loaded launchers. Kept through a transient failure so chrome never disappears. */
   launchers: ResolvedPluginLauncher[];
   contributionsByPluginId: Map<string, PluginUiContribution>;
+  /** True while nothing has loaded yet, including while reconnecting after an outage. */
   isLoading: boolean;
+  /** Readable copy for a non-transient failure, or null. Never set for an outage. */
   errorMessage: string | null;
 };
 
@@ -127,11 +132,6 @@ const supportedLauncherBounds = new Set<PluginLauncherBounds>(
 
 const PluginLauncherRuntimeContext = createContext<PluginLauncherRuntimeContextValue | null>(null);
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error";
-}
-
 function buildLauncherHostContext(
   context: PluginLauncherContext,
   renderEnvironment: PluginRenderEnvironmentContext | null,
@@ -156,6 +156,32 @@ function focusFirstElement(container: HTMLElement | null): void {
     return;
   }
   container.focus();
+}
+
+function resolveLauncherNavigationTarget(target: string, hostContext: PluginLauncherContext): string {
+  if (/^https?:\/\//.test(target) || target.startsWith("/") || target.startsWith("#") || target.startsWith(".") || target.startsWith("?")) {
+    return target;
+  }
+  const companyPrefix = hostContext.companyPrefix?.trim();
+  return companyPrefix ? `/${companyPrefix}/${target}` : target;
+}
+
+function launcherRoutePath(launcher: ResolvedPluginLauncher): string | null {
+  if (launcher.action.type !== "navigate" && launcher.action.type !== "deepLink") return null;
+  if (/^https?:\/\//.test(launcher.action.target)) return null;
+  const [pathOnly] = launcher.action.target.split(/[?#]/, 1);
+  const segment = pathOnly?.split("/").filter(Boolean).at(-1);
+  return segment ? segment.toLowerCase() : null;
+}
+
+function launcherDisplayName(launcher: ResolvedPluginLauncher, contribution: PluginUiContribution | undefined): string {
+  if (launcher.placementZone !== "sidebar" || !contribution) return launcher.displayName;
+  const routePath = launcherRoutePath(launcher);
+  if (!routePath) return launcher.displayName;
+  const routeSidebar = contribution.slots.find((slot) =>
+    slot.type === "routeSidebar" && slot.routePath?.toLowerCase() === routePath
+  );
+  return routeSidebar?.displayName ?? launcher.displayName;
 }
 
 function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
@@ -264,11 +290,14 @@ export function usePluginLaunchers(
   filters: UsePluginLaunchersFilters,
 ): UsePluginLaunchersResult {
   const queryEnabled = filters.enabled ?? true;
-  const { data, isLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: queryEnabled,
   });
+  const { data, isLoading, error } = query;
+  // Shared with `usePluginSlots`: an outage is never reported as an error here.
+  const viewKind = queryViewKind(query);
 
   const placementZonesKey = useMemo(
     () => [...filters.placementZones].sort().join("|"),
@@ -318,11 +347,14 @@ export function usePluginLaunchers(
     return rows;
   }, [data, filters.entityType, placementZonesKey]);
 
+  // Same as `usePluginSlots`: a transient failure never reports an error,
+  // even after the retry policy gives up while the server is reachable.
+  const transientFailure = viewKind === "error" && isTransientError(error);
   return {
     launchers,
     contributionsByPluginId,
-    isLoading: queryEnabled && isLoading,
-    errorMessage: error ? getErrorMessage(error) : null,
+    isLoading: queryEnabled && (isLoading || viewKind === "reconnecting" || transientFailure),
+    errorMessage: viewKind === "error" && !transientFailure ? describeError(error).body : null,
   };
 }
 
@@ -652,13 +684,13 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
     ) => {
       switch (launcher.action.type) {
         case "navigate":
-          navigate(launcher.action.target);
+          navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
           return;
         case "deepLink":
           if (/^https?:\/\//.test(launcher.action.target)) {
             window.open(launcher.action.target, "_blank", "noopener,noreferrer");
           } else {
-            navigate(launcher.action.target);
+            navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
           }
           return;
         case "performAction":
@@ -725,10 +757,12 @@ export function usePluginLauncherRuntime(): PluginLauncherRuntimeContextValue {
 }
 
 function DefaultLauncherTrigger({
+  displayName,
   launcher,
   placementZone,
   onClick,
 }: {
+  displayName?: string;
   launcher: ResolvedPluginLauncher;
   placementZone: PluginLauncherPlacementZone;
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -741,7 +775,7 @@ function DefaultLauncherTrigger({
       className={launcherTriggerClassName(placementZone)}
       onClick={onClick}
     >
-      {launcher.displayName}
+      {displayName ?? launcher.displayName}
     </Button>
   );
 }
@@ -752,32 +786,27 @@ type PluginLauncherOutletProps = {
   entityType?: PluginUiSlotEntityType | null;
   className?: string;
   itemClassName?: string;
-  errorClassName?: string;
 };
 
+/**
+ * Renders the plugin launchers for a host placement. Like `PluginSlotOutlet`,
+ * an outlet never shows a fetch error: it renders the last loaded launchers,
+ * or nothing if none have loaded yet.
+ */
 export function PluginLauncherOutlet({
   placementZones,
   context,
   entityType,
   className,
   itemClassName,
-  errorClassName,
 }: PluginLauncherOutletProps) {
   const { activateLauncher } = usePluginLauncherRuntime();
-  const { launchers, contributionsByPluginId, errorMessage } = usePluginLaunchers({
+  const { launchers, contributionsByPluginId } = usePluginLaunchers({
     placementZones,
     entityType,
     companyId: context.companyId,
     enabled: !!context.companyId,
   });
-
-  if (errorMessage) {
-    return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin launchers unavailable: {errorMessage}
-      </div>
-    );
-  }
 
   if (launchers.length === 0) return null;
 
@@ -786,6 +815,7 @@ export function PluginLauncherOutlet({
       {launchers.map((launcher) => (
         <div key={`${launcher.pluginKey}:${launcher.id}`} className={itemClassName}>
           <DefaultLauncherTrigger
+            displayName={launcherDisplayName(launcher, contributionsByPluginId.get(launcher.pluginId))}
             launcher={launcher}
             placementZone={launcher.placementZone}
             onClick={(event) => {

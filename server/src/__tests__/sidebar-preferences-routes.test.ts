@@ -18,10 +18,8 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ sidebarPreferenceRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/sidebar-preferences.js"),
-    import("../middleware/index.js"),
-  ]);
+  const { errorHandler } = await import("../middleware/index.js");
+  const { sidebarPreferenceRoutes } = await import("../routes/sidebar-preferences.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -46,7 +44,7 @@ describe("sidebar preference routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockSidebarPreferenceService.getCompanyOrder.mockResolvedValue({
       orderedIds: ORDERED_IDS,
       updatedAt: null,

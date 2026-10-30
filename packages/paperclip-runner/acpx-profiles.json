@@ -1,0 +1,72 @@
+{
+  "schema": "paperclip.acpx-profiles.v1",
+  "acpxVersion": "0.13.1",
+  "driverKind": "acpx_runtime",
+  "protocolVersion": 1,
+  "profiles": {
+    "antigravity": {
+      "agentProfileVersion": 1,
+      "agentServerPackage": "native:antigravity-acp",
+      "agentServerVersion": "1.4.3",
+      "agentRuntimePackage": "native:antigravity-localharness",
+      "agentRuntimeVersion": "1.4.3",
+      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "requiresProviderPolicy": true,
+      "qualificationStatus": "pending"
+    },
+    "grok": {
+      "agentProfileVersion": 15,
+      "agentServerPackage": "builtin:grok-acp",
+      "agentServerVersion": "1",
+      "agentRuntimePackage": "native:grok",
+      "agentRuntimeVersion": "1.0.13",
+      "commandDigest": "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
+      "requiresProviderPolicy": false
+    },
+    "pi": {
+      "agentProfileVersion": 35,
+      "agentServerPackage": "pi-acp",
+      "agentServerVersion": "0.0.33",
+      "agentRuntimePackage": "@earendil-works/pi-coding-agent",
+      "agentRuntimeVersion": "1.0.0",
+      "commandDigest": "sha256:9473de6ef4baf2bd82fe8b6757239bdc160960b0a78ae6f47fa9e0996544226c",
+      "requiresProviderPolicy": true
+    },
+    "cursor": {
+      "agentProfileVersion": 16,
+      "agentServerPackage": "cursor-agent",
+      "agentServerVersion": "2026.09.26-dd393fe",
+      "agentRuntimePackage": null,
+      "agentRuntimeVersion": null,
+      "commandDigest": "sha256:759e7415fea8ed2b6b0e6f362b57652b8768835f9d1fdae4a94c1b5eb3669301",
+      "requiresProviderPolicy": true
+    },
+    "copilot": {
+      "agentProfileVersion": 88,
+      "agentServerPackage": "@github/copilot",
+      "agentServerVersion": "1.0.88",
+      "agentRuntimePackage": null,
+      "agentRuntimeVersion": null,
+      "commandDigest": "sha256:b9c13b83628be07086a88394ae671997291b77bbdbf45b0bd1c4e91b7121bc9d",
+      "requiresProviderPolicy": true
+    },
+    "claude": {
+      "agentProfileVersion": 1,
+      "agentServerPackage": "@agentclientprotocol/claude-agent-acp",
+      "agentServerVersion": "0.73.0",
+      "agentRuntimePackage": "@anthropic-ai/claude-agent-sdk",
+      "agentRuntimeVersion": "0.3.286",
+      "commandDigest": "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+      "requiresProviderPolicy": false
+    },
+    "codex": {
+      "agentProfileVersion": 1,
+      "agentServerPackage": "@agentclientprotocol/codex-acp",
+      "agentServerVersion": "1.6.2",
+      "agentRuntimePackage": "@openai/codex",
+      "agentRuntimeVersion": "0.160.0",
+      "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
+      "requiresProviderPolicy": false
+    }
+  }
+}

@@ -27,6 +27,7 @@ describe("run liveness classifier", () => {
     });
 
     expect(classification.livenessState).toBe("plan_only");
+    expect(classification.actionability).toBe("runnable");
     expect(classification.nextAction).toContain("inspect the repo");
   });
 
@@ -34,6 +35,7 @@ describe("run liveness classifier", () => {
     const classification = classifyRunLiveness(baseInput);
 
     expect(classification.livenessState).toBe("empty_response");
+    expect(classification.actionability).toBe("unknown");
   });
 
   it("treats issue comments, documents, products, and actions as progress", () => {
@@ -72,13 +74,14 @@ describe("run liveness classifier", () => {
     expect(classification.lastUsefulActionAt).toBeNull();
   });
 
-  it("exempts planning/document tasks from plan-only retry classification", () => {
+  it("uses explicit planning mode for the planning diagnostic exemption", () => {
     const classification = classifyRunLiveness({
       ...baseInput,
       issue: {
         status: "in_progress",
         title: "Draft implementation plan",
         description: "Create a plan for the work.",
+        workMode: "planning",
       },
       resultJson: {
         summary: "Plan:\n- Inspect files\n- Implement after approval",
@@ -86,6 +89,35 @@ describe("run liveness classifier", () => {
     });
 
     expect(classification.livenessState).toBe("advanced");
+  });
+
+  it.each([undefined, null, "standard", "ask", "skill_test", "planning"])(
+    "title and description cannot change liveness in explicit mode %s",
+    (workMode) => {
+      const input = {
+        ...baseInput,
+        issue: { ...baseInput.issue, workMode },
+        resultJson: { summary: "I will inspect the repo next." },
+      };
+      const expected = classifyRunLiveness(input);
+      expect(expected.livenessState).toBe(workMode === "planning" ? "advanced" : "plan_only");
+      for (const text of ["plan", "planning", "analysis", "investigation", "research", "report", "proposal", "design doc", "write-up", "making a plan", "No plan requested", "Preparar un plan"]) {
+        for (const prose of [{ title: `Implement ${text} export` }, { description: `Create a ${text} exporter.` }]) {
+          expect(classifyRunLiveness({ ...input, issue: { ...input.issue, ...prose } })).toEqual(expected);
+        }
+      }
+    },
+  );
+
+  it("a standard-mode task can deliver a plan and complete without entering planning mode", () => {
+    const input = {
+      ...baseInput,
+      issue: { ...baseInput.issue, workMode: "standard", title: "Write a plan" },
+      resultJson: { summary: "Plan:\n1. Inspect files.\n2. Implement the service." },
+      evidence: { documentRevisionsCreated: 1, planDocumentRevisionsCreated: 1 },
+    };
+    expect(classifyRunLiveness(input).livenessState).toBe("advanced");
+    expect(classifyRunLiveness({ ...input, issue: { ...input.issue, status: "done" } }).livenessState).toBe("completed");
   });
 
   it("exempts runs that update the plan document from plan-only classification", () => {
@@ -128,5 +160,102 @@ describe("run liveness classifier", () => {
     });
 
     expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("blocked_external");
+  });
+
+  it("treats PAP-2000-style validation output as runnable follow-up, not an external blocker", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "PAP-1949 remains blocked until PAP-2000 is resolved.",
+      },
+      issueCommentBodies: [
+        [
+          "Validation is ready for the next pass.",
+          "",
+          "- Blocked chain context: PAP-1949 -> PAP-1999 -> PAP-2000",
+          "- Next action: run npm test and report the row counts.",
+        ].join("\n"),
+      ],
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.actionability).toBe("runnable");
+    expect(classification.nextAction).toBe("run npm test and report the row counts.");
+  });
+
+  it("prefers durable comments over raw transcript next-action noise", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issueCommentBodies: ["Next action: run pnpm test -- --runInBand."],
+      stdoutExcerpt: [
+        "tool_call: write",
+        "command: rm -rf production-data",
+        "Next action: deploy to production",
+      ].join("\n"),
+    });
+
+    expect(classification.actionability).toBe("runnable");
+    expect(classification.nextAction).toBe("run pnpm test -- --runInBand.");
+  });
+
+  it("keeps approval requests out of automatic continuation", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Next action: wait for board approval before continuing.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("approval_required");
+    expect(classification.nextAction).toBe("wait for board approval before continuing.");
+  });
+
+  it("routes production-sensitive next actions to manager review", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Next action: deploy to production and verify live traffic.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("needs_followup");
+    expect(classification.actionability).toBe("manager_review");
+    expect(classification.nextAction).toBe("deploy to production and verify live traffic.");
+  });
+
+
+  it("uses killed background-task evidence instead of a generic failed-run reason", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "process_lost",
+      resultJson: {
+        stopReason: "unmanaged_background_task_stopped",
+        unmanagedBackgroundTask: {
+          kind: "orphaned_process_group_cleanup",
+          stopped: true,
+          stopReason: "unmanaged_background_task_stopped",
+          reason: "unmanaged background task stopped; no durable live path",
+        },
+      },
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).toBe("unmanaged background task stopped; no durable live path");
+  });
+
+  it("marks unclear useful output as unknown actionability", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Observed mixed output and left notes for a later pass.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("needs_followup");
+    expect(classification.actionability).toBe("unknown");
+    expect(classification.nextAction).toBeNull();
   });
 });

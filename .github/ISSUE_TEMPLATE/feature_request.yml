@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a new capability or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature work on core Paperclip is coordinated against `ROADMAP.md` and Discord `#dev`. Please skim those before filing — see [CONTRIBUTING.md](https://github.com/paperclipai/paperclip/blob/master/CONTRIBUTING.md) for the full guidance.
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem affected
+      description: Which part of the codebase would this primarily live in?
+      options:
+        - server/ — REST API & orchestration services
+        - ui/ — React + Vite board UI
+        - packages/db — Drizzle schema, migrations
+        - packages/shared — types, constants, validators, API paths
+        - packages/adapters — agent adapter implementations
+        - packages/plugins — plugin system
+        - Cross-cutting (multiple of the above)
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to do that is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you'd like. How should it work?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why you ruled them out.
+  - type: textarea
+    id: roadmap
+    attributes:
+      label: Roadmap alignment
+      description: Does this relate to anything in `ROADMAP.md`? Link the relevant section if so.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples from other tools, related issues, etc.

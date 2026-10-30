@@ -1,7 +1,9 @@
+import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adapter-utils/openrouter-attribution";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { installSandboxToolMemoryPreference } from "./sandbox-tool-memory.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -21,6 +23,77 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
+// gateway provider secrets (e.g. the LLM-gateway virtual key) into opencode.json
+// SERVER-SIDE, where the value is reliably present. OpenCode's own {env:...}
+// resolution happens inside the (possibly sandboxed) run process, whose env
+// plumbing is not guaranteed to carry the key to OpenCode's spawned server -- so
+// we resolve it here. Unresolvable placeholders are left intact for OpenCode to try.
+function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | undefined): T {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+      const resolved = resolve(name);
+      return resolved !== undefined && resolved.length > 0 ? resolved : match;
+    }) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => expandEnvPlaceholders(entry, resolve)) as unknown as T;
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = expandEnvPlaceholders(entry, resolve);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function parseProviderConfig(
+  raw: unknown,
+  resolveEnv: (name: string) => string | undefined,
+  notes: string[],
+): Record<string, unknown> | null {
+  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Surface the misconfiguration instead of silently dropping the provider
+    // block; an unparseable value would otherwise be undiagnosable.
+    notes.push("PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.");
+    return null;
+  }
+  if (!isPlainObject(parsed)) {
+    notes.push(
+      "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
+    );
+    return null;
+  }
+  // Only keep provider entries that are themselves objects; surface the ones
+  // we drop so a malformed entry is just as diagnosable as malformed JSON.
+  const providers: Record<string, unknown> = {};
+  const skipped: string[] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+    else skipped.push(key);
+  }
+  if (skipped.length > 0) {
+    notes.push(
+      `PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`,
+    );
+  }
+  return Object.keys(providers).length > 0 ? providers : null;
+}
+
+function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  return { provider: trimmed.slice(0, slash), model: trimmed.slice(slash + 1) };
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
@@ -34,9 +107,17 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  targetIsRemote?: boolean;
+  sandboxToolOomPreference?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+
+  // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
+  // (and actively harmful — it leaks a macOS-only path into the remote Linux
+  // env). Callers that need to ship a runtime opencode config to the remote
+  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts; this
+  // host-fs helper is local-only.
+  if (input.targetIsRemote) {
     return {
       env: input.env,
       notes: [],
@@ -64,28 +145,155 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const existingPermission = isPlainObject(existingConfig.permission)
-    ? existingConfig.permission
-    : {};
-  const nextConfig = {
+  const notes = [
+    skipPermissions ? "Injected runtime OpenCode config with permission=allow for all tools and connections." : "Prepared isolated OpenCode provider configuration.",
+  ];
+
+  // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
+  // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
+  // provider/model` only when that model exists in a provider's `models` map, and
+  // OPENCODE_ALLOW_ALL_MODELS does NOT bypass its internal getModel(). So routing a
+  // gateway model (e.g. an EU LLM gateway exposing OpenAI-compatible /v1) requires a
+  // custom provider with an explicit models map. We accept it as config (not
+  // hard-coded) so the gateway URL, key env, and model list stay declarative.
+  const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
+  const gatewayProviders = parseProviderConfig(
+    input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+    resolveEnv,
+    notes,
+  );
+  const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
+  let nextProvider = gatewayProviders
+    ? { ...existingProvider, ...gatewayProviders }
+    : existingProvider;
+  if (gatewayProviders) {
+    notes.push(
+      `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
+    );
+  }
+
+  // Register the configured model on its provider's models map. OpenCode resolves
+  // `--model provider/model` only when the model id exists in that map, so ids the
+  // models.dev catalog does not carry — OpenRouter routing variants such as
+  // `openai/gpt-oss-120b:nitro`, or models newer than the bundled catalog — are
+  // otherwise rejected with "Model not found" even though the provider serves them.
+  // An empty entry deep-merges with catalog metadata, so this is a no-op for models
+  // the catalog already knows, and we never clobber an explicit definition from the
+  // user config or PAPERCLIP_OPENCODE_PROVIDERS.
+  const configuredModel = parseConfiguredModelRef(input.config.model);
+  if (configuredModel) {
+    const providerEntry = isPlainObject(nextProvider[configuredModel.provider])
+      ? { ...(nextProvider[configuredModel.provider] as Record<string, unknown>) }
+      : {};
+    const providerModels = isPlainObject(providerEntry.models)
+      ? { ...(providerEntry.models as Record<string, unknown>) }
+      : {};
+    if (!isPlainObject(providerModels[configuredModel.model])) {
+      providerModels[configuredModel.model] = {};
+      providerEntry.models = providerModels;
+      nextProvider = { ...nextProvider, [configuredModel.provider]: providerEntry };
+      notes.push(
+        `Registered configured model ${configuredModel.provider}/${configuredModel.model} in the runtime OpenCode config.`,
+      );
+    }
+  }
+
+  const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: {
-      ...existingPermission,
-      external_directory: "allow",
-    },
+    ...(skipPermissions ? { permission: "allow" } : {}),
   };
+  const inlineContent = input.env.OPENCODE_CONFIG_CONTENT ?? process.env.OPENCODE_CONFIG_CONTENT;
+  let inlineConfig: Record<string, unknown> | undefined;
+  if (inlineContent) {
+    try {
+      const parsed: unknown = JSON.parse(inlineContent);
+      if (isPlainObject(parsed)) inlineConfig = parsed;
+    } catch {
+      // OpenCode must still report invalid operator configuration.
+    }
+  }
+  nextProvider = attributeOpenCodeProviders(mergeConfigObjects(nextProvider,
+    isPlainObject(inlineConfig?.provider) ? inlineConfig.provider : {}));
+  if (Object.keys(nextProvider).length > 0) {
+    nextConfig.provider = nextProvider;
+  }
+
+  // Pin OpenCode's auxiliary "small" model (used for session-title generation and
+  // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
+  // defaults the small model to a built-in provider default (e.g. a claude-* model
+  // for the anthropic provider); when that provider is repointed at a gateway that
+  // does not serve that exact model, the title-gen call fails and aborts the run.
+  // Setting small_model to a gateway-served model keeps every call on supported models.
+  const smallModel = (input.env.PAPERCLIP_OPENCODE_SMALL_MODEL ?? process.env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  if (smallModel) {
+    nextConfig.small_model = smallModel;
+    notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+  }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  if (input.sandboxToolOomPreference) {
+    try {
+      await installSandboxToolMemoryPreference(runtimeConfigDir);
+      notes.push("Prepared sandbox Bash tool memory preference; shell commands are preferred OOM victims over OpenCode.");
+    } catch {
+      notes.push("Could not prepare sandbox Bash tool memory preference; continuing with the existing shell behavior.");
+    }
+  }
 
   return {
     env: {
       ...input.env,
       XDG_CONFIG_HOME: runtimeConfigHome,
+      ...(inlineContent ? { OPENCODE_CONFIG_CONTENT: inlineConfig
+        ? JSON.stringify({ ...inlineConfig, provider: nextProvider }) : inlineContent } : {}),
     },
-    notes: [
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    ],
+    notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
   };
+}
+
+/** Managed credentials must never leave host-only homes in a remote process. */
+export function prepareManagedOpenCodeRemoteHomes(input: {
+  env: Record<string, string>;
+  config: Record<string, unknown>;
+  runtimeRootDir: string | null | undefined;
+  runId: string;
+  configDir?: string;
+}): void {
+  if (!input.config.managedAiConnection) return;
+  if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
+  const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
+  Object.assign(input.env, {
+    HOME: home,
+    XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
+    XDG_DATA_HOME: path.posix.join(home, "data"),
+    XDG_CACHE_HOME: path.posix.join(home, "cache"),
+    XDG_STATE_HOME: path.posix.join(home, "state"),
+  });
+}
+
+/** Native provider defaults and per-model headers can both carry harness attribution. */
+function attributeOpenCodeProviders(providers: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { openrouter: {}, ...providers };
+  for (const [name, value] of Object.entries(result)) {
+    if (!isPlainObject(value)) continue;
+    const options = isPlainObject(value.options) ? value.options : {};
+    if (!isOpenRouterUrl(options.baseURL) && !(name === "openrouter" && options.baseURL === undefined)) continue;
+    const headers = isPlainObject(options.headers) ? options.headers as Record<string, string> : {};
+    const models = isPlainObject(value.models) ? Object.fromEntries(Object.entries(value.models).map(([id, model]) => [id,
+      isPlainObject(model) ? { ...model, headers: openRouterAttributionHeaders(isPlainObject(model.headers) ? model.headers as Record<string, string> : {}) } : model,
+    ])) : undefined;
+    result[name] = { ...value, options: { ...options, headers: openRouterAttributionHeaders(headers) }, ...(models ? { models } : {}) };
+  }
+  return result;
+}
+
+function mergeConfigObjects(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const entries = Object.entries(override).map(([key, value]) => {
+    const previous = base[key];
+    return [key, isPlainObject(previous) && isPlainObject(value)
+      ? mergeConfigObjects(previous, value) : value];
+  });
+  return { ...base, ...Object.fromEntries(entries) };
 }

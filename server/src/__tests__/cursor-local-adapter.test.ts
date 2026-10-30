@@ -4,6 +4,39 @@ import { parseCursorStdoutLine } from "@paperclipai/adapter-cursor-local/ui";
 import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
 
 describe("cursor parser", () => {
+  it.each([
+    { type: "result" },
+    { type: "result", usage: {} },
+    { type: "result", usage: { input_tokens: 0 } },
+    { type: "result", usage: { input_tokens: -1, output_tokens: 0 } },
+    { type: "step_finish", part: {} },
+  ])("does not treat absent or malformed counters as reported zeroes (%j)", event => {
+    const parsed = parseCursorJsonl(JSON.stringify(event));
+    expect(parsed.usageReported).toBe(false);
+    expect(parsed.usageComplete).toBe(false);
+    expect(parsed.costUsd).toBeNull();
+  });
+
+  it.each([
+    { type: "result", usage: { input_tokens: 0, output_tokens: 0 } },
+    { type: "result", usage: { inputTokens: 0, outputTokens: 0 } },
+    { type: "step_finish", part: { tokens: { input: 0, output: 0 } } },
+  ])("preserves explicitly reported zero counters (%j)", event => {
+    expect(parseCursorJsonl(JSON.stringify(event))).toMatchObject({
+      usageReported: true, usageComplete: true,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    });
+  });
+
+  it("keeps known partial usage without claiming a complete total", () => {
+    const parsed = parseCursorJsonl([
+      { type: "step_finish", part: { tokens: { input: 20, output: 5 } } },
+      { type: "result" },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed).toMatchObject({ usageReported: true, usageComplete: false,
+      usage: { inputTokens: 20, outputTokens: 5 }, costUsd: null });
+  });
+
   it("extracts session, summary, usage, cost, and terminal error message", () => {
     const stdout = [
       JSON.stringify({ type: "system", subtype: "init", session_id: "chat_123", model: "gpt-5" }),
@@ -401,5 +434,14 @@ describe("cursor cli formatter", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+
+describe("Cursor price completeness", () => {
+  it("preserves reported zero and keeps a partially priced stream unpriced", () => {
+    expect(parseCursorJsonl(JSON.stringify({ type: "result", cost_usd: 0 })).costUsd).toBe(0);
+    expect(parseCursorJsonl(JSON.stringify({ type: "result" })).costUsd).toBeNull();
+    expect(parseCursorJsonl([JSON.stringify({ type: "step_finish", part: { cost: 1 } }), JSON.stringify({ type: "step_finish", part: {} })].join("\n")).costUsd).toBeNull();
   });
 });
