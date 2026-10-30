@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { taskReplyContentMatches } from "./task-reply-content.js";
 
 it("parses CommonMark escapes, entities, inline formatting and paragraph boundaries", () => {
+  expect(taskReplyContentMatches({ body: "Visible" }, "~~Visible~~")).toBe(true);
   expect(taskReplyContentMatches({ body: "Couldn't retrieve a_b & c. No retry." },
     "**Couldn't retrieve** `a_b` &amp; c.\n\nNo _retry_.")).toBe(true);
   expect(taskReplyContentMatches({ body: "Couldn't retrieve a_b & c. No retry. Extra." },
