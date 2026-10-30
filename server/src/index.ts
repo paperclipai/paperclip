@@ -277,8 +277,9 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
-  ensureDecisionSigningSecret();
+  // Resolve and validate managed-cloud prerequisites before keys, telemetry, or DB effects.
   let config = loadConfig();
+  ensureDecisionSigningSecret();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;

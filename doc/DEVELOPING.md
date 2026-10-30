@@ -1442,6 +1442,38 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+### Managed cloud prerequisites
+
+A valid `PAPERCLIP_MANAGED_CONFIG` document with `mode: "cloud"` selects the
+managed-cloud profile. An absent variable remains self-hosted. A blank or invalid
+document refuses startup. The managed profile also requires:
+
+- `PAPERCLIP_STORAGE_PROVIDER=s3` (or `storage.provider: "s3"` in the config file).
+  An invalid explicit environment value refuses startup even if the file selects S3.
+- An explicit nonblank `PAPERCLIP_STORAGE_S3_BUCKET` or `storage.s3.bucket`.
+  The self-hosted `paperclip` bucket default does not qualify. The region defaults
+  to `us-east-1`; an explicit blank region refuses startup. An optional endpoint
+  must be an HTTP(S) URL without embedded credentials.
+- An external PostgreSQL URL from `DATABASE_URL` or `database.connectionString`.
+  The managed profile never falls back to embedded PostgreSQL.
+- A stable `PAPERCLIP_SECRETS_MASTER_KEY` supplied by the deployment secret store.
+  Use the same value across replacements. The existing provider accepts 32-byte
+  base64, 64-character hex, or a raw 32-byte UTF-8 string. A key file alone does
+  not qualify because a replacement web server may not have that file.
+
+Configuration loading checks these prerequisites before startup creates signing
+keys, initializes first-party Telemetry, opens a database, or serves requests.
+It does not contact S3 or verify credentials, bucket access, database connectivity,
+or that a key matches existing encrypted data. Operators must qualify ordinary
+S3 put/read/delete with deployment credentials and preserve the existing key.
+AWS credentials continue to use the provider's normal SDK credential chain.
+Local and self-hosted storage and key-file defaults remain unchanged.
+
+These are prerequisites for shared storage and secrets. They do not establish
+that the whole web server is disposable or that all execution and recovery paths
+survive web-server replacement. Run-log/trace storage and producer retention are
+separate changes.
+
 ## Agent Artifact Uploads
 
 When an agent generates a file that a board user or reviewer should inspect as

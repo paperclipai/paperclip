@@ -1,3 +1,4 @@
+import { validateManagedCloudPrerequisites } from "./managed-cloud-prerequisites.js";
 import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
 import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
@@ -179,7 +180,8 @@ export function loadConfig(): Config {
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
   );
-  const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
+  const configuredStorageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket;
+  const storageS3Bucket = configuredStorageS3Bucket ?? "paperclip";
   const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
   const storageS3Endpoint = process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
   const storageS3Prefix = process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
@@ -187,6 +189,13 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  validateManagedCloudPrerequisites({
+    storageProvider,
+    storageS3Bucket: configuredStorageS3Bucket,
+    storageS3Region,
+    storageS3Endpoint,
+    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+  }, process.env);
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||

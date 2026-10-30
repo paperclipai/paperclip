@@ -595,6 +595,35 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+  it("refuses invalid managed-cloud prerequisites before signing, DB creation, or HTTP setup", async () => {
+    const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalManaged = process.env.PAPERCLIP_MANAGED_CONFIG;
+    const originalStorage = process.env.PAPERCLIP_STORAGE_PROVIDER;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-refusal-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_MANAGED_CONFIG = JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] },
+    });
+    process.env.PAPERCLIP_STORAGE_PROVIDER = "local_disk";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    loadConfigMock.mockImplementationOnce(realConfig.loadConfig);
+    try {
+      await expect(startServer()).rejects.toThrow(/PAPERCLIP_STORAGE_PROVIDER=s3/);
+      expect(createDbMock).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(existsSync(path.join(tempHome, "instances"))).toBe(false);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalManaged === undefined) delete process.env.PAPERCLIP_MANAGED_CONFIG;
+      else process.env.PAPERCLIP_MANAGED_CONFIG = originalManaged;
+      if (originalStorage === undefined) delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+      else process.env.PAPERCLIP_STORAGE_PROVIDER = originalStorage;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
