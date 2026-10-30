@@ -6,8 +6,10 @@ import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.j
 import { deleteCompany } from "../../../services/company-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../company-deletion.js";
 import { requireServerAdapter } from "../../../adapters/index.js";
-import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
+import { agentExecutionsHaveStopped, describeExecutionStopBlockers, listAgentExecutionStopBlockers } from "../../../services/agent-execution-stop.js";
 import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
+import { LEGACY_EXECUTION_SETTLEMENT_KEY, LEGACY_EXECUTION_SETTLEMENT_SCHEMA } from "../../../services/legacy-execution-settlement.js";
+import { LEGACY_ADAPTER_ENTERED, LEGACY_ADAPTER_ENTRY_ABANDONED } from "../../../services/run-dispatch-evidence.js";
 import { approvalService } from "../../../services/approvals.js";
 import { updateAgentConfigurationInTransaction } from "../../../services/agent-configuration-transaction.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
@@ -19,14 +21,14 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, resourceLifecycleEvents, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
 import { projectCompanyHolds } from "../adapters/company-policy.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
-import type { LifecycleAgent } from "../application/ports.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 
@@ -53,12 +55,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle test", issuePrefix: `L${companyId.slice(0, 7)}` });
   });
-  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
-    const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete", driver: Partial<LifecycleDriver> = {}) {
+    const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost, ...driver });
     workers.push(value); return value;
   }
   async function hire(status = "idle") { return createAgentLifecycle(db).requestHire(companyId, { name: "Agent", status, adapterType: "process" }); }
   async function current(id: string) { return (await db.select().from(agents).where(eq(agents.id, id)))[0]!; }
+  function resumeEvents(id: string) {
+    return db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.resourceId, id), eq(resourceLifecycleEvents.action, "resume")));
+  }
 
   it.each((["codex", "claude"] as const).flatMap(provider => ["direct", "setup", "approval"].map(path => [provider, path] as const)))("defaults a newly hired %s agent on a warm task environment to warm execution through %s", async (provider, path) => {
     const pluginId = randomUUID(), environmentId = randomUUID();
@@ -193,9 +198,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(agent).not.toHaveProperty("lifecycleOperation");
   });
 
-
-
-
   it("freezes the final setup configuration for hire approval", async () => {
     const lifecycle = createAgentLifecycle(db);
     const id = randomUUID();
@@ -215,7 +217,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(lifecycle.requestHire(companyId, { name: "Paused" }, { setupAgentId: paused.id })).rejects.toThrow("no longer available");
     expect((await current(setup.id)).lifecycleHolds).toEqual(["setup"]);
   });
-
 
   it("creates a board-owned setup before requesting approval for its final configuration", async () => {
     await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
@@ -429,6 +430,205 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await createAgentLifecycle(db).retry(agent.id);
     await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
+  });
+
+  const unrecordedCancellation = (agentId: string, executionStage: string, resultJson?: Record<string, unknown>) => ({
+    companyId, agentId, status: "cancelled", invocationSource: "on_demand" as const,
+    runtimeMode: "legacy", executionStage, startedAt: new Date(), finishedAt: new Date(),
+    resultJson: (resultJson ?? null) as never,
+    runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } } as never,
+  });
+  const settlementReceipt = {
+    [LEGACY_EXECUTION_SETTLEMENT_KEY]: {
+      schema: LEGACY_EXECUTION_SETTLEMENT_SCHEMA, settledAt: new Date().toISOString(),
+      controllerBootId: null, stage: "dispatching",
+    },
+  };
+  async function readyAgent(name = "Ready") {
+    return (await db.insert(agents).values({ companyId, name, status: "idle", lifecycleState: "ready" }).returning())[0]!;
+  }
+
+  it.each([
+    { executionStage: "preparing", resultJson: undefined },
+    { executionStage: "settled", resultJson: undefined },
+    { executionStage: "dispatching", resultJson: settlementReceipt as Record<string, unknown> },
+  ])("pauses after a conversation-adapter run was cancelled at stage $executionStage before its PID was recorded", async ({ executionStage, resultJson }) => {
+    const agent = await readyAgent();
+    const [run] = await db.insert(heartbeatRuns).values(unrecordedCancellation(agent.id, executionStage, resultJson)).returning();
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: run.id, agentId: agent.id, seq: 1, eventType: "adapter.invoke" });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
+  it.each(["http", "hermes_local", "claude_local"])(
+    "holds the stop when a cancelled %s run recorded entering its adapter", async (adapterType) => {
+      const agent = await readyAgent();
+      const [run] = await db.insert(heartbeatRuns).values({
+        ...unrecordedCancellation(agent.id, "preparing"),
+        runnerProfileJson: { adapterDispatch: { adapterType } } as never,
+      }).returning();
+      await db.insert(heartbeatRunEvents).values({
+        companyId, runId: run.id, agentId: agent.id, seq: 1, eventType: LEGACY_ADAPTER_ENTERED,
+      });
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+      const work = worker(createLifecycleDriver(db, {} as never).runHost);
+      await createAgentLifecycle(db).pauseAgent(agent.id);
+      await work.process(agent.id);
+      expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    });
+
+  it.each(["http", "hermes_local", "claude_local"])(
+    "pauses a cancelled %s run whose adapter entry was abandoned before the adapter ran", async (adapterType) => {
+      const agent = await readyAgent();
+      const [run] = await db.insert(heartbeatRuns).values({
+        ...unrecordedCancellation(agent.id, "preparing"),
+        runnerProfileJson: { adapterDispatch: { adapterType } } as never,
+      }).returning();
+      await db.insert(heartbeatRunEvents).values([
+        { companyId, runId: run.id, agentId: agent.id, seq: 1, eventType: LEGACY_ADAPTER_ENTERED },
+        { companyId, runId: run.id, agentId: agent.id, seq: 2, eventType: LEGACY_ADAPTER_ENTRY_ABANDONED },
+      ]);
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+      const work = worker(createLifecycleDriver(db, {} as never).runHost);
+      await createAgentLifecycle(db).pauseAgent(agent.id);
+      await work.process(agent.id);
+      expect((await current(agent.id)).lifecycleState).toBe("paused");
+      await db.insert(heartbeatRunEvents).values({ companyId, runId: run.id, agentId: agent.id, seq: 3, eventType: LEGACY_ADAPTER_ENTERED });
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    });
+
+  it("reports every execution that blocks a stop, not only the first", async () => {
+    const agent = await readyAgent();
+    const rows = await db.insert(heartbeatRuns).values([0, 1, 2].map(() => unrecordedCancellation(agent.id, "preparing"))).returning();
+    for (const row of rows) {
+      await db.insert(heartbeatRunEvents).values({ companyId, runId: row.id, agentId: agent.id, seq: 1, eventType: "adapter.invoke" });
+    }
+    const blockers = await listAgentExecutionStopBlockers(db, [agent.id]);
+    expect(blockers.map(blocker => blocker.runId).sort()).toEqual(rows.map(row => row.id).sort());
+    expect([...new Set(blockers.map(blocker => blocker.reason))]).toEqual(["legacy_cancellation_unproven"]);
+    expect(describeExecutionStopBlockers(blockers)).toContain(rows[0].id);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
+  it("records why a stop keeps deferring instead of retrying silently forever", async () => {
+    const agent = await readyAgent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(),
+      processPid: process.pid }).returning();
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    const quiet = await current(agent.id);
+    expect(quiet.lifecycleState).toBe("pausing");
+    expect(quiet.lifecycleError).toBeNull();
+    await db.update(agents).set({ lifecycleOperation: sql`jsonb_set(${agents.lifecycleOperation}, '{attempts}', '14'::jsonb) - 'retryAt'` })
+      .where(eq(agents.id, agent.id));
+    await work.process(agent.id);
+    const diagnosed = await current(agent.id);
+    expect(diagnosed.lifecycleState).toBe("pausing");
+    expect(diagnosed.lifecycleError).toContain("process_alive");
+    expect(diagnosed.lifecycleError).toContain(run.id);
+    const retryAt = (diagnosed.lifecycleOperation as { retryAt?: string } | null)?.retryAt;
+    expect(Date.parse(retryAt!) - Date.now()).toBeLessThan(30_000);
+    await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleError).toBe(diagnosed.lifecycleError);
+  });
+
+  it("refuses to resume a pause in flight and abandons it on an explicit abort", async () => {
+    const agent = await readyAgent();
+    const work = worker(async () => "pending");
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    await expect(createAgentLifecycle(db).resumeAgent(agent.id)).rejects.toThrow("Cannot resume an agent in state pausing");
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    const aborted = await createAgentLifecycle(db).abortPause(agent.id);
+    expect(aborted).toMatchObject({ lifecycleState: "ready", status: "idle", pauseReason: null });
+    expect((await current(agent.id)).pausedAt).toBeNull();
+    expect(await resumeEvents(agent.id)).toHaveLength(1);
+    await expect(createAgentLifecycle(db).abortPause(agent.id)).rejects.toThrow("Cannot abort an agent in state ready");
+  });
+
+  it("refuses to abandon a pause while a stop attempt still holds the lifecycle lease", async () => {
+    const agent = await readyAgent();
+    const work = worker(async () => "pending");
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    const leaseUntil = JSON.stringify(new Date(Date.now() + 60_000).toISOString());
+    await db.update(agents).set({
+      lifecycleOperation: sql`jsonb_set(jsonb_set(${agents.lifecycleOperation},
+        '{leaseOwner}', '"another-controller"'::jsonb), '{leaseUntil}', ${leaseUntil}::jsonb)`,
+    }).where(eq(agents.id, agent.id));
+    await expect(createAgentLifecycle(db).abortPause(agent.id)).rejects.toThrow("stop attempt is in flight");
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    await db.update(agents).set({
+      lifecycleOperation: sql`${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil'`,
+    }).where(eq(agents.id, agent.id));
+    expect(await createAgentLifecycle(db).abortPause(agent.id)).toMatchObject({ lifecycleState: "ready" });
+  });
+
+  it("keeps a policy hold through an abort so the pause is not abandoned twice", async () => {
+    const agent = await readyAgent();
+    const work = worker(async () => "pending");
+    await createAgentLifecycle(db).pauseAgent(agent.id, "budget");
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    await expect(createAgentLifecycle(db).abortPause(agent.id)).rejects.toThrow("budget");
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+  });
+
+  it("restores stopped plugin resources through resuming when a part-paused agent is abandoned", async () => {
+    const agent = await readyAgent();
+    const [stopped, slow] = [randomUUID(), randomUUID()];
+    const calls: string[] = [];
+    const work = worker(async () => "complete", {
+      requiredPluginIds: async () => [stopped, slow],
+      runPlugin: async (paused, pluginId) => {
+        calls.push(`${pluginId === stopped ? "stopped" : "slow"}:${paused.lifecycleState}`);
+        return pluginId === slow && paused.lifecycleState === "pausing" ? "pending" : "complete";
+      },
+    });
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    const held = await current(agent.id);
+    expect(held.lifecycleState).toBe("pausing");
+    expect(held.lifecycleOperation).toMatchObject({ hostComplete: true, completedPluginIds: [stopped] });
+    expect(await createAgentLifecycle(db).abortPause(agent.id)).toMatchObject({ lifecycleState: "resuming" });
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", pauseReason: null });
+    expect(calls).toEqual(["stopped:pausing", "slow:pausing", "stopped:resuming", "slow:resuming"]);
+    expect(await resumeEvents(agent.id)).toHaveLength(1);
+  });
+
+  it("gives the board a route out of a pause that cannot finish", async () => {
+    const agent = await readyAgent("Wedged");
+    const work = worker(async () => "pending");
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    function app(actor: Express.Request["actor"]) {
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", agentRoutes(db)); app.use(errorHandler); return app;
+    }
+    const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
+      memberships: [{ companyId, membershipRole: "admin", status: "active" }] };
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "admin" });
+    await db.insert(principalPermissionGrants).values(["agents:create", "agents:configure"].map(permissionKey =>
+      ({ companyId, principalType: "user", principalId: "board", permissionKey })));
+    const url = `/api/agents/${agent.id}/lifecycle/abort`;
+    await request(app({ type: "agent", source: "agent_key", companyId, agentId: agent.id })).post(url).send({}).expect(403);
+    const response = await request(app(board)).post(url).send({});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.lifecycle_aborted"))))
+      .toEqual([expect.objectContaining({ actorType: "user", actorId: "board" })]);
+    await request(app(board)).post(url).send({}).expect(409);
   });
 
   it("does not cancel a reporting agent when its manager pauses", async () => {

@@ -9,6 +9,7 @@ import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.
 import { isNativeRunnerOwnershipHeld } from "../native-runtime/native-runner-ownership.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
+import { hasLegacyExecutionSettlement } from "../legacy-execution-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution } from "../case-access.js";
 import { assertCaseHandoffSourceAuthority, lockCaseHandoffAuthorityRun } from "../case-handoff-authority.js";
@@ -269,7 +270,7 @@ export async function isCaseHandoffSourceReleased(db: Db, input: { runId: string
     neverStarted ||
     await recoverLegacyCaseHandoffCleanup(db, run, input.issueId) ||
     (run.runtimeMode === "legacy" && recovery?.providerStopped === true && recovery?.sessionPreserved === true &&
-      recovery?.actionOutcomes === "settled" && run.executionStage === "settled");
+      recovery?.actionOutcomes === "settled" && hasLegacyExecutionSettlement(run));
   if (!stopped) return false;
   await recordCaseHandoffExecutionReleased(db, run.id, input.issueId);
   return true;

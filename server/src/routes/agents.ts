@@ -845,7 +845,6 @@ export function agentRoutes(
     { secretId: string; secretName: string; accountHomeDir: string; companyIdentityDiffers: boolean }
   >();
 
-
   const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
     runtime: createProductionLoginSessionRuntime({
@@ -5769,6 +5768,23 @@ export function agentRoutes(
     await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId,
       agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
       action: "agent.lifecycle_retried", entityType: "agent", entityId: agent.id });
+    res.json(redactAgentRowForResponse(agent));
+  });
+
+  router.post("/agents/:id/lifecycle/abort", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) return;
+    await assertCanConfigureAgentSetup(req, existing);
+    const agent = await svcLifecycle.abortPause(id);
+    if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
+    if (agent.lifecycleState === "ready") await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.lifecycle_aborted", entityType: "agent", entityId: agent.id,
+      details: { abandonedState: "pausing", lifecycleState: agent.lifecycleState } });
     res.json(redactAgentRowForResponse(agent));
   });
 

@@ -40,8 +40,10 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
+          const host = await runStep("host", () => driver.runHost(agent));
+          if (host === "pending" || typeof host === "object") {
+            const reason = typeof host === "object" ? host.reason : undefined;
+            if (!await runStep("defer", () => store.defer(agent, owner, reason, new Date(), { retryInMs: 2_000 }))) continue;
             return;
           }
           if (!await runStep("complete_host", () => store.completeHost(agent, owner))) continue;

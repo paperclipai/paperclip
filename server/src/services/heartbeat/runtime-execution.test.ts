@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
@@ -22,6 +22,8 @@ import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwners
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
+import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
+import { LEGACY_ADAPTER_ENTERED, LEGACY_ADAPTER_ENTRY_ABANDONED } from "../run-dispatch-evidence.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
@@ -107,7 +109,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
         envOrchestrator: { releaseForRun: vi.fn() }, cancelRunInternal: vi.fn(), enqueueWakeup: vi.fn(),
         persistRunProcessMetadata: vi.fn(), recordCurrentHeartbeatRunRuntimeProgress: vi.fn(), dispatchPendingNativeStatusWakeups: vi.fn(),
       },
-      effects: { onUsageCaptureReady: vi.fn(), onNativeDispatchStarted: vi.fn(), onLegacyAdapterEntered: vi.fn(), onWorkspaceRestoreFailure: vi.fn(), onProviderResourceDisposition: vi.fn(), onNativeWorkspaceFinalizeScheduled: vi.fn(), onNativeSessionResumeScheduled: vi.fn(), onNativeOwnershipHeld: vi.fn() },
+      effects: { onUsageCaptureReady: vi.fn(), onNativeDispatchStarted: vi.fn(), onLegacyAdapterEntered: vi.fn(), onLegacyAdapterEntryAbandoned: vi.fn(), onWorkspaceRestoreFailure: vi.fn(), onProviderResourceDisposition: vi.fn(), onNativeWorkspaceFinalizeScheduled: vi.fn(), onNativeSessionResumeScheduled: vi.fn(), onNativeOwnershipHeld: vi.fn() },
     };
     return { input, adapter, run };
   }
@@ -173,6 +175,57 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed" } }]);
     expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
     expectCleanup(input);
+  });
+
+  it.each([
+    ["terminates the run", async (runId: string) => {
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    }],
+    ["records a cancellation receipt while the run still reads running", async (runId: string) => {
+      await db.update(heartbeatRuns).set({ resultJson: { padding: randomBytes(192 * 1024).toString("hex"), cancellation: { requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, runId));
+    }],
+  ] as const)("skips the adapter handoff when a stop %s while the dispatch marker is written", async (_label, stop) => {
+    const { input, adapter, run } = await fixture();
+    input.effects.onLegacyAdapterEntered = vi.fn(async () => { await stop(run.id); });
+    await executeHeartbeatRuntime(db, input);
+    expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
+    expect(input.effects.onLegacyAdapterEntryAbandoned).toHaveBeenCalledOnce();
+    expect(adapter.execute).not.toHaveBeenCalled();
+    expect(await read(run.id)).toMatchObject({ usageJson: { accountingProviderWorkStarted: false } });
+    expect(await db.select().from(runUsageReceipts)).toHaveLength(0);
+    expectCleanup(input);
+  });
+
+  it("lets a later pause finish after a stop cancelled the run during the dispatch marker write", async () => {
+    const { input, adapter, run } = await fixture();
+    const record = (eventType: string, seq: number) => db.insert(heartbeatRunEvents).values({
+      companyId: input.agent.companyId, runId: run.id, agentId: input.agent.id, seq, eventType });
+    input.effects.onLegacyAdapterEntered = vi.fn(async () => {
+      await record(LEGACY_ADAPTER_ENTERED, 1);
+      await db.update(heartbeatRuns).set({ status: "cancelled", startedAt: new Date(), finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      expect(await agentExecutionsHaveStopped(db, [input.agent.id])).toBe(false);
+    });
+    input.effects.onLegacyAdapterEntryAbandoned = vi.fn(async () => { await record(LEGACY_ADAPTER_ENTRY_ABANDONED, 2); });
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute).not.toHaveBeenCalled();
+    expect(input.effects.onLegacyAdapterEntryAbandoned).toHaveBeenCalledOnce();
+    expect(await agentExecutionsHaveStopped(db, [input.agent.id])).toBe(true);
+  });
+
+  it("blocks a stop that lands after the handoff recheck, before the adapter can report anything", async () => {
+    const { input, adapter, run } = await fixture();
+    input.effects.onLegacyAdapterEntered = vi.fn(async () => {
+      await db.insert(heartbeatRunEvents).values({
+        companyId: input.agent.companyId, runId: run.id, agentId: input.agent.id, seq: 1, eventType: LEGACY_ADAPTER_ENTERED,
+      });
+    });
+    adapter.execute.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status: "cancelled", startedAt: new Date(), finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      expect(await agentExecutionsHaveStopped(db, [input.agent.id])).toBe(false);
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute).toHaveBeenCalledOnce();
   });
 
   it.each([

@@ -3,6 +3,7 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
+import { readLegacyExecutionSettlement } from "./legacy-execution-settlement.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
@@ -240,6 +241,8 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   if (typeof originalFailureCode === "string" && /^[a-z][a-z0-9_]{1,99}$/.test(originalFailureCode)) {
     execution.originalFailureCode = originalFailureCode;
   }
+  const settlement = readLegacyExecutionSettlement(run);
+  if (settlement) execution.settledAt = settlement.settledAt;
   if (run.startedAt && run.finishedAt) {
     const durationMs = run.finishedAt.getTime() - run.startedAt.getTime();
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;

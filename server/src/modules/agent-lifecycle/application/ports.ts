@@ -20,13 +20,16 @@ export interface LifecycleStore {
   setRequiredPlugins(agent: LifecycleAgent, owner: string, pluginIds: string[]): Promise<boolean>;
   completeHost(agent: LifecycleAgent, owner: string): Promise<boolean>;
   completePlugin(agent: LifecycleAgent, owner: string, pluginId: string): Promise<boolean>;
-  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date): Promise<boolean>;
+  defer(agent: LifecycleAgent, owner: string, error: string | null | undefined, now: Date,
+    options?: { retryInMs?: number }): Promise<boolean>;
   pending(limit: number, now: Date): Promise<string[]>;
 }
 
+export type LifecycleHostResult = "complete" | "pending" | { status: "pending"; reason: string | null };
+
 export interface LifecycleDriver {
   requiredPluginIds(agent: LifecycleAgent): Promise<string[]>;
-  runHost(agent: LifecycleAgent): Promise<"complete" | "pending">;
+  runHost(agent: LifecycleAgent): Promise<LifecycleHostResult>;
   runPlugin(agent: LifecycleAgent, pluginId: string): Promise<"complete" | "pending">;
   /** Notify the scheduler only after readiness has committed. */
   onReady?(agent: LifecycleAgent): Promise<void>;

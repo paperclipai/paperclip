@@ -6,6 +6,9 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleDriver } from "../modules/agent-lifecycle/index.js";
 import { agentHarnessVerificationService } from "./agent-harness-verification.js";
 import { agentInstanceSecretService } from "./agent-instance-secrets.js";
+import { describeExecutionStopBlockers, listAgentExecutionStopBlockers } from "./agent-execution-stop.js";
+
+export const STOP_DIAGNOSIS_ATTEMPTS = 15;
 
 export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): LifecycleDriver {
   const { verify } = agentHarnessVerificationService(db, manager);
@@ -50,7 +53,12 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
         const reason = agent.lifecycleHolds?.includes("company_archived")
           ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
-        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) return "pending";
+        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) {
+          const attempts = agent.lifecycleOperation?.attempts ?? 0;
+          if (attempts < STOP_DIAGNOSIS_ATTEMPTS || attempts % STOP_DIAGNOSIS_ATTEMPTS !== 0) return "pending";
+          const blockers = await listAgentExecutionStopBlockers(db, ids);
+          return { status: "pending", reason: blockers.length ? describeExecutionStopBlockers(blockers) : null };
+        }
       }
       return "complete";
     },

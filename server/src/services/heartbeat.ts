@@ -238,7 +238,6 @@ import { decisionModelService } from "./decision-models.js";
 import { TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 
-
 import {
   startupCancellationFence,
 } from "./native-runtime/native-cancellation-request.js";
@@ -273,6 +272,8 @@ import {
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
 
+import { legacyExecutionSettlementReceipt } from "./legacy-execution-settlement.js";
+import { LEGACY_ADAPTER_ENTERED, LEGACY_ADAPTER_ENTRY_ABANDONED } from "./run-dispatch-evidence.js";
 
 import {
   prepareManagedAiRuntime,
@@ -503,9 +504,7 @@ import {
   DIRECT_NON_INVOKABLE_STATUSES,
 } from "./agent-invokability.js";
 
-
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
-
 
 import { environmentService } from "./environments.js";
 
@@ -3465,10 +3464,28 @@ export function heartbeatService(
           effects: {
             onUsageCaptureReady: (value) => { persistUsageCaptureFailure = value; },
             onNativeDispatchStarted: () => { nativeDispatchStarted = true; },
-            onLegacyAdapterEntered: () => {
+            onLegacyAdapterEntered: async () => {
               legacyAdapterEntered = true;
               legacyLocalAdapterEntered = legacyAdapterNeedsLocalProcessSettlement({
                 adapterType: adapter.type, executionTargetKind: executionTarget?.kind,
+              });
+              await appendRunEvent(run, {
+                eventType: LEGACY_ADAPTER_ENTERED,
+                stream: "system",
+                level: "info",
+                message: "legacy adapter entered",
+                payload: { adapterType: adapter.type, executionTargetKind: executionTarget?.kind ?? "local" },
+              });
+            },
+            onLegacyAdapterEntryAbandoned: async () => {
+              legacyAdapterEntered = false;
+              legacyLocalAdapterEntered = false;
+              await appendRunEvent(run, {
+                eventType: LEGACY_ADAPTER_ENTRY_ABANDONED,
+                stream: "system",
+                level: "info",
+                message: "legacy adapter entry abandoned",
+                payload: { adapterType: adapter.type, executionTargetKind: executionTarget?.kind ?? "local" },
               });
             },
             onNativeWorkspaceFinalizeScheduled: () => { nativeWorkspaceFinalizeScheduled = true; },
@@ -3905,7 +3922,7 @@ export function heartbeatService(
           });
         }
         await db.update(heartbeatRuns).set({
-          executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
+          resultJson: legacyExecutionSettlementReceipt(new Date(), legacyControllerBootId),
           controllerLeaseExpiresAt: null,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),

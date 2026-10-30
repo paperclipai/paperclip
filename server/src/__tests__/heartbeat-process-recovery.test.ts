@@ -17,6 +17,7 @@ import * as environmentOrchestrator from "../services/environment-run-orchestrat
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } from "../services/recovery/legacy-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
+import { LEGACY_EXECUTION_SETTLEMENT_SCHEMA } from "../services/legacy-execution-settlement.js";
 import * as instructionWorkingCopies from "../services/agent-instruction-working-copies.js";
 import * as runEvents from "../services/heartbeat-run-events.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
@@ -8815,7 +8816,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         }).toEqual({
           status: result.run!.status,
           errorCode: result.run!.errorCode,
-          resultJson: result.run!.resultJson,
+          resultJson: {
+            ...(result.run!.resultJson ?? {}),
+            legacyExecutionSettlement: {
+              schema: LEGACY_EXECUTION_SETTLEMENT_SCHEMA,
+              settledAt: expect.any(String),
+              controllerBootId: expect.any(String),
+              stage: "dispatching",
+            },
+          },
           finishedAt: result.run!.finishedAt,
         });
       } finally {

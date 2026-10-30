@@ -47,6 +47,26 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+## Legacy adapter entry
+
+`legacy.adapter_entered` records that the controller is about to enter a legacy
+adapter's `execute`, and is committed before that call. It carries the adapter
+type and execution target kind. Its purpose is durable evidence: an adapter may
+spawn a child or contact a provider without ever reporting a PID, a session, or
+an event of its own, so the absence of this marker is what establishes that no
+executor ran. Its presence is not evidence that a provider was reached. The
+marker is controller bookkeeping rather than agent task progress, and is
+excluded from run-liveness action counts.
+
+`legacy.adapter_entry_abandoned` records that the controller wrote the marker
+and then did not enter the adapter, because the run had been stopped in the
+meantime. It withdraws one `legacy.adapter_entered` marker: a run is treated as
+having reached provider dispatch only while its marker count exceeds its
+abandonment count, so a second attempt that did enter an adapter still counts.
+Without it a run stopped inside that window would carry dispatch evidence for
+work that never started, and no later pause of its agent could ever complete.
+It is controller bookkeeping and is excluded from run-liveness action counts.
+
 ## Legacy case handoff cleanup
 
 `legacy.case_handoff_cleanup_intent` records local cleanup ownership before

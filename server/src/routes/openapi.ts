@@ -4000,6 +4000,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/agents/{id}/lifecycle/abort",
+  tags: ["agents"],
+  summary: "Abandon an agent pause that cannot finish",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/agents/{id}/pause",
   tags: ["agents"],
   summary: "Pause an agent",

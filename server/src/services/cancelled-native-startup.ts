@@ -1,9 +1,8 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
-import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { claimedAdapterType } from "./conversation-continuation.js";
-import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasProviderDispatchEvidence, leaseRetainsResources, readRunEnvironmentLeases } from "./run-dispatch-evidence.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 
@@ -57,21 +56,8 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const settled = beforeReviewDispatch || typeof run.resultJson?.startupPreparationSettledAt === "string";
   // The old preparer can still be unwinding even though the run is terminal.
   if (!settled && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
-  const leases = await db.select().from(environmentLeases).where(and(
-    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-  ));
-  if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
-    lease.provider === "local"
-      ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
-      : !hasRemoteTerminationReceipt(lease))) return false;
-  // Reject contradictory retained evidence, including a crash after a launch
-  // request but before the PID callback. Provider events never certify a stop.
-  const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    or(isNotNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
-        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
-        "provider.event", "provider.rpc_result", "tool.execution.started"])),
-  )).limit(1);
-  return !execution;
+  const leases = await readRunEnvironmentLeases(db, run);
+  if ((!settled && leases.length === 0 && !historicalBeforeSelection) ||
+    leases.some(leaseRetainsResources)) return false;
+  return !await hasProviderDispatchEvidence(db, run);
 }

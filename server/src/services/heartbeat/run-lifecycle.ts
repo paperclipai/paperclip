@@ -250,6 +250,8 @@ const LIVENESS_BOOKKEEPING_EVENT_TYPES = [
   "lifecycle",
   "adapter.invoke",
   "error",
+  "legacy.adapter_entered",
+  "legacy.adapter_entry_abandoned",
   "legacy.case_handoff_cleanup_intent",
   "legacy.case_handoff_cleanup_verified",
 ];

@@ -86,6 +86,22 @@ describe("lifecycle failure diagnostics", () => {
     await worker.stop();
   });
 
+  it("records a reason a pending host step supplies without slowing its retry", async () => {
+    const { store, driver, worker } = fixture();
+    driver.runHost.mockResolvedValue({ status: "pending", reason: "process_alive (run-1)" });
+    await worker.process(agent.id);
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), "process_alive (run-1)", expect.any(Date), { retryInMs: 2_000 });
+    await worker.stop();
+  });
+
+  it("keeps a recorded reason when a pending host step supplies none", async () => {
+    const { store, driver, worker } = fixture();
+    driver.runHost.mockResolvedValue("pending");
+    await worker.process(agent.id);
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), undefined, expect.any(Date), { retryInMs: 2_000 });
+    await worker.stop();
+  });
+
   it("does not treat prototype properties as allowed failure codes", () => {
     expect(lifecycleFailureMessage({ stage: "host", phase: "verifying" }, { code: "toString" }))
       .toContain("Paperclip could not complete this step");

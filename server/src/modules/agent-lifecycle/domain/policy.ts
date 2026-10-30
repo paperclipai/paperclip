@@ -1,6 +1,6 @@
 import type { AgentLifecycleState } from "@paperclipai/shared";
 
-export type LifecycleCommand = "reconcile" | "approve" | "reject" | "pause" | "resume" | "terminate" | "complete" | "retry";
+export type LifecycleCommand = "reconcile" | "approve" | "reject" | "pause" | "resume" | "terminate" | "complete" | "retry" | "abort";
 export class AgentLifecycleConflict extends Error {
   constructor(message: string) { super(message); this.name = "AgentLifecycleConflict"; }
 }
@@ -36,6 +36,8 @@ export function transition(state: AgentLifecycleState, command: LifecycleCommand
   } else if (command === "resume") {
     if (state === "ready" || state === "resuming") return state;
     if (state === "paused") return "resuming";
+  } else if (command === "abort") {
+    if (state === "pausing") return resumeState;
   } else if (command === "complete") {
     switch (state) {
       case "preparing": return "verifying";
