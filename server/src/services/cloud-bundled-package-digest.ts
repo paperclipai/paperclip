@@ -41,6 +41,10 @@ export function cloudBundledPackageDigest(packageRoot: string, options: { catalo
     logical(target);
     if (imageNodeModules) {
       const relative = path.relative(imageNodeModules, target).split(path.sep);
+      if ((relative.length === 1 && relative[0] === "")
+        || (relative[0] === ".pnpm" && (relative.length === 1 || (relative.length === 2 && relative[1] === "node_modules")))) {
+        throw new Error("Image dependency must select an individual package");
+      }
       if (relative[0] === ".pnpm" && relative.length > 2 && relative[1] && relative[1] !== "node_modules") {
         walk(path.join(imageNodeModules, ".pnpm", relative[1]));
         return;

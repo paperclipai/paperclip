@@ -63,6 +63,14 @@ describe("bounded current-image package dependency inventory", () => {
     expect(cloudBundledPackageDigest(image.provider, { catalogRoot: image.catalogRoot })).toBe(first);
   });
 
+  it.each(["", ".pnpm", ".pnpm/node_modules"])("rejects aggregate image dependency targets: %s", (aggregate) => {
+    const image = fixture();
+    const target = path.join(image.root, "node_modules", aggregate);
+    fs.mkdirSync(target, { recursive: true });
+    link(target, path.join(image.sdk, "node_modules", "aggregate"));
+    expect(() => cloudBundledPackageDigest(image.provider, { catalogRoot: image.catalogRoot })).toThrow("select an individual package");
+  });
+
   it("accepts the shipped provider's observed entry class", () => {
     const image = fixture();
     const directory = path.join(image.provider, "many"); fs.mkdirSync(directory);
