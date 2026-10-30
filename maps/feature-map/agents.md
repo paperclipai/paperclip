@@ -51,8 +51,11 @@ operators can choose **Paperclip Runner** in Advanced. Bind a Cursor Cloud
 API key, enter the exact model and select a repository/ref or a named Cursor
 cloud environment. Cursor hosts the agent's environment; this native setup has
 no Paperclip Computer selection. Save, reopen, and run Test. Test checks the
-account catalog and authenticated callback without a prompt; the effective-model
-warning remains visible for this experimental integration. Assign a real task
+account catalog and callback authentication gate without a prompt; the effective-model
+warning remains visible for this experimental integration. Finish setup repeats
+that account check and reaches Ready without preparing or leasing a Computer,
+even when the instance has a default plugin Computer. The Cursor lifecycle stays
+per-turn. Assign a real task
 and verify its output, question continuation, Plan approval and Stop separately.
 Managed-sandbox-only policy stays enabled. It continues to deny local agent code.
 Kubernetes-only execution is not supported by this API controller.

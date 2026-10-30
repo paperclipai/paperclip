@@ -28,7 +28,9 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   const prepareSetup = changed && current.lifecycleHolds.length === 1 && current.lifecycleHolds[0] === "setup"
     && ["paused", "preparing", "verifying"].includes(current.lifecycleState)
     && await effects.setupRequiresPreparation(tx, current.companyId,
-      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId);
+      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId,
+      { adapterType: patch.adapterType ?? current.adapterType,
+        adapterConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig") ? patch.adapterConfig : current.adapterConfig });
   const invalidate = changed && (["preparing", "verifying", "resuming"].includes(current.lifecycleState) || prepareSetup);
   if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {

@@ -24,8 +24,10 @@ complete native profile is validated. Create/update with `runner: paperclip`
 stores `defaultEnvironmentId: null`; the caller cannot supply placement, commands,
 working directories or arbitrary environment values. Only the bound
 `CURSOR_API_KEY` is passed to the qualified API proxy. Test does not acquire a
-Computer lease. Task/run authority, company boundaries, budgets and per-turn
-callback scope remain enforced. Local Computer execution stays denied under
+Computer lease. Finish setup uses the same validated placement and account check;
+it does not inherit a default Computer or its warm-task lifecycle. Incomplete
+held drafts stay inactive until the complete profile passes activation validation.
+Task/run authority, company boundaries, budgets and per-turn callback scope remain enforced. Local Computer execution stays denied under
 managed-sandbox-only policy. Verify the actual saved agent and live run; a board
 Test result does not prove agent task-tool access.
 

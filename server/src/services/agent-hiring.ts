@@ -14,6 +14,8 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -45,7 +47,11 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
-  if (adapterType === "paperclip_runner" && !["openai_dot", "grok_bot", "muse"].includes(String(adapterConfig.provider)) &&
+  const profile = { adapterType, adapterConfig };
+  const providerApiDraft = options?.setupOnly === true && isProviderApiSetupDraft(profile);
+  const providerApi = providerApiDraft ? null : resolveProviderApiPlacement({ agent: profile });
+  if (providerApi) assertProviderApiPlacementPolicy(await instanceSettingsService(db).getGeneral());
+  if (!providerApiDraft && !providerApi && adapterType === "paperclip_runner" && !["openai_dot", "grok_bot", "muse"].includes(String(adapterConfig.provider)) &&
       (await resolveAgentRunnerTaskDriverForCompany(db, companyId, data.defaultEnvironmentId))?.warmTaskVersion === 1) {
     adapterConfig.lifecycleMode = "warm";
   }

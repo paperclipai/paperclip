@@ -24,6 +24,12 @@ export function assertProviderApiPlacementPolicy(policy: ExecutionPolicy): void 
   }
 }
 
+/** Held setup may be incomplete. This only skips unused Computer preparation;
+ * active hire and verification must still derive a fully validated placement. */
+export function isProviderApiSetupDraft(agent: { adapterType?: string; adapterConfig?: unknown }): boolean {
+  return agent.adapterType === "paperclip_runner" && parseObject(agent.adapterConfig).provider === "cursor_cloud";
+}
+
 /** Placement is server-owned. A provider's API client is not an agent Computer. */
 export function resolveProviderApiPlacement(input: {
   agent: { adapterType: string; adapterConfig: unknown };
