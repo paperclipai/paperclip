@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const KIMI_PROFILE_VERSION = 15;
+export const KIMI_PROFILE_VERSION = 16;
 const sources = [
   "scripts/patch-kimi-runtime.mjs", "scripts/kimi-instructions-runtime.mjs",
   "scripts/materialize-kimi-distribution.mjs", "scripts/provision-kimi.mjs",
@@ -36,6 +36,9 @@ const sources = [
   "runner/crates/runner-core/src/native_provider_backend.rs",
   "runner/crates/runner-core/src/durable/runner.rs",
   "runner/crates/runner-core/src/durable/mod.rs",
+  "src/contracts/runtime-context.ts",
+  "src/contracts/generated-runtime-context-contract.ts",
+  "src/contracts/runtime-context-prompts.ts",
   "src/provider-events.ts",
   "src/native-session-runtime.ts",
   "src/control-plane/durable-prp-control-plane.ts",

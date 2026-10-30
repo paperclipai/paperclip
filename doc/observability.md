@@ -1070,6 +1070,15 @@ report must come after setup and carry no signal. Other `service` failures,
 untyped capacity text, and Codex CLI transient upstream failures remain reportable.
 The run keeps its failed state and its terminal diagnostic.
 
+A native Codex model capacity failure stays local only while its automatic
+retry owns recovery. The run must carry `native_provider_overloaded`, the closed
+`codex`/`server_overloaded` diagnostic, and a committed finalization whose
+reason is `native_provider_overloaded`. The report also requires the
+`native_provider_overloaded` retry run that the same status transaction created.
+Exhausted or held capacity failures, other retry lanes, setup failures, signals,
+and unreadable retry evidence remain reportable. A failed retry reports its own
+outcome.
+
 Expected pre-provider waits for a shared project workspace, a credential rotation
 lock, or an exhausted AI connection pool carry a server-owned expected
 cancellation receipt. They retain existing retry and lock behavior without a

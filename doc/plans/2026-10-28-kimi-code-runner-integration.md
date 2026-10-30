@@ -99,19 +99,40 @@ Its exact-final baseline fails; five focused tests and all thirty-five owning ba
 tests pass. The initial sandbox TCP-bind failures remain recorded separately from
 the successful loopback-authorized owning run. These controls are not model acceptance.
 
-The repair requires new pending15 native artifacts and a new image. Pending14
-fixtures, artifacts and its two passes retain their exact identities; they are not
-relabeled as pending15. The first proposed paid pending15 case is local
-Plan-revise-accept, once, after the new source/artifacts and caller pass review.
-The image build can proceed in parallel after that source freeze. The earlier held
-qualified15 promotion proposal is stale and remains immutable. Ordinary promotion
-will use a new qualified16 proposal only after required qualification and cleanup.
+The cold repair shipped as pending15 at source
+`9e82c00ad8e2eba628a33a2e1857379769ad7128`. All ten local task cases passed
+with original grades, scoped native15 audits and physical host closure. The
+causal Plan-revise-accept case reused the same native/provider session across its
+first and revised runs. No pending15 Daytona model case ran. Its immutable Linux
+image was built, independently checked, loaded once and published once at
+`sha256:61b097ec5e1c581a0868c174881497fab556c9197d92261595ddc75469d1787f`.
+The earlier public-push review rejection and later exact human authorization stay
+recorded. This is an original-source artifact, not acceptance of a later runtime.
+
+Master advanced to `0c70cedce9a803bdc201324528abb35e423e7cd0` before remote
+qualification. The real reconciliation preserves upstream runtime-context and
+sidecar contract generation, confirmation replay and provider-pack contract digest
+verification. The critical Kimi inventory now has 58 source inputs. Maintained
+identity generation derives pending16, Copilot91 and Grok18; Pi36 is unchanged.
+Colliding Copilot88 and Grok15 historical fixtures retain the upstream canonical
+filenames while the unmerged Foundation variants remain byte-exact under
+branch-qualified names with explicit lineage and no execution authority.
+
+All earlier pending15 passes and artifacts remain historical, source-bound
+evidence. They supply zero pending16 acceptance credit. The earlier held qualified16
+proposal is obsolete and remains immutable. The reconciled source requires new
+native artifacts on both targets, exact installed pack verification and a fresh
+20-case local/Daytona matrix with full resource, key and host closure before a new
+ordinary qualification proposal. The existing immutable image may be a physical
+base only when the normal installer verifies the current full Linux pack and
+native daemon; its old pack is not relabelled as current. No new artifact build,
+model test or promotion is authorized by this source proposal.
 
 The pending14 zero-model Daytona preflight passed native create/load, HTTPS checks,
 raw sandbox absence, complete scoped inventory and child-key revocation/list absence.
-It made no model request and supplies zero task-qualification credit. Current
-Foundation, Core and Product exact-head CI and reviews are green at their retained
-pre-repair heads. Original runner-shutdown attempts and the single successful
+It made no model request and supplies zero task-qualification credit. The retained pending15
+Foundation, Core and Product exact-head CI and reviews are green; the new private
+master reconciliation has no published-head CI claim. Original runner-shutdown attempts and the single successful
 failed-jobs-only retry request per Core/Product run remain recorded.
 
 Pending qualification uses the existing trusted startup-admission channel with
@@ -123,8 +144,8 @@ test authority.
 
 | Required gate | Current evidence | Remaining proof |
 | --- | --- | --- |
-| Merged native behavior | Reviewed cold restore repair: exact-final RED, focused5 and owning35 GREEN | Freeze pending15 source; build and verify both native targets |
-| Local and Daytona acceptance | Pending14 Stop/new and message pass; Plan failed; prior cases keep their original identities | First pending15 causal local Plan, then required local/Daytona acceptance and full closure |
+| Merged native behavior | Cold repair RED/GREEN retained; current master union and pending16 deterministic checks reviewed separately | Freeze reconciled source; build and verify both native targets and current pack contract |
+| Local and Daytona acceptance | Pending15 ten local passes; pending14 Plan failure and all original records unchanged | Fresh pending16 twenty-case matrix and full closure; zero carried acceptance credit |
 | Credential isolation | Protected startup and private-stdin SSH checks pass; pending14 zero-model preflight closes | Verify normal qualified setup and Test without candidate authority |
 | Normal distribution | Maintained closure has eighteen public packages and four daemon targets | Exact qualified-source build, full checks and clean installed consumption |
 | Ordinary product setup | Isolated hosted TEST workspace reserved | Installed Mac and hosted Linux setup/Test/save/reopen, assigned skill, download and reconnect |

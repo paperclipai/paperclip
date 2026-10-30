@@ -5,20 +5,23 @@ import { QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
 import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 
 describe("historical ACPX profile decoding", () => {
-  it("retains prior Kimi14, Copilot89 and Grok16 declarations while admitting only current launch identities", () => {
+  it("retains historical Kimi and Copilot declarations while admitting only current launch identities", () => {
     expect(isSupportedAcpxProfileVersion("kimi", 13)).toBe(true);
     expect(isSupportedAcpxProfileVersion("kimi", 12)).toBe(false);
     expect(isSupportedAcpxProfileVersion("kimi", 14)).toBe(true);
     expect(isSupportedAcpxProfileVersion("kimi", 15)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("kimi", 16)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("kimi", 16)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("kimi", 17)).toBe(false);
     expect(isSupportedAcpxProfileVersion("copilot", 88)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 89)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 90)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("copilot", 91)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("copilot", 91)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 92)).toBe(false);
     expect(isSupportedAcpxProfileVersion("grok", 15)).toBe(true);
     expect(isSupportedAcpxProfileVersion("grok", 16)).toBe(true);
     expect(isSupportedAcpxProfileVersion("grok", 17)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("grok", 18)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("grok", 18)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("grok", 19)).toBe(false);
   });
   it("retains each provider's existing revision boundary", () => {
     expect(isSupportedAcpxProfileVersion("grok", 7)).toBe(true);
@@ -100,7 +103,7 @@ describe("independent historical profile declarations", () => {
     const lineage = JSON.parse(readFileSync(new URL("../../../test/fixtures/profile-history-lineage.json", import.meta.url), "utf8"));
     expect(lineage.historicalDecodeOnly).toBe(true);
     expect(lineage.executionRequiresExactCurrentProfile).toBe(true);
-    expect(lineage.records).toHaveLength(10);
+    expect(lineage.records).toHaveLength(14);
     const variants = new Map<string, Set<string>>();
     for (const record of lineage.records) {
       const bytes = readFileSync(new URL(`../../../../../${record.path}`, import.meta.url));
@@ -116,7 +119,7 @@ describe("independent historical profile declarations", () => {
       const values = variants.get(key) ?? new Set<string>();
       values.add(record.commandDigest); variants.set(key, values);
     }
-    expect(variants.size).toBe(5);
+    expect(variants.size).toBe(7);
     for (const values of variants.values()) expect(values.size).toBe(2);
   });
 });

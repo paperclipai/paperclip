@@ -12,6 +12,7 @@ import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChe
 import { editCreatedSkillThroughStudio } from "../skill-studio-flow.js";
 import { downloadStoryArtifact, runArtifactOracle } from "../story-artifact.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readBoundTaskFinalReply } from "../native-task-reply.js";
 import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -92,6 +93,24 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
     state.currentIssue.status === "done" && state.taskRuns.length === count && state.taskRuns.every(run => !active(run))
     && state.interactions.every(row => row.status !== "pending"), "agent_task_not_completed");
+  const finalReply = async (issue: Row, state: TaskState, marker?: string) => {
+    const runs = state.taskRuns.filter(run => run.status === "succeeded");
+    if (!runs.length || runs.some(run => !Number.isFinite(Date.parse(run.finishedAt)))) throw new JourneyError("failed", "final_run_time_missing");
+    const run = [...runs].sort((a, b) => Date.parse(a.finishedAt) - Date.parse(b.finishedAt)).at(-1)!;
+    const companies = await context.api.get<Row[]>("/api/companies?scope=accessible");
+    if (!Array.isArray(companies) || !companies.some(row => row.id === context.company.id)
+      || companies.some(row => typeof row.issuePrefix !== "string" || !row.issuePrefix)) throw new JourneyError("failed", "reply_company_context_missing");
+    await open(issue);
+    const receipt = await readBoundTaskFinalReply({ page: context.page, runId: run.id, agentId: agent.id,
+      load: async () => {
+        const [latest, events] = await Promise.all([read(issue), collectRunEvents<Row>((afterSeq, limit) =>
+          context.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`))]);
+        return { run: latest.taskRuns.find(row => row.id === run.id)!, comments: latest.comments, events };
+      },
+      expectedText: marker, deadlineAt: options.deadlineAt, knownCompanyPrefixes: companies.map(row => row.issuePrefix) });
+    await retain(`${issue.id}-final-reply.json`, receipt);
+    return receipt;
+  };
   const reply = async (issue: Row, message: string) => {
     const before = (await read(issue)).comments;
     await open(issue);
@@ -124,9 +143,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const final = await settled(issue, 3);
     const marker = fixture.buildVisibleMarker(nonce);
     check("plan-revision-and-approval", receipt.draftInteraction.id !== receipt.revisedInteraction.id);
-    check("plan-final-answer", final.comments.some(row => row.authorAgentId === agent.id && row.body?.trim() === marker));
-    await open(issue); await context.page.reload();
-    await expect(context.page.getByText(marker, { exact: true }).last()).toBeVisible();
+    await finalReply(issue, final, marker);
+    check("plan-final-answer");
   } else if (id === "build-revise") {
     await runArtifactOracle(null, "base", options.deadlineAt);
     const issue = await create("", SLUGIFY_REQUIREMENTS);
@@ -174,12 +192,14 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
       check(`${phase}-decision-persisted`, final.interactions.some(row => row.id === decision.id && row.status === (decline ? "rejected" : "accepted")));
       check(`${phase}-service-call-count`, service.invocationCount() === callsBefore + (decline ? 0 : 1));
       if (decline) {
+        const nativeFinalReply = await finalReply(issue, final);
+        const refreshed = await read(issue);
         const connectionAfter = await context.api.get<Row>(`/api/tool-connections/${service.connectionId}`);
         const unchanged = (row: Row) => JSON.stringify({ id: row.id, companyId: row.companyId, status: row.status, enabled: row.enabled,
           installs: row.installs?.filter((install: Row) => install.targetType === "agent" && install.targetId === agent.id) });
         const checks = gradeConnectionGuidanceDecline({ caseId: "service-decline", decisionId: decision.id,
-          decisions: final.interactions as any, leadAgentId: agent.id, issueId: issue.id, replies: final.comments,
-          runs: final.taskRuns as any, marker: service.marker, calls: service.invocationCount() - callsBefore, sameConnections: unchanged(connectionBefore) === unchanged(connectionAfter) });
+          decisions: refreshed.interactions as any, leadAgentId: agent.id, issueId: issue.id, replies: refreshed.comments, nativeFinalReply,
+          runs: refreshed.taskRuns as any, marker: service.marker, calls: service.invocationCount() - callsBefore, sameConnections: unchanged(connectionBefore) === unchanged(connectionAfter) });
         await retain("service-decline-grade.json", checks);
         check("decline-truthful-explanation", checks.every(row => row.passed));
       } else {
@@ -240,8 +260,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const marker = redirected.marker;
     const userReply = redirected.reply as Row;
     const final = await settled(issue, 3);
-    check("new-direction-completed", final.comments.some(row => row.authorAgentId === agent.id && row.body?.trim() === marker
-      && row.createdByRunId !== original.id));
+    const completion = await finalReply(issue, final, marker);
+    check("new-direction-completed", completion.runId !== original.id);
     check("stopped-run-remained-terminal", final.taskRuns.find(run => run.id === original.id)?.status === "cancelled");
     const afterEvents = await runActivity();
     check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents)

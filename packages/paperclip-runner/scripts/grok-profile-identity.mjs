@@ -9,7 +9,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 // Versions 1–13 remain decodable historical identities. Versioned fixtures are
 // immutable; advance this version before changing a versioned declaration.
-export const GROK_PROFILE_VERSION = 17;
+export const GROK_PROFILE_VERSION = 18;
 // Contract surfaces: ACPX wire patch; sidecar parsing and error translation;
 // native effort/search/credential admission; host/sandbox/tool-bridge execution;
 // launcher integrity and platform pins; Rust descriptor writes, session state,
@@ -24,6 +24,7 @@ export const GROK_PROFILE_SOURCE_FILES = [
     "src/drivers/acpx/codex-runtime-adapter.ts", "src/drivers/acpx/runtime-host.ts",
     "src/drivers/preconfigured-home.ts",
     "src/drivers/acpx/runtime-sandbox.ts", "src/drivers/acpx/sidecar-protocol.ts",
+    "src/drivers/acpx/generated-sidecar-contract.ts",
     "src/drivers/acpx/native-distribution-integrity.ts",
     "src/providers/grok/launcher.cjs", "src/providers/grok/platforms.json",
     "runner/crates/runner-core/src/acpx_provider_backend.rs",

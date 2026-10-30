@@ -13,6 +13,7 @@ const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest
 const manifest = (revision: string): ProviderPackIdentity => {
   const payload = {
     compatibility: { opencode: 1, acpx: 1 },
+    contractDigest: sha("contracts"),
     pins: { opencode: "1.18.34", nodeMinimum: "24.11.0" },
     target: { platform: "linux", architecture: "x64" },
     runnerSourceRevision: revision.repeat(40),
@@ -69,16 +70,26 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "opencode" }, requireExactIdentity: options.requireExactIdentity,
       requireCurrentOpenCodeProxy: options.requireCurrentOpenCodeProxy });
   };
-  it.each(["interface", "platform", "schema", "artifact_path", "digest", "legacy"])("rejects an incompatible %s", async field => {
+  it.each(["interface", "contracts", "platform", "schema", "artifact_path", "digest", "legacy", "legacy_contracts"])("rejects an incompatible %s", async field => {
     let pack = manifest("a");
     if (field === "interface") pack.payload.compatibility!.opencode += 1;
+    if (field === "contracts") pack.payload.contractDigest = sha("other-contracts");
     if (field === "legacy") delete pack.payload.compatibility;
+    if (field === "legacy_contracts") delete pack.payload.contractDigest;
     if (field === "platform") pack.payload.target.architecture = "arm64";
     if (field === "schema") pack.schema = "unknown";
     if (field === "artifact_path") pack.payload.artifacts.nodeCommand.path = "../node";
     pack = reseal(pack);
     if (field === "digest") pack.digest = sha("corrupt");
     await expect(check(pack)).rejects.toThrow("runner_remote_provider_artifact_incompatible");
+  });
+  it("does not reuse image packs when the controller's bundled pack records no contract digest", async () => {
+    const current = manifest("b");
+    delete current.payload.contractDigest;
+    const installed = manifest("a");
+    await expect(verifyRemoteProviderPack({ runner: { execute: vi.fn() }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true },
+      provider: { kind: "opencode" } })).rejects.toThrow("interface or installation is incompatible");
   });
   it("keeps writable installations at the content-verification boundary", async () => {
     await expect(check(manifest("b"), { immutable: false })).rejects.toThrow("installation is incompatible");

@@ -102,6 +102,46 @@
       "version": 14,
       "commandDigest": "sha256:3140bc190a025afa2f7380a3eb1a2d8aeecd24850ac69f82871847e78c3b17a0",
       "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v88-kimi-foundation-81fbfb44-identity.json",
+      "originRevision": "81fbfb44cd4c652605ea581f8a10c42433cc34c3",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v88-identity.json",
+      "sha256": "c8acee88d0768e8bbecda50bcfd0378c7d7f3ce5e2925c1b6f1f66eeb06ae161",
+      "agent": "copilot",
+      "version": 88,
+      "commandDigest": "sha256:0c3328c3fecbe730fa0c4d5239f1084eada804bcb140e16bb41efa0e5a4c4380",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v88-identity.json",
+      "originRevision": "0c70cedce9a803bdc201324528abb35e423e7cd0",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v88-identity.json",
+      "sha256": "81e5fbccf057c04e012f638dc7a02c5758bf6ca67f7c4ed0045f3f61525401c2",
+      "agent": "copilot",
+      "version": 88,
+      "commandDigest": "sha256:b9c13b83628be07086a88394ae671997291b77bbdbf45b0bd1c4e91b7121bc9d",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/grok-profile-v15-kimi-foundation-81fbfb44-identity.json",
+      "originRevision": "81fbfb44cd4c652605ea581f8a10c42433cc34c3",
+      "originPath": "packages/paperclip-runner/test/fixtures/grok-profile-v15-identity.json",
+      "sha256": "f99f284f966c4a17b3073c4093b4cf35cff003868eb1d8dfa80e5171c4e7e7a0",
+      "agent": "grok",
+      "version": 15,
+      "commandDigest": "sha256:99a7c5a38e3786fc08cc27e54902b0d36b07be15c61e3ca5645088c301c35067",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/grok-profile-v15-identity.json",
+      "originRevision": "0c70cedce9a803bdc201324528abb35e423e7cd0",
+      "originPath": "packages/paperclip-runner/test/fixtures/grok-profile-v15-identity.json",
+      "sha256": "54f7063c82dc5b135a9b5e2b0d8653b5c839a42bbc3a845dbcfb6cd225fa623f",
+      "agent": "grok",
+      "version": 15,
+      "commandDigest": "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
+      "launchAuthority": false
     }
   ]
 }

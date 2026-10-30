@@ -109,7 +109,7 @@ describe("trusted Kimi candidate admission", () => {
   });
 
   it.each(["darwin-arm64", "linux-x64"] as const)("binds only the current pending Kimi profile and exact %s closure", target => {
-    expect(resolveQualifiedAcpxProfile("kimi", kimiExpected.model)).toMatchObject({ agentProfileVersion: 15, qualificationStatus: "pending" });
+    expect(resolveQualifiedAcpxProfile("kimi", kimiExpected.model)).toMatchObject({ agentProfileVersion: 16, qualificationStatus: "pending" });
     expect(parseAcpxCandidateAdmission(kimiCandidate(target), kimiExpected, now)).toEqual(kimiCandidate(target));
     expect(() => assertAcpxProfileReleased("kimi")).toThrow("qualification is pending");
     expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile("kimi", kimiExpected.model))).toThrow("qualification is pending");
