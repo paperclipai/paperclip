@@ -10,8 +10,6 @@ const editor = (page: Page) => page.getByTestId("task-chat-composer-stack").loca
 async function ready(page: Page) {
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
   await expect(editor(page)).toBeVisible();
-  const announcement = page.getByRole("button", { name: "Dismiss announcement", exact: true });
-  if (await announcement.isVisible()) await announcement.click();
 }
 async function anchor(page: Page) {
   return scroller(page).evaluate(root => {
@@ -28,12 +26,11 @@ async function offset(page: Page, id: string) {
 }
 async function scrollUp(page: Page, distance = 100_000) {
   await scroller(page).hover();
-  const before = await scroller(page).evaluate(root => root.scrollTop);
-  const moved = before > 0 ? scroller(page).evaluate(root => new Promise<void>(resolve => {
-    root.addEventListener("scroll", () => resolve(), { once: true });
-  })) : Promise.resolve();
+  const wheel = page.evaluate(() => new Promise<void>(resolve => {
+    window.addEventListener("wheel", () => requestAnimationFrame(() => requestAnimationFrame(() => resolve())), { once: true, capture: true });
+  }));
   await page.mouse.wheel(0, -distance);
-  await moved;
+  await wheel;
   await scroller(page).evaluate(root => new Promise<void>(resolve => {
     let previous = root.scrollTop, stable = 0;
     const sample = () => {
@@ -51,6 +48,12 @@ test.beforeAll(async ({ request }) => {
   fixture = await longChatFixture(request);
   const preference = await request.put(`/api/companies/${fixture.company.id}/workspace-preferences/me`, { data: { coordinatorWorkspaceEnabled: true } });
   expect(preference.ok()).toBeTruthy();
+  const announcementResponse = await request.get("/api/announcements/current");
+  const announcement = await announcementResponse.json();
+  if (announcement) {
+    const dismissed = await request.post(`/api/announcements/${announcement.id}/dismiss`, { data: { companyId: fixture.company.id } });
+    expect(dismissed.ok()).toBeTruthy();
+  }
   chatPath = `/${fixture.company.issuePrefix}/chats/${fixture.agent.id}`;
 });
 
