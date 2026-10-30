@@ -105,21 +105,28 @@ export function fixtureRuntimeCostCoverage(usage: RunnerE2ERuntimeUsage, fixture
   return { ...known, costStatus: "unavailable", costSource: "provider_cost_unavailable" };
 }
 
-export async function deleteDaytonaEnvironment(api: Pick<RunnerApi, "delete">, environmentId: string) {
-  const deadlineAt = Date.now() + 120_000;
+export async function deleteDaytonaEnvironment(api: Pick<RunnerApi, "delete">, environmentId: string, cleanupDeadlineAt?: number) {
+  const deadlineAt = cleanupDeadlineAt ?? Date.now() + 120_000;
+  if (!Number.isFinite(deadlineAt)) throw new Error("Daytona cleanup deadline must be finite");
   let lastError: unknown;
   while (Date.now() < deadlineAt) {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) break;
     try {
       await api.delete(
         `/api/environments/${environmentId}?destroyReusableSandboxLeases=true`,
         {
           allowNotFound: true,
+          timeout: Math.min(30_000, remaining),
         },
       );
+      if (Date.now() >= deadlineAt) throw new Error("Daytona cleanup deadline expired");
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(3_000, remaining)));
     }
   }
   throw new Error(
@@ -178,6 +185,7 @@ export async function setupLiveFixtures(input: {
   workspacePath: string;
   credentials: Partial<Record<CredentialName, string>>;
   daytonaImage?: string;
+  cleanupDeadlineAt?: number;
   onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
@@ -307,7 +315,7 @@ export async function setupLiveFixtures(input: {
     },
     async teardown(environment) {
       if (execution.environment.id === "daytona") {
-        await deleteDaytonaEnvironment(api, environment.id);
+        await deleteDaytonaEnvironment(api, environment.id, input.cleanupDeadlineAt);
       }
     },
   });

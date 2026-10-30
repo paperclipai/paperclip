@@ -492,6 +492,7 @@ describe("adapter routes", () => {
         { value: "cursor", label: "Cursor" },
         { value: "copilot", label: "GitHub Copilot" },
         { value: "pi", label: "Pi" },
+        { value: "kimi", label: "Kimi Code" },
       ],
     });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");

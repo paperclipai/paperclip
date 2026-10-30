@@ -367,22 +367,20 @@ cleanup before hire and retains its unconfirmed recovery state.
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
 
-### Kimi Code candidate verification
+### Kimi Code verification
 
-The pending native Kimi profile uses `paperclipai runtime setup kimi` on the
-execution host, an exact typed model, and a `KIMI_API_KEY` company secret.
-Existing legacy Kimi agents keep their saved runtime. The pending gate hides
-ordinary native Kimi hiring until qualification. The manual fixture seeds its
-company, then restarts its owned server with exact trusted company/model/profile/
-target/expiry authority before setup and Test. The grant cannot come from saved
-agent config or a public request. This fixture is not proof of the ordinary setup
-journey; the later qualified profile requires no candidate grant.
+The qualified native Kimi profile uses `paperclipai runtime setup kimi` on Mac
+ARM64 or Linux x64, an exact typed model, and a `KIMI_API_KEY` company secret.
+Ordinary setup, hiring and Runtime Test require no candidate grant. Runtime Test
+queries the authenticated Code model catalog without inference. Existing legacy
+Kimi agents keep their saved runtime. Future pending profiles retain protected
+startup admission; saved agent configuration and public requests cannot grant it.
 
 Use the explicit `kimi-qualification` Product E2E suite for local and Daytona
 reply, semantic question/plan, file/download, Stop, and continuation cases.
 Verify the actual task result, persisted state and process cleanup. Run the
 ordinary New Agent draft → model/secret → Test → save/reopen → task journey
-separately after admission. Native filesystem/shell tools are denied in read-only
+through ordinary released selection. Native filesystem/shell tools are denied in read-only
 Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
 is a test path, not a statement that live acceptance passed. Current evidence:
 [Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).

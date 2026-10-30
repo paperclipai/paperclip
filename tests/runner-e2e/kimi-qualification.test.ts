@@ -20,7 +20,7 @@ describe("Kimi Code explicit Product qualification", () => {
     expect(() => selectRunnerExecutions(parseRunnerSelectors(["--profile", "runner-acpx-kimi"]))).toThrow("zero executions");
     expect(runnerMatrix.filter(cell => cell.suite.id === "extended-harnesses")).toHaveLength(30);
     expect(runnerSuites.find(suite => suite.id === suiteId)?.definitionMetadata).toMatchObject({
-      qualification: "pending", scheduling: "explicit-only", modelDiscovery: "exact-model-authenticated-observed",
+      qualification: "qualified", scheduling: "explicit-only", modelDiscovery: "exact-model-authenticated-observed",
       nativeQuestions: "not-claimed", nativePlans: "not-claimed", accounting: "usage-and-cost-unavailable",
     });
   });
@@ -30,7 +30,7 @@ describe("Kimi Code explicit Product qualification", () => {
     for (const cell of cells) {
       expect(cell.suite.manualOnly).toBe(true);
       expect(cell.profile).toMatchObject({ qualificationCandidate: "kimi", model: "kimi-for-coding",
-        modelQualification: { source: "candidate_runner_profile" } });
+        modelQualification: { source: "qualified_runner_profile" } });
       expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
       expect(cell.requiredCredentials).toEqual(cell.environment.id === "local" ? ["KIMI_API_KEY"] : ["KIMI_API_KEY", "DAYTONA_API_KEY"]);
       expect(cell.profile.buildAgent({ executionId: cell.id, environmentId: "env", environmentFixtureId: cell.environment.id,

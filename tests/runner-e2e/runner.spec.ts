@@ -944,6 +944,7 @@ for (const execution of executions) {
         workspacePath,
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
+        cleanupDeadlineAt: kimiLifecycleTiming?.cleanupDeadlineAt,
         onCompanyCreated,
       });
       await finishBudgetedEvalSetup({ executionId: execution.id, environmentId: execution.environment.id, agentId: fixtures.agent.id,

@@ -3,6 +3,7 @@ import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "./generated-profiles.js";
 import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { assertAcpxExecutionAdmission, bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateAdmission } from "./candidate-admission.js";
+import historicalKimi from "../../../test/fixtures/kimi-profile-v16-identity.json" with { type: "json" };
 import { verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { AcpxRuntimeHost } from "./runtime-host.js";
 import * as integrity from "./installation-integrity.js";
@@ -109,10 +110,18 @@ describe("trusted Kimi candidate admission", () => {
   });
 
   it.each(["darwin-arm64", "linux-x64"] as const)("binds only the current pending Kimi profile and exact %s closure", target => {
-    expect(resolveQualifiedAcpxProfile("kimi", kimiExpected.model)).toMatchObject({ agentProfileVersion: 16, qualificationStatus: "pending" });
-    expect(parseAcpxCandidateAdmission(kimiCandidate(target), kimiExpected, now)).toEqual(kimiCandidate(target));
-    expect(() => assertAcpxProfileReleased("kimi")).toThrow("qualification is pending");
-    expect(() => assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile("kimi", kimiExpected.model))).toThrow("qualification is pending");
+    const profile = resolveQualifiedAcpxProfile("kimi", kimiExpected.model);
+    if (profile.qualificationStatus === "pending") {
+      expect(parseAcpxCandidateAdmission(kimiCandidate(target), kimiExpected, now)).toEqual(kimiCandidate(target));
+      expect(() => assertAcpxProfileReleased("kimi")).toThrow("qualification is pending");
+      expect(() => assertAcpxExecutionAdmission(profile)).toThrow("qualification is pending");
+    } else {
+      expect(profile.agentProfileVersion).toBe(17);
+      expect(() => assertAcpxProfileReleased("kimi")).not.toThrow();
+      expect(() => assertAcpxExecutionAdmission(profile)).not.toThrow();
+      expect(() => parseAcpxCandidateAdmission(kimiCandidate(target), kimiExpected, now)).toThrow();
+      expect(() => parseAcpxCandidateAdmission({ ...kimiCandidate(target), profileDigest: historicalKimi.commandDigest }, kimiExpected, now)).toThrow();
+    }
     const other = target === "darwin-arm64" ? "linux-x64" : "darwin-arm64";
     for (const change of [
       { companyId: "foreign-company" }, { agent: "antigravity" }, { model: "another-model" },
@@ -126,15 +135,21 @@ describe("trusted Kimi candidate admission", () => {
   });
 
   it.each(["darwin-arm64", "linux-x64"] as const)("requires the exact actual host and startup identity for %s", target => {
-    const startup = bindAcpxCandidateAdmission({ ...kimiCandidate(target), expiresAt: Date.now() + 60_000 },
-      { runId: "kimi-run", normalizedSessionId: "kimi-session" });
     const profile = resolveQualifiedAcpxProfile("kimi", kimiExpected.model);
+    const source = { ...kimiCandidate(target), expiresAt: Date.now() + 60_000 };
+    const identity = { runId: "kimi-run", normalizedSessionId: "kimi-session" };
+    const startup = profile.qualificationStatus === "pending" ? bindAcpxCandidateAdmission(source, identity) : { ...source, ...identity };
+    if (profile.qualificationStatus !== "pending") expect(() => bindAcpxCandidateAdmission(source, identity)).toThrow();
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const architecture = Object.getOwnPropertyDescriptor(process, "arch")!;
     try {
       Object.defineProperty(process, "platform", { ...platform, value: startup.platform });
       Object.defineProperty(process, "arch", { ...architecture, value: startup.architecture });
-      expect(() => assertAcpxExecutionAdmission(profile, startup)).not.toThrow();
+      if (profile.qualificationStatus === "pending") expect(() => assertAcpxExecutionAdmission(profile, startup)).not.toThrow();
+      else {
+        expect(() => assertAcpxExecutionAdmission(profile)).not.toThrow();
+        expect(() => assertAcpxExecutionAdmission(profile, startup)).toThrow();
+      }
       for (const identity of [{ runId: "foreign-run" }, { normalizedSessionId: "foreign-session" }, { model: "foreign-model" }]) {
         expect(() => parseAcpxCandidateStartupAdmission(startup, { ...kimiExpected, runId: "kimi-run", normalizedSessionId: "kimi-session", ...identity })).toThrow();
       }

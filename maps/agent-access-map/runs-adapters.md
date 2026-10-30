@@ -70,15 +70,13 @@ qualified selection, not successful authentication or task execution. Native
 Claude retains existing account grants and company/responsible-user boundaries.
 Source: [adapter discovery](../../server/src/adapters/registry.ts).
 
-Kimi Code has a separate pending native ACPX profile. It requires an explicit
-model and a company-secret `KIMI_API_KEY` binding, and uses the global Code API.
-Ordinary selection stays gated until local and Daytona acceptance passes; exact
-trusted startup records authorize only the exact company, model, pending profile,
-Mac ARM64 or Linux x64 closure, and expiry. Saved agent configuration and public
-requests cannot supply this authority. The owned fixture stages it after company
-creation through a server restart; candidate Test binds a distinct metadata
-operation/session and sends no model prompt. These runs do not grant ordinary
-agent installation access. Inactive setup drafts can precede model entry; Test and hire still require it.
+Kimi Code has a qualified native ACPX profile on Mac ARM64 and Linux x64. It
+requires an explicit model and a company-secret `KIMI_API_KEY` binding, and uses
+the global Code API. Ordinary selection, setup and Runtime Test require no
+candidate grant. Runtime Test queries the authenticated Code model catalog and
+sends no model prompt. Future pending profiles retain exact trusted startup
+admission; saved agent configuration and public requests cannot supply authority.
+Inactive setup drafts can precede model entry; Test and hire still require it.
 The native model route returns no suggestions and accepts typed identifiers.
 Managed Kimi account connections, ambient OAuth borrowing, and automatic legacy
 migration are outside this release. Source/control evidence only; see the

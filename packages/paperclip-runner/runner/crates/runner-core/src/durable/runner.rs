@@ -5149,7 +5149,12 @@ mod tests {
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     ))]
-    fn kimi_candidate_handoff_binds_the_existing_authenticated_next_authority() {
+    fn released_kimi_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("kimi")
+                .unwrap()
+                .qualification_pending
+        );
         let directory =
             std::env::temp_dir().join(format!("kimi-grant-handoff-{}", std::process::id()));
         let mut current = config(directory);
@@ -5190,7 +5195,7 @@ mod tests {
                 path: PathBuf::from("/fixture/node"),
                 sha256: format!("sha256:{}", "b".repeat(64)),
             }],
-            candidate_admission: Some(grant.clone()),
+            candidate_admission: None,
         });
         current.validate().unwrap();
         let mut next_grant = grant.clone();
@@ -5199,27 +5204,22 @@ mod tests {
         attach.payload = json!({"paperclipNextAuthority":{
             "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
                 "runId":"run_2","normalizedSessionId":current.normalized_session_id,"turnId":"turn_2","itemId":"item_2"},
-            "connection":{"mode":"external"},"candidateAdmission":next_grant
+            "connection":{"mode":"external"}
         }});
         let next = next_authority_config(&attach, &current).unwrap().unwrap();
-        let actual = next
+        assert!(next
             .acpx_launch_profile
             .as_ref()
             .unwrap()
             .candidate_admission
-            .as_ref()
-            .unwrap();
-        assert_eq!(actual, &next_grant);
-        assert_eq!(
-            current
-                .acpx_launch_profile
-                .as_ref()
-                .unwrap()
-                .candidate_admission
-                .as_ref()
-                .unwrap(),
-            &grant
-        );
+            .is_none());
+        assert_eq!(next.acpx_launch_profile, current.acpx_launch_profile);
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.turn_id, "turn_2");
+        assert_eq!(next.item_id, "item_2");
+        let mut injected = attach.clone();
+        injected.payload["paperclipNextAuthority"]["candidateAdmission"] = json!(next_grant);
+        assert!(next_authority_config(&injected, &current).is_err());
         assert_eq!(next.runner_instance_id, current.runner_instance_id);
         assert_eq!(next.environment_lease_id, current.environment_lease_id);
         assert_eq!(next.normalized_session_id, current.normalized_session_id);
@@ -5236,7 +5236,7 @@ mod tests {
             ("runId", json!("unbound-run")),
             ("normalizedSessionId", json!("foreign-session")),
         ] {
-            let mut changed = attach.clone();
+            let mut changed = injected.clone();
             changed.payload["paperclipNextAuthority"]["candidateAdmission"][field] = value;
             assert!(
                 next_authority_config(&changed, &current).is_err(),
@@ -5255,18 +5255,19 @@ mod tests {
                 "{field}"
             );
         }
-        let mut missing = attach.clone();
+        let mut missing = injected.clone();
         missing.payload["paperclipNextAuthority"]
             .as_object_mut()
             .unwrap()
             .remove("candidateAdmission");
-        assert!(next_authority_config(&missing, &current).is_err());
-        let mut no_prior = current.clone();
-        no_prior
+        assert!(next_authority_config(&missing, &current).unwrap().is_some());
+        let mut stale_candidate = current.clone();
+        stale_candidate
             .acpx_launch_profile
             .as_mut()
             .unwrap()
-            .candidate_admission = None;
-        assert!(next_authority_config(&attach, &no_prior).is_err());
+            .candidate_admission = Some(grant);
+        assert!(stale_candidate.validate().is_err());
+        assert!(next_authority_config(&injected, &stale_candidate).is_err());
     }
 }

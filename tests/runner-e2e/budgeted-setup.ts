@@ -53,6 +53,7 @@ export function createKimiLifecycleTiming(input: { startedAt: number; deadlineMs
   const setupDeadlineAt = input.startedAt + input.deadlineMs;
   let workStarted = false;
   return { setupDeadlineAt, playwrightTimeoutMs: 2 * input.deadlineMs + 90_000,
+    cleanupDeadlineAt: input.startedAt + 2 * input.deadlineMs + 60_000,
     beginWork(readyAt: number) {
       if (workStarted) throw new Error("Kimi lifecycle work window already started");
       if (readyAt < input.startedAt || readyAt >= setupDeadlineAt) throw new Error("Kimi lifecycle setup deadline expired");

@@ -8,7 +8,7 @@ import path from "node:path";
 import type { RunnerApi } from "./api.js";
 import { buildRuntimeUsage } from "./billing.js";
 import { runnerMatrix } from "./catalog.js";
-import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage } from "./live-fixtures.js";
+import { deleteDaytonaEnvironment, setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
   it.each([
@@ -577,5 +577,58 @@ describe("Daytona fixture readiness after candidate startup", () => {
     const api = apiAt(() => true, true);
     await expect(waitReady()(api, { companyId, deadlineAt: Date.now() + 5_000 })).rejects.toThrow(/plugin identity/);
     expect(api.calls).not.toContain("ENV_POST");
+  });
+});
+
+
+describe("absolute Daytona fixture cleanup deadline", () => {
+  it("waits for an ordinary pending cleanup to succeed beyond the default120s without extending the original Kimi window", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const times: number[] = [];
+    const remove = vi.fn(async (_path: string, options?: { allowNotFound?: boolean; timeout?: number }) => {
+      times.push(Date.now());
+      expect(options?.allowNotFound).toBe(true);
+      expect(options!.timeout).toBeLessThanOrEqual(660_000 - Date.now());
+      if (Date.now() < 300_000) throw new Error("DELETE409 pending_cleanup");
+    });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment", 660_000);
+      await vi.advanceTimersByTimeAsync(300_000);
+      await completed;
+      expect(times.at(-1)).toBe(300_000);
+      expect(times.length).toBe(101);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("stops at the absolute deadline and clamps final request/sleep time", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const times: number[] = [], timeouts: number[] = [];
+    const remove = vi.fn(async (_path: string, options?: { timeout?: number }) => {
+      times.push(Date.now()); timeouts.push(options!.timeout!);
+      throw new Error("DELETE409 pending_cleanup");
+    });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment", 3_500).catch(error => error);
+      await vi.advanceTimersByTimeAsync(3_500);
+      expect(await completed).toMatchObject({ message: expect.stringContaining("Daytona lease cleanup failed") });
+      expect(times).toEqual([0, 3_000]);
+      expect(timeouts).toEqual([3_500, 500]);
+      await expect(deleteDaytonaEnvironment({ delete: remove }, "environment", 3_500)).rejects.toThrow("cleanup failed");
+      expect(remove).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(0);
+      const lateSuccess = vi.fn(async () => { vi.setSystemTime(3_500); });
+      await expect(deleteDaytonaEnvironment({ delete: lateSuccess }, "environment", 3_500)).rejects.toThrow("deadline expired");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("preserves the120s default for callers without an absolute cleanup deadline", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const remove = vi.fn(async () => { throw new Error("DELETE409 pending_cleanup"); });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment").catch(error => error);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await completed).toMatchObject({ message: expect.stringContaining("cleanup failed") });
+      expect(remove).toHaveBeenCalledTimes(40);
+    } finally { vi.useRealTimers(); }
   });
 });

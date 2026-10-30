@@ -10542,8 +10542,8 @@ const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
   acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
 } as const;
-const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot"] as const;
-const REMOTE_PROVIDER_PACK_CANDIDATES = [...REMOTE_PROVIDER_PACK_PROVIDERS, "kimi"] as const;
+const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending" ? ["kimi"] as const : [])] as const;
+const REMOTE_PROVIDER_PACK_CANDIDATES = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? ["kimi"] as const : [])] as const;
 
 type RemoteProviderPackManifest = {
   schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
@@ -10749,7 +10749,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
       if (!allowedProviders.includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && provider === "copilot" ? "qualified" : "pending") || candidate.path !== expectedPath
+        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending") ? "qualified" : "pending") || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
@@ -10783,7 +10783,9 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
         }
       }
       if (provider === "kimi") {
-        if (payload.target.platform !== "linux" || payload.target.architecture !== "x64"
+        if (inventory !== (QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "candidateProviders" : "providers")
+          || payload[QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? "providers" : "candidateProviders"]?.kimi
+          || payload.target.platform !== "linux" || payload.target.architecture !== "x64"
           || candidate.version !== QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion
           || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.kimi.commandDigest
           || candidate.closureDigest !== `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`) {

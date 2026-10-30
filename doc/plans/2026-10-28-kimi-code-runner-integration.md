@@ -135,6 +135,30 @@ Foundation, Core and Product exact-head CI and reviews are green; the new privat
 master reconciliation has no published-head CI claim. Original runner-shutdown attempts and the single successful
 failed-jobs-only retry request per Core/Product run remain recorded.
 
+At pending16 source `603756c22b2e39de9b5b5c3c26a0eb23c67604a1`, the
+causal local Plan and message cases passed. The next local ask-question case
+failed with `native_finalization_missing: session returned no semantic result`.
+Its native terminal reported completed/yielded without a semantic result. The
+sequence stopped, and original/physical cleanup passed. The original failure is
+retained for owner diagnosis. Current acceptance is two passed, one failed and
+seventeen unstarted; no paid retry or source repair is claimed here.
+
+A proposed ordinary qualified17 transition is prepared separately and remains
+HELD. It must not be applied, built for release or deployed until Root accepts all
+twenty pending16 original cases and their full closure at the frozen execution
+source. Earlier pending15 local passes remain historical and supply no pending16
+credit. This ledger does not claim a pending16 pass count, a qualified17 artifact,
+a hosted result or permission to promote.
+
+The held transition changes the top Product source only. Foundation and Core stay
+at their reviewed pending16 prerequisite identities; no extra merge or mirrored
+generation exists only to make branch metadata equal. The final qualified build
+must bind its actual top revision, complete native58 inventory, full pack contract
+and exact target artifacts. Ordinary startup and Test must work without a candidate
+grant, and retained pending16 identities must remain historical-only for execution.
+The actual accepted pending16 evidence and final qualified limitations must be
+recorded before the eventual qualified-source commit and artifact build.
+
 Pending qualification uses the existing trusted startup-admission channel with
 exact company, model, profile, platform closure, expiry, run and session bindings.
 A warm handoff may rotate only the authenticated run identity through the normal
@@ -869,3 +893,52 @@ and [product setup #18029](https://github.com/paperclipai/paperclip/pull/18029).
 The first foundation review was 5/5 with no comments on its exact prior head;
 the corrected final head requires a fresh review. Neither PR is ready for merge
 until required product acceptance and checks pass.
+
+### 2026-10-30: native behavior and cleanup recovery accepted
+
+The profile 16 candidate (`e027eb4e…`, SDK 2.3.3, native artifact source
+`603756c22b2e39de9b5b5c3c26a0eb23c67604a1`) has evidence for ten distinct
+local behaviors and ten distinct Daytona behaviors. These are functional
+acceptances, not twenty originally green attempts: local Ask retains its first
+failure; the Daytona permission case retains an accounting-observer failure;
+the final provider-loss case retains its original cleanup-failure grade.
+Fixture/Core sources for the remote evidence are `8bc5ce3b…` and `e7f65045…`;
+the fixture-only rebuild changed only build-info among 10,993 compiled files.
+
+The final Daytona case delivered loss to the exact owned native child while
+Write approval was pending. Its six matchers passed, including no file effect,
+expiry of the original callback, rejection of stale Allow, one failed native
+run, blocked task state, and complete native process retirement. Its workspace
+recovery completed and confirmed stop, then deliberately queued sandbox
+destruction for five minutes later. The test's 120-second environment-delete
+wait ended before that ordinary cleanup deadline.
+
+A separate recovery restored the same captured control-plane state to an
+isolated working copy and used the normal server, company-secret rotation,
+cleanup scheduler, and environment DELETE route. Cleanup became successful,
+DELETE returned its documented HTTP 200, and the environment was absent from
+the database. No model turn, new run, new lease, or direct domain SQL update was
+used for recovery. Both the original and recovery processes, ports, provider
+resources, and temporary keys were closed. Root's combined acceptance record
+is SHA256 `25d0eae952eab91c6d54abb6850d4abf1b69f1045e7d7bb05333f8b87c184c0a`;
+it preserves the original failed grades and distinguishes native proof from
+later normal cleanup recovery.
+
+The readiness correction waits for the same agent before changing permission
+policy, avoiding invalidation of an in-flight verification. Setup and native
+work now have separate finite windows, and remote deadline diagnostics identify
+the operation without retaining SDK text. Canonical focused verification passed
+223 tests with one existing Linux-only skip on Mac, plus the full fixture
+TypeScript check. Native runtime bytes and model/callback limits were unchanged.
+Profile 17 public-package installation and the actual hosted walkthrough on
+`kimi.test.paperclip.app` remain separate delivery gates; this section does not
+claim either has passed.
+
+The cleanup fixture now uses one absolute Kimi deadline at the original test
+start plus 660 seconds, within the unchanged 690-second total limit. It leaves
+30 seconds for final evidence. Each DELETE request and retry sleep uses only
+the remaining time. Other flows retain their 120-second default. The actual
+canonical fixture tests passed 73 assertions across three files, including
+ordinary deferred cleanup beyond 120 seconds, deadline exhaustion, request
+timeout forwarding, and HTTP success versus pending cleanup. This source
+correction does not regrade the preserved failed live attempt.

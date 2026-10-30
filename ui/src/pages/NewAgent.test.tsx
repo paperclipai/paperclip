@@ -1016,6 +1016,7 @@ describe("New agent setup", () => {
   });
   it("offers native Kimi separately from the existing legacy Kimi under a qualified release fixture", async () => {
     const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
     profile.qualified = true;
     try {
       const setupId = "00000000-0000-4000-8000-000000000094";
@@ -1031,21 +1032,27 @@ describe("New agent setup", () => {
       await settle();
       expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }), "company-1");
       expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining("runnerProvider=kimi"), { replace: true });
-    } finally { profile.qualified = false; }
+    } finally { profile.qualified = previousQualified; }
   });
 
-  it("keeps the native Kimi setup behind qualification", async () => {
-    await render("paperclip_runner", "kimi");
-    await fill("KIMI_API_KEY", "kimi-test-key");
-    await fill("Model", "explicit-kimi-model");
-    await click("Finish setup");
-    expect(api.testEnvironment).not.toHaveBeenCalled();
-    expect(api.hire).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Kimi Code is not enabled for production");
+  it("keeps an unqualified native Kimi declaration behind qualification", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    try {
+      profile.qualified = false;
+      await render("paperclip_runner", "kimi");
+      await fill("KIMI_API_KEY", "kimi-test-key");
+      await fill("Model", "explicit-kimi-model");
+      await click("Finish setup");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(api.hire).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Kimi Code is not enabled for production");
+    } finally { profile.qualified = previousQualified; }
   });
 
   it("saves and reopens native Kimi with its exact model and one organization secret under a qualified release fixture", async () => {
     const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
     profile.qualified = true;
     try {
       await render("paperclip_runner", "kimi");
@@ -1078,7 +1085,7 @@ describe("New agent setup", () => {
         adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" }),
       }));
       expect(secrets.create).toHaveBeenCalledTimes(1);
-    } finally { profile.qualified = false; }
+    } finally { profile.qualified = previousQualified; }
   });
 
   it("defines a Kimi API model without overriding it with a CLI model alias", async () => {

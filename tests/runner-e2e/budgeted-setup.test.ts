@@ -145,6 +145,8 @@ it("keeps a finite setup cap and one full graded Kimi window after the recorded 
   const timing = createKimiLifecycleTiming({ startedAt, deadlineMs });
   expect(timing.setupDeadlineAt).toBe(startedAt + 300_000);
   expect(timing.playwrightTimeoutMs).toBe(690_000);
+  expect(timing.cleanupDeadlineAt).toBe(startedAt + 660_000);
+  expect(startedAt + timing.playwrightTimeoutMs - timing.cleanupDeadlineAt).toBe(30_000);
   const readyAt = startedAt + 242_000;
   const workDeadlineAt = timing.beginWork(readyAt);
   expect(workDeadlineAt - readyAt).toBe(300_000);

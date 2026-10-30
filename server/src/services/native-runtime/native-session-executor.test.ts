@@ -2005,16 +2005,16 @@ describe("remote provider pack manifest", () => {
     const kimi = { version: QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion,
       profileDigest: QUALIFIED_ACPX_PROFILES.kimi.commandDigest,
       closureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`,
-      qualification: "pending", path: kimiPath, sha256: sha256DirectoryTree(join(root, kimiPath)) };
-    Object.assign(payload, { candidateProviders: { kimi } });
+      qualification: "qualified", path: kimiPath, sha256: sha256DirectoryTree(join(root, kimiPath)) };
+    Object.assign(payload, { providers: { cursor, kimi } });
     await mkdir(releaseMetadata, { recursive: true });
     const writeKimiManifest = async () => {
       await writeManifest();
       await cp(join(root, "provider-pack.json"), manifestPath);
     };
     await writeKimiManifest();
-    expect(readRemoteProviderPackManifest(root).payload.candidateProviders?.kimi).toEqual(kimi);
-    expect(readBundledRemoteProviderPackManifest(manifestPath).payload.candidateProviders?.kimi?.qualification).toBe("pending");
+    expect(readRemoteProviderPackManifest(root).payload.providers?.kimi).toEqual(kimi);
+    expect(readBundledRemoteProviderPackManifest(manifestPath).payload.providers?.kimi?.qualification).toBe("qualified");
     for (const field of ["version", "profileDigest", "closureDigest"] as const) {
       const previous = kimi[field];
       kimi[field] = field === "version" ? "older-kimi" : digest(`old-kimi-${field}`);
@@ -2032,37 +2032,39 @@ describe("remote provider pack manifest", () => {
       kimi.path = `provider-assets/kimi/${target.platform}-${target.architecture}`;
       Object.assign(payload, { providers: {} });
       await writeKimiManifest();
-      expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Kimi profile or closure");
+      expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("bundled image pack must target linux-x64");
     }
     payload.target = originalTarget;
     kimi.path = kimiPath;
-    kimi.qualification = "qualified";
-    await writeKimiManifest();
-    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate identity");
+    Object.assign(payload, { providers: { cursor, kimi } });
     kimi.qualification = "pending";
-    Object.assign(payload, { providers: { cursor, kimi: { ...kimi, qualification: "qualified" } } });
     await writeKimiManifest();
     expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate identity");
-    Object.assign(payload, { providers: { cursor } });
+    kimi.qualification = "qualified";
+    Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: { kimi } });
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Kimi profile or closure");
+    Object.assign(payload, { providers: { cursor, kimi } });
+    Reflect.deleteProperty(payload, "candidateProviders");
     await writeKimiManifest();
     await writeFile(join(root, kimiPath, "runtime"), "substitute Kimi runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("candidate asset tree digest mismatch");
     await writeFile(join(root, kimiPath, "runtime"), "pinned Kimi runtime");
-    const fourCandidates = { kimi, cursor,
+    const threeCandidates = { cursor,
       pi: { ...kimi, version: "1.0.0", qualification: "qualified", path: "provider-assets/pi/linux-x64" },
-      copilot: { ...kimi, version: QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion,
+      copilot: { ...kimi, qualification: "pending", version: QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion,
         profileDigest: QUALIFIED_ACPX_PROFILES.copilot.commandDigest,
         closureDigest: "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
         path: "provider-assets/copilot/linux-x64" } };
-    for (const candidate of [fourCandidates.pi, fourCandidates.copilot]) {
+    for (const candidate of [threeCandidates.pi, threeCandidates.copilot]) {
       await mkdir(join(root, candidate.path), { recursive: true });
       await writeFile(join(root, candidate.path, "runtime"), "candidate runtime");
       candidate.sha256 = sha256DirectoryTree(join(root, candidate.path));
     }
-    Object.assign(payload, { candidateProviders: fourCandidates });
+    Object.assign(payload, { candidateProviders: threeCandidates });
     await writeKimiManifest();
-    expect(Object.keys(readRemoteProviderPackManifest(root).payload.candidateProviders!)).toHaveLength(4);
-    Object.assign(payload, { candidateProviders: { ...fourCandidates, unknown: kimi } });
+    expect(Object.keys(readRemoteProviderPackManifest(root).payload.candidateProviders!)).toHaveLength(3);
+    Object.assign(payload, { candidateProviders: { ...threeCandidates, unknown: kimi } });
     await writeKimiManifest();
     expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate inventory");
     Object.assign(payload, { candidateProviders: { unknown: kimi } });
