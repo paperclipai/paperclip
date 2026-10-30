@@ -11,7 +11,7 @@ import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure }
 import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
-import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError, reclaimLapsedLegacyControllerLease } from "../legacy-controller-lease.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -397,6 +397,41 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     failedProcessRunCancellations,
   } = dependencies;
 
+  async function keepCleanResultAfterLeaseLoss(
+    run: CompleteHeartbeatRunInput["run"],
+    signal: AbortSignal,
+    adapterResult: CompleteHeartbeatRunInput["adapterResult"],
+    processCancellation: { failed: boolean } | undefined,
+  ): Promise<boolean> {
+    if (
+      !signal.aborted ||
+      !(signal.reason instanceof LegacyControllerLeaseLostError) ||
+      processCancellation ||
+      adapterResult.nativeFinalization ||
+      adapterResult.timedOut ||
+      adapterResult.resultJson?.status === "cancelled" ||
+      (adapterResult.exitCode ?? 0) !== 0 ||
+      adapterResult.errorMessage ||
+      adapterResult.signal
+    ) return false;
+    if (!(await reclaimLapsedLegacyControllerLease(db, run))) return false;
+    try {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Controller lease lapsed during execution and was reclaimed; the adapter's clean result is kept",
+        payload: controllerLeaseLossEvidence(signal.reason),
+      });
+    } catch (error) {
+      logger.warn(
+        { error, runId: run.id },
+        "controller lease loss event failed without affecting run outcome",
+      );
+    }
+    return true;
+  }
+
   async function completeRun(input: CompleteHeartbeatRunInput) {
     const { run, agent, issueId, issueRef, signal, output, session, readFailureReportSecrets, adapterResult, sessionCodec, taskSessionForRun, sessionCompaction,
       configFreshnessResultMetadata, runLedgerScope, currentUserRedactionOptions,
@@ -409,9 +444,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
     const latestRun = await getRun(run.id);
+    const keptAfterLeaseLoss =
+      !isHeartbeatRunTerminalStatus(latestRun?.status) &&
+      (await keepCleanResultAfterLeaseLoss(run, signal, adapterResult, processCancellation));
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
-    } else if (signal.aborted) {
+    } else if (signal.aborted && !keptAfterLeaseLoss) {
       outcome = "cancelled";
     } else if (adapterResult.nativeFinalization) {
       const nativeTerminal =
@@ -624,6 +662,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               ? { executionRecovery: adapterResult.executionRecovery }
               : {}),
             ...(outcome === "cancelled" ? controllerLeaseLossResultJson(signal) : {}),
+            ...(keptAfterLeaseLoss ? controllerLeaseLossEvidence(signal.reason) : {}),
             configFreshness: configFreshnessResultMetadata,
           },
           errorFamily: adapterResult.errorFamily ?? null,

@@ -77,6 +77,21 @@ async function renewOnLivenessPool(
   });
 }
 
+export async function reclaimLapsedLegacyControllerLease(
+  db: Db,
+  run: Pick<Run, "id" | "companyId">,
+): Promise<boolean> {
+  const [reclaimed] = await db.update(heartbeatRuns).set({
+    controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
+  }).where(and(
+    eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+    eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
+    eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+    sql`${heartbeatRuns.resultJson} -> 'cancellation' is null`,
+  )).returning({ id: heartbeatRuns.id });
+  return Boolean(reclaimed);
+}
+
 export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "native" || !run.controllerBootId) return false;
   const [owner] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
