@@ -868,6 +868,30 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await exists(own.current)).toBe(false); expect(await taskSessionCount(own.agentId)).toBe(0); await quiet();
   });
 
+  it.each(["EIO", "EACCES"])("retains expired-only cleanup after a directory read failure (%s)", async code => {
+    const session = await seedSession();
+    const backupRoot = path.dirname(session.current);
+    const expired = path.join(backupRoot, `.expired-${randomUUID()}`);
+    await fs.rename(session.current, expired);
+    const read = fs.readdir;
+    const fault = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+      if (String(args[0]) === backupRoot) throw Object.assign(new Error("controlled cleanup listing failure"), { code });
+      return read(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1);
+    const retry = coordinator!.nextWakeAt();
+    expect(retry).not.toBeNull();
+    expect(retry! - Date.now()).toBeGreaterThanOrEqual(29_000);
+    expect(await exists(session.current)).toBe(false);
+    expect(await exists(expired)).toBe(true);
+    fault.mockRestore();
+    await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry! - Date.now()); await settled();
+    expect(await fs.readdir(backupRoot)).toEqual([]);
+    await quiet();
+  });
+
   it("reconstructs future retention without issue row locks", async () => {
     await seedSession({ closedDaysAgo: 2 }); const queries: string[] = [];
     const previous = db.$client.options.debug;
