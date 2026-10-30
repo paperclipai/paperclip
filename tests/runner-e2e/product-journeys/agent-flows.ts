@@ -46,7 +46,7 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
   }
 }
 
-async function waitFor<T>(deadlineAt: number, load: () => Promise<T>, accept: (value: T) => boolean, code: string): Promise<T> {
+export async function waitFor<T>(deadlineAt: number, load: () => Promise<T>, accept: (value: T) => boolean, code: string): Promise<T> {
   while (Date.now() < deadlineAt) {
     const value = await load();
     if (accept(value)) return value;

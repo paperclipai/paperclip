@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { canonicalProviderEventsFromCodex, canonicalProviderEventsFromAcpxRuntimeEvent } from "../../../packages/paperclip-runner/src/provider-events.js";
 import { activeFollowupBoundary, activeFollowupOutcome, sameActiveFollowupBoundary } from "./active-followup-evidence.js";
 import { activeFollowupStory } from "./active-followup-flow.js";
 import { journeyRequiredChecks } from "./success-contract.js";
@@ -22,15 +23,15 @@ const outcome = () => ({ issueId: "issue", agentId: "agent", before: boundary(),
 describe("deployment-independent active follow-up", () => {
   it("withholds the changed requirement and result marker until the follow-up", () => {
     const story = activeFollowupStory("campaign-123");
-    expect(story.first).toContain("sleep 45"); expect(story.first).toContain(story.reference);
+    expect(story.first).toContain("sleep 90"); expect(story.first).toContain(story.reference);
     expect(story.first).not.toContain(story.marker); expect(story.first).not.toContain("Friday");
     expect(story.followup).toContain(story.expectedReply);
   });
   it("requires a bound running native turn and an actual pending shell execution", () => {
     expect(boundary()).toMatchObject({ runId: "run", executionId: "wait", startedSeq: 2 });
     for (const rows of [[], events().slice(0, 1), [...events(), event(3, "tool.execution.completed", { ...command, status: "completed" })],
-      [...events(), event(3, "turn.completed")], [events()[0]!, event(2, "tool.execution.started", { ...command, operation: "read" })],
-      [events()[0]!, event(2, "tool.execution.started", { ...command, name: "paperclip_finish" })],
+      [...events(), event(3, "turn.completed")], [...events(), event(3, "turn.started")], [events()[0]!, event(2, "tool.execution.started", { ...command, operation: "read" })],
+      [events()[0]!, event(2, "tool.execution.started", { ...command, readOnly: true })],
       [events()[0]!, event(2, "tool.execution.started", { ...command, transport: "mcp" })],
       [events()[0]!, event(3, "tool.execution.started", command)],
       [...events(), event(3, "tool.execution.started", command)]]) expect(activeFollowupBoundary(run, rows)).toBeNull();
@@ -40,6 +41,19 @@ describe("deployment-independent active follow-up", () => {
     const rows = events(); rows[0]!.payload.prpEvent.sourceKind = "control_plane";
     expect(activeFollowupBoundary(run, rows)).toBeNull();
     for (const changed of [{ status: "succeeded" }, { runtimeMode: "legacy" }]) expect(activeFollowupBoundary({ ...run, ...changed }, events())).toBeNull();
+  });
+  it("accepts canonical Codex command text and ACP display titles without provider-name coupling", () => {
+    const codex = canonicalProviderEventsFromCodex("item/started", {
+      item: { id: "wait", type: "commandExecution", command: "sleep 90", status: "inProgress" },
+    })[0]!;
+    const acp = canonicalProviderEventsFromAcpxRuntimeEvent({
+      type: "tool_call", tag: "tool_call", toolCallId: "wait", title: "Bounded settlement fixture", kind: "execute", status: "pending",
+    } as never, "fallback")[0]!;
+    expect(codex.payload).toMatchObject({ transport: "process", operation: "execute", name: "sleep 90", status: "running" });
+    expect(acp.payload).toMatchObject({ transport: "builtin", operation: "execute", name: "Bounded settlement fixture", readOnly: false, status: "running" });
+    for (const mapped of [codex, acp]) {
+      expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, mapped.eventType, mapped.payload)])).toMatchObject({ runId: "run", startedSeq: 2 });
+    }
   });
   it("proves the same execution remains active after the user message is stored", () => {
     expect(sameActiveFollowupBoundary(boundary(), boundary())).toBe(true);

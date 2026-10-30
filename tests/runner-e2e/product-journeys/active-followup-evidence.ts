@@ -12,7 +12,6 @@ export interface ActiveFollowupBoundary {
   sourceSeq: number;
   startedRowSha256: string;
 }
-const commandTools = new Set(["bash", "exec_command", "shell", "shell_command", "run_command"]);
 
 /** A claimed run or elapsed delay is not proof that native work is active. */
 export function activeFollowupBoundary(run: Row, events: Row[]): ActiveFollowupBoundary | null {
@@ -31,10 +30,10 @@ export function activeFollowupBoundary(run: Row, events: Row[]): ActiveFollowupB
   if (latestTurn?.eventType !== "turn.started") return null;
   const starts = bound.filter(event => {
     const payload = event.payload.prpEvent.payload;
-    return event.eventType === "tool.execution.started" && payload?.schema === "paperclip.tool.execution.v1"
+    return event.seq > latestTurn.seq && event.eventType === "tool.execution.started" && payload?.schema === "paperclip.tool.execution.v1"
       && typeof payload.executionId === "string" && Boolean(payload.executionId)
       && ["builtin", "process"].includes(payload.transport) && payload.operation === "execute"
-      && commandTools.has(payload.name) && payload.status === "running";
+      && payload.readOnly !== true && payload.status === "running";
   });
   const pending = starts.filter(start => {
     const id = start.payload.prpEvent.payload.executionId;

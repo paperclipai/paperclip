@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { collectRunEvents } from "../run-observations.js";
 import { nativeFinalReplyEvents, readBoundTaskFinalReply } from "../native-task-reply.js";
-import { fixtureReplyStoredOnce, validateAgentTaskState } from "./agent-flows.js";
+import { fixtureReplyStoredOnce, validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { activeFollowupBoundary, activeFollowupOutcome, sameActiveFollowupBoundary } from "./active-followup-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -16,7 +16,7 @@ export function activeFollowupStory(campaignId: string) {
   const reference = `BRIEF${nonce}`, marker = `UPDATED${nonce}`;
   const expectedReply = `Launch Friday. Reference ${reference}. Update ${marker}.`;
   return {
-    first: `Our launch is planned for Monday. Run the bounded command sleep 45 exactly once before answering, so I can send additional context while you work. After the command finishes, briefly acknowledge the launch day and reference ${reference}, then finish this task. No files, projects or child tasks are needed.`,
+    first: `Our launch is planned for Monday. Run the bounded command sleep 90 exactly once before answering, so I can send additional context while you work. After the command finishes, briefly acknowledge the launch day and reference ${reference}, then finish this task. No files, projects or child tasks are needed.`,
     followup: `Change the launch day to Friday. When ready, reply with exactly this one line and finish: ${expectedReply}`,
     reference, marker, expectedReply,
   };
@@ -52,23 +52,17 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
   };
   const events = (runId: string) => collectRunEvents<Row>((afterSeq, limit) =>
     context.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
-  const wait = async <T>(load: () => Promise<T>, accept: (value: T) => boolean, code: string) => {
-    while (Date.now() < options.deadlineAt) {
-      const value = await load();
-      if (accept(value)) return value;
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    throw new JourneyError("failed", code);
-  };
-  const active = await wait(async () => {
+  const issue = (await read()).currentIssue;
+  await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`, { waitUntil: "domcontentloaded" });
+  await expect(context.page.getByTestId("task-chat-composer-input").last()).toBeVisible();
+  const beforeComments = (await read()).comments;
+  const active = await waitFor(options.deadlineAt, async () => {
     const state = await read(), run = state.taskRuns.find(run => run.status === "running");
     return { state, run, boundary: run ? activeFollowupBoundary(run, await events(run.id)) : null };
   }, value => Boolean(value.boundary), "followup_native_command_not_active");
   const before = active.boundary!;
-  await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/issues/${active.state.currentIssue.identifier}`, { waitUntil: "domcontentloaded" });
-  const beforeComments = (await read()).comments;
   await submitTaskReply(context.page, story.followup);
-  const persisted = await wait(read, state => state.comments.some(comment => comment.authorUserId === context.user.id
+  const persisted = await waitFor(Math.min(options.deadlineAt, Date.now() + 30_000), read, state => state.comments.some(comment => comment.authorUserId === context.user.id
     && !beforeComments.some(old => old.id === comment.id)), "followup_not_persisted");
   const afterRun = persisted.taskRuns.find(run => run.id === before.runId)!;
   const after = activeFollowupBoundary(afterRun, await events(before.runId));
@@ -76,7 +70,7 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
   check("followup-native-command-active", sameActiveFollowupBoundary(before, after));
   check("followup-stored-once", fixtureReplyStoredOnce(beforeComments, persisted.comments, context.user.id, story.followup));
 
-  const final = await wait(async () => {
+  const final = await waitFor(options.deadlineAt, async () => {
     const state = await read();
     const replies = [] as Array<{ runId: string; body: string }>;
     for (const run of state.taskRuns.filter(run => run.status === "succeeded")) {
@@ -95,7 +89,7 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
     finalIssueStatus: value.state.currentIssue.status }), "followup_final_outcome_missing");
   check("followup-consumed-once", true);
   const finalRunId = final.replies.find(reply => reply.body === story.expectedReply)!.runId;
-  const companies = await context.api.get<Array<{ id: string; issuePrefix: string }>>("/api/companies");
+  const companies = await context.api.get<Array<{ id: string; issuePrefix: string }>>("/api/companies?scope=accessible");
   if (!Array.isArray(companies) || !companies.some(company => company.id === context.company.id) || companies.some(company => !company.issuePrefix)) throw new JourneyError("failed", "reply_company_context_missing");
   const reply = await readBoundTaskFinalReply({ page: context.page, runId: finalRunId, agentId: agent.id,
     expectedText: story.expectedReply, deadlineAt: options.deadlineAt, knownCompanyPrefixes: companies.map(company => company.issuePrefix),

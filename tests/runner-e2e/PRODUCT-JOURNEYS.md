@@ -178,11 +178,13 @@ reported as retained data, rather than confirmed deletion.
 
 The `followup-while-running` story uses the same ordinary task composer and saved
 reply observer on managed self-hosted and attached Cloud targets. The initial
-request includes one bounded `sleep 45` command. It supplies no changed launch
+request includes one bounded `sleep 90` command. It supplies no changed launch
 day or final marker. The observer requires a valid running native turn and a
-pending builtin shell execution before sending the follow-up. The same command
-must remain active after exactly one user message is saved. Merely observing a
-running heartbeat or waiting for a fixed interval cannot satisfy the boundary.
+pending builtin or process execution before sending the follow-up. The same
+command must remain active after exactly one user message is saved. The task page and
+composer are ready before observing the boundary, so navigation is outside the
+submission window. The longer bounded command leaves room for remote persistence.
+Merely observing a running heartbeat or waiting for a fixed interval cannot satisfy the boundary.
 
 The late message changes the launch day and supplies a unique final marker.
 The independent oracle requires the expected reply from one bound native run,
