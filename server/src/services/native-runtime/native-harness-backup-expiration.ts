@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -39,6 +40,7 @@ const MAX_CONTROL_PLANE_STATE_BYTES = 4 * 1024 * 1024;
 const CHECKPOINT_EXPIRATION_MAX_FAILED_PASSES = 3;
 
 export type NativeHarnessBackupExpirationOptions = {
+  duty?: "backups" | "evidence";
   closedForDays?: number;
   evidenceRetentionDays?: number;
   dryRun?: boolean;
@@ -76,6 +78,7 @@ type EvidenceContext = {
   retainedBefore: number;
   canInspect: () => boolean;
   dueAt: (at: number) => void;
+  retry: () => void;
 };
 
 type SessionIdentity = {
@@ -104,8 +107,13 @@ function emptyResult(): NativeHarnessBackupExpirationResult {
   };
 }
 
+function missingPath(error: NodeJS.ErrnoException) {
+  if (error.code === "ENOENT") return null;
+  throw error;
+}
+
 async function isRealDirectory(target: string): Promise<boolean> {
-  const stat = await fs.lstat(target).catch(() => null);
+  const stat = await fs.lstat(target).catch(missingPath);
   return Boolean(stat?.isDirectory() && !stat.isSymbolicLink());
 }
 
@@ -261,6 +269,8 @@ export function nativeHarnessBackupExpirationService(
   db: Db,
   defaults: NativeHarnessBackupExpirationOptions = {},
 ) {
+  const includeBackups = defaults.duty !== "evidence";
+  const includeEvidence = defaults.duty !== "backups";
   let cursor: string | null = null;
   let resume: { scope: string; archive: string } | null = null;
   let quarantineCursor: string | null = null;
@@ -377,6 +387,7 @@ export function nativeHarnessBackupExpirationService(
       });
       if ("reason" in blocker) return blocker;
       if (options.dryRun) return { owner: blocker, cleared: 0 };
+      await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
       const cleared = await tx
         .delete(agentTaskSessions)
         .where(
@@ -419,7 +430,10 @@ export function nativeHarnessBackupExpirationService(
   }
 
   async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
-    for (const name of await fs.readdir(parent).catch(() => [] as string[])) {
+    for (const name of await fs.readdir(parent).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [] as string[];
+      throw error;
+    })) {
       if (!name.startsWith(EXPIRED_PREFIX) || !UUID_PATTERN.test(name.slice(EXPIRED_PREFIX.length))) continue;
       if (!context.canInspect()) {
         context.dueAt(context.now);
@@ -442,17 +456,17 @@ export function nativeHarnessBackupExpirationService(
       result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
     };
     const target = path.join(parent, name);
-    const stat = await fs.lstat(target).catch(() => null);
+    const stat = await fs.lstat(target).catch(missingPath);
     if (path.dirname(target) !== parent || !stat?.isDirectory()) {
       return skip("unsafe_path");
     }
     const createdAt = stampedAt > 0 && stampedAt <= context.now ? stampedAt : stat.mtimeMs;
     if (createdAt >= context.retainedBefore) {
-      context.dueAt(createdAt + context.retentionMs);
+      context.dueAt(createdAt + context.retentionMs + 1);
       return skip("recent_evidence");
     }
     if (context.isSessionBusy(scopeDigest)) {
-      context.dueAt(context.now);
+      context.retry();
       return skip("session_active");
     }
     const bytes = await allocatedBytes(target);
@@ -460,7 +474,7 @@ export function nativeHarnessBackupExpirationService(
     result.evidenceCandidateBytes += bytes;
     if (context.dryRun) return;
     if (context.isSessionBusy(scopeDigest)) {
-      context.dueAt(context.now);
+      context.retry();
       return skip("session_active");
     }
     const trash = path.join(parent, `${EXPIRED_PREFIX}${randomUUID()}`);
@@ -478,7 +492,7 @@ export function nativeHarnessBackupExpirationService(
     result: NativeHarnessBackupExpirationResult,
   ): Promise<string | null> {
     const parent = path.join(root, "continuity-breaks");
-    const stat = await fs.lstat(parent).catch(() => null);
+    const stat = await fs.lstat(parent).catch(missingPath);
     if (!stat) return null;
     if (!stat.isDirectory()) {
       result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
@@ -497,7 +511,7 @@ export function nativeHarnessBackupExpirationService(
         await retireEvidence(parent, name, scopeDigest, Number(match[1]), context, result);
       } catch (err) {
         result.failed++;
-        context.dueAt(context.now);
+        context.retry();
         logger.warn({ err, scope: scopeDigest }, "native runner evidence retention skipped a continuity archive");
       }
     }
@@ -511,7 +525,7 @@ export function nativeHarnessBackupExpirationService(
     result: NativeHarnessBackupExpirationResult,
   ): Promise<boolean> {
     const parent = path.join(base, "quarantine");
-    const stat = await fs.lstat(parent).catch(() => null);
+    const stat = await fs.lstat(parent).catch(missingPath);
     if (!stat) return true;
     if (!stat.isDirectory()) {
       result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
@@ -535,7 +549,7 @@ export function nativeHarnessBackupExpirationService(
         await retireEvidence(parent, name, match[1]!, Number(match[2]), context, result);
       } catch (err) {
         result.failed++;
-        context.dueAt(context.now);
+        context.retry();
         logger.warn({ err, scope: match[1] }, "native runner evidence retention skipped a quarantine entry");
       }
     }
@@ -544,7 +558,7 @@ export function nativeHarnessBackupExpirationService(
   }
 
   function noteEvidence(writtenAt: number) {
-    evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs());
+    evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs() + (defaults.duty === "evidence" ? 1 : 0));
   }
 
   function evidenceRetentionMs(options: NativeHarnessBackupExpirationOptions = {}) {
@@ -570,9 +584,10 @@ export function nativeHarnessBackupExpirationService(
     const closedBefore = new Date(now - closedForDays * DAY_MS);
     const result = emptyResult();
     const hasBudget = () => shouldContinue() && result.candidates + result.evidenceCandidates < maxRemovals;
+    if (!passActive && !includeBackups && evidenceDueAt > now) return result;
     if (!passActive) {
       passActive = true;
-      evidencePass = evidenceDueAt <= now;
+      evidencePass = includeEvidence && evidenceDueAt <= now;
       if (evidencePass) {
         evidenceDueAt = Number.POSITIVE_INFINITY;
         passDueAt = Number.POSITIVE_INFINITY;
@@ -588,10 +603,16 @@ export function nativeHarnessBackupExpirationService(
       dueAt: (at) => {
         passDueAt = Math.min(passDueAt, at);
       },
+      retry: () => {
+        passDueAt = Math.min(passDueAt, now + (defaults.duty === "evidence" ? 60 * 60_000 : 0));
+      },
     };
 
     if (phase === "sessions") {
-      const names = (await fs.readdir(base).catch(() => [] as string[]))
+      const names = (await fs.readdir(base).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [] as string[];
+        throw error;
+      }))
         .filter((name) => SCOPE_PATTERN.test(name))
         .sort();
       const pending = cursor ? names.filter((name) => name > cursor!) : names;
@@ -606,11 +627,18 @@ export function nativeHarnessBackupExpirationService(
         const previous = cursor;
         cursor = name;
         const root = path.join(base, name);
-        if (path.dirname(root) !== base || !(await isRealDirectory(root))) {
-          result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
+        try {
+          if (path.dirname(root) !== base || !(await isRealDirectory(root))) {
+            result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
+            continue;
+          }
+        } catch (err) {
+          result.failed++;
+          context.retry();
+          logger.warn({ err, scope: name }, "native runner retention could not inspect a session root");
           continue;
         }
-        if (resumeAfter === null) {
+        if (resumeAfter === null && includeBackups) {
           try {
             await expireSession(root, name, { dryRun, isSessionBusy, closedBefore }, result);
           } catch (err) {
@@ -624,7 +652,7 @@ export function nativeHarnessBackupExpirationService(
           stoppedAt = await retireContinuityBreaks(root, name, resumeAfter, context, result);
         } catch (err) {
           result.failed++;
-          context.dueAt(now);
+          context.retry();
           logger.warn({ err, scope: name }, "native runner evidence retention skipped a session");
         }
         if (stoppedAt !== null) {
@@ -649,7 +677,7 @@ export function nativeHarnessBackupExpirationService(
       }
     } catch (err) {
       result.failed++;
-      context.dueAt(now);
+      context.retry();
       quarantineCursor = null;
       logger.warn({ err }, "native runner evidence retention skipped quarantine");
     }
@@ -658,6 +686,11 @@ export function nativeHarnessBackupExpirationService(
     evidencePass = false;
     evidenceDueAt = Math.min(evidenceDueAt, passDueAt);
     return result;
+  }
+
+  function nextEvidenceAt() {
+    if (passActive) return Date.now();
+    return Number.isFinite(evidenceDueAt) ? evidenceDueAt : null;
   }
 
   async function tickCheckpoints(options: NativeHarnessBackupExpirationOptions = {}) {
@@ -712,5 +745,5 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  return { tick, noteEvidence, tickCheckpoints, registerCheckpointExpiration };
+  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration };
 }

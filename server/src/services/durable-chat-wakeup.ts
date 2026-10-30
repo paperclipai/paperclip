@@ -21,6 +21,21 @@ const committedChatResponseAuthorities = new WeakMap<
   CommittedChatResponseAuthority
 >();
 
+const committedChatResponseAuthorityListeners = new WeakMap<Db, Set<() => void>>();
+
+export function onCommittedChatResponseAuthorityRegistered(db: Db, listener: () => void): () => void {
+  let listeners = committedChatResponseAuthorityListeners.get(db);
+  if (!listeners) {
+    listeners = new Set();
+    committedChatResponseAuthorityListeners.set(db, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && committedChatResponseAuthorityListeners.get(db) === listeners) committedChatResponseAuthorityListeners.delete(db);
+  };
+}
+
 export class CommittedChatResponseAuthorizationError extends HttpError {
   constructor() {
     super(
@@ -41,6 +56,7 @@ export function registerCommittedChatResponseAuthority(
   authority: CommittedChatResponseAuthority,
 ): () => void {
   committedChatResponseAuthorities.set(db, authority);
+  for (const listener of committedChatResponseAuthorityListeners.get(db) ?? []) listener();
   return () => {
     if (committedChatResponseAuthorities.get(db) === authority) {
       committedChatResponseAuthorities.delete(db);

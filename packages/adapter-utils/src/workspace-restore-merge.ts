@@ -308,6 +308,7 @@ export type WorkspaceRestoreFailureCode =
   | "restore_permission_denied"
   | "restore_lock_timeout"
   | "restore_unsafe_archive"
+  | "restore_invalid_metadata"
   | "restore_failed";
 
 /**
@@ -330,6 +331,7 @@ export type WorkspaceRestoreOutcome =
  */
 export function classifyWorkspaceRestoreFailure(error: unknown): WorkspaceRestoreFailureCode {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
+  if (code === "WORKSPACE_RESTORE_INVALID_GIT_METADATA") return "restore_invalid_metadata";
   if (code === "EACCES" || code === "EPERM") return "restore_permission_denied";
   if (code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return "restore_lock_timeout";
   const message = error instanceof Error ? error.message : "";
@@ -361,6 +363,8 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
       return "the restore timed out waiting for the workspace merge lock";
     case "restore_unsafe_archive":
       return "the archive contains an unsafe link or path; workspace repair is required";
+    case "restore_invalid_metadata":
+      return "the restore metadata is invalid; workspace repair is required";
     case "restore_failed":
       return "the restore failed";
   }

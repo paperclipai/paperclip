@@ -85,6 +85,9 @@ describe("trusted report catalog discovery", () => {
     const known = runnerMatrix.find((execution) => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
     expect(journeyCapabilities(known).map((capability) => capability.id)).toEqual(["questions-and-approvals/questions"]);
     expect(journeyCapabilities({ ...known, suite: { ...known.suite, id: "branch-only" } })).toEqual([]);
+    const product = { ...known, suite: { ...known.suite, id: "product-journeys" } };
+    expect(journeyCapabilities(product).map(capability => capability.id)).toEqual(["questions-and-approvals/questions"]);
+    expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-create" } }).map(capability => capability.id)).toEqual(["tasks/create"]);
   });
 
   it("aggregates unknown suites and renders their cases, missing results, and screenshot gallery", () => {

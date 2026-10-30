@@ -20,6 +20,7 @@ import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./nativ
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
+import { buildAntigravityJourneySuite } from "./antigravity-journey-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
@@ -1608,10 +1609,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
     description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
     groups: ["chat", "native"],
-    profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
-      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] }))],
-    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 2,
-    definitionMetadata: { version: 1, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+    profiles: [nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
+      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] }),
+      runnerProfiles.find(profile => profile.id === "runner-opencode")!].map(chatFeatureProfile),
+    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
       instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
       unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
       maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
@@ -1829,6 +1831,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
   buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
+  buildAntigravityJourneySuite(runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -1904,8 +1907,8 @@ export function buildRunnerMatrix(
                 ]),
               ],
               requiredCredentials: [
-                ...(["provider_connection", "github_review_journey"].includes(task.flow) ? [] : [profile.credential]),
-                ...(!["provider_connection", "github_review_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
+                ...(["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) ? [] : [profile.credential]),
+                ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
                 ...(task.requiredCredentials ?? []),
               ],
             }))

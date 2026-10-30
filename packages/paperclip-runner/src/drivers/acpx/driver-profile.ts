@@ -9,13 +9,14 @@ import { providerFamilyCapabilities } from "../../provider-events.js";
 import {
   ACPX_DRIVER_KIND,
   QUALIFIED_ACPX_VERSION,
+  QUALIFIED_ACPX_PROFILES,
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
 
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 
-const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot"] as const;
+const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot", "antigravity"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
   "approve-paperclip",
@@ -37,6 +38,12 @@ export function acpxCapabilities(
 ): NativeSessionCapabilities {
   const controls = agent === "pi" ? negotiated : null;
   const profile = ACPX_CAPABILITY_PROFILES[agent];
+  if (QUALIFIED_ACPX_PROFILES[agent].qualificationStatus === "pending") return {
+    resume: false, toolRefreshOnResume: false, typedEvents: false, steering: false, queuedFollowUp: false,
+    interruption: false, structuredResult: false, read: false, reconciliation: false, usage: false,
+    dynamicTools: false, runtimeRequestResolution: false, runtimeRequestHandoff: false, goals: false, threadLineage: false,
+    unsupported: ["qualification_pending"],
+  };
   return {
     resume: profile.recovery === "session-load",
     toolRefreshOnResume: profile.recovery === "session-load" && profile.toolRefreshOnResume === true,
@@ -68,15 +75,16 @@ export function acpxCapabilities(
 export function acpxDriverDescriptor(
   agent: QualifiedAcpxAgent,
 ): HarnessDriverDescriptor {
+  const pending = QUALIFIED_ACPX_PROFILES[agent].qualificationStatus === "pending";
   return {
     kind: ACPX_DRIVER_KIND,
     displayName: `${displayAgent(agent)} via ACPX`,
     version: QUALIFIED_ACPX_VERSION,
     protocolVersion: "acp/v1",
     runtimeContextCapabilities: {
-      instructions: "native",
-      skills: "native",
-      mcp: "native",
+      instructions: pending ? "unsupported" : "native",
+      skills: pending ? "unsupported" : "native",
+      mcp: pending ? "unsupported" : "native",
     },
     capabilities: acpxCapabilities(agent),
   };
@@ -105,11 +113,11 @@ export function validateAcpxDriverConfig(
     return invalid(
       "agent",
       "invalid_agent",
-      "ACPX agent must be claude, codex, grok, cursor, copilot, or pi.",
+      "ACPX agent must be claude, codex, grok, cursor, copilot, pi, or antigravity.",
     );
   }
   if (ACPX_CAPABILITY_PROFILES[agent].qualification !== "qualified") {
-    return invalid("agent", "qualification_pending", `${ACPX_CAPABILITY_PROFILES[agent].displayName} requires local and Daytona qualification before use.`);
+    return invalid("agent", "qualification_pending", `${ACPX_CAPABILITY_PROFILES[agent].displayName} requires native Runner acceptance before use.`);
   }
   const model = text(config.model);
   try {

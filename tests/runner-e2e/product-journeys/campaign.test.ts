@@ -45,7 +45,7 @@ async function run(options:{authFailure?:boolean;onboardingFailure?:boolean;preA
   await writeFile(module, `import {readFile,writeFile} from 'node:fs/promises';
 const identity={kind:'cloud',targetId:'qa',origin:'https://qa.example.test',commit:'${"a".repeat(40)}',cloudRelease:'v1',runtimeImage:'image',configurationHash:'config'};
 let onboarded=false;
-const context={identity,company:{id:'company-1',issuePrefix:'QA'},api:{post:async()=>({id:'issue-fixture-1',identifier:'QA-1'})},startingState:'onboarding',capabilities:['company','board-user','task-write'],page:{async screenshot(){} }};
+const context={identity,company:{id:'company-1',issuePrefix:'QA'},api:{origin:identity.origin,post:async()=>({id:'issue-fixture-1',identifier:'QA-1'})},startingState:'onboarding',capabilities:['company','board-user','task-write'],page:{url:()=>identity.origin+'/QA/issues/QA-1',locator:()=>({isVisible:async()=>true,screenshot:async()=>{}}) }};
 export const provider={version:1, async acquire(input){return {
 async authenticate(){${options.authFailure ? "throw {outcome:'failed',code:'login_code_expired'};" : ""}},
 async onboard(evidence){${options.preAcceptanceFailure ? `evidence.onboardingPreAcceptance=${JSON.stringify(preAcceptanceEvidence)};throw {outcome:'failed',code:'onboarding_work_before_acceptance'};` : options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},

@@ -121,6 +121,13 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `GET /api/health`.
+- `GET /api/instance/task-drain?upgradeReadiness=1` — instance-admin or signed
+  Cloud control only. Returns aggregate restart eligibility, never checkpoint
+  contents, task identities or credentials. Company members and agent keys are
+  denied. The explicit request performs bounded read-only SQL; ordinary drain
+  status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
+  and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
+  establish this local boundary; hosted active-run continuity requires separate proof.
 - `GET /api/liveness` and `HEAD /api/liveness` — public process startup status
   and build commit only; no database readiness or workspace identity.
 
@@ -189,3 +196,14 @@ Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b832
 Verification: `not-run` — Inspect setup identity/path and repeat reuse on an owned disposable published installation. Verify a matching trusted companion import and reject altered/cross-release/linked inventory while preserving unrelated files. Check no instance credentials are loaded and no model is called. Qualify actual adapter/account task execution separately.
 
 Gaps: Source-checkout setup, different platforms, remote Cursor, provider execution, and published-package acceptance remain separate scopes. Local fixture materialization does not establish remote model readiness.
+
+Antigravity addition (2026-10-28): `paperclipai runtime setup antigravity` stages
+the verified official and patched two-executable closures on macOS ARM64. The
+operator-only authority above is unchanged. The native profile remains pending
+at API, driver, sidecar and Rust admission; a company grant cannot enable it.
+Google AI API-key binding is distinct from Workspace OAuth. Evidence remains
+`source-only` for agent access: [setup](../../cli/src/commands/runtime.ts),
+[provisioner](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
+and [gate regressions](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
+Credential-free public-layout provisioning and controlled native tests do not
+qualify a company agent task or authenticated connection/revocation.

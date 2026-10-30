@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -174,6 +175,7 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string): Pro
           identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId) return "skipped";
       if (!(await recordNativeLocalProcessStop(tx, run))) return "pending";
     }
+    await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
     await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, run.id));

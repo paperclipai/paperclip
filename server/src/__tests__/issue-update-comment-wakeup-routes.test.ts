@@ -2,6 +2,11 @@ import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn(async () => undefined),
+  publishActivity: vi.fn(),
+}));
+
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
 }));
@@ -222,7 +227,7 @@ async function loadAppModules() {
 }
 
 async function createApp(transaction: (callback: (tx: Record<string, never>) => Promise<unknown>) => Promise<unknown> =
-  async (callback) => callback({})) {
+  async (callback) => callback({ select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve([]), { for: async () => [{ id: "comment-3" }] }) }) }) } as any)) {
   const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
@@ -239,6 +244,7 @@ async function createApp(transaction: (callback: (tx: Record<string, never>) => 
   });
   app.use("/api", issueRoutes({
     transaction,
+    select: () => ({ from: () => ({ where: async () => [] }) }),
   } as any, {} as any));
   app.use(errorHandler);
   return app;

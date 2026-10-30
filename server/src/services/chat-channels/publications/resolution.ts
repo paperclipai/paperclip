@@ -113,7 +113,7 @@ export function createChatPublicationResolution(db: Db, options: ResolutionOptio
             code: "chat_file_transfer_resolution_required",
           },
         );
-      await notifyChatPublicationWork(tx);
+      await notifyChatPublicationWork(tx, current);
       return tx
         .update(chatPublications)
         .set({
@@ -218,7 +218,7 @@ export function createChatPublicationResolution(db: Db, options: ResolutionOptio
             action === "retry_anyway"
           ) { await recordPhotonPublicationRetry(tx, endpointId, publication, userId); }
           const now = new Date();
-          await notifyChatPublicationWork(tx);
+          await notifyChatPublicationWork(tx, publication);
           await notifyVoicePublication(tx, initialRecord.endpoint, publication.conversationId);
           await tx
             .update(chatPublications)

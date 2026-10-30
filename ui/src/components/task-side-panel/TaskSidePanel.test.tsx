@@ -11,6 +11,7 @@ import {
   taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
+  readTaskSidePanelState,
   writeTaskSidePanelState,
 } from "@/lib/task-side-panel-state";
 import type { TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
@@ -83,6 +84,10 @@ vi.mock("@/components/task-detail/TaskDetailRelationsPanel", () => ({
 }));
 
 const agentChat = vi.hoisted(() => ({ enabled: true }));
+const coordinator = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: coordinator.enabled, loaded: true }),
+}));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({
   useAgentChatEnabled: () => ({ enabled: agentChat.enabled, loaded: true }),
 }));
@@ -101,7 +106,7 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
-  TaskDocumentPanel: ({ documentKey }: { documentKey: string }) => <div>{`Document ${documentKey}`}</div>,
+  TaskDocumentPanel: ({ documentKey, issueId, revisionId, documentIssueId, currentIssueId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; documentIssueId?: string; currentIssueId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-gallery-owner={documentIssueId} data-current-task={currentIssueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
 }));
 
 vi.mock("./TaskWorkspaceFilePanel", () => ({
@@ -137,12 +142,14 @@ describe("TaskSidePanel", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    coordinator.enabled = false;
     window.localStorage.clear();
     browserFixture.data = [];
     browserFixture.control.mockClear();
     fixture.documents = [];
     fixture.plan = null;
     routeFixture.location.search = "";
+    routeFixture.location.hash = "";
     window.history.replaceState(null, "", routeFixture.location.pathname);
     routeFixture.navigate.mockReset();
     container = document.createElement("div");
@@ -262,6 +269,54 @@ describe("TaskSidePanel", () => {
     expect(slot?.hasAttribute("inert")).toBe(false);
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Artifacts"]')?.click());
     expect(container.querySelector("[data-artifact-upload-slot]")).toBeNull();
+  });
+
+  it("opens only the requested Coordinator document despite background plans, subtasks and artifacts", async () => {
+    coordinator.enabled = true;
+    fixture.plan = issueDocument("plan", "Unrequested plan");
+    fixture.documents = [fixture.plan, issueDocument("report", "Reviewed report")];
+    routeFixture.location.hash = "#document-report&revision=reviewed-version&interaction=decision-1";
+    const onArtifactsOpened = vi.fn();
+    await render(panel({
+      documentDeepLink: { requestId: 1, documentKey: "report" },
+      artifactsOpenRequestId: 1, onArtifactsOpened,
+      showSubtasksTab: true, childIssues: [issue({ id: "child-1" })],
+    }));
+    expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["document:report:reviewed-version"]);
+    expect(onArtifactsOpened).toHaveBeenCalledWith(1);
+  });
+
+  it("opens another task's exact plan without requiring an origin plan or reusing origin document data", async () => {
+    coordinator.enabled = true;
+    fixture.plan = null;
+    fixture.documents = [issueDocument("plan", "Origin task document must not leak")];
+    routeFixture.location.hash = "#document-plan&revision=b-v1&interaction=review-on-a&documentIssue=task-b";
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" } }));
+    const document = container.querySelector("[data-document-owner]");
+    expect(document?.getAttribute("data-document-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-gallery-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-current-task")).toBe("task-1");
+    expect(document?.getAttribute("data-revision-id")).toBe("b-v1");
+    expect(document?.hasAttribute("data-initial-document")).toBe(false);
+    expect(container.textContent).not.toContain("Origin task document must not leak");
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("document:task-b:plan:b-v1");
+    routeFixture.location.hash = "#document-local";
+    await render(panel());
+    expect(container.querySelector("[data-gallery-owner]")?.getAttribute("data-gallery-owner")).toBe("task-b");
+  });
+
+  it("preserves explicitly saved Coordinator tabs when a decision link adds its document", async () => {
+    coordinator.enabled = true;
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelPropertiesTab(), taskPanelArtifactsTab()], activeTabId: "properties" },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: Date.now(),
+    });
+    fixture.documents = [issueDocument("report", "Report")];
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "report" } }));
+    expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["properties", "artifacts", "document:report"]);
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Report");
   });
 
   it("opens, deduplicates, switches and closes text attachment tabs", async () => {
@@ -726,6 +781,30 @@ describe("TaskSidePanel", () => {
     await render(panel({ issue: issue({ workMode: "planning" }) }));
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(1);
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it.each([false, true])("restores each workspace before persisting a same-task scope switch (mobile=%s)", async (mobile) => {
+    const classic = { tabs: [taskPanelPropertiesTab()], activeTabId: "properties" };
+    const experiment = { tabs: [taskPanelArtifactsTab()], activeTabId: "artifacts" };
+    for (const [scope, state] of [["user-1", classic], ["coordinator:user-1", experiment]] as const) {
+      writeTaskSidePanelState(scope, "company-1", "task-1", {
+        state, launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+      });
+    }
+    await render(panel({ accountScope: "user-1", mobile }));
+    expect(container.textContent).toContain("Properties content");
+    // A preference refreshed from another window can change scope without
+    // changing the task or remounting the public TaskSidePanel component.
+    coordinator.enabled = true;
+    await render(panel({ accountScope: "coordinator:user-1", mobile }));
+    expect(container.textContent).toContain("Artifacts content");
+    expect(container.textContent).not.toContain("Properties content");
+    expect(readTaskSidePanelState("user-1", "company-1", "task-1", false)?.state).toEqual(classic);
+    expect(readTaskSidePanelState("coordinator:user-1", "company-1", "task-1", false)?.state).toEqual(experiment);
+    coordinator.enabled = false;
+    await render(panel({ accountScope: "user-1", mobile }));
+    expect(container.textContent).toContain("Properties content");
+    expect(readTaskSidePanelState("coordinator:user-1", "company-1", "task-1", false)?.state).toEqual(experiment);
   });
 
   it("opens a URL-backed workspace file tab outside file-viewer provider ancestry", async () => {

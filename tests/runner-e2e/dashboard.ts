@@ -1,3 +1,4 @@
+import { renderCatalogOverview, catalogOverviewStyles, catalogOverviewScript, type CatalogOverview, type CatalogScenarioDescription } from "./catalog-overview.js";
 import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming, summarizeCampaignTiming, summarizeWorkerPhaseTiming } from "./campaign-timing.js";
 import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
@@ -10,6 +11,7 @@ import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
 import { STARTUP_REUSE_LAYERS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
+import { renderTaskChat } from "./task-chat-report.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
 import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
 import { renderEvalOperationsReport } from "./operations-report.js";
@@ -46,6 +48,8 @@ export interface RunnerDashboardInput {
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
   history?: RunnerE2EHistoryIndex;
+  catalogOverview?: CatalogOverview;
+  catalogOverviewDescriptions?: ReadonlyMap<string, CatalogScenarioDescription>;
   presentation?: {
     title?: string;
     description?: string;
@@ -160,6 +164,8 @@ function renderCase(
   const outcome = entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : "";
   const passed = state === "passed" && entry?.result.status === "passed";
   const firstTaskChecks = entry?.result.firstTask?.checks;
+  const taskChatCoversOnboarding = entry?.result.taskChat?.status === "complete" &&
+    entry.result.taskChat.threads.some(thread => thread.issueId === entry.result.firstTask?.onboardingIssueId);
   const productChecks = entry?.result.productJourney?.checks;
   const notReached = firstTaskChecks?.filter((c) => c.notReached).length ?? 0;
   const matcherResults = firstTaskChecks?.length
@@ -323,7 +329,8 @@ function renderCase(
     </dl>` : ""}
     ${matcherResults.length || notReached ? `<ul class="case-checks" aria-label="Recorded checks">${matcherResults.map(result => `<li><span class="check-state ${result.passed ? "check-passed" : "check-failed"}">${result.passed ? "Pass" : "Fail"}</span><span>${html(result.detail)}</span></li>`).join("")}${firstTaskChecks?.filter(check => check.notReached).map(check => `<li><span class="check-state">Not reached</span><span>${html(check.detail)} · ${html(check.notReached)}</span></li>`).join("") ?? ""}</ul>` : ""}
     ${billingStrip}
-    ${renderFirstTaskDetails(entry?.result)}
+    ${renderFirstTaskDetails(entry?.result, !taskChatCoversOnboarding)}
+    ${renderTaskChat(entry?.result.taskChat)}
     ${links}
     <details class="case-context case-advanced">
     <summary>Diagnostics</summary>
@@ -398,6 +405,8 @@ function renderSuiteResults(input: {
 }
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  if (input.catalogOverview && (input.entries.length || input.expected.length || input.catalog.length || input.campaign)) throw new Error("Catalog metadata cannot be mixed with campaign results");
+  const catalogOverview = input.catalogOverview ? renderCatalogOverview(input.catalogOverview, input.catalogOverviewDescriptions) : null;
   const presentationLinks = (input.presentation?.links ?? []).flatMap(link => {
     const href = reportEvidenceHref(link.href);
     return href ? [{ ...link, href }] : [];
@@ -859,11 +868,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .matrix thead th, .profile-cell, .profile-sticky { position: static; }
     }
     ${reportNavigationStyles}
+    ${catalogOverviewStyles}
   </style>
 </head>
-<body id="top">
-  ${renderReportShell({ campaignId: input.campaign?.campaignId, catalog, history: input.history })}
+<body id="top"${catalogOverview ? " data-catalog-metadata" : ""}>
+  ${renderReportShell(catalogOverview ? { history: input.history } : { campaignId: input.campaign?.campaignId, catalog, history: input.history })}
   <main id="overview">
+    ${catalogOverview ?? `
     <section class="case-page-heading" data-case-page-heading hidden><p class="eyebrow">Test case</p><h1 data-case-page-title tabindex="-1"></h1><a href="?view=all" data-nav-return>← Back to campaign results</a></section>
     <section data-campaign-overview>
     <header class="report-header">
@@ -919,6 +930,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </section>
     ${suiteSections}
     <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} selected executions · Declared screenshots and normalized results published</span></footer>
+    `}
   </main>
   </div></div>
   <a class="back-to-top" href="#top" data-back-to-top hidden><span aria-hidden="true">↑</span>Back to top</a>
@@ -1074,7 +1086,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       stage.addEventListener("pointercancel", () => { pointerStartX = null; });
     })();
   </script>
-  <script>${reportShellScript}${reportBrowserScript}</script>
+  <script>${reportShellScript}${catalogOverview ? catalogOverviewScript : reportBrowserScript}</script>
 
 </body>
 </html>

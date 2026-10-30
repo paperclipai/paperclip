@@ -1,13 +1,17 @@
+import { assertAcpxExecutionAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
 import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyCursorInstallation } from "./cursor-installation.js";
+import { verifyAntigravityInstallation } from "./antigravity-installation.js";
 import { assertCursorWorkspacePolicy } from "./cursor-launch-policy.js";
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxAgent, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 import { verifyPiInstallation } from "./pi-installation.js";
 import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
-export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile): Promise<VerifiedAcpxInstallation> {
+export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile, candidateAdmission?: AcpxCandidateStartupAdmission): Promise<VerifiedAcpxInstallation> {
+  assertAcpxExecutionAdmission(profile, candidateAdmission);
+  if (profile.agent === "antigravity") return verifyAntigravityInstallation(profile, candidateAdmission);
   if (profile.agent === "pi") return verifyPiInstallation(profile);
   if (profile.agent === "copilot") return verifyCopilotInstallation(profile);
   if (profile.agent === "cursor") {
@@ -31,6 +35,9 @@ export async function assertAcpxProfileWorkspace(agent: QualifiedAcpxAgent, work
 /** Called with the sanitized launch environment, never ambient process.env. */
 export function assertAcpxProfileEnvironment(agent: QualifiedAcpxAgent, environment: Readonly<NodeJS.ProcessEnv>): void {
   if (agent === "copilot") assertCopilotCredentials(environment);
+  if (agent === "antigravity" && !environment.GEMINI_API_KEY?.trim() && !environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET?.trim()) {
+    throw Object.assign(new Error("Google Antigravity requires an explicitly bound Google runtime connection. Connect a Google account or Gemini API key before starting a task."), { code: "ANTIGRAVITY_CREDENTIALS_MISSING", retryable: false });
+  }
   if (agent === "cursor" && !environment.CURSOR_API_KEY?.trim() && !environment.CURSOR_AUTH_TOKEN?.trim()) {
     throw Object.assign(new Error("Cursor credentials are missing. Bind a company secret to CURSOR_API_KEY or CURSOR_AUTH_TOKEN in the agent environment."), { code: "CURSOR_CREDENTIALS_MISSING", retryable: false });
   }

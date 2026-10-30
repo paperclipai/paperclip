@@ -1,3 +1,6 @@
+import { notifyGitHubReviewProjection } from "./chat-channels/github/review-projection-work.js";
+import { notifyGitHubReviewChecks } from "./chat-channels/github/review-check-work.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
@@ -9,7 +12,7 @@ import {
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
-import { githubReviewHeading } from "./chat-channels/github/review-heading.js";
+import { githubReviewSummary } from "./chat-channels/github/review-heading.js";
 import { githubPublicationRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 import { createHash } from "node:crypto";
 import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
@@ -349,16 +352,21 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       .limit(1);
     if (prior && prior.runId === source.run.id) return prior;
     if (prior && !prior.runId && prior.deliveryId === source.delivery.id) {
-      const [claimed] = await db
-        .update(chatGitHubReviews)
-        .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatGitHubReviews.id, prior.id),
-            isNull(chatGitHubReviews.runId),
-          ),
-        )
-        .returning();
+      const [claimed] = await db.transaction(async tx => {
+        await notifyGitHubReviewProjection(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id });
+        await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          repositoryId: source.repositoryId, number: source.number });
+        return tx
+          .update(chatGitHubReviews)
+          .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
+          .where(
+            and(
+              eq(chatGitHubReviews.id, prior.id),
+              isNull(chatGitHubReviews.runId),
+            ),
+          )
+          .returning();
+      });
       if (claimed) return claimed;
       return reviewForHead(source, pull);
     }
@@ -406,26 +414,30 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       labels: pull.labels.map((l) => l.name),
       ...(automatic ? automatic.context : {}),
     };
-    const [review] = await db
-      .insert(chatGitHubReviews)
-      .values({
-        companyId: source.endpoint.companyId,
-        endpointId: source.endpoint.id,
-        issueId: source.issue.id,
-        runId: source.run.id,
-        repositoryId: source.repositoryId,
-        repository: source.repository,
-        pullNumber: source.number,
-        headSha: pull.head.sha,
-        deliveryId: `run:${source.run.id}:${pull.head.sha}`,
-        configurationRevision:
-          manual?.revision ?? automatic?.revision ?? source.config.revision,
-        policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
-        event: context,
-        state: "running",
-      })
-      .onConflictDoNothing()
-      .returning();
+    const [review] = await db.transaction(async tx => {
+      await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+        repositoryId: source.repositoryId, number: source.number });
+      return tx
+        .insert(chatGitHubReviews)
+        .values({
+          companyId: source.endpoint.companyId,
+          endpointId: source.endpoint.id,
+          issueId: source.issue.id,
+          runId: source.run.id,
+          repositoryId: source.repositoryId,
+          repository: source.repository,
+          pullNumber: source.number,
+          headSha: pull.head.sha,
+          deliveryId: `run:${source.run.id}:${pull.head.sha}`,
+          configurationRevision:
+            manual?.revision ?? automatic?.revision ?? source.config.revision,
+          policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
+          event: context,
+          state: "running",
+        })
+        .onConflictDoNothing()
+        .returning();
+    });
     if (review) {
       await githubReviewCheckService(db, fetchImpl).enqueue(
         source.endpoint,
@@ -461,6 +473,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ): Promise<string> {
     if (writer === db) return db.transaction(tx => stage(source, operation, payload, key, invocationId, toolName, parameters, tx));
     const actionKey = `github_publication:${source.issue.id}:${operation}:${hash(key)}`;
+    await notifyChatResponseAvailability(writer, { companyId: source.endpoint.companyId, issueId: source.issue.id });
     await notifyDeliveryWork(writer, DELIVERY_QUEUES.chatGitHubPublications);
     const values = {
       companyId: source.endpoint.companyId,
@@ -1046,6 +1059,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     )?.[1];
     if (!number || !binding?.repository.providerRepositoryId) {
       await db.transaction(async tx => {
+        await notifyChatResponseAvailability(tx, { companyId: action.companyId, conversationId: action.conversationId ?? undefined });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
         await tx.update(chatActions).set({ status: "cancelled", result: { code: "publication_binding_unavailable", retryable: false }, updatedAt: new Date() })
           .where(and(eq(chatActions.id, actionId), eq(chatActions.companyId, action.companyId)));
@@ -1230,12 +1244,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
               : "";
             const summary = projectSafeChatPublicationText(
-              `${githubReviewHeading({
+              `${githubReviewSummary({
                 botDisplayName: source.endpoint.botDisplayName,
                 botUsername: source.endpoint.botUsername,
                 agentName: source.agent.name,
                 score: assessment.complete ? assessment.score : null,
-              })}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
+                summary: assessment.summary,
+                rationale: assessment.rationale,
+              })}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
             );
             const summaryMarker = marker(
               "review",

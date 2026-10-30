@@ -136,6 +136,12 @@ test.describe("Onboarding wizard", () => {
     await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await page.getByRole("main").getByRole("link", { name: /^Atlas / }).click();
+    await expect(page.getByRole("button", { name: "Run now", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Finish setup", exact: true })).toHaveCount(1);
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Finish setup", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Run now", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Finish setup", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
     await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="codex_local"]') }).click();

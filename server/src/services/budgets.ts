@@ -262,7 +262,7 @@ async function markApprovalStatus(
   if (!approvalId) return;
   const [approval] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, approvalId));
   if (!approval) return;
-  await notifyApprovalWork(db, approval.companyId);
+  await notifyApprovalWork(db, approval.companyId, { approvalId });
   await db
     .update(approvals)
     .set({
@@ -301,6 +301,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
@@ -358,6 +361,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await db
       .update(companies)

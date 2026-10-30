@@ -26,6 +26,120 @@ async function fixture() {
 }
 const generation = (index: number) => index.toString(16).padStart(64, "0");
 
+it("does not wait for a cache-only Git archive flush", async () => {
+  const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  await fs.writeFile(cacheOnly, "branch-neutral reusable seed");
+  const blocked = deferred<"flush_wait">(), release = deferred<void>();
+  const open = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    const file = await open(...args);
+    if (String(args[0]).includes(".pending-") && path.basename(String(args[0])) === "git.tar") {
+      vi.spyOn(file, "sync").mockImplementation(async () => {
+        blocked.resolve("flush_wait");
+        await release.promise;
+      });
+    }
+    return file;
+  });
+  const publishing = publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: cacheOnly });
+  try {
+    expect(await Promise.race([publishing, blocked.promise])).toBe(true);
+    const cached = await readWorkspaceSeedGeneration(f.workspace, generation(1));
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+    expect(await fs.readFile(cached!.gitArchivePath!, "utf8")).toBe("branch-neutral reusable seed");
+    expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
+    expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+  } finally {
+    release.resolve();
+    await publishing;
+  }
+});
+
+it.each(["same path", "hardlink"])("rejects a cache-only Git archive that shares recovery bytes through %s", async kind => {
+  const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  if (kind === "hardlink") await fs.link(recovery, cacheOnly);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: kind === "hardlink" ? cacheOnly : recovery })).toBe(false);
+  expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
+});
+
+it("rejects a cache-only archive replaced with a recovery hardlink during verification", async () => {
+  const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  await fs.writeFile(cacheOnly, "branch-neutral reusable seed");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: cacheOnly, verify: async () => {
+      await fs.rm(cacheOnly);
+      await fs.link(recovery, cacheOnly);
+      return true;
+    } })).toBe(false);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1))).toBeNull();
+  expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
+});
+
+it.each(["workspace.tar", "git.tar"])("keeps storage flush failures fatal to publication of recovery-backed %s", async archive => {
+  const f = await fixture();
+  const git = path.join(f.root, "recovery-git.tar");
+  await fs.writeFile(git, "task branch recovery");
+  const open = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    const file = await open(...args);
+    if (String(args[0]).includes(".pending-") && path.basename(String(args[0])) === archive) {
+      vi.spyOn(file, "sync").mockRejectedValue(Object.assign(new Error("storage flush failed"), { code: "EIO" }));
+    }
+    return file;
+  });
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(false);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1))).toBeNull();
+  expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+  expect(await fs.readFile(git, "utf8")).toBe("task branch recovery");
+});
+
+it("returns verified private copies that survive subsequent cache changes", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copy = await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination });
+  expect(copy).not.toBeNull();
+  expect(path.dirname(copy!.workspaceArchivePath)).toBe(path.dirname(copy!.gitArchivePath!));
+  expect(path.dirname(path.dirname(copy!.workspaceArchivePath))).toBe(destination);
+  await fs.writeFile(path.join(f.workspace, generation(1), "workspace.tar"), "changed shared cache");
+  await fs.rm(path.join(f.workspace, generation(1), "git.tar"));
+  expect(await fs.readFile(copy!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  expect(await fs.readFile(copy!.gitArchivePath!, "utf8")).toBe("git recovery bytes");
+});
+
+it("rejects corrupted private bytes and removes incomplete materialization", async () => {
+  const f = await fixture();
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed)).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copyFile = fs.copyFile.bind(fs);
+  vi.spyOn(fs, "copyFile").mockImplementationOnce(async (...args) => {
+    await copyFile(...args);
+    await fs.writeFile(args[1], "corrupted during copy");
+  });
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+  expect(await fs.readFile(path.join(f.workspace, generation(1), "workspace.tar"), "utf8")).toBe("run recovery bytes");
+});
+
+it("cleans a verified workspace copy if the cached Git archive is corrupt", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  await fs.writeFile(path.join(f.workspace, generation(1), "git.tar"), "corrupt");
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+});
+
 it("stops new workspace generations at capacity while retaining reusable and per-run seeds", async () => {
   const f = await fixture(); const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 } };
   expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
@@ -56,6 +170,50 @@ it.each(["companyGenerations", "companyWorkspaces"] as const)("serializes distin
   expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
 });
 
+it("keeps company-lock contention outside the locked-publication span", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), release = deferred<void>(), verified = deferred<void>();
+  const spans: string[][] = [[], []];
+  const runtimeSpan = (index: number) => async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    spans[index].push(name);
+    if (index === 0 && name === "workspace.seed_cache_locked_publish") {
+      entered.resolve();
+      await release.promise;
+    }
+    return work();
+  };
+  const first = publishWorkspaceSeedGeneration(path.join(f.company, "first"), generation(1), f.seed, {
+    companyDirectory: f.company, runtimeSpan: runtimeSpan(0),
+  });
+  let second: Promise<boolean> | undefined;
+  try {
+    await entered.promise;
+    second = publishWorkspaceSeedGeneration(path.join(f.company, "second"), generation(2), f.seed, {
+      companyDirectory: f.company, runtimeSpan: runtimeSpan(1),
+      verify: async () => { verified.resolve(); return true; },
+    });
+    await verified.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(spans[1]).toContain("workspace.seed_cache_capacity");
+    expect(spans[1]).not.toContain("workspace.seed_cache_locked_publish");
+  } finally {
+    release.resolve();
+    await Promise.all([first, second]);
+  }
+  expect(await first).toBe(true);
+  expect(await second).toBe(true);
+  for (const names of spans) {
+    expect(names).toContain("workspace.seed_cache_locked_publish");
+    expect(names).toContain("workspace.seed_cache_evict");
+    expect(names).toContain("workspace.seed_cache_sync");
+    expect(names).toContain("workspace.seed_cache_hash");
+  }
+  for (const [name, index] of [["first", 1], ["second", 2]] as const) {
+    const cached = await readWorkspaceSeedGeneration(path.join(f.company, name), generation(index), { companyDirectory: f.company });
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  }
+});
+
 it("applies the company byte cap across workspace roots", async () => {
   const f = await fixture();
   const options = { companyDirectory: f.company, limits: { companyBytes: 4500 } };
@@ -63,6 +221,70 @@ it("applies the company byte cap across workspace roots", async () => {
   const secondArchive = path.join(f.root, "second-seed.tar"); await fs.writeFile(secondArchive, "x".repeat(1000));
   expect(await publishWorkspaceSeedGeneration(path.join(f.company, "second"), generation(2), { workspaceArchivePath: secondArchive }, options)).toBe(false);
   expect(await fs.readdir(f.company)).toEqual(["workspace"]);
+});
+
+it("admits multiple recent workspaces into the company bucket without applying one workspace's quota to their sum", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const options = { companyDirectory: f.company, scope: "company" as const,
+    limits: { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 100_000 } };
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+  for (const index of [1, 2]) {
+    const cached = await readWorkspaceSeedGeneration(f.workspace, generation(index));
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("x".repeat(8192));
+  }
+});
+
+it.each(["companyGenerations", "companyBytes"] as const)("keeps the shared bucket within %s and preserves recently used seeds", async limit => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const options = { companyDirectory: f.company, scope: "company" as const,
+    limits: { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 100_000,
+      [limit]: limit === "companyBytes" ? 25_000 : 2 } };
+  for (const index of [1, 2]) expect(await publishWorkspaceSeedGeneration(f.workspace, generation(index), f.seed, options)).toBe(true);
+  const verify = vi.fn(async () => true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, { ...options, verify })).toBe(false);
+  expect(verify).not.toHaveBeenCalled();
+  expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2)]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("x".repeat(8192));
+});
+
+it("evicts an old legacy workspace seed to make room for a new shared generation", async () => {
+  const f = await fixture(); const now = Date.now();
+  await fs.writeFile(f.archive, "x".repeat(8192));
+  const limits = { workspaceGenerations: 1, workspaceBytes: 20_000, companyGenerations: 3, companyBytes: 40_000 };
+  const legacy = path.join(f.company, "legacy");
+  const legacyArchive = path.join(f.root, "legacy.tar"); await fs.writeFile(legacyArchive, "y".repeat(15_000));
+  expect(await publishWorkspaceSeedGeneration(legacy, generation(0), { workspaceArchivePath: legacyArchive },
+    { companyDirectory: f.company, limits, now: () => now })).toBe(true);
+  const receipt = path.join(legacy, generation(0), "receipt.json");
+  await fs.utimes(receipt, new Date(now - 2 * 60 * 60 * 1000), new Date(now - 2 * 60 * 60 * 1000));
+  const options = { companyDirectory: f.company, scope: "company" as const, limits, now: () => now };
+  for (const index of [1, 2, 3]) expect(await publishWorkspaceSeedGeneration(f.workspace, generation(index), f.seed, options)).toBe(true);
+  expect(await fs.readdir(f.company)).toEqual(["workspace"]);
+  expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2), generation(3)]);
+  expect(await fs.readFile(legacyArchive, "utf8")).toBe("y".repeat(15_000));
+});
+
+it("retains the individual seed byte ceiling when the shared bucket has room", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const verify = vi.fn(async () => true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, scope: "company", limits: { workspaceBytes: 8192 }, verify,
+  })).toBe(false);
+  expect(verify).not.toHaveBeenCalled();
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("x".repeat(8192));
+});
+
+it("rechecks the individual shared seed byte ceiling after verification", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const verify = vi.fn(async () => { await fs.writeFile(f.archive, "y".repeat(30_000)); return true; });
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, scope: "company", limits: { workspaceBytes: 20_000, companyBytes: 100_000 }, verify,
+  })).toBe(false);
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("y".repeat(30_000));
 });
 
 it("serializes concurrent archive publication against the aggregate byte cap", async () => {

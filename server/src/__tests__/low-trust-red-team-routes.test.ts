@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
@@ -55,12 +56,13 @@ import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_LOW_TRUST_TEST_DATABASE_URL");
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+const describeEmbeddedPostgres = externalTestDatabaseUrl || embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-if (!embeddedPostgresSupport.supported) {
+if (!externalTestDatabaseUrl && !embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres low-trust route tests on this host: ${
       embeddedPostgresSupport.reason ?? "unsupported environment"
@@ -885,10 +887,10 @@ describeEmbeddedPostgres(
     }
 
     beforeAll(async () => {
-      tempDb = await startEmbeddedPostgresTestDatabase(
+      if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
       );
-      db = createDb(tempDb.connectionString);
+      db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     }, 20_000);
 
     afterEach(async () => {
@@ -927,6 +929,7 @@ describeEmbeddedPostgres(
     });
 
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await tempDb?.cleanup();
     });
 

@@ -18,7 +18,7 @@ test("the active Grok profile attests its exact admission source", () => {
 });
 
 for (const contract of [
-  "src/cli/acpx-runtime-sidecar.ts",
+  "src/drivers/acpx/generated-sidecar-contract.ts",
   "runner/crates/runner-core/src/acpx_provider_backend.rs",
 ]) test(`changing the Grok field in ${contract} invalidates the identity`, () => {
   const copy = mkdtempSync(join(tmpdir(), "grok-profile-source-"));
@@ -47,7 +47,7 @@ test("the generator cannot overwrite a versioned identity after source changes",
   const launcher = `${prefix}src/providers/grok/launcher.cjs`;
   try {
     for (const path of new Set([...GROK_PROFILE_SOURCE_FILES, ...[
-      "acpx-profiles.json", "cursor-distributions.json", "cursor-contract.json", "package.json",
+      "acpx-profiles.json", "cursor-distributions.json", "cursor-contract.json", "antigravity-distributions.json", "package.json",
       "scripts/grok-profile-identity.mjs", "scripts/generate-acpx-profiles.mjs",
       `test/fixtures/copilot-profile-v${manifest.profiles.copilot.agentProfileVersion}-identity.json`,
       `test-fixtures/pi-acp/profile-v${manifest.profiles.pi.agentProfileVersion}-identity.json`,
@@ -62,7 +62,7 @@ test("the generator cannot overwrite a versioned identity after source changes",
     const unchanged = generate();
     assert.equal(unchanged.status, 0, unchanged.stderr);
     assert.deepEqual(protectedFiles.map(path => readFileSync(join(copy, path), "utf8")), before);
-    const sidecar = join(copy, prefix, "src/cli/acpx-runtime-sidecar.ts");
+    const sidecar = join(copy, prefix, "src/drivers/acpx/generated-sidecar-contract.ts");
     writeFileSync(sidecar, readFileSync(sidecar, "utf8").replace('"grokEffort"', '"obsoleteGrokEffort"'));
     const result = generate();
     assert.deepEqual(protectedFiles.map(path => readFileSync(join(copy, path), "utf8")), before, "a changed identity must be refused before any write");

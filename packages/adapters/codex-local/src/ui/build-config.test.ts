@@ -36,6 +36,20 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("refuses pending Antigravity selection before saving Runner config", () => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
+      adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } })))
+      .toThrow("Google Antigravity is not enabled for production");
+  });
+  it("builds only the exact candidate model from non-persisted UI context", () => {
+    const values = makeValues({ model: "exact-antigravity-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } });
+    const context = { candidateHarnesses: [{ agent: "antigravity" as const, model: "exact-antigravity-model" }] };
+    expect(buildPaperclipRunnerConfig(values, context)).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: values.model });
+    expect(buildPaperclipRunnerConfig(values, context)).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig({ ...values, model: "another-model" }, context)).toThrow();
+    expect(() => buildPaperclipRunnerConfig(values)).toThrow();
+  });
+
   it("preserves explicitly disabled hosted search in native Codex configuration", () => {
     expect(buildPaperclipRunnerConfig(makeValues({ search: false }))).toHaveProperty("search", false);
     expect(buildPaperclipRunnerConfig(makeValues({ search: true }))).not.toHaveProperty("search");

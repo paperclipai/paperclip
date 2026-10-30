@@ -1,8 +1,9 @@
 # Runner E2E security for a public repository
 
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
-and a privately supplied Codex subscription login through the existing isolated
-company staging helper. Only source-chat screenshots are captured. Task, document
+and either a privately supplied Codex subscription login through the existing
+isolated company staging helper or the OpenCode profile's encrypted OpenRouter
+secret reference. Only source-chat screenshots are captured. Task, document
 and run evidence stays behind the existing sanitizer and publication allowlist;
 the YAML catalog contains no credentials. The suite's accounted-work budgets do
 not cover production setup probes or imply zero subscription cost.
@@ -40,9 +41,27 @@ does not attribute a product cause or authorize acceptance.
 
 ## Attended connection authentication
 
+The [Antigravity saved-subscription journey](ANTIGRAVITY-AGENT-JOURNEY.md) attaches
+only to its declared same-host loopback macOS ARM64 test target. Configured pins
+assert the trusted startup candidate authority; they cannot create it. The
+signed-in browser user must own the exact pre-existing personal default Google
+grant. No provider secret or OAuth code enters test configuration or prompts,
+and no MCP connection is required. Ownership receipts, actual authenticated
+screenshots and concrete account/session bindings stay private and receive no
+public-fixture marker. Recovery validates target/company/execution and immutable
+owned resources, stops only owned work and retains the supplied Google account
+and default grant. It neither resets the attached instance nor clears accounting
+holds. Two work turns, finite deadlines and zero automatic retries bound the
+selected cell; unknown subscription prices remain unknown.
+
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+`ConnectionApi.postSensitive` keeps credential bodies outside Playwright traces.
+Adapters must preserve this transport when wrapping APIs. Its optional abort
+signal and bounded timeout stop the actual HTTP request; setup cleanup must
+wait for that request to retire before it certifies resource absence.
 
 Provider-connection results may retain closed diagnostic codes and terminal run
 status before managed-instance teardown. Only error records and failed tool
@@ -322,6 +341,17 @@ in the retained Actions artifact. Credential redaction does not remove hidden
 reasoning or provider session identities, so a text extension never admits a
 file to the public bundle. Graded results remain in `normalized-results.json`.
 
+The normalized result may also contain the reviewed `taskChat` projection:
+task titles/briefs, complete saved comments, visible question/approval copy and
+recorded answers, agent display names, timestamps, and explicitly classified
+native assistant progress. It is captured only from the disposable fixture
+company and credential-redacted before retention. Only these presentation
+fields are admitted by the closed result validator. Arbitrary interaction
+payloads, tool arguments/results, provider/session identities, reasoning and
+raw event envelopes are excluded. No per-attempt snapshot or log becomes public
+as a consequence. Fixture authors must keep task conversation text public just
+as they do the visible content of marked screenshots.
+
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, broader boundary. Text is exact-value and key-shape scanned and
 redacted. PNG and WebM are raw-byte scanned; SVG is rejected during packaging
@@ -558,3 +588,8 @@ Runner hook performs it. Only synthetic source bytes and proof JSON enter the
 existing private attempt evidence and registered-artifact verification pipeline.
 A failed attempt remains retained. These development checks are not staging or
 Slack qualification, and they do not publish trusted archives or credentials.
+
+
+Report identities preserve legacy chat tasks and exact `area.case` chat catalog
+tasks. Additional task segments, path separators and dotted nonchat tasks remain
+invalid. This parsing does not qualify a result or grant a new execution.

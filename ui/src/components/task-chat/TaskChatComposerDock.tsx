@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 interface TaskChatComposerDockProps {
@@ -10,7 +10,23 @@ interface TaskChatComposerDockProps {
 
 /** A normal flex footer beside the message scroller, on desktop and mobile. */
 export function TaskChatComposerDock({ children, mobile, streamlined, concealed = false }: TaskChatComposerDockProps) {
+  const dockRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const thread = dock?.closest<HTMLElement>('[data-testid="task-chat-thread"]');
+    if (!dock || !thread || !thread.closest(".coordinator-workspace")) return;
+    const measure = () => thread.style.setProperty("--task-composer-dock-height", `${dock.getBoundingClientRect().height}px`);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(dock);
+    return () => {
+      observer.disconnect();
+      thread.style.removeProperty("--task-composer-dock-height");
+    };
+  }, []);
   return <div
+    ref={dockRef}
     data-testid="task-chat-composer-dock"
     data-conversation-typography=""
     inert={concealed}

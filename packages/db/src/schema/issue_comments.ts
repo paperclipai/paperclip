@@ -5,6 +5,7 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -50,6 +51,9 @@ export const issueComments = pgTable(
     clientRequestUq: unique("issue_comments_client_request_uq").on(table.issueId, table.authorUserId, table.clientRequestId),
     companyIdUq: unique("issue_comments_company_id_uq").on(table.companyId, table.id),
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
+    reviewResponseReceiptIdx: index("issue_comments_review_response_receipt_idx").on(
+      table.createdByRunId, table.companyId, table.issueId, table.authorAgentId,
+    ).where(sql`${table.authorType} = 'agent' AND ${table.metadata}->>'authorizationReason' = 'allow_chat_run_presentation'`),
     companyIdx: index("issue_comments_company_idx").on(table.companyId),
     companyIssueCreatedAtIdx: index("issue_comments_company_issue_created_at_idx").on(
       table.companyId,

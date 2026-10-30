@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -80,12 +81,11 @@ export async function ensureProjectAccessMember(
     subjectId: string;
   },
 ) {
-  return dbOrTx
-    .insert(projectAccessMembers)
-    .values(input)
-    .onConflictDoNothing()
-    .returning()
-    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+  return dbOrTx.transaction(async (tx: Db) => {
+    await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+    return tx.insert(projectAccessMembers).values(input).onConflictDoNothing().returning()
+      .then(rows => rows[0] ?? null);
+  });
 }
 
 /**
@@ -1013,6 +1013,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
         const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();

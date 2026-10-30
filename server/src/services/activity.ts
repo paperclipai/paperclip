@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
@@ -109,7 +110,7 @@ export function activityService(db: Db) {
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,

@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { withAgentAppearance } from "@paperclipai/shared";
@@ -290,6 +291,7 @@ export function createSecretProposalsService(db: Db) {
       : outcome === "rejected"
         ? "rejected"
         : "withdrawn";
+    if (current.status !== status) await notifyChatRunMilestones(txDb, current);
     await txDb
       .update(issueThreadInteractions)
       .set({

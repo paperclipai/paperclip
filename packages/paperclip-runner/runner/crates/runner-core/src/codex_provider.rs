@@ -23,6 +23,52 @@ use crate::provider_events::normalized_codex_terminal_event_type;
 use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
+#[cfg(unix)]
+pub(crate) fn runtime_notification_codex_args(
+    args: &[String],
+    profile: &str,
+    paths: &[PathBuf; 4],
+) -> Vec<String> {
+    let prefix = "shell_environment_policy.include_only=";
+    let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
+        return vec![];
+    };
+    let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
+        return vec![];
+    };
+    for key in [
+        crate::runtime_notifications::CONTEXT_ENV,
+        crate::runtime_notifications::HELPER_ENV,
+    ] {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.into());
+        }
+    }
+    let mut extra = vec![
+        "-c".into(),
+        format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
+        "-c".into(),
+        "shell_environment_policy.inherit=\"all\"".into(),
+    ];
+    for profile in BTreeSet::from([profile, "paperclip-runner-workspace-read-only"]) {
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Ok(mut config) = format!("filesystem={value}").parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
+            continue;
+        };
+        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
+            filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
+        }
+        extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
+    }
+    extra
+}
+
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -32,6 +78,14 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AI_PROVIDER_URL",
     "PAPERCLIP_AGENT_KEY_ID",
@@ -984,6 +1038,18 @@ impl CodexProvider {
                     .map_err(|e| LocalRunnerError::invalid(e.to_string()))?,
             );
         }
+        #[cfg(unix)]
+        if config.provider == "codex" {
+            if let Some(paths) = crate::runtime_notifications::access_paths() {
+                let extra =
+                    runtime_notification_codex_args(&launch_args, &permission_profile, &paths);
+                let position = launch_args
+                    .iter()
+                    .position(|arg| arg == "app-server")
+                    .unwrap_or(launch_args.len());
+                launch_args.splice(position..position, extra);
+            }
+        }
         let spawn = (|| {
             if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
@@ -1745,7 +1811,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_options_and_effort(message, cwd, options, None)
+        self.start_turn_with_options_and_effort(message, cwd, options, None, None)
     }
 
     pub(crate) fn start_turn_with_options_and_effort(
@@ -1754,6 +1820,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
         effort: Option<&Value>,
+        run_id: Option<&str>,
     ) -> Result<Value, LocalRunnerError> {
         let CodexTurnOptions {
             skills,
@@ -1825,6 +1892,13 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        // The retained proxy's launch environment belongs to its first run.
+        // Only runnerd's rotated authority supplies the current run identity.
+        if self.config.provider == "opencode" {
+            if let Some(run_id) = run_id {
+                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+        }
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
@@ -4159,6 +4233,77 @@ fn codex_question_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_notification_policy_grants_only_discovery_files_and_ipc() {
+        let mut args = vec![
+            "shell_environment_policy.include_only=[\"PATH\",\"LANG\",\"PAPERCLIP_API_KEY\"]"
+                .into(),
+        ];
+        for name in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            args.push(format!(
+                "permissions.{name}.filesystem={{\":root\"=\"none\",\"/state/private\"=\"none\"}}"
+            ));
+        }
+        let paths = [
+            PathBuf::from("/runtime/runnerd"),
+            PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/state/private/runtime-activity.lock"),
+            PathBuf::from("/tmp/prn-channel"),
+        ];
+        let extra =
+            runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
+        let keys: Vec<String> = serde_json::from_str(
+            extra[1]
+                .strip_prefix("shell_environment_policy.include_only=")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys,
+            [
+                "PATH",
+                "LANG",
+                "PAPERCLIP_API_KEY",
+                crate::runtime_notifications::CONTEXT_ENV,
+                crate::runtime_notifications::HELPER_ENV
+            ]
+        );
+        let serialized = extra.join("\n");
+        for profile in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            let prefix = format!("permissions.{profile}.filesystem=");
+            let value = extra
+                .iter()
+                .find_map(|arg| arg.strip_prefix(&prefix))
+                .unwrap();
+            let config = format!("filesystem={value}")
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            let filesystem = config["filesystem"].as_inline_table().unwrap();
+            for (path, mode) in [
+                (":root", "none"),
+                ("/state/private", "none"),
+                ("/runtime/runnerd", "read"),
+                ("/state/private/runtime-notifications.json", "read"),
+                ("/state/private/runtime-activity.lock", "read"),
+                ("/tmp/prn-channel", "write"),
+            ] {
+                assert_eq!(
+                    filesystem.get(path).and_then(toml_edit::Value::as_str),
+                    Some(mode)
+                );
+            }
+        }
+        assert!(!serialized.contains("network."));
+        assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
+    }
 
     #[cfg(unix)]
     fn completion_tail_provider() -> CodexProvider {

@@ -53,7 +53,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     return skillDir;
   }
 
+  const previousPackageStorage = process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
   beforeAll(async () => {
+    process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = "true";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-service-");
     oldPaperclipHome = process.env.PAPERCLIP_HOME;
     oldPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
@@ -80,6 +82,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   });
 
   afterAll(async () => {
+    if (previousPackageStorage === undefined) delete process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
+    else process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = previousPackageStorage;
     if (oldPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = oldPaperclipHome;
     if (oldPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -233,7 +237,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.insert(companies).values({ id: companyId, name: "Rollback retry", issuePrefix: `T${companyId.slice(0, 6)}` });
     const input = { name: "Retryable", slug: "retryable", markdown: "# durable bytes\n" };
     await expect(db.transaction(async (tx) => {
-      await companySkillService(tx as any).createLocalSkill(companyId, input);
+      await companySkillService(tx as any, { packageDb: db }).createLocalSkill(companyId, input);
       throw new Error("simulate outer rollback");
     })).rejects.toThrow("simulate outer rollback");
 
@@ -383,7 +387,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.insert(companies).values({ id: companyId, name: "Rollback conflict", issuePrefix: `T${companyId.slice(0, 6)}` });
     const original = { name: "Original", slug: "rollback-conflict", markdown: "# original bytes\n" };
     await expect(db.transaction(async (tx) => {
-      await companySkillService(tx as any).createLocalSkill(companyId, original);
+      await companySkillService(tx as any, { packageDb: db }).createLocalSkill(companyId, original);
       throw new Error("simulate outer rollback");
     })).rejects.toThrow("simulate outer rollback");
 
@@ -894,7 +898,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       releasedAt: new Date("2026-07-21T00:00:00.000Z"),
     });
     if (!champion) throw new Error("Expected seeded v7-roster release");
-    const championHashes = Object.fromEntries(champion.fileInventory.map((entry) => [
+    const championVersion = (await svc.getVersion(companyId, paperclipSkill.id, champion.id))!;
+    const championHashes = Object.fromEntries(championVersion.fileInventory.map((entry) => [
       entry.path,
       createHash("sha256").update(entry.content).digest("hex"),
     ]));
@@ -2701,7 +2706,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
     expect(versions[0]).toMatchObject({ revisionNumber: 2, authorUserId: "board" });
-    expect(versions[0]!.fileInventory).toEqual([
+    expect(versions[0]!.fileInventory).toEqual([{ path: "SKILL.md", kind: "skill" }]);
+    expect((await svc.getVersion(companyId, skill.id, versions[0]!.id))!.fileInventory).toEqual([
       expect.objectContaining({ path: "SKILL.md", content: editedMarkdown }),
     ]);
     await expect(svc.getById(companyId, skill.id)).resolves.toMatchObject({
