@@ -154,7 +154,6 @@ export async function runChatFeatureFlow(context: {
     try {
       await refresh();
       await saveEvidence();
-      for (const check of gradeChatFeature(observation).checks) input.check?.(check.id, check.passed, check.detail);
       const runEvidence = await Promise.all(observation.runs.map(run => collectChatRunEvidence(api, run)));
       await input.evidence("chat-feature-runs.json", runEvidence);
       await input.evidence("api-state.json", { issue: observation.source, runs: observation.runs,
@@ -163,6 +162,10 @@ export async function runChatFeatureFlow(context: {
       if (!failure) throw error;
       await input.evidence("chat-feature-evidence-error.json", { incomplete: true,
         message: error instanceof Error ? error.message : "Evidence collection failed" });
-    } finally { await fixtures.teardown(); }
+    } finally {
+      try {
+        for (const check of gradeChatFeature(observation).checks) input.check?.(check.id, check.passed, check.detail);
+      } finally { await fixtures.teardown(); }
+    }
   }
 }
