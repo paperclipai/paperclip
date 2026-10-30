@@ -105,8 +105,11 @@ server proves that no provider work started. A scheduled replacement remains
 pending and consumes the run limit. It cannot satisfy completion; the child must
 still finish through native execution and pass the independent artifact checks.
 
-A native run with a saved automatic same-run recovery remains pending within the
-original campaign deadline. The authenticated run projection must identify an
+A native run can remain pending for saved automatic same-run recovery with code
+`native_session_interrupted`, `provider_transport_failed`,
+`provider_request_timeout`, or `native_runner_process_exited`.
+The wait stays within the original campaign deadline.
+The authenticated run projection must identify a matching source code and an
 agent-owned retryable native interruption, a bounded attempt and retry schedule,
 and no successor. An overdue retry can still be reconnecting; it does not extend
 the deadline or authorize a new story attempt. Ordinary failures, terminal or

@@ -1,6 +1,9 @@
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value)
   ? value as RecordValue : {};
+const nativeRecoveryCauses = new Set([
+  "native_session_interrupted", "provider_transport_failed", "provider_request_timeout", "native_runner_process_exited",
+]);
 
 function hasProviderUsage(value: unknown): boolean {
   if (value == null) return false;
@@ -20,7 +23,7 @@ export function isPendingNativeRecovery(run: RecordValue, deadlineAt: number): b
   const finishedAt = typeof run.finishedAt === "string" ? Date.parse(run.finishedAt) : NaN;
   const retryAt = typeof execution.retryAt === "string" ? Date.parse(execution.retryAt) : NaN;
   return run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure" &&
-    run.errorCode === "native_session_interrupted" && execution.cause === "native_session_interrupted" &&
+    typeof run.errorCode === "string" && nativeRecoveryCauses.has(run.errorCode) && execution.cause === run.errorCode &&
     typeof run.nativeIssueId === "string" && run.nativeIssueId === object(run.contextSnapshot).issueId &&
     (run.issueId == null || run.issueId === run.nativeIssueId) &&
     (execution.phase === "retry_scheduled" || execution.phase === "reconnecting") && execution.recoveryOwner === "agent" &&

@@ -301,7 +301,8 @@ describe("Cloud canonical onboarding first task", () => {
     expect(result.artifact.originatingRunId).toBe("child-run");
     expect(connectionDelay).toHaveBeenCalledOnce();
   });
-  it.each([false, true])("observes the same native recovery through success with workspace predecessor=%s", async predecessor => {
+  it.each(["native_session_interrupted", "provider_transport_failed", "provider_request_timeout", "native_runner_process_exited"]
+    .flatMap(cause => [false, true].map(predecessor => ({ cause, predecessor }))))("observes $cause recovery through success with workspace predecessor=$predecessor", async ({ cause, predecessor }) => {
     let now = Date.now(), stage = 0;
     const failedAt = now - 1000, retryAt = now + 30_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -311,7 +312,7 @@ describe("Cloud canonical onboarding first task", () => {
       const child = state.runs.find(run => run.id === "child-run")!;
       if (predecessor) { state.runs.splice(state.runs.indexOf(child), 0, workspaceDeferral()); linkWorkspaceRetry(child); }
       if (stage < 2) {
-        withPendingNativeRecovery(child, failedAt, retryAt);
+        withPendingNativeRecovery(child, failedAt, retryAt, cause);
         child.execution.phase = stage === 0 ? "retry_scheduled" : "reconnecting";
         child.scheduledRetryAt = new Date(failedAt - 60_000).toISOString();
       } else if (stage === 2) Object.assign(child, { status: "running", nativePhase: "observed", finishedAt: null });
@@ -365,6 +366,11 @@ describe("Cloud canonical onboarding first task", () => {
     ["mismatched issue binding", (run: Row) => { run.contextSnapshot.issueId = "other-issue"; }],
     ["provider failure", (run: Row) => { run.errorCode = run.execution.cause = "native_provider_terminal_failed"; }],
     ["mismatched cause", (run: Row) => { run.execution.cause = "provider_transport_failed"; }],
+    ["unknown matching cause", (run: Row) => { run.errorCode = run.execution.cause = "unclassified_provider_error"; }],
+    ["ambiguous transport failure", (run: Row) => {
+      run.errorCode = run.execution.cause = "provider_transport_failed"; run.nativePhase = "terminal_failure";
+      Object.assign(run.execution, { phase: "recovery_needed", recoveryOwner: "board", retryAt: null });
+    }],
     ["generic recovery", (run: Row) => { run.execution.phase = "recovery_needed"; }],
     ["board owner", (run: Row) => { run.execution.recoveryOwner = "board"; }],
     ["missing schedule", (run: Row) => { run.execution.retryAt = null; }],
@@ -526,10 +532,10 @@ function workspaceDeferral(): Row {
     } };
 }
 
-function withPendingNativeRecovery(run: Row, failedAt: number, retryAt: number) {
-  Object.assign(run, { status: "failed", nativePhase: "retryable_failure", errorCode: "native_session_interrupted",
+function withPendingNativeRecovery(run: Row, failedAt: number, retryAt: number, cause = "native_session_interrupted") {
+  Object.assign(run, { status: "failed", nativePhase: "retryable_failure", errorCode: cause,
     finishedAt: new Date(failedAt).toISOString(), execution: {
-      phase: "retry_scheduled", cause: "native_session_interrupted", retryAt: new Date(retryAt).toISOString(),
+      phase: "retry_scheduled", cause, retryAt: new Date(retryAt).toISOString(),
       attempt: 1, maxAttempts: 3, recoveryOwner: "agent", successorRunId: null,
     } });
 }
