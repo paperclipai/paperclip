@@ -7,6 +7,7 @@ import type { NativeResponsePresentationScope } from "../native-response-present
 import { onCommittedChatResponseAuthorityRegistered } from "../durable-chat-wakeup.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
+import { measureRunPhase, withRunResponsePresentationTiming } from "../execution-preparation-timing.js";
 
 export function registerNativeResponsePresentationWork(db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
@@ -20,27 +21,35 @@ export function nativeResponsePresentationWork(db: Db) {
     const query = nativeResponsePresentationCandidates(scope, after, runId).as("pending_native_response");
     return db.select().from(query).orderBy(asc(query.id));
   };
-  async function load(scope?: NativeResponsePresentationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
+  function load(scope?: NativeResponsePresentationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
+    const work = () => loadWithinTrace(scope, signal, canRun);
+    return scope?.runId ? withRunResponsePresentationTiming(scope.runId, work) : work();
+  }
+  async function loadWithinTrace(scope: NativeResponsePresentationScope | undefined, signal: AbortSignal | undefined,
+    canRun: () => boolean): Promise<Entry[]> {
     const entries: Entry[] = [];
     let after: string | undefined;
     while (canRun() && !signal?.aborted) {
-      const rows = await candidates(scope, after);
+      const rows = await measureRunPhase("response.resolve", () => candidates(scope, after));
       for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
       if (rows.length < 100) return entries;
       after = rows[rows.length - 1].id;
     }
     throw new Error("Native response presentation discovery stopped");
   }
-  async function check(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
+  function check(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
+    return withRunResponsePresentationTiming(entry.id, () => checkWithinTrace(entry, signal));
+  }
+  async function checkWithinTrace(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
     if (signal?.aborted) throw new Error("Native response presentation recovery stopped");
     const scope = { companyId: entry.companyId, issueId: entry.issueId };
-    const [current] = await candidates(scope, undefined, entry.id);
+    const [current] = await measureRunPhase("response.resolve", () => candidates(scope, undefined, entry.id));
     if (!current) return null;
     if (current.nextAttemptAt && current.nextAttemptAt.getTime() > Date.now()) return { ...entry, dueAt: current.nextAttemptAt.getTime() };
     if (signal?.aborted) throw new Error("Native response presentation recovery stopped");
     const recoveryStartedAt = Date.now();
     await recoverCommittedNativeChatResponse(db, { ...scope, runId: entry.id, onlyWhenDue: true });
-    const [remaining] = await candidates(scope, undefined, entry.id);
+    const [remaining] = await measureRunPhase("response.resolve", () => candidates(scope, undefined, entry.id));
     return remaining?.nextAttemptAt && remaining.nextAttemptAt.getTime() > recoveryStartedAt
       ? { ...entry, dueAt: remaining.nextAttemptAt.getTime() } : null;
   }

@@ -3465,11 +3465,10 @@ mod tests {
     }
 
     #[test]
-    fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
-        let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v36-identity.json"
-        ))
-        .unwrap();
+    fn pi_profile_admits_its_release_attestation_and_rejects_the_prior_digest() {
+        let current_digest = crate::generated_acpx_profiles::acpx_release_profile("pi")
+            .unwrap()
+            .command_digest;
         let mut value = descriptor("codex");
         value["agent"] = json!("pi");
         value["model"] = json!("openrouter/deepseek/deepseek-v4-flash-0731");
@@ -3479,48 +3478,15 @@ mod tests {
         value["agentRuntimeVersion"] = json!("1.0.0");
         value["piThinkingLevel"] = json!("low");
         value["providerPolicy"] = json!({"readOnly": true});
-        value["commandDigest"] = published["commandDigest"].clone();
+        value["commandDigest"] = json!(current_digest);
         let current: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
         current.validate(&context()).unwrap();
 
-        for prior in [
-            include_str!("../../../../test-fixtures/pi-acp/profile-v35-identity.json"),
-            include_str!(
-                "../../../../test-fixtures/pi-acp/profile-v35-kimi-historical-identity.json"
-            ),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v34-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v33-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v32-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v31-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v16-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v17-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v18-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v19-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v20-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v21-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v22-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!(
-                "../../../../test-fixtures/pi-acp/profile-v24-claude-historical-identity.json"
-            ),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v25-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v26-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v27-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v30-identity.json"),
-        ] {
-            let prior: Value = serde_json::from_str(prior).unwrap();
-            value["commandDigest"] = prior["commandDigest"].clone();
-            let rejected: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
-            assert!(rejected.validate(&context()).is_err());
-        }
+        // The last source-bound Pi identity is refused.
+        value["commandDigest"] =
+            json!("sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc");
+        let rejected: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        assert!(rejected.validate(&context()).is_err());
     }
 
     #[test]

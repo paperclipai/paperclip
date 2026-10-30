@@ -6,6 +6,28 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("rejects task shell selectors without a controller-owned helper projection", () => {
+    const selectors = { BASH_ENV: "/workspace/hook.sh", ZDOTDIR: "/workspace", GH_CONFIG_DIR: "/workspace/gh" };
+    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual({});
+    for (const [key, value] of Object.entries(selectors)) {
+      expect(configuredEnvironmentProjection({[key]: value})).not.toHaveProperty(key);
+      expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
+    }
+  });
+  it("keeps explicit Claude managed-command selectors without forwarding GitHub credentials", () => {
+    const helpers = { PATH: "/managed:/usr/bin", BASH_ENV: "/managed/.bashrc", ZDOTDIR: "/managed",
+      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed" };
+    const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "host-capability", NODE_OPTIONS: "--require=untrusted" };
+    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
+    for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
+    const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
+    const sibling = createSanitizedAcpxSpawnInput(source, "cursor").env;
+    for (const key of Object.keys(helpers).filter(key => key !== "PATH")) {
+      expect(ambient).not.toHaveProperty(key);
+      expect(sibling).not.toHaveProperty(key);
+    }
+  });
   it("does not inherit ambient prepared storage", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "/ambient/claude");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/ambient/claude");

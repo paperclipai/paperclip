@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
 
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
+  | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
+  | "run_identity" | "trust_preset" | "task_context"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
   | "configuration_mentions" | "configuration_github_identity" | "configuration_secrets"
@@ -84,6 +86,7 @@ export type ExecutionPhase =
   | "workspace_sync.seed_generation" | "workspace_sync.seed_lookup" | "workspace_sync.seed_publish"
   | "workspace_sync.seed_cache_copy" | "workspace_sync.seed_cache_sync" | "workspace_sync.seed_cache_hash"
   | "workspace_sync.seed_cache_capacity" | "workspace_sync.seed_cache_evict" | "workspace_sync.seed_cache_locked_publish"
+  | "workspace_sync.seed_read_copy" | "workspace_sync.seed_read_hash" | "workspace_sync.seed_read_touch"
   | "workspace_sync.git_clone" | "workspace_sync.git_archive" | "workspace_sync.seed_replay" | "workspace_sync.seed_persist"
   | "workspace_sync.git_index_refresh"
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
@@ -196,6 +199,14 @@ export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () =>
   return measure(runId, "task.workspace_finalization", work, true);
 }
 
+export function withRunResponsePresentationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
+  const owned = ownership.getStore();
+  if (owned?.runId === runId && owned.phase === "task.response_presentation" && !owned.ended) {
+    return (async () => work())();
+  }
+  return measure(runId, "task.response_presentation", work, true);
+}
+
 export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   const owned = ownership.getStore();
   if (!endpointEnabled() || !owned || owned.ended) return work();
@@ -251,6 +262,9 @@ const workspaceSyncDetailPhases = {
   "workspace.ignore_rules": "workspace_sync.ignore_rules",
   "workspace.seed_generation": "workspace_sync.seed_generation",
   "workspace.seed_lookup": "workspace_sync.seed_lookup",
+  "workspace.seed_read_copy": "workspace_sync.seed_read_copy",
+  "workspace.seed_read_hash": "workspace_sync.seed_read_hash",
+  "workspace.seed_read_touch": "workspace_sync.seed_read_touch",
   "workspace.seed_publish": "workspace_sync.seed_publish",
   "workspace.seed_cache_copy": "workspace_sync.seed_cache_copy",
   "workspace.seed_cache_sync": "workspace_sync.seed_cache_sync",

@@ -24,8 +24,10 @@ never start a server or depend on a tenant filesystem.
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
+| `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
 | `build-revise` | Native agent; two work runs; qualified Docker artifact oracle | Browser-download both ZIP versions, independently exercise source/CLI behavior, verify different hashes and preserve the original download |
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
@@ -36,6 +38,41 @@ never start a server or depend on a tenant filesystem.
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
 draft can otherwise lose the original content when the file arrives.
+
+The project/task journey records durable project and task ownership before each
+creation and immediately saves the response IDs. Its project must retain its
+planned state. Independent project-filtered task reads must contain the exact
+new task. The final task view must show the same project after reload. Browser
+readback uses the main project heading and visible task content rather
+than a duplicate sidebar label. It binds navigation to the saved project URL key
+and task identifier. Closed failure codes identify project-list, project-open,
+task-open and property-readback failures without retaining Playwright page text. A Cloud
+provider must clean only these owned resources, settle owned tasks before
+archiving the project, and preserve their history. Catalog registration does not
+admit this candidate to a saved daily plan; a real deployment pass is required.
+
+The search/filter journey creates only campaign-owned, board-assigned tasks through
+the public API. The target and completed control share a unique search marker;
+a second Backlog control has a different marker. Search and status selection use
+the production controls. The oracle compares the complete visible task identity
+set at each step, verifies the exact saved company, owner, title, description and
+status, and checks all three tasks have no native runs. It reopens the target after
+reload and browser Back, and leaves the target visible for the harness screenshot.
+The combined Tasks shell reapplies its named view's status preset on mount, so
+the journey first proves the checkbox filter, then selects the normal Backlog
+view and enters the same search again before checking reload/Back persistence.
+Coordinator and legacy task lists keep their supported saved-filter behavior.
+The status selector stays inside the Status group. Legacy status glyphs contribute
+their label to the checkbox's accessible name, producing `BacklogBacklog`; the
+refreshed panel supplies the explicit `Backlog` name. A credential-free browser
+regression covers both forms and a separate assignee called Backlog.
+Unexpected browser/API errors retain only a closed `task_search_<stage>_failed`
+code. Stage names come from the journey source; raw exception text, URLs, form
+values, and response bodies are not added to reporting. Existing owned evidence
+failures keep their specific codes and the screenshot privacy guard stays in place.
+It does not depend on row order or an otherwise empty company. This selection is
+manual until a separate target owner records a fresh pass and admits it to a daily
+plan; adding the shared journey does not qualify any deployed target.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
 Cloud (`local` or `daytona` when present), and new Cloud. New Cloud must start
@@ -120,6 +157,15 @@ the deadline or authorize a new story attempt. Ordinary failures, terminal or
 board-owned recovery, and exhausted attempts still fail. The producing turn must
 settle before proposal acceptance, and the recovered child must actually succeed
 before the existing document, artifact, download, and parent-link checks can pass.
+
+An approved child that commits a board-owned current-track blocker fails with
+`onboarding_child_task_blocked` once all owned work has settled. The latest child
+run must prove the blocked decision at the child's current status version.
+Parent dependency waits, pending recovery, and stale child decisions keep waiting
+within the original deadline. This failure does not satisfy any delivery check.
+The [semantic control-plane port](../../server/src/services/native-runtime/paperclip-control-plane-port.ts)
+writes `prpReportedWorkDisposition`. [Native finalization](../../server/src/services/native-runtime/native-run-finalizer.ts)
+commits the blocked decision and `statusVersionAfter` into the run's `resultJson`.
 
 The attached `ask-question` recipe requires a prepared native general agent and
 an explicit execution environment. Legacy execution is unsupported until its

@@ -36,18 +36,6 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # on master failed its drift check — .github/docker-context-checks.Dockerfile
 # now guards this in PR CI.
 !packages/paperclip-runner/generated/**
-# ACPX generation verifies these immutable release attestations as build inputs.
-# Keep current declarations and historical identities while excluding other development fixtures.
-!packages/paperclip-runner/test
-packages/paperclip-runner/test/**
-!packages/paperclip-runner/test/fixtures
-packages/paperclip-runner/test/fixtures/**
-!packages/paperclip-runner/test/fixtures/*-profile-v*-identity.json
-!packages/paperclip-runner/test-fixtures
-packages/paperclip-runner/test-fixtures/**
-!packages/paperclip-runner/test-fixtures/pi-acp
-packages/paperclip-runner/test-fixtures/pi-acp/**
-!packages/paperclip-runner/test-fixtures/pi-acp/profile-v*-identity.json
 !packages/paperclip-runner/docs/capability-contract.md
 # check:runner-workflow-traceability access()es every regression test the
 # stress-traceability spec names — those are src/**/*.test.ts files, so
@@ -57,8 +45,6 @@ packages/paperclip-runner/test-fixtures/pi-acp/**
 
 packages/grok-acp/bin
 
-# The Copilot build-time identity gate reads these sanitized source declarations.
-# Grok's source identity is also an input to the image profile drift check.
 # Images build their pinned Copilot assets instead of copying host binaries.
 /packages/paperclip-runner/provider-assets/
 /server/provider-assets/

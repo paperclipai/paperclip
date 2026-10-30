@@ -77,7 +77,7 @@ The source regressions also create an addressed request through the service for 
 human assignee. They check unread lists, flags, and counts, plus exclusion of
 historical questions and closed requests while preserving authorization requests.
 
-Manual: Seed GitHub, Slack, scheduled routine, and manual routine tasks. Attribution, imported comments, and reading alone keep them outside Mine. Direct board/API comments, human assignment, and open addressed requests admit them. Resolve the request and check that another valid reason is needed. Inbox discovery and Blocked hide unrelated automation by default; the **show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
+Manual: Seed GitHub, Slack, scheduled routine, and manual routine tasks. Attribution, imported comments, and reading alone keep them outside Mine. Direct board/API comments, human assignment, and open addressed requests admit them. Resolve the request and check that another valid reason is needed. Inbox discovery and Blocked hide unrelated automation by default; the **Show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
 
 Manual: Read an unread task, return to Unread, archive a handled item, and reload. Verify personal triage state changes while task status stays correct. Switch users and companies to check isolation.
 
@@ -92,6 +92,12 @@ approvals/runs resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
 100-row index, with parent/run context by ID; sidebar badges use the count endpoint.
+Coordinator desktop and mobile navigation share `/attention/summary` for the
+outstanding count. Needs You owns its complete feed; Tasks → Needs attention
+owns a compact complete task-ID index. Navigation reuses either page response. Coordinator keeps the optimized Inbox even when
+the instance Streamlined UI setting is off. The loopback browser checks in
+[collection startup](../../tests/perf/collections/startup.spec.ts) exercise these
+reads and the initial task row budget. They do not establish deployed latency.
 The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
 barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.
