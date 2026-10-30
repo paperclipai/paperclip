@@ -3,8 +3,8 @@ import type { ComponentType } from "react";
 import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import {
+  blockedReasonLabel,
   blockedReasonVariant,
-  blockedVariantLabel,
   type BlockedReasonVariant,
 } from "../lib/blockedInbox";
 import type { IssueBlockedInboxReason } from "@paperclipai/shared";
@@ -47,6 +47,24 @@ const SEVERITY_DOT: Partial<Record<IssueBlockedInboxSeverity, string>> = {
   high: "bg-orange-500",
 };
 
+/**
+ * The blocked-inbox reason, rendered at the specificity the server classified it
+ * at.
+ *
+ * The chip used to print `blockedVariantLabel(variant)` — the 6 group labels.
+ * That threw away the distinction the server had already made: `needs_attention`
+ * covers "Unassigned blocker", "Parked blocker", "Cancelled blocker" and
+ * "Review without action path", and all four displayed as "Needs attention".
+ * On top of that the text was pure redundancy, because `BlockedInboxView`
+ * buckets rows by variant and heads each bucket with that same variant label
+ * (`BlockedInboxView.tsx` renders `${group.label} · ${group.rows.length}`), so
+ * every row in a group repeated its own group's header.
+ *
+ * The variant is not discarded — it still selects the colour, the icon and the
+ * `data-variant` hook. Only the printed text moves to the specific reason, which
+ * is also what the search box indexes, so search results and displayed rows now
+ * say the same thing.
+ */
 export function BlockedReasonChip({
   reason,
   severity,
@@ -54,7 +72,7 @@ export function BlockedReasonChip({
   className,
 }: BlockedReasonChipProps) {
   const variant = blockedReasonVariant(reason);
-  const label = blockedVariantLabel(variant);
+  const label = blockedReasonLabel(reason);
   const Icon = VARIANT_ICONS[variant];
   const dotClass = SEVERITY_DOT[severity];
   return (
@@ -62,6 +80,7 @@ export function BlockedReasonChip({
       data-testid="blocked-reason-chip"
       data-variant={variant}
       data-severity={severity}
+      title={label}
       aria-label={`Reason: ${label}, severity ${severity}`}
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-(length:--text-nano) font-medium leading-tight sm:text-(length:--text-micro)",
