@@ -21,6 +21,7 @@ jobs:
     # other branch or workflow can mint a token that bypasses master rules.
     environment: lockfile-refresh
     permissions:
+      actions: read
       contents: write
       pull-requests: write
 
@@ -41,6 +42,26 @@ jobs:
           # Resolution-only installs do not populate the package store. Do not
           # claim the shared cache key with an empty archive before full installs.
           package-manager-cache: false
+
+      # Start from the lockfile the previous run held, so resolution keeps those
+      # versions while their manifests are unchanged and they can age past the
+      # gate. Read it from that run's artifact, not the PR branch: anyone with
+      # write access can push to chore/refresh-lockfile.
+      - name: Reuse versions from a held refresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="$(
+            gh run list --workflow refresh-lockfile.yml --branch master --status success --limit 20 \
+              --json databaseId,event \
+              --jq '[.[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")][0].databaseId // empty'
+          )"
+          if [ -n "$run_id" ] && gh run download "$run_id" --name held-pnpm-lock --dir "$RUNNER_TEMP/held-lock" 2>/dev/null; then
+            cp "$RUNNER_TEMP/held-lock/pnpm-lock.yaml" pnpm-lock.yaml
+            echo "Resolving from the lockfile held by run $run_id."
+          else
+            echo "The previous refresh held nothing. Resolving from master."
+          fi
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
@@ -186,6 +207,15 @@ jobs:
             gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/release-age-report.md"
           fi
           echo "::notice title=Lockfile PR held::Added package versions are too new to merge without review. See $PR_URL"
+
+      - name: Save held lockfile for the next refresh
+        if: steps.release-age.outputs.eligible == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: held-pnpm-lock
+          path: pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 7
 
       # Mint the bypass token only after resolution has finished, so no earlier
       # step can read it. The lockfile bot is a master ruleset bypass actor in

@@ -36,6 +36,19 @@ test("the gate runs only for an open PR, and the bot acts only when the gate pas
   assert.equal(condition("Merge lockfile PR"), "steps.release-age.outputs.eligible == 'true'");
 });
 
+test("a held refresh keeps its versions through the next master run's artifact", () => {
+  assert.ok(stepNames.indexOf("Reuse versions from a held refresh") < stepNames.indexOf("Refresh pnpm lockfile"));
+  const reuse = step("Reuse versions from a held refresh");
+  assert.match(reuse, /gh run list --workflow refresh-lockfile\.yml --branch master --status success/);
+  assert.match(reuse, /gh run download "\$run_id" --name held-pnpm-lock/);
+  assert.doesNotMatch(reuse, /chore\/refresh-lockfile/, "the PR branch is writable by others and must not seed resolution");
+
+  assert.equal(condition("Save held lockfile for the next refresh"), "steps.release-age.outputs.eligible == 'false'");
+  const save = step("Save held lockfile for the next refresh");
+  assert.match(save, /name: held-pnpm-lock/);
+  assert.match(save, /path: pnpm-lock\.yaml/);
+});
+
 test("the bot merges only the commit this job pushed", () => {
   assert.match(step("Create or update pull request"), /echo "head_sha=\$\(git rev-parse HEAD\)" >> "\$GITHUB_OUTPUT"/);
   const merge = step("Merge lockfile PR");
