@@ -21,11 +21,16 @@ export function nativeResponsePresentationWork(db: Db) {
     const query = nativeResponsePresentationCandidates(scope, after, runId).as("pending_native_response");
     return db.select().from(query).orderBy(asc(query.id));
   };
-  async function load(scope?: NativeResponsePresentationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
+  function load(scope?: NativeResponsePresentationScope, signal?: AbortSignal, canRun = () => true): Promise<Entry[]> {
+    const work = () => loadWithinTrace(scope, signal, canRun);
+    return scope?.runId ? withRunResponsePresentationTiming(scope.runId, work) : work();
+  }
+  async function loadWithinTrace(scope: NativeResponsePresentationScope | undefined, signal: AbortSignal | undefined,
+    canRun: () => boolean): Promise<Entry[]> {
     const entries: Entry[] = [];
     let after: string | undefined;
     while (canRun() && !signal?.aborted) {
-      const rows = await candidates(scope, after);
+      const rows = await measureRunPhase("response.resolve", () => candidates(scope, after));
       for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
       if (rows.length < 100) return entries;
       after = rows[rows.length - 1].id;

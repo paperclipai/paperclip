@@ -256,9 +256,10 @@ no eligible work can end without a restore child.
 
 `task.response_presentation` owns recovery of an already committed native reply.
 It starts a separate linked root because deferred presentation can run after the
-execution attempt and workspace finalization have ended. Worker checks include
-candidate reads under `response.resolve`; direct recovery and its worker share
-one root when nested. `response.transaction`
+execution attempt and workspace finalization have ended. Worker discovery for
+a specific run and worker checks include candidate reads under
+`response.resolve`. Each discovery or check owns its root; direct recovery and
+its worker check share one root when nested. `response.transaction`
 includes the recovery transaction; `response.transaction.entry` measures entry
 into its callback, including connection acquisition. These spans retain only the
 same hashed run ID and never capture reply content. A successful task status is

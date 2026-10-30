@@ -213,31 +213,39 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 
-  it.each(["direct", "worker"])("traces %s reply recovery independently and leaves reply content out of spans", async lane => {
+  it.each(["direct", "worker", "discovery and worker"])("traces %s reply recovery independently and leaves reply content out of spans", async lane => {
     const f = await unpublishedAcceptedReply();
     const exporter = new InMemorySpanExporter();
     const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
     trace.setGlobalTracerProvider(provider);
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
     try {
-      if (lane === "worker") {
-        expect(await nativeResponsePresentationWork(db).check({ id: f.run.id, companyId: f.companyId,
+      if (lane !== "direct") {
+        const worker = nativeResponsePresentationWork(db);
+        if (lane === "discovery and worker") {
+          expect(await worker.load({ companyId: f.companyId, issueId: f.issueId, runId: f.run.id }))
+            .toEqual([expect.objectContaining({ id: f.run.id })]);
+        }
+        expect(await worker.check({ id: f.run.id, companyId: f.companyId,
           issueId: f.issueId, agentId: f.agentId, dueAt: 0 })).toBeNull();
       } else {
         expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.run.id })).toBe(true);
       }
       const spans = exporter.getFinishedSpans();
-      expect(spans.filter(span => span.name === "task.response_presentation")).toHaveLength(1);
-      const root = spans.find(span => span.name === "task.response_presentation")!;
-      expect(root).toBeDefined();
-      expect(root.parentSpanContext).toBeUndefined();
-      expect(root.attributes).toEqual({ "paperclip.task.run.run_id": createHash("sha256").update(f.run.id).digest("hex").slice(0, 12) });
+      const roots = spans.filter(span => span.name === "task.response_presentation");
+      expect(roots).toHaveLength(lane === "discovery and worker" ? 2 : 1);
+      for (const root of roots) {
+        expect(root.parentSpanContext).toBeUndefined();
+        expect(root.attributes).toEqual({ "paperclip.task.run.run_id": createHash("sha256").update(f.run.id).digest("hex").slice(0, 12) });
+      }
+      const root = roots.at(-1)!;
       for (const name of ["response.transaction", "response.transaction.entry"]) {
         const child = spans.find(span => span.name === name)!;
         expect(child).toBeDefined();
         expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
       }
-      if (lane === "worker") expect(spans.filter(span => span.name === "response.resolve")).toHaveLength(2);
+      if (lane !== "direct") expect(spans.filter(span => span.name === "response.resolve"))
+        .toHaveLength(lane === "discovery and worker" ? 3 : 2);
       expect(JSON.stringify(spans.map(span => span.attributes))).not.toContain(f.reply);
       const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.run.id));
       expect(comments).toHaveLength(1);
