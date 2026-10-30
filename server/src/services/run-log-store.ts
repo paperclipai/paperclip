@@ -7,6 +7,7 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import { sanitizeTextForPersistence } from "../persistence-sanitizer.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -353,7 +354,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         ts: event.ts,
         ...(handle.attemptId ? { attemptId: handle.attemptId } : {}),
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: sanitizeTextForPersistence(event.chunk),
         // Monotonic per-run sequence so readers can dedupe and order records
         // even when several identical chunks share the same millisecond ts
         // (common for ACP-style token deltas).

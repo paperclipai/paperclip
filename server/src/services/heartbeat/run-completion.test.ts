@@ -120,6 +120,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
+  it.each(["failed", "timed_out", "cancelled"] as const)("sanitizes %s error text before persistence", async outcome => {
+    const f = await fixture();
+    const canary = "canary-fake-completion-000";
+    Object.assign(f.input.adapterResult, {
+      exitCode: 1,
+      timedOut: outcome === "timed_out",
+      errorCode: outcome === "cancelled" ? "cancelled" : "provider_error",
+      errorMessage: `MY_API_TOKEN=${canary}`,
+    });
+    if (outcome === "cancelled") f.controller.abort();
+    await f.completion.completeRun(f.input);
+    const row = await read(f.run.id);
+    expect(row.status).toBe(outcome);
+    expect(row.error).not.toContain(canary);
+    expect(row.error).toContain("***REDACTED***");
+  });
+
   it.each(["completeRun", "failRun"] as const)("settles the outgoing agent after a case handoff in %s", async operation => {
     const f = await fixture();
     await db.update(agents).set({ status: "running", lifecycleState: "ready" }).where(eq(agents.id, f.agent.id));

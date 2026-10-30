@@ -170,10 +170,8 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../../log-redaction.js";
-import {
-  redactEventPayload,
-  redactSensitiveText,
-} from "../../redaction.js";
+import { redactSensitiveText } from "../../redaction.js";
+import { sanitizeForPersistence } from "../../persistence-sanitizer.js";
 import {
   type RuntimeStatusUpdate,
 } from "@paperclipai/adapter-utils";
@@ -2112,7 +2110,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
       : event.payload;
     const secretSanitizedPayload = boundedPayload
-      ? redactEventPayload(boundedPayload)
+      ? sanitizeForPersistence(boundedPayload)
       : boundedPayload;
     const sanitizedPayload = secretSanitizedPayload
       ? redactCurrentUserValue(

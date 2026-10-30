@@ -34,6 +34,7 @@ import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
+import { sanitizeTextForPersistence } from "../../persistence-sanitizer.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
@@ -458,12 +459,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const normalizedUsage = sessionUsageResolution.normalizedUsage;
     const runErrorMessage =
       outcome === "cancelled"
-        ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
+        ? redactCurrentUserText(
+            sanitizeTextForPersistence(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled"),
+            currentUserRedactionOptions,
+          )
         : outcome === "succeeded"
           ? null
           : redactCurrentUserText(
-              adapterResult.errorMessage ??
-                (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+              sanitizeTextForPersistence(
+                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+              ),
               currentUserRedactionOptions,
             );
     const recordedResponsibleUserDenialCode =

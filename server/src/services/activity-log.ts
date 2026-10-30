@@ -10,7 +10,7 @@ import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclip
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
-import { sanitizeRecord } from "../redaction.js";
+import { sanitizeForPersistence } from "../persistence-sanitizer.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -77,7 +77,7 @@ export async function createActivityDetailsRedactor(db: Db) {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
   return (details: Record<string, unknown> | null) => (
-    details ? redactCurrentUserValue(sanitizeRecord(details), currentUserRedactionOptions) : null
+    details ? redactCurrentUserValue(sanitizeForPersistence(details), currentUserRedactionOptions) : null
   );
 }
 

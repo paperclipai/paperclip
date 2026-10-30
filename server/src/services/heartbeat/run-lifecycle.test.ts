@@ -355,7 +355,7 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     deps.getCurrentUserRedactionOptions.mockResolvedValueOnce({ enabled: true, userNames: ["bob"], homeDirs: ["/Users/bob"] });
     const lifecycle = createHeartbeatLifecycle(db, deps);
     for (const name of ["alice", "bob"]) await lifecycle.appendRunEvent(run, {
-      eventType: "lifecycle", message: `Opening /Users/${name}/project`, payload: { path: `/Users/${name}/project`, token: "test-credential-material" },
+      eventType: "lifecycle", message: `Opening /Users/${name}/project`, payload: { path: `/Users/${name}/project`, token: "test-credential-material", notes: ["EXPORTED_API_TOKEN=canary-fake-event-000"] },
     });
     const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id)).orderBy(heartbeatRunEvents.seq);
     expect(deps.getCurrentUserRedactionOptions).toHaveBeenCalledTimes(2);
@@ -367,6 +367,7 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(text).not.toContain("alice");
       expect(text).not.toContain("bob");
       expect(text).not.toContain("test-credential-material");
+      expect(text).not.toContain("canary-fake-event-000");
       expect(published.find(event => event.payload?.seq === row.seq)?.payload).toMatchObject({ message: row.message, payload: row.payload });
     }
   });

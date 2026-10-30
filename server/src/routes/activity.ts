@@ -6,7 +6,7 @@ import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
-import { sanitizeRecord } from "../redaction.js";
+import { sanitizeForPersistence } from "../persistence-sanitizer.js";
 import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
 import { logActivity } from "../services/activity-log.js";
@@ -345,7 +345,7 @@ export function activityRoutes(db: Db) {
     const event = await svc.create({
       companyId,
       ...req.body,
-      details: req.body.details ? sanitizeRecord(req.body.details) : null,
+      details: req.body.details ? sanitizeForPersistence(req.body.details) : null,
     });
     res.status(201).json(event);
   });
