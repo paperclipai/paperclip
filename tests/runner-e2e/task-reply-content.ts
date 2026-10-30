@@ -2,12 +2,15 @@ import { markdownReplyContent } from "../../ui/src/lib/markdown-reply-content.js
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "../../ui/src/lib/company-routes.js";
 import { parseIssueReferenceFromHref } from "../../ui/src/lib/issue-reference.js";
 
-export type ReplyContentPart = { text: string } | { href: string; label?: string; decorated?: boolean };
+export type ReplyContentPart = { text: string } | { href: string; label?: string; decorated?: boolean } | { checked: boolean };
 
 function normalized(parts: ReplyContentPart[], pageUrl: string, source = false) {
   const result: ReplyContentPart[] = [];
   for (const part of parts) {
-    if ("href" in part) {
+    if ("checked" in part) {
+      if (typeof part.checked !== "boolean") return null;
+      result.push({ checked: part.checked });
+    } else if ("href" in part) {
       try {
         const issueRef = source ? parseIssueReferenceFromHref(part.href) : null;
         const href = issueRef ? applyCompanyPrefix(issueRef.href, extractCompanyPrefixFromPath(new URL(pageUrl).pathname)) : part.href;
@@ -37,7 +40,7 @@ export function taskReplyContentMatches(
     // Bind the structured projection to the independently observed innerText.
     // A destination alone cannot attest to arbitrary visible wording.
     if (observation.content.some(part => "href" in part && (typeof part.label !== "string" || !part.label.trim()))) return false;
-    const displayed = observation.content.map(part => "text" in part ? part.text : part.label!).join("").replace(/\s+/g, " ").trim();
+    const displayed = observation.content.map(part => "text" in part ? part.text : "href" in part ? part.label! : "").join("").replace(/\s+/g, " ").trim();
     if (displayed !== observation.body.replace(/\s+/g, " ").trim()) return false;
   }
   const parts = markdownReplyContent(markdown, observation.knownCompanyPrefixes);
@@ -48,6 +51,7 @@ export function taskReplyContentMatches(
   return expected !== null && actual !== null && expected.length === actual.length && expected.every((part, index) => {
     const displayed = actual[index]!;
     return "text" in part ? "text" in displayed && part.text === displayed.text
-      : "href" in displayed && part.href === displayed.href && (part.label === displayed.label || displayed.decorated === true);
+      : "href" in part ? "href" in displayed && part.href === displayed.href && (part.label === displayed.label || displayed.decorated === true)
+        : "checked" in displayed && part.checked === displayed.checked;
   });
 }

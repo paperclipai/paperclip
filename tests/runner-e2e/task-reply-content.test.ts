@@ -14,6 +14,12 @@ it("rejects unsupported Markdown rather than stripping unknown or invisible cont
     expect(taskReplyContentMatches({ body: "Visible" }, source)).toBe(false);
 });
 
+it("matches generated GFM checkboxes and rejects changed check states", () => {
+  const observation = { body: "Finished Next", content: [{ checked: true }, { text: " Finished " }, { checked: false }, { text: " Next" }] };
+  expect(taskReplyContentMatches(observation, "- [x] Finished\n- [ ] Next")).toBe(true);
+  expect(taskReplyContentMatches(observation, "- [ ] Finished\n- [ ] Next")).toBe(false);
+});
+
 it("uses production GFM autolinks and issue linking with the viewer's known companies", () => {
   const context = { pageUrl: "https://fixture.test/QA/issues/QA-1", knownCompanyPrefixes: ["QA"] };
   expect(taskReplyContentMatches({ ...context, body: "Depends on QA-123.", content: [{ text: "Depends on " },

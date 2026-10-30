@@ -54,7 +54,7 @@ export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agen
 
 export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElement>): TaskReplyObservation[] {
   return elements.map(element => {
-    const content: Array<{ text: string } | { href: string; label: string; decorated: boolean }> = [];
+    const content: Array<{ text: string } | { href: string; label: string; decorated: boolean } | { checked: boolean }> = [];
     const nodes: Array<Node | string> = [element];
     while (nodes.length) {
       const node = nodes.pop()!;
@@ -62,6 +62,10 @@ export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElemen
       if (node.nodeType === Node.TEXT_NODE) { content.push({ text: node.textContent ?? "" }); continue; }
       if (!(node instanceof HTMLElement) || node.getAttribute("aria-hidden") === "true"
         || getComputedStyle(node).display === "none" || getComputedStyle(node).visibility === "hidden") continue;
+      if (node instanceof HTMLInputElement && node.type === "checkbox") {
+        if (node.getClientRects().length) content.push({ checked: node.checked });
+        continue;
+      }
       if (node instanceof HTMLAnchorElement) {
         if (node.getClientRects().length && node.innerText.trim()) content.push({ href: node.href, label: node.innerText,
           decorated: node.matches('[data-mention-kind="issue"], [data-sidebar-document-link]') });

@@ -26,6 +26,8 @@ for (const [source, html, passes] of [
   ["Depends on TREE-604.", "Depends on TREE-604.", true],
   ["Depends on QA-123.", "Depends on <a data-mention-kind='issue' href='/QA/issues/QA-999'>QA-123</a>.", false],
   ["See https://example.com/", "See <a href='https://other.test/'>https://example.com/</a>", false],
+  ["- [x] Finished\n- [ ] Next", "<ul><li><input type='checkbox' checked disabled> Finished</li><li><input type='checkbox' disabled> Next</li></ul>", true],
+  ["- [x] Finished\n- [ ] Next", "<ul><li><input type='checkbox' disabled> Finished</li><li><input type='checkbox' disabled> Next</li></ul>", false],
 ] as const) test(`reloaded auto-linked content: ${source} (${passes})`, async ({ page }) => {
   const url = "https://fixture.test/QA/issues/QA-1";
   await page.route(url, route => route.fulfill({ contentType: "text/html", body:

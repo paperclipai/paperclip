@@ -3,7 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkLinkIssueReferences } from "./issue-reference.js";
 
-export type MarkdownReplyPart = { text: string } | { href: string; label: string };
+export type MarkdownReplyPart = { text: string } | { href: string; label: string } | { checked: boolean };
 type AstNode = { type: string; children?: AstNode[] };
 
 /** The reply observer consumes the UI's existing parser without adding a
@@ -31,8 +31,12 @@ export function markdownReplyContent(markdown: string, knownPrefixes?: string[])
       return true;
     }
     if (Array.isArray(node)) return node.every(child => visit(child, label));
-    if (!isValidElement<{ children?: ReactNode; href?: string }>(node)) return false;
+    if (!isValidElement<{ children?: ReactNode; href?: string; type?: string; checked?: boolean; disabled?: boolean }>(node)) return false;
     if (node.type === Fragment) return visit(node.props.children, label);
+    if (!label && node.type === "input" && node.props.type === "checkbox" && node.props.disabled === true) {
+      parts.push({ checked: node.props.checked === true });
+      return true;
+    }
     if (node.type === "a" && !label && node.props.href) {
       const words: string[] = [];
       if (!visit(node.props.children, words)) return false;
