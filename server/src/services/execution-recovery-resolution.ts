@@ -222,7 +222,7 @@ export async function markExecutionReconciliation(
           eq(nativeRunFinalizations.runId, decision.runId),
         ),
       );
-    await tx
+    const [source] = await tx
       .update(issueRecoveryActions)
       .set({
         evidence: {
@@ -242,7 +242,45 @@ export async function markExecutionReconciliation(
           eq(issueRecoveryActions.companyId, action.companyId),
           eq(issueRecoveryActions.id, action.id),
         ),
-      );
+      ).returning({
+        cause: issueRecoveryActions.cause,
+        fingerprint: issueRecoveryActions.fingerprint,
+        kind: issueRecoveryActions.kind,
+        evidence: issueRecoveryActions.evidence,
+      });
+    if (
+      !source || options?.workspaceRepairOnly ||
+      source.cause !== "legacy_execution_requires_reconciliation" ||
+      source.fingerprint !== `legacy-execution:${decision.runId}` ||
+      ["workspaceRestoreFailure", "workspaceRestoreRecovery", "systemRecovery"].some(key => key in source.evidence)
+    ) return;
+    const now = new Date();
+    const siblings = await tx.update(issueRecoveryActions).set({
+      status: "resolved", outcome: "cancelled", resolvedAt: now, updatedAt: now,
+      wakePolicy: null, monitorPolicy: null,
+      resolutionNote: "The same source execution was reconciled through another recovery action.",
+      evidence: sql`(${issueRecoveryActions.evidence} - 'automaticRecovery') || ${JSON.stringify({
+        executionReconciliation: { ...decision, actorId, recordedAt: now.toISOString() },
+        continuationDelivery: "invalidated",
+        coalescedIntoRecoveryActionId: action.id,
+      })}::jsonb`,
+    }).where(and(
+      eq(issueRecoveryActions.companyId, action.companyId),
+      eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId),
+      not(eq(issueRecoveryActions.id, action.id)),
+      eq(issueRecoveryActions.kind, source.kind),
+      eq(issueRecoveryActions.cause, source.cause),
+      eq(issueRecoveryActions.fingerprint, source.fingerprint),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${decision.runId}`,
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      sql`not (${issueRecoveryActions.evidence} ?| array['executionReconciliation', 'workspaceRestoreFailure', 'workspaceRestoreRecovery', 'systemRecovery'])`,
+    )).returning({ id: issueRecoveryActions.id });
+    if (siblings.length) await persistActivity(tx as unknown as Db, {
+      companyId: action.companyId, actorType: "user", actorId,
+      action: "issue.recovery_action_resolved", entityType: "issue", entityId: action.sourceIssueId,
+      details: { reason: "same_source_execution_reconciled", recoveryActionId: action.id,
+        coalescedRecoveryActionIds: siblings.map(sibling => sibling.id), runId: decision.runId },
+    });
   });
 }
 

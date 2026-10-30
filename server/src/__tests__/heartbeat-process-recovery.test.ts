@@ -4911,6 +4911,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toHaveLength(1);
   });
 
+  it("preserves a settled no-replay decision across repeated terminalization while holding a new source run", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "idle",
+      runStatus: "failed",
+    });
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await terminalizeLegacyExecution({ db, run: run!, status: "failed" });
+    await settleUnrecoverableExecutions(db);
+    const [settled] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(settled).toMatchObject({
+      status: "resolved",
+      outcome: "blocked",
+      evidence: { runId, automaticRecovery: { replay: "blocked" } },
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await terminalizeLegacyExecution({ db, run: current!, status: "failed" });
+      await settleUnrecoverableExecutions(db);
+    }
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([settled]);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+
+    const [newSource] = await db.insert(heartbeatRuns).values({
+      companyId, agentId, status: "failed", contextSnapshot: { issueId },
+    }).returning();
+    await terminalizeLegacyExecution({ db, run: newSource!, status: "failed" });
+    const actions = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(2);
+    expect(actions.find((action) => action.id === settled!.id)).toEqual(settled);
+    expect(actions.find((action) => action.id !== settled!.id)).toMatchObject({
+      status: "active",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${newSource!.id}`,
+      evidence: { runId: newSource!.id },
+    });
+  });
+
   it("does not reset an exhausted incident budget on server restart", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",

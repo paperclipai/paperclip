@@ -170,6 +170,11 @@ Agent access: `partial` — permitted resolution followed by current eligible ag
 
 Policy: Lock exact source/action. Same settled actionId returns retained receipt/no repeated log/wake. Todo wake only when required state/owner changed; reconciled executions use own durable delivery, restricted chat uses exact authorized failed request and real board user/current channel authority. No generic duplicate wake alongside durable owner.
 
+For ordinary legacy no-replay holds, a verified board reconciliation also
+resolves historical duplicates with the same company, task, cause, fingerprint,
+and source run. Only the selected action owns continuation delivery. Existing
+reconciliations, workspace repair and system recovery records remain unchanged.
+
 Evidence: `source-only` — [recovery routes](../../server/src/routes/issues.ts), [reconciliation outbox](../../server/src/services/execution-recovery-resolution.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live provider proof.
 
 Verification: `not-run` — Repeat/concurrent same action and lost acknowledgment -> one recorded resolution/eligible continuation. Changed/new action/source never overwritten; restricted chat either retains exact provenance or stays unresolved.
