@@ -1,3 +1,7 @@
+import { registerNativeHarnessBackupExpirationWork } from "../services/native-runtime/native-harness-backup-expiration-work.js";
+import { noteNativeHarnessBackupChange, notifyNativeHarnessBackupExpiration } from "../services/native-harness-backup-expiration-notifications.js";
+import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { issueService } from "../services/issues.js";
 import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerNativeRunnerEvidenceRetentionWork } from "../services/native-runtime/native-runner-evidence-retention-work.js";
@@ -55,7 +59,10 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerNativeRunnerEvidenceRetentionWork> | undefined;
   let admitted = true;
+  let backupWorker: ReturnType<typeof registerNativeHarnessBackupExpirationWork> | undefined;
+  const backupErrors: unknown[] = [];
   afterEach(async () => {
+    await backupWorker?.stop(); backupWorker = undefined; backupErrors.length = 0;
     worker?.unsubscribe(); await coordinator?.stop(); coordinator = undefined; worker = undefined; admitted = true;
     vi.useRealTimers(); vi.restoreAllMocks();
     await db.delete(agentTaskSessions);
@@ -557,6 +564,149 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(directories).not.toHaveBeenCalled();
     reads.mockRestore(); writes.mockRestore(); directories.mockRestore();
   }
+
+  async function startBackups(options: Parameters<typeof nativeHarnessBackupExpirationService>[1] = {}) {
+    if (!stateBase) await emptyStateBase();
+    if (!vi.isFakeTimers()) {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.setSystemTime(now);
+    }
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
+      onError: error => backupErrors.push(error) });
+    backupWorker = registerNativeHarnessBackupExpirationWork(coordinator, db,
+      { stateBase, isSessionBusy: () => false, ...options }, () => admitted);
+    await backupWorker.ready;
+  }
+
+  it.each([false, true])("backup deadline worker leaves empty and retained terminal history quiet (%s)", async history => {
+    await emptyStateBase();
+    if (history) {
+      const session = await seedSession();
+      await fs.rm(path.join(session.root, "failover-backups"), { recursive: true });
+      for (let index = 0; index < 250; index++) await fs.mkdir(path.join(stateBase,
+        createHash("sha256").update(String(index)).digest("hex")));
+    }
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    await startBackups({ maxEntries: 20 }); await settled();
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); await quiet();
+    expect(backupErrors).toEqual([]);
+  });
+
+  it("ordinary task close arms exact backup retention, deletes physical bytes and resume pointer, then stays quiet", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled(); await quiet();
+    const closed = await issueService(db).update(session.issueId, { status: "done", companyGuard: session.companyId });
+    const deadline = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(deadline); await quiet(60_000);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+    expect(await exists(session.current)).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); await settled();
+    expect(await exists(session.current)).toBe(false);
+    expect(await taskSessionCount(session.agentId)).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, session.runId))).toHaveLength(1);
+    expect(backupErrors).toEqual([]); await quiet();
+  });
+
+  it("reopen cancels a saved deadline and a later ordinary close restores retention", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+    await issueService(db).update(session.issueId, { status: "todo" });
+    await settled(); await quiet(8 * DAY_MS); expect(await exists(session.current)).toBe(true);
+    const closed = await issueService(db).update(session.issueId, { status: "done" });
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("reconstructs a retained backup deadline on restart without changing business timestamps", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    const [before] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    const due = now.getTime() + 5 * DAY_MS + 1;
+    await startBackups(); await settled(due);
+    await backupWorker!.stop(); await coordinator!.stop();
+    await startBackups(); await settled(due);
+    const [after] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    expect(after!.updatedAt).toEqual(before!.updatedAt); expect(after!.completedAt).toEqual(before!.completedAt);
+    await quiet();
+  });
+
+  it("reports dry-run backups once and rechecks only after source invalidation", async () => {
+    const session = await seedSession(); const report = vi.spyOn(logger, "info");
+    await startBackups({ dryRun: true }); await settled();
+    expect(report.mock.calls.filter(call => call[1] === "native harness backup expiration")).toHaveLength(1);
+    expect(await taskSessionCount(session.agentId)).toBe(1); expect(await exists(session.current)).toBe(true);
+    await quiet();
+    noteNativeHarnessBackupChange(db, { companyId: session.companyId, scopeDigest: session.scope });
+    await settled();
+    expect(report.mock.calls.filter(call => call[1] === "native harness backup expiration")).toHaveLength(2);
+    await quiet();
+  });
+
+  it("retains live lease references and only removes the owning company's backup after lease release", async () => {
+    const first = await seedSession({ leaseStatus: "retained" });
+    const other = await seedSession({ leaseStatus: "retained" });
+    await startBackups(); await settled(); await quiet();
+    await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "expired" })
+      .where(eq(environmentLeases.companyId, first.companyId)), { companyId: first.companyId });
+    await settled(); expect(await exists(first.current)).toBe(false); expect(await exists(other.current)).toBe(true);
+    expect(await taskSessionCount(other.agentId)).toBe(1); await quiet();
+  });
+
+  it("retries a partial physical deletion from its tombstone without recreating a resume pointer", async () => {
+    const session = await seedSession(); const remove = fs.rm; let failed = false;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (!failed && String(args[0]).includes(".expired-")) { failed = true; throw new Error("controlled filesystem delete failure"); }
+      return remove(...args);
+    });
+    await startBackups();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100); expect(backupErrors).toHaveLength(1); });
+    const retry = coordinator!.nextWakeAt()!; expect(retry - Date.now()).toBeGreaterThan(20_000);
+    expect(await taskSessionCount(session.agentId)).toBe(0); expect(await exists(session.current)).toBe(false);
+    fault.mockRestore(); await quiet(5000);
+    await vi.advanceTimersByTimeAsync(retry - Date.now()); await settled();
+    expect(await fs.readdir(path.join(session.root, "failover-backups"))).toEqual([]); await quiet();
+  });
+
+  it("retains a first ordinary close during drain and dispatches it after resume", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled(); admitted = false;
+    const closed = await issueService(db).update(session.issueId, { status: "done" });
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    await quiet(60_000); admitted = true;
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("honors outer rollback for nested ordinary close and activates only on committed work", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled();
+    await expect(db.transaction(async outer => {
+      await outer.transaction(async nested => {
+        await issueService(db).update(session.issueId, { status: "done" }, nested);
+      });
+      expect(await exists(session.current)).toBe(true);
+      throw new Error("rollback outer close");
+    })).rejects.toThrow("rollback outer close");
+    await settled(); await quiet(8 * DAY_MS);
+    expect(await exists(session.current)).toBe(true);
+    const [saved] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    expect(saved!.status).toBe("todo");
+  });
+
+  it("pages multiple company backups, preserves a busy one and wakes from process release", async () => {
+    const sessions = [await seedSession(), await seedSession(), await seedSession()]; let busy = true;
+    await startBackups({ maxEntries: 1, maxRemovals: 1, isSessionBusy: digest => busy && digest === sessions[1]!.scope });
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+      expect(await exists(sessions[0]!.current)).toBe(false); expect(await exists(sessions[2]!.current)).toBe(false);
+      expect(backupErrors.length).toBeGreaterThan(0);
+    });
+    expect(await exists(sessions[1]!.current)).toBe(true); busy = false;
+    noteNativeHarnessBackupChange(db, { companyId: sessions[1]!.companyId });
+    await settled(); expect(await exists(sessions[1]!.current)).toBe(false); await quiet();
+  });
 
   it("leaves empty evidence and retained backups quiet without invoking backup SQL", async () => {
     const session = await seedSession();

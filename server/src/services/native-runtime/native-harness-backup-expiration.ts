@@ -170,7 +170,7 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 async function sessionRetentionBlocker(
   tx: Tx,
   input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean },
-): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[] }> {
+): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[]; issueIds: string[]; closedAt: number }> {
   const [owner] = await tx
     .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
     .from(heartbeatRuns)
@@ -246,7 +246,7 @@ async function sessionRetentionBlocker(
     .where(and(inArray(environmentLeases.status, LIVE_LEASE_STATUSES), or(...leaseReferences)))
     .limit(1);
   if (lease) return { reason: "live_lease" };
-  return { ...owner, runIds };
+  return { ...owner, runIds, issueIds, closedAt: Math.max(...issueRows.map(issue => new Date(issue.closedAt!).getTime())) };
 }
 
 async function hasLiveRun(db: Db, owner: { companyId: string; agentId: string }, sessionId: string) {
@@ -379,54 +379,48 @@ export function nativeHarnessBackupExpirationService(
     const identity = await readSessionIdentity(root);
     if (!identity) return skip("identity_unknown");
 
-    const decision = await db.transaction(async (tx) => {
-      const blocker = await sessionRetentionBlocker(tx, {
-        scopeDigest,
-        identity,
-        closedBefore: options.closedBefore,
-      });
-      if ("reason" in blocker) return blocker;
-      if (options.dryRun) return { owner: blocker, cleared: 0 };
-      await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
-      const cleared = await tx
-        .delete(agentTaskSessions)
-        .where(
-          and(
-            eq(agentTaskSessions.companyId, blocker.companyId),
-            eq(agentTaskSessions.agentId, blocker.agentId),
-            sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
-          ),
-        )
-        .returning({ id: agentTaskSessions.id });
-      return { owner: blocker, cleared: cleared.length };
-    });
-    if ("reason" in decision) return skip(decision.reason);
-
-    const bytes = await allocatedBytes(current);
-    result.candidates++;
-    result.candidateBytes += bytes;
-    if (options.dryRun) return;
-    result.clearedTaskSessions += decision.cleared;
-    if (options.isSessionBusy(scopeDigest)) return skip("session_active");
     const id = randomUUID();
     const retiring = path.join(backupRoot, `${RETIRING_PREFIX}${id}`);
     const trash = path.join(backupRoot, `${EXPIRED_PREFIX}${id}`);
-    await fs.rename(current, retiring);
-    let liveRun: boolean;
+    let retired = false;
+    let decision: { reason: string } | { cleared: number; bytes: number };
     try {
-      liveRun = await hasLiveRun(db, decision.owner, identity.normalizedSessionId);
-    } catch (err) {
-      await fs.rename(retiring, current);
-      throw err;
+      decision = await db.transaction(async (tx) => {
+        const blocker = await sessionRetentionBlocker(tx, {
+          scopeDigest, identity, closedBefore: options.closedBefore,
+        });
+        if ("reason" in blocker) return blocker;
+        const bytes = await allocatedBytes(current);
+        if (options.dryRun) return { cleared: 0, bytes };
+        if (options.isSessionBusy(scopeDigest)) return { reason: "session_active" };
+        await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
+        await fs.rename(current, retiring);
+        retired = true;
+        if (await hasLiveRun(tx as unknown as Db, blocker, identity.normalizedSessionId)) {
+          await fs.rename(retiring, current);
+          retired = false;
+          return { reason: "live_run" };
+        }
+        const cleared = await tx.delete(agentTaskSessions).where(and(
+          eq(agentTaskSessions.companyId, blocker.companyId),
+          eq(agentTaskSessions.agentId, blocker.agentId),
+          sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
+        )).returning({ id: agentTaskSessions.id });
+        return { cleared: cleared.length, bytes };
+      });
+    } catch (error) {
+      if (retired) await fs.rename(retiring, current);
+      throw error;
     }
-    if (liveRun) {
-      await fs.rename(retiring, current);
-      return skip("live_run");
-    }
+    if ("reason" in decision) return skip(decision.reason);
+    result.candidates++;
+    result.candidateBytes += decision.bytes;
+    if (options.dryRun) return;
+    result.clearedTaskSessions += decision.cleared;
     await fs.rename(retiring, trash);
     await removeBackupTree(trash);
     result.expired++;
-    result.reclaimedBytes += bytes;
+    result.reclaimedBytes += decision.bytes;
   }
 
   async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
@@ -745,5 +739,55 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration };
+  async function inspectBackup(scopeDigest: string) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const root = path.join(base, scopeDigest);
+    if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
+    const backupRoot = path.join(root, "failover-backups");
+    if (!(await isRealDirectory(backupRoot))) return null;
+    const names = await fs.readdir(backupRoot);
+    const current = path.join(backupRoot, "current");
+    const stat = await fs.lstat(current).catch(missingPath);
+    const leftovers = names.some(name => [RETIRING_PREFIX, EXPIRED_PREFIX].some(prefix =>
+      name.startsWith(prefix) && UUID_PATTERN.test(name.slice(prefix.length))));
+    if ((!stat?.isDirectory() || stat.isSymbolicLink()) && !leftovers) return null;
+    if (defaults.dryRun && !stat?.isDirectory()) return null;
+    const identity = await readSessionIdentity(root);
+    if (!identity) return null;
+    const [owner] = await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    if (!owner) return null;
+    if (leftovers && !defaults.dryRun) return { id: scopeDigest, ...owner, dueAt: 0 };
+    if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) return null;
+    const blocker = await db.transaction(tx => sessionRetentionBlocker(tx, {
+      scopeDigest, identity, closedBefore: new Date(8_000_000_000_000_000),
+    }));
+    if ("reason" in blocker) return null;
+    const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
+    return { id: scopeDigest, ...owner, dueAt: Math.max(stat!.mtimeMs, blocker.closedAt) + retentionMs + 1 };
+  }
+
+  async function backupScopes(after?: string, limit = 100) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const names = (await fs.readdir(base).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [] as string[];
+      throw error;
+    })).filter(name => SCOPE_PATTERN.test(name) && (!after || name > after)).sort();
+    return { names: names.slice(0, limit), complete: names.length <= limit };
+  }
+
+  async function expireBackup(scopeDigest: string) {
+    const result = emptyResult();
+    const root = path.join(path.resolve(defaults.stateBase ?? nativeHarnessStateBase()), scopeDigest);
+    const dryRun = defaults.dryRun ?? false;
+    await expireSession(root, scopeDigest, {
+      dryRun,
+      isSessionBusy: defaults.isSessionBusy ?? nativeSessionScopeDigestIsBusy,
+      closedBefore: new Date(Date.now() - Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS),
+    }, result);
+    return result;
+  }
+
+  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
+    inspectBackup, backupScopes, expireBackup };
 }

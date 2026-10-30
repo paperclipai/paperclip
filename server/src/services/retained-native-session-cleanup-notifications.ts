@@ -1,3 +1,4 @@
+import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -9,6 +10,7 @@ export type RetainedNativeSessionCleanupScope = {
 };
 
 export async function notifyRetainedNativeSessionCleanup(tx: object, scope: RetainedNativeSessionCleanupScope) {
+  await notifyNativeHarnessBackupExpiration(tx, { companyId: scope.companyId });
   await notifySkillVersionRetention(tx, scope.companyId);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.retainedNativeSessionCleanup, JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId, agentId: scope.agentId }));
 }

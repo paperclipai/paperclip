@@ -1,3 +1,4 @@
+import { noteNativeHarnessBackupChange } from "../native-harness-backup-expiration-notifications.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -13310,6 +13311,8 @@ async function createRunnerdBackendWithinSessionClaim(
                   throw error;
                 }
                 removeNativeHarnessBackup(previousRoot);
+                noteNativeHarnessBackupChange(input.db, { companyId: input.execution.binding.companyId,
+                  scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex") });
               } finally {
                 removeNativeHarnessBackup(pendingRoot);
               }
