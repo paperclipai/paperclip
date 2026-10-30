@@ -1,3 +1,4 @@
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -10606,6 +10607,7 @@ export function issueService(db: Db) {
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -11494,6 +11496,7 @@ export function issueService(db: Db) {
         if (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined
           || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, id);
         }
         if (patch.monitorNextCheckAt !== undefined || (receiptExisting.monitorNextCheckAt &&
           (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined))) {
@@ -11541,6 +11544,9 @@ export function issueService(db: Db) {
           await notifyNativeResultCommit(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeWorkspaceFinalization(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeStatusReassessment(tx, { companyId: receiptExisting.companyId, issueId: id });
+        }
+        if (patch.originKind !== undefined || patch.originRunId !== undefined || patch.originId !== undefined) {
+          await notifyRoutineExecutionStatus(tx, id);
         }
         const updated = await tx
           .update(issues)
@@ -11958,6 +11964,7 @@ export function issueService(db: Db) {
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, id);
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))
@@ -12086,6 +12093,7 @@ export function issueService(db: Db) {
       const updated = await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         return tx
           .update(issues)
           .set({
@@ -12215,6 +12223,7 @@ export function issueService(db: Db) {
           const adopted = await db.transaction(async tx => {
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+            await notifyRoutineExecutionStatus(tx, id);
             return tx
               .update(issues)
               .set(adoptionSet)
@@ -12470,6 +12479,7 @@ export function issueService(db: Db) {
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         const updated = await tx
           .update(issues)
           .set({
@@ -12530,6 +12540,7 @@ export function issueService(db: Db) {
         }
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyRoutineExecutionStatus(tx, id);
         const updated = await tx
           .update(issues)
           .set(patch)

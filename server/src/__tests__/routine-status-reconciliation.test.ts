@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -5,11 +6,12 @@ import { companies, createDb, issues, routineRuns, routines } from "@paperclipai
 import { routineService } from "../services/routines.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ROUTINE_STATUS_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Skipping routine status database tests: ${support.reason}`);
 (support.supported ? describe : describe.skip)("routine status reconciliation", () => {
   let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("routine-status-"); db = createDb(database.connectionString); }, 60_000);
+  beforeAll(async () => { if (!external) database = await startEmbeddedPostgresTestDatabase("routine-status-"); db = createDb(external ?? database.connectionString, { maxConnections: 6 }); }, 60_000);
   afterEach(async () => { vi.restoreAllMocks(); await db.execute(sql`SET client_min_messages = warning; TRUNCATE companies CASCADE`); });
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
   async function seed(status = "blocked") {
