@@ -128,10 +128,8 @@ export function isWithinStatusCardActiveHours(policy: StatusCardRefreshPolicy, n
 }
 
 export function nextStatusCardEvaluationAt(policy: StatusCardRefreshPolicy, now: Date) {
-  if (policy.mode === "manual") return null;
-  const seconds = policy.mode === "interval"
-    ? (policy.intervalMinutes ?? 15) * 60
-    : Math.min(policy.debounceSeconds ?? 60, 60);
+  if (policy.mode !== "interval") return null;
+  const seconds = (policy.intervalMinutes ?? 15) * 60;
   return new Date(now.getTime() + seconds * 1000);
 }
 
@@ -171,4 +169,38 @@ export function evaluateStatusCardPolicy(input: {
     if (dueAt > input.now) return { action: "wait" as const, dueAt };
   }
   return { action: "run" as const };
+}
+
+/** A retry exists only while filtered changes remain. Use the owning policy's
+ * actual eligibility boundary instead of repeatedly rediscovering a closed gate. */
+export function nextStatusCardPolicyEligibility(input: {
+  policy: StatusCardRefreshPolicy;
+  now: Date;
+  lastChangeAt: Date;
+  completedUpdateTimes: Date[];
+  tokensToday: number;
+}): Date | null {
+  if (input.policy.mode === "manual") return null;
+  let at = input.now.getTime();
+  if (input.tokensToday >= (input.policy.dailyTokenCap ?? 100_000)) {
+    const day = new Date(input.now);
+    day.setUTCHours(24, 0, 0, 0);
+    at = Math.max(at, day.getTime());
+  }
+  if (input.policy.mode === "reactive") {
+    at = Math.max(at, input.lastChangeAt.getTime() + (input.policy.debounceSeconds ?? 60) * 1000);
+    const cap = input.policy.maxUpdatesPerHour ?? 6;
+    const recent = input.completedUpdateTimes.map(time => time.getTime())
+      .filter(time => time > at - 3_600_000).sort((a, b) => a - b);
+    if (recent.length >= cap) at = Math.max(at, recent[recent.length - cap]! + 3_600_000 + 1);
+  }
+  if (isWithinStatusCardActiveHours(input.policy, new Date(at))) return new Date(at);
+  // Active-hour precision is one local minute. Walking UTC minutes also honors
+  // skipped/repeated local times at daylight-saving transitions.
+  const end = at + 48 * 3_600_000;
+  for (at = Math.floor(at / 60_000) * 60_000 + 60_000; at <= end; at += 60_000) {
+    if (isWithinStatusCardActiveHours(input.policy, new Date(at))) return new Date(at);
+  }
+  // Equal start/end describes an empty window; retain changes, awaiting config.
+  return null;
 }

@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -1011,6 +1012,7 @@ export function issueTreeControlService(db: Db) {
           await notifyChatResponseAvailability(tx, { companyId, issueId });
           if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
         }
+        await notifyStatusCardIssueChange(tx, companyId);
         const rows = await tx
           .update(issues)
           .set({
