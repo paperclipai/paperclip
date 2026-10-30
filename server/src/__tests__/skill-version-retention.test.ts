@@ -712,7 +712,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     expect(await exists(dir)).toBe(false);
   });
 
-  it("sweeps deleted skills after protecting existing runs", async () => {
+  it("blocks deletion for detached active pins and sweeps after they settle", async () => {
     const companyId = await createCompany();
     const { skillId, versionIds } = await createSkill(companyId, 2);
     const first = await writeSnapshot(companyId, skillId, versionIds[0]!);
@@ -720,14 +720,16 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     const [agent] = await db.insert(agents).values({ companyId, name: "Detached agent" }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running",
       contextSnapshot: { skillVersions: { retained: versionIds[0] } } }).returning();
-    await companySkillService(db).deleteSkill(companyId, skillId);
+    await expect(companySkillService(db).deleteSkill(companyId, skillId)).rejects.toMatchObject({ status: 422 });
     expect(await exists(first)).toBe(true);
     await skillVersionRetentionService(db).pruneCompany(companyId);
     expect(await exists(first)).toBe(true);
-    expect(await exists(second)).toBe(false);
+    expect(await exists(second)).toBe(true);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await companySkillService(db).deleteSkill(companyId, skillId);
     await skillVersionRetentionService(db).pruneCompany(companyId);
     expect(await exists(first)).toBe(false);
+    expect(await exists(second)).toBe(false);
   });
 
   it("never removes anything outside the company's versions root", async () => {

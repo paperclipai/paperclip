@@ -615,6 +615,70 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+
+  it("refuses invalid cloud bootstrap prerequisites before signing, DB creation, or HTTP setup", async () => {
+    const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalManaged = process.env.PAPERCLIP_MANAGED_CONFIG;
+    const originalStorage = process.env.PAPERCLIP_STORAGE_PROVIDER;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-refusal-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_MANAGED_CONFIG = JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] },
+    });
+    process.env.PAPERCLIP_STORAGE_PROVIDER = "s3";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    cloudRuntimeStartupMocks.bootstrap.mockImplementationOnce(realConfig.loadCloudBootstrapConfig);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+    vi.stubEnv("DATABASE_URL", buildTestConfig().databaseUrl);
+    try {
+      await expect(startServer()).rejects.toThrow(/stable PAPERCLIP_SECRETS_MASTER_KEY/);
+      expect(createDbMock).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(existsSync(path.join(tempHome, "instances"))).toBe(false);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalManaged === undefined) delete process.env.PAPERCLIP_MANAGED_CONFIG;
+      else process.env.PAPERCLIP_MANAGED_CONFIG = originalManaged;
+      if (originalStorage === undefined) delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+      else process.env.PAPERCLIP_STORAGE_PROVIDER = originalStorage;
+      vi.unstubAllEnvs();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+
+  it("rejects missing effective Cloud storage after the snapshot and before local signing mutations", async () => {
+    const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");
+    const { setCloudRuntimeConfigSnapshot } = await import("../services/cloud-runtime-config-snapshot.js");
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-storage-refusal-"));
+    vi.stubEnv("PAPERCLIP_HOME", tempHome);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
+    vi.stubEnv("DATABASE_URL", buildTestConfig().databaseUrl);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", undefined);
+    cloudRuntimeStartupMocks.initialize.mockImplementationOnce(async () => {
+      setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: null });
+      return null;
+    });
+    loadConfigMock.mockImplementationOnce(realConfig.loadConfig);
+    try {
+      await expect(startServer()).rejects.toThrow(/PAPERCLIP_STORAGE_S3_BUCKET/);
+      expect(createDbMock).toHaveBeenCalled();
+      expect(cloudRuntimeStartupMocks.initialize).toHaveBeenCalledOnce();
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(existsSync(path.join(tempHome, "instances"))).toBe(false);
+    } finally {
+      setCloudRuntimeConfigSnapshot(null);
+      vi.unstubAllEnvs();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("awaits saved Cloud configuration before telemetry, authentication and app construction", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
     vi.stubEnv("HOST", "0.0.0.0");
@@ -672,6 +736,7 @@ describe("startServer feedback export wiring", () => {
       expect(createAppMock).not.toHaveBeenCalled();
     } finally { vi.unstubAllEnvs(); }
   });
+
 
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
@@ -1188,7 +1253,8 @@ describe("startServer feedback export wiring", () => {
   it("refuses startup when an explicit decision signing secret is too short", async () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "too-short";
     await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET must be at least 32 characters");
-    expect(loadConfigMock).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {

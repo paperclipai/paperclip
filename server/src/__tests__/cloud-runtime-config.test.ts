@@ -66,6 +66,9 @@ beforeEach(() => {
   vi.stubEnv("PAPERCLIP_ALLOWED_HOSTNAMES", undefined);
   vi.stubEnv("PAPERCLIP_TAILNET_BIND_HOST", "100.100.0.1");
   vi.stubEnv("OPENAI_API_KEY", "environment-api-secret");
+  vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
+  vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", undefined);
+  vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
   setCloudRuntimeConfigSnapshot(null);
 });
 
@@ -170,6 +173,10 @@ describePostgres("Cloud runtime configuration in PostgreSQL", () => {
     expect(fs.existsSync(configPath)).toBe(false);
     vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", "authenticated");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://environment.example.test");
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-token");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", "environment-bucket");
     expect(loadConfig()).toMatchObject({ databaseMode: "postgres", authBaseUrlMode: "explicit", secretsStrictMode: true, telemetryEnabled: true });
   });
 
@@ -282,6 +289,26 @@ describePostgres("Cloud runtime configuration in PostgreSQL", () => {
     })).rejects.toThrow(/injected migration failure/);
     expect(await cloudRuntimeConfigService(second).inspectStored()).toBeNull();
     expect(await second.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "runtime-config-test-receipt"))).toEqual([]);
+  });
+
+  it.each([undefined, "", "   "])("rejects raw canonical S3 rows with missing or blank bucket %j", async bucket => {
+    const config = structuredClone(projectCloudRuntimeConfig(paperclipConfigSchema.parse(legacyConfig())));
+    const raw = config;
+    if (bucket === undefined) Reflect.deleteProperty(raw.storage.s3, "bucket");
+    else raw.storage.s3.bucket = bucket;
+    await first.insert(instanceSettings).values({ singletonKey: CLOUD_RUNTIME_CONFIG_KEY, general: { version: 1, revision: 0, config: raw } });
+    await expect(initializeCloudRuntimeConfig(second)).rejects.toThrow(/Persisted Cloud runtime configuration is invalid/);
+    expect(() => getCloudRuntimeConfigSnapshot()).toThrow(/not been initialized/);
+  });
+
+  it.each(["database-bucket", "paperclip"])("accepts canonical DB bucket %s without local configuration provenance", async bucket => {
+    const config = projectCloudRuntimeConfig(paperclipConfigSchema.parse(legacyConfig()));
+    config.storage.s3.bucket = bucket;
+    await cloudRuntimeConfigService(first).seedIfAbsent(config);
+    fs.writeFileSync(configPath, "invalid local file must not be consulted");
+    await initializeCloudRuntimeConfig(second);
+    expect(loadConfig()).toMatchObject({ storageProvider: "s3", storageS3Bucket: bucket });
+    expect(readConfigFile({ includeProvenance: true })).toMatchObject({ explicitStorageS3Bucket: true });
   });
 
   it("fails closed on invalid database settings without consulting a valid legacy file", async () => {

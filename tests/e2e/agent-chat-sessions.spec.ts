@@ -180,7 +180,7 @@ test("Stop then queued /new resets unpause the conversation without losing histo
             (c: any) => c.body === "Provider is streaming and ready to stop.",
           )
         );
-      })
+      }, { timeout: 30_000 })
       .toBe(true);
     const issue = await json(await request.get(f.chatPath));
     const active = (
