@@ -84,6 +84,14 @@ describe("managed cloud configuration boundary", () => {
     expect(() => loadConfig()).toThrow(/stable PAPERCLIP_SECRETS_MASTER_KEY/);
   });
 
+  it("requires the Cloud bootstrap key even when an external secret provider is selected", () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_PROVIDER", "aws_secrets_manager");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+    expect(() => loadConfig()).toThrow(/stable PAPERCLIP_SECRETS_MASTER_KEY/);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
+    expect(loadConfig().secretsProvider).toBe("aws_secrets_manager");
+  });
+
   it.each(["", "{bad", JSON.stringify({ v: 1, mode: "cloud" })])("rejects malformed managed config before startup (%j)", (value) => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", value);
     expect(() => loadConfig()).toThrow(/PAPERCLIP_MANAGED_CONFIG/);

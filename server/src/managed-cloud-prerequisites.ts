@@ -17,6 +17,15 @@ export function validateManagedCloudPrerequisites(
   config: ManagedCloudPrerequisites,
   env: ManagedConfigEnv,
 ): void {
+  validateManagedCloudStoragePrerequisites(config, env);
+  validateManagedCloudBootstrapPrerequisites(config, env);
+}
+
+/** Validate a resolved candidate before its first Cloud import or startup use. */
+export function validateManagedCloudStoragePrerequisites(
+  config: Pick<ManagedCloudPrerequisites, "storageProvider" | "storageS3Bucket" | "storageS3Region" | "storageS3Endpoint">,
+  env: ManagedConfigEnv,
+): void {
   if (!isCloudManagedInstance(env)) return;
   parseManagedConfigEnv(env);
 
@@ -43,7 +52,6 @@ export function validateManagedCloudPrerequisites(
     } catch { /* The diagnostic must not include a possibly secret URL. */ }
     if (!validEndpoint) refuse("PAPERCLIP_STORAGE_S3_ENDPOINT must be an HTTP(S) URL without credentials");
   }
-  validateManagedCloudBootstrapPrerequisites(config, env);
 }
 
 /** Environment-owned prerequisites needed before opening the Cloud database. */

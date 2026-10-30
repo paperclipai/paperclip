@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@paperclipai/db";
 import { paperclipConfigSchema } from "@paperclipai/shared";
 import { resolvePaperclipConfigPathForInstance } from "@paperclipai/shared/home-paths";
+import { validateManagedCloudStoragePrerequisites } from "../managed-cloud-prerequisites.js";
+import { loadStorageConfig } from "../storage/config.js";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 import {
   parseStoredCloudRuntimeConfig,
@@ -94,6 +96,7 @@ export async function readLegacyCloudRuntimeConfig(env: CloudInstanceEnv = proce
   if (parsed.data.llm?.provider === "openai" && parsed.data.llm.apiKey?.trim() && !env.OPENAI_API_KEY?.trim()) {
     throw new Error("Move the legacy OpenAI API key to OPENAI_API_KEY before initializing Cloud runtime configuration");
   }
+  validateManagedCloudStoragePrerequisites(loadStorageConfig(parsed.data, env), env);
   return projectCloudRuntimeConfig(parsed.data);
 }
 

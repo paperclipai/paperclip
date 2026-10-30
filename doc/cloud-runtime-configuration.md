@@ -39,6 +39,10 @@ existing validation at application startup.
    authentication and application services. A saved telemetry opt-out therefore
    takes effect before a telemetry client can be created.
 
+Managed Cloud always requires a stable environment master key, including when
+an external default secrets provider is selected. Internal local-encrypted
+credential paths still need that key.
+
 Managed Cloud validates effective S3 storage after publishing the canonical
 snapshot, before signing-key initialization, telemetry, authentication or app
 construction. Cloud requires S3 and a nonblank bucket; an authoritative absent
@@ -46,7 +50,9 @@ configuration needs explicit environment storage settings. Raw saved snapshots
 cannot obtain a bucket from a schema default. Every legacy Cloud file must name its
 bucket before its one-time import, even if its saved provider is local disk and
 an environment bucket is present. Omission or blank values fail before seeding;
-environment overlays are not saved as operator choices. Correct that file before
+The effective storage candidate is validated before seeding, so a rejected
+legacy file leaves no canonical row and can be corrected before retry.
+Environment overlays are not saved as operator choices. Correct that file before
 import, or use the existing absent-file/null-snapshot environment-only setup.
 Ordinary self-hosted file defaults remain unchanged.
 Already-canonical nonblank values, including `paperclip`, remain authoritative.
