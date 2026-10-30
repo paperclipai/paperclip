@@ -10,6 +10,7 @@ import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
@@ -387,8 +388,8 @@ describe("managed AI connections", () => {
     await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
   });
 
-  it("persists first-time recovery directories before consuming a single-use token", async () => {
-    const owner = "quota-durable-path";
+  it("commits one exchanged token without writable credential recovery storage", async () => {
+    const owner = "quota-database-first";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { account_id: owner, access_token: "expired", refresh_token: "single-use" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
@@ -396,32 +397,32 @@ describe("managed AI connections", () => {
     const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
     const recoveryRoot = path.dirname(path.dirname(file));
     await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
-    const synced: string[] = [];
-    let rejectRoot = true;
-    const realOpen = fs.open.bind(fs);
+    const writes: string[] = [];
+    const rejectRecoveryWrite = (target: unknown) => {
+      if (String(target).startsWith(recoveryRoot)) {
+        writes.push(String(target));
+        throw Object.assign(new Error("Fixture recovery storage is read-only"), { code: "EROFS" });
+      }
+    };
+    const realOpen = fs.open.bind(fs), realMkdir = fs.mkdir.bind(fs);
     const open = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
-      const handle = await realOpen(...args);
-      const sync = handle.sync.bind(handle);
-      vi.spyOn(handle, "sync").mockImplementation(async () => {
-        if (rejectRoot && args[0] === recoveryRoot) throw new Error("Injected recovery directory flush failure");
-        await sync(); synced.push(String(args[0]));
-      });
-      return handle;
+      rejectRecoveryWrite(args[0]);
+      return realOpen(...args);
     });
-    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      expect(synced).toContain(recoveryRoot);
-      expect(synced).toContain(path.dirname(recoveryRoot));
-      return Response.json({ access_token: "fresh-durable", refresh_token: "replacement-durable" });
+    const mkdir = vi.spyOn(fs, "mkdir").mockImplementation(async (...args: Parameters<typeof fs.mkdir>) => {
+      rejectRecoveryWrite(args[0]);
+      return realMkdir(...args);
     });
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "fresh-direct", refresh_token: "replacement-direct" }));
     try {
-      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("Injected recovery directory flush failure");
-      expect(request).not.toHaveBeenCalled();
-      expect(await service.credential(row)).toBe(original);
-      rejectRoot = false;
-      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      const refreshed = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      expect(JSON.parse(refreshed)).toMatchObject({ tokens: { access_token: "fresh-direct", refresh_token: "replacement-direct" } });
+      expect(await service.credential(row)).toBe(refreshed);
       expect(request).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-durable", refresh_token: "replacement-durable" } });
-    } finally { open.mockRestore(); request.mockRestore(); }
+      expect(writes).toEqual([]);
+      await expect(access(file)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { open.mockRestore(); mkdir.mockRestore(); request.mockRestore(); }
   });
 
   it.each(["timeout", "unexpected"] as const)("classifies a manual probe's %s lock failure before starting the provider", async (kind) => {
@@ -854,7 +855,7 @@ describe("managed AI connections", () => {
     });
     provider.listen(0, "127.0.0.1"); await once(provider, "listening");
     const address = provider.address() as { port: number };
-    const child = spawn(process.execPath, ["--import", "tsx", new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
+    const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
       env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
         CREDENTIAL_TEST_PROVIDER_URL: `http://127.0.0.1:${address.port}`, CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
       stdio: "ignore",
