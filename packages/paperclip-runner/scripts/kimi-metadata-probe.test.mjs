@@ -92,7 +92,7 @@ test("Kimi metadata CLI is self-contained and rejects incomplete assets without 
   }
   assert.doesNotMatch(withoutAdmission.stdout + withoutAdmission.stderr, /UNEXPECTED_NETWORK_OR_CHILD|selected-secret-canary/);
 
-  if (profile.qualificationStatus === "qualified") {
+  if (profile.qualificationStatus !== "pending") {
     const formerAdmission = spawnSync(node, ["--require", preload, entry], {
       env: { KIMI_API_KEY: "selected-secret-canary", PAPERCLIP_KIMI_PROBE_MODEL: "selected-model",
         PAPERCLIP_ACPX_CANDIDATE_ADMISSION: JSON.stringify(admission),
