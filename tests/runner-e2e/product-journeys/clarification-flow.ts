@@ -4,11 +4,10 @@ import { expect } from "@playwright/test";
 import { continuationScenario } from "../continuation-cases.js";
 import { continuationAnswerCommitted, continuationCheckpointReady } from "../continuation-readiness.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
-import { validResumeQuestionForm } from "../question-resume-scoring.js";
 import { answerResumeQuestionThroughUi } from "../question-resume-ui.js";
 import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState } from "./agent-flows.js";
-import { gradeClarificationEvidence, type ClarificationReadback } from "./clarification-evidence.js";
+import { clarificationQuestionFailure, gradeClarificationEvidence, type ClarificationReadback } from "./clarification-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -82,7 +81,8 @@ export async function runClarificationJourney(context: JourneyContext, session: 
     for (const [index, input] of [{ choice: "Afternoon" }, { text: scenario.answer }].entries()) {
       const point = await snapshot(index === 0 ? "initial" : "answered", state);
       const question = state.interactions.find(i => i.kind === "ask_user_questions" && i.status === "pending")!;
-      if (!validResumeQuestionForm(point, question, index === 0)) throw new JourneyError("failed", "clarification_form_or_native_path_invalid");
+      const questionFailure = clarificationQuestionFailure(point, question, index === 0);
+      if (questionFailure) throw new JourneyError("failed", questionFailure);
       if (point.documents.length || point.attachments.length || point.children.length || point.issue.status === "done") {
         throw new JourneyError("failed", "clarification_premature_output");
       }

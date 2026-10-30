@@ -19,7 +19,7 @@ describe("portable clarification journey admission", () => {
   });
 });
 
-import { gradeClarificationEvidence } from "./clarification-evidence.js";
+import { clarificationQuestionFailure, gradeClarificationEvidence } from "./clarification-evidence.js";
 import { continuationScenario } from "../continuation-cases.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 import { journeyRequiredChecks } from "./success-contract.js";
@@ -59,6 +59,23 @@ function recording(paths: Array<"provider" | "semantic">) {
 const failures = (f: ReturnType<typeof recording>) => gradeClarificationEvidence(context, "task", "AMBERnonce", f.checkpoints, f.readback).filter(c => !c.passed);
 
 describe("attached clarification evidence", () => {
+  it.each([true, false])("reports API fallback without accepting it as native question evidence (choice=%s)", choice => {
+    const f = recording(["semantic", "semantic"]), point = f.checkpoints[choice ? 0 : 1];
+    const question = point.interactions.find((i: Row) => i.status === "pending"), source = point.runs.at(-1);
+    source.resultJson = { apiToolReceipts: { call: { state: "completed", operationId: "POST /api/issues/{id}/interactions",
+      result: { ok: true, data: { id: question.id } } } } };
+    expect(clarificationQuestionFailure(point, question, choice)).toBe(`clarification_${choice ? "choice" : "text"}_api_fallback`);
+    expect(failures(f).some(check => check.id === `question-resume.${choice ? "choice" : "text"}.path`)).toBe(true);
+    delete source.resultJson.apiToolReceipts;
+    expect(clarificationQuestionFailure(point, question, choice)).toBe(`clarification_${choice ? "choice" : "text"}_native_path_invalid`);
+  });
+  it("distinguishes an invalid form from a correctly bound semantic question", () => {
+    const point = recording(["semantic", "semantic"]).checkpoints[0], question = point.interactions[0];
+    expect(clarificationQuestionFailure(point, question, true)).toBeUndefined();
+    question.payload.questionSet.questions[0].answerMode = "text";
+    point.runs[0].resultJson.semanticToolReceipts[question.idempotencyKey].result.interaction.payload = structuredClone(question.payload);
+    expect(clarificationQuestionFailure(point, question, true)).toBe("clarification_choice_form_invalid");
+  });
   it.each([["provider", "provider"], ["provider", "semantic"], ["semantic", "provider"], ["semantic", "semantic"]] as const)("accepts the real %s/%s paths with native binding and reload proof", (...paths) => {
     expect(failures(recording([...paths]))).toEqual([]);
   });

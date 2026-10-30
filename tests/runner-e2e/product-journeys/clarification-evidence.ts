@@ -1,4 +1,4 @@
-import { gradeQuestionResume } from "../question-resume-scoring.js";
+import { gradeQuestionResume, questionPath, validResumeQuestionForm } from "../question-resume-scoring.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
 import { validateAgentTaskState } from "./agent-flows.js";
 import type { JourneyContext } from "./types.js";
@@ -6,6 +6,20 @@ import type { JourneyContext } from "./types.js";
 type Row = Record<string, any>;
 export interface ClarificationReadback {
   issueId: string; key: string; revisionId: string; body: string; visibleBody: string;
+}
+
+export function clarificationQuestionFailure(point: ContinuationCheckpoint, question: Row, choice: boolean) {
+  const stage = choice ? "choice" : "text";
+  if (!questionPath(point, question)) {
+    const source = point.runs.find(run => run.id === question.sourceRunId) as Row | undefined;
+    const apiCreated = Object.values(source?.resultJson?.apiToolReceipts ?? {}).some(value => {
+      const receipt = value as Row;
+      return receipt.state === "completed" && receipt.operationId === "POST /api/issues/{id}/interactions"
+        && receipt.result?.ok === true && receipt.result?.data?.id === question.id;
+    });
+    return apiCreated ? `clarification_${stage}_api_fallback` : `clarification_${stage}_native_path_invalid`;
+  }
+  return validResumeQuestionForm(point, question, choice) ? undefined : `clarification_${stage}_form_invalid`;
 }
 
 export function gradeClarificationEvidence(context: JourneyContext, issueId: string, marker: string,
