@@ -301,6 +301,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
     });
+    if (readRemoteWorkspaceAuthority(existing.metadata)) {
+      throw unprocessable("Workspace commands are not supported for remote workspaces yet. Run the command through an agent task.",
+        { code: "remote_workspace_runtime_commands_unsupported" });
+    }
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {

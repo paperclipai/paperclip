@@ -2621,7 +2621,10 @@ cleanup. File browsing distinguishes live bytes from a saved copy and its time.
 V1 supports plain task folders, Git sources, and managed mutable repositories
 from the same project. It rejects read-only cross-project referenced folders,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
-remote close. Disabling new enrollment preserves existing authority and recovery.
+remote close. Manual workspace runtime commands, jobs, and services are also
+unsupported in V1 and must fail before local filesystem work. Agent tasks remain
+the supported command path. Disabling new enrollment preserves existing authority
+and recovery.
 This feature does not remove the instance volume or qualify HTTP traffic drain,
 active provider handoff, or other instance data paths. See
 [setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the

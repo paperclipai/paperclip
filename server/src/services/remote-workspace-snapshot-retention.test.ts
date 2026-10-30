@@ -69,6 +69,32 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, op!.id));
     expect(await owner.tick()).toMatchObject({ deleted: 1 });
   });
+  it("leaves healthy current versions outside later unrelated maintenance passes", async () => {
+    const current = await seed("committed");
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { snapshotId: current.row.id } } })
+      .where(eq(executionWorkspaces.id, current.workspaceId));
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ checked: 1, pinned: 1, deleted: 0 });
+    const obsolete = await seed();
+    expect(await owner.tick()).toMatchObject({ checked: 1, pinned: 0, deleted: 1 });
+    expect((await storage.headObject(current.companyId, current.keys[0]!)).exists).toBe(true);
+    expect((await storage.headObject(obsolete.companyId, obsolete.keys[0]!)).exists).toBe(false);
+    expect(await owner.nextDeadlineAt()).toBeNull();
+  });
+  it("revisits a parent when cleanup of an unfinished child releases its last pin", async () => {
+    const parent = await seed("superseded", "10000000-0000-4000-8000-000000000001");
+    await db.insert(executionWorkspaceSnapshots).values({ id: "20000000-0000-4000-8000-000000000001",
+      companyId: parent.companyId, executionWorkspaceId: parent.workspaceId, sourceOperationId: randomUUID(),
+      parentSnapshotId: parent.row.id, generation: 2, epoch: 1, status: "pending",
+      deleteAfter: new Date(now.getTime() - 1000), createdAt: new Date(now.getTime() - 10 * 86400_000) });
+    const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
+    try {
+      await vi.waitFor(async () => expect((await storage.headObject(parent.companyId, parent.keys[0]!)).exists).toBe(false),
+        { timeout: 4000, interval: 40 });
+      expect(await owner.nextDeadlineAt()).toBeNull();
+    } finally { await worker.stop(); await coordinator.stop(); }
+  });
   it("pins an unfinished upload and an active recovery hold", async () => {
     const f = await seed("pending");
     await db.insert(workspaceOperations).values({ id: f.operationId, companyId: f.companyId, executionWorkspaceId: f.workspaceId,

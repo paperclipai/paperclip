@@ -107,6 +107,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
     expect(readRemoteWorkspaceAuthority(prepared.workspace.metadata)?.snapshotId).toBeTruthy();
+    expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
     await fs.writeFile(path.join(prepared.remoteRoot, "report.md"), "useful saved result\n");
     await fs.mkdir(path.join(prepared.remoteRoot, "empty-folder"));
     await fs.writeFile(path.join(prepared.remoteRoot, "binary.bin"), Buffer.from([0, 1, 255]));
@@ -190,9 +191,54 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: prepared.lease, target: first, assertOwned: async () => undefined })).rejects.toThrow("storage offline");
     expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({ dirty: true, writerRunId: ids.run,
       snapshotId: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId });
+    expect((await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).length).toBe(1);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
     expect(saved.generation).toBe(2);
+    expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
+  }, 60_000);
+
+  it("records and retries export cleanup after a lost reply without another upload", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("cleanup-sandbox");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "keep working files\n");
+    const sandbox = first as Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+    const execute = sandbox.runner!.execute.bind(sandbox.runner!);
+    let lost = false;
+    sandbox.runner!.execute = async input => {
+      const result = await execute(input);
+      if (!lost && input.args?.[1]?.includes("remote_workspace_export_cleanup_failed") && result.exitCode === 0) {
+        lost = true; throw new Error("lost cleanup reply");
+      }
+      return result;
+    };
+    const upload = vi.spyOn(storage, "putFile");
+    const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: first, assertOwned: async () => undefined };
+    const saved = await saveRemoteWorkspace(input);
+    const [before] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, ids.run),
+      eq(workspaceOperations.phase, "remote_workspace_snapshot"), eq(workspaceOperations.status, "succeeded"),
+      eq(workspaceOperations.id, (await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, saved.snapshotId)))[0]!.sourceOperationId)));
+    expect(before?.metadata?.exportCleanup).toMatchObject({ state: "pending", lastError: "remote_workspace_export_cleanup_failed" });
+    expect(await saveRemoteWorkspace(input)).toMatchObject({ snapshotId: saved.snapshotId, generation: saved.generation });
+    expect(upload).toHaveBeenCalledOnce();
+    const [after] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, before!.id));
+    expect(after?.metadata?.exportCleanup).toMatchObject({ state: "cleaned", lastError: null });
+    expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("keep working files\n");
+  }, 60_000);
+
+  it("replays an acknowledged preparation save after a newer boundary without recapture", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("boundary-sandbox");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: first, assertOwned: async () => undefined };
+    const older = await saveRemoteWorkspace({ ...input, boundary: "repository:one" });
+    await fs.writeFile(path.join(prepared.remoteRoot, "later.txt"), "later acknowledged work\n");
+    const newer = await saveRemoteWorkspace({ ...input, boundary: "repository:two" });
+    const upload = vi.spyOn(storage, "putFile");
+    expect(await saveRemoteWorkspace({ ...input, boundary: "repository:one" })).toMatchObject({ snapshotId: older.snapshotId });
+    expect(upload).not.toHaveBeenCalled();
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(newer.snapshotId);
   }, 60_000);
 
   it("retains an uncertain provisioning command and never replays its external effect", async () => {

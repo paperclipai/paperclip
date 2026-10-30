@@ -22,7 +22,7 @@ import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAcces
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { persistActivity } from "./activity-log.js";
 import {
-  captureRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
+  captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
@@ -176,6 +176,38 @@ async function persistRunReference(tx: Transaction, companyId: string, runId: st
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
 }
 
+/** Retry only completed exports from this exact allocation, never unfinished saves. */
+async function cleanupSavedExports(input: { db: Db; companyId: string; workspaceId: string;
+  location: NonNullable<RemoteWorkspaceAuthority["location"]>; target: ReturnType<typeof requireRemoteWorkspaceTarget>;
+  assertOwned: () => Promise<void> }) {
+  for (;;) {
+    const rows = await input.db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId),
+      eq(workspaceOperations.phase, "remote_workspace_snapshot"), eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->'exportCleanup'->>'state' = 'pending'`,
+      sql`${workspaceOperations.metadata}->'exportCleanup'->>'environmentId' = ${input.location.environmentId}`,
+      sql`${workspaceOperations.metadata}->'exportCleanup'->>'providerLeaseId' = ${input.location.providerLeaseId}`,
+      sql`${workspaceOperations.metadata}->'exportCleanup'->>'remoteCwd' = ${input.location.remoteCwd}`,
+    )).limit(20);
+    if (!rows.length) return true;
+    for (const row of rows) {
+      await input.assertOwned();
+      let cleaned = false;
+      try {
+        await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: input.location.remoteCwd, operationId: row.id });
+        cleaned = true;
+      } catch { /* Keep a durable retry obligation; the acknowledged snapshot is safe. */ }
+      await input.assertOwned();
+      await input.db.update(workspaceOperations).set({ metadata: { ...row.metadata,
+        exportCleanup: { ...object(row.metadata?.exportCleanup), state: cleaned ? "cleaned" : "pending",
+          lastError: cleaned ? null : "remote_workspace_export_cleanup_failed" } }, updatedAt: new Date() })
+        .where(and(eq(workspaceOperations.id, row.id), eq(workspaceOperations.companyId, input.companyId),
+          eq(workspaceOperations.status, "succeeded")));
+      if (!cleaned) return false;
+    }
+  }
+}
+
 /** The caller retains execution admission and provider ownership; this owns file authority. */
 export async function prepareRemoteWorkspace(input: {
   db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
@@ -197,6 +229,9 @@ export async function prepareRemoteWorkspace(input: {
   const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces", input.workspace.id);
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
+  if (sameAllocation && !await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
+    workspaceId: input.workspace.id, location: initial.location!, target,
+    assertOwned: input.assertOwned ?? (async () => undefined) })) throw new Error("remote_workspace_export_cleanup_pending");
   if (!sameAllocation) {
     if (initial.snapshotId) {
       const snapshot = await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id, snapshotId: initial.snapshotId });
@@ -296,15 +331,20 @@ export async function saveRemoteWorkspace(input: {
         eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id))) : [];
     const [created] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
       heartbeatRunId: input.runId, issueId, phase: "remote_workspace_snapshot", status: "running",
-      metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation: (parent?.generation ?? 0) + 1 },
+      metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation: (parent?.generation ?? 0) + 1,
+        exportCleanup: { ...current.location, state: "pending" } },
     }).returning();
     return created!;
   });
   const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id,
     operationId: operation.id, runId: input.runId, parentSnapshotId: operation.metadata?.parentSnapshotId as string | null,
     generation: operation.metadata?.generation as number, epoch: expected.epoch });
-  if (operation.status === "succeeded" && snapshot.status === "committed") return { snapshotId: snapshot.id,
-    generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
+  const cleanup = () => cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
+    workspaceId: input.workspace.id, location: expected.location!, target, assertOwned: input.assertOwned });
+  if (operation.status === "succeeded" && ["committed", "superseded"].includes(snapshot.status)) {
+    await cleanup();
+    return { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
+  }
   const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
   const captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd, operationId: operation.id });
@@ -341,6 +381,7 @@ export async function saveRemoteWorkspace(input: {
         deleteAfter: new Date(at.getTime() + 7 * 86400_000), updatedAt: at }).where(and(eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
         eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id)));
     });
+    await cleanup();
     return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256, savedAt: at.toISOString() };
   } finally { await captured?.cleanup(); }
 }

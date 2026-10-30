@@ -46,6 +46,61 @@ async function workspaceArchive(input: {
     }, (error, stdout) => error ? reject(error) : resolve(stdout));
     if (stdin !== undefined) command.stdin?.end(stdin);
   });
+  const portableRemoteUrl = (value: string) => {
+    if (!value || /[\u0000-\u0020\u007f\\]/u.test(value)) return false;
+    if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
+      let url: URL; try { url = new URL(value); } catch { return false; }
+      if (!["http:", "https:", "ssh:", "git:"].includes(url.protocol)) return false;
+      if (url.password || (url.username && url.protocol !== "ssh:") || url.search || url.hash) fail("credential_in_git_remote");
+      return Boolean(url.hostname);
+    }
+    if (/^[a-z]:[\/\\]/iu.test(value)) return false;
+    return /^(?:[a-z0-9._-]+@)?(?:[a-z0-9._-]+|\[[a-f0-9:]+\]):[^\s]+$/iu.test(value);
+  };
+  const portableGitSettings = async (repo: string) => {
+    // Read only the repository's own allowlisted values. Includes, execution
+    // hooks, filters, credential helpers, and machine-specific paths stay out.
+    const raw = await git(repo, ["config", "--null", "--local", "--no-includes", "--get-regexp",
+      "^(remote\\..*\\.(url|pushurl|fetch)|branch\\..*\\.(remote|merge|rebase))$"])
+      .catch((error: { code?: number }) => { if (error.code === 1) return ""; throw error; });
+    const settings = raw.split("\0").filter(Boolean).map(row => {
+      const split = row.indexOf("\n"), key = row.slice(0, split), value = row.slice(split + 1);
+      if (split < 1 || /[\u0000-\u0020\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
+      return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch)$/.exec(key), branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key) };
+    });
+    const remotes = new Set(settings.flatMap(item => item.remote?.[2] === "url" ? [item.remote[1]!] : []));
+    for (const setting of settings) if (setting.remote && ["url", "pushurl"].includes(setting.remote[2]!)) {
+      if (!portableRemoteUrl(setting.value)) remotes.delete(setting.remote[1]!);
+    }
+    const branches = new Map<string, boolean>();
+    for (const setting of settings) if (setting.branch?.[2] === "remote") {
+      const name = setting.branch[1]!;
+      branches.set(name, (branches.get(name) ?? true) && (setting.value === "." || remotes.has(setting.value)));
+    }
+    const retained: Array<{ key: string; value: string }> = [];
+    for (const setting of settings) {
+      if (setting.remote) {
+        if (!remotes.has(setting.remote[1]!)) continue;
+        if (setting.remote[2] === "fetch") {
+          const refs = setting.value.replace(/^[+^]/u, "").split(":");
+          if (refs.length > 2 || !refs.some(Boolean)) fail("unsupported_git_setting");
+          for (const ref of refs.filter(Boolean)) {
+            if (ref.startsWith("-")) fail("unsupported_git_setting");
+            await git(repo, ["check-ref-format", "--allow-onelevel", "--refspec-pattern", ref]).catch(() => fail("unsupported_git_setting"));
+          }
+        }
+      } else if (setting.branch) {
+        if (!(branches.get(setting.branch[1]!) ?? remotes.has("origin"))) continue;
+        if (setting.branch[2] === "merge") {
+          if (setting.value.startsWith("-")) fail("unsupported_git_setting");
+          await git(repo, ["check-ref-format", "--allow-onelevel", setting.value]).catch(() => fail("unsupported_git_setting"));
+        }
+        if (setting.branch[2] === "rebase" && !["true", "false", "merges", "interactive", "preserve", "yes", "no", "on", "off", "1", "0", ""].includes(setting.value)) fail("unsupported_git_setting");
+      } else fail("unsupported_git_setting");
+      retained.push({ key: setting.key, value: setting.value });
+    }
+    return retained;
+  };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
   const walk = async (root: string, copyTo?: string, skipGit = false) => {
@@ -119,14 +174,15 @@ async function workspaceArchive(input: {
       const before = await walk(root, tree, true);
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
-      const signature = async (repo: string) => {
+      const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
-        return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash]);
+        return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, settings ?? await portableGitSettings(repo)]);
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
-        gitSignatures.set(relative, await signature(repo));
+        const settings = await portableGitSettings(repo);
+        gitSignatures.set(relative, await signature(repo, settings));
         // Mirror copies all refs; dissociation brings borrowed objects into this
         // private repository. The selected worktree's index and HEAD are separate.
         await git(root, ["clone", "--mirror", "--no-hardlinks", "--dissociate", "--", repo, normalized]);
@@ -147,14 +203,8 @@ async function workspaceArchive(input: {
         const restoredRepo = path.join(tree, relative);
         await git(restoredRepo, ["config", "core.bare", "false"]);
         await git(restoredRepo, ["config", "--unset-all", "remote.origin.mirror"]).catch(() => undefined);
-        const origin = (await git(repo, ["remote", "get-url", "origin"]).catch(() => "")).trim();
         await git(restoredRepo, ["remote", "remove", "origin"]).catch(() => undefined);
-        if (origin) {
-          if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(origin)) {
-            const parsed = new URL(origin); if (parsed.password || (["https:", "http:"].includes(parsed.protocol) && parsed.username)) fail("credential_in_git_remote");
-          }
-          await git(restoredRepo, ["remote", "add", "origin", origin]);
-        }
+        for (const setting of settings) await git(restoredRepo, ["config", "--add", setting.key, setting.value]);
         // Removing the source-only remote also removes its refs. Restore every
         // source ref without using the network; objects are already self-contained.
         const refs = await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]);

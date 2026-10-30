@@ -46,7 +46,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations } from "@paperclipai/db";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -82,6 +82,7 @@ describe("automatic retained workspace recovery", () => {
   let connectionString: string;
   let db: ReturnType<typeof createDb>;
   let root: string;
+  const fixtureCompanyIds = new Set<string>();
   const priorHome = process.env.PAPERCLIP_HOME, priorInstance = process.env.PAPERCLIP_INSTANCE_ID;
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "workspace-recovery-"));
@@ -100,9 +101,26 @@ describe("automatic retained workspace recovery", () => {
     if (priorHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = priorHome;
     if (priorInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = priorInstance;
   });
+  afterEach(async () => {
+    // Discovery is intentionally global and bounded. An unresolved source from
+    // an earlier test must not consume the current fixture's recovery page.
+    // Keep all history within each test until its assertions have completed.
+    const companyIds = [...fixtureCompanyIds]; fixtureCompanyIds.clear();
+    if (!companyIds.length) return;
+    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .where(inArray(environmentLeases.companyId, companyIds));
+    for (const lease of leases) targets.delete(lease.id);
+    await db.delete(environmentLeases).where(inArray(environmentLeases.companyId, companyIds));
+    // Historical adoption can reconstruct an action from either the lease or
+    // the run descriptor, so retire both fixture inputs before deleting it.
+    await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'workspaceRestoreRecovery' - 'workspaceRestoreFailure'` })
+      .where(inArray(heartbeatRuns.companyId, companyIds));
+    await db.delete(issueRecoveryActions).where(inArray(issueRecoveryActions.companyId, companyIds));
+  });
   async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy", reusable = false, ephemeral = false) {
     const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), actionId: string = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Workspace recovery", defaultResponsibleUserId: "board", issuePrefix: `R${companyId.slice(0, 6)}` });
+    fixtureCompanyIds.add(companyId);
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, assigneeAgentId: agentId, status: "blocked", title: "Recover existing work" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, issueId, nativeIssueId: mode === "native" ? issueId : null,

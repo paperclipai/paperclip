@@ -309,7 +309,9 @@ reconciliation has a board boundary.
 Remote closure additionally requires a clean committed snapshot and no active
 writer. It releases confirmed remote compute while retaining the saved authority;
 reopen restores from that saved version when the allocation is gone. Custom
-cleanup/teardown commands block remote close. No new agent authority is granted.
+cleanup/teardown commands block remote close. Manual runtime commands, jobs,
+repairs, and services reject remote workspaces before local filesystem access.
+Agent tasks remain the supported execution path. No new agent authority is granted.
 Source: [remote lifecycle](../../server/src/services/remote-workspace-lifecycle.ts)
 and [close readiness](../../server/src/services/execution-workspaces.ts).
 Evidence: `source-only` for the remote extension. Verification: `not-run` —

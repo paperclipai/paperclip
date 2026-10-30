@@ -1643,7 +1643,9 @@ same command to reconcile it before starting another writer.
 Supported sources include empty task folders, repository URLs, and managed
 mutable repositories from the same project. Configured local folders must be
 imported first. V1 rejects read-only cross-project referenced folders and custom
-cleanup/teardown commands on remote close. One writer owns each logical
+cleanup/teardown commands on remote close. Manual workspace jobs, services,
+and runtime commands are also rejected before any local directory access; run
+those commands through an agent task. One writer owns each logical
 workspace; separate workspaces can run concurrently. The Files panel identifies
 **Live workspace** and **Saved copy** with its save time. An unavailable dirty
 allocation is not silently replaced with an older saved copy.

@@ -6,7 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // This unit suite isolates runtime lifecycle behavior; privacy is covered with a
 // real database by privacy-production-review.test.ts.
@@ -37,6 +37,7 @@ const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.f
 const mockStartRuntimeServices = vi.hoisted(() => vi.fn());
 const mockStopRuntimeServicesForExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockEnsurePersistedExecutionWorkspaceAvailable = vi.hoisted(() => vi.fn());
+const mockRunWorkspaceJobForControl = vi.hoisted(() => vi.fn());
 const mockBuildWorkspaceRuntimeDesiredStatePatch = vi.hoisted(() => vi.fn());
 const mockListConfiguredRuntimeServiceEntries = vi.hoisted(() => vi.fn());
 // The integrated control path also takes the durable runtime-control lease (PAP-17205). This
@@ -74,7 +75,7 @@ vi.mock("../services/workspace-runtime.js", () => ({
   cleanupExecutionWorkspaceArtifacts: vi.fn(),
   ensurePersistedExecutionWorkspaceAvailable: mockEnsurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries: mockListConfiguredRuntimeServiceEntries,
-  runWorkspaceJobForControl: vi.fn(),
+  runWorkspaceJobForControl: mockRunWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl: mockStartRuntimeServices,
   stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
@@ -246,6 +247,11 @@ function mockVerifiedReseed(
  * stopped and retryable instead of "desired running" with residue.
  */
 describe("execution workspace runtime control conflict and failure reconciliation", () => {
+  beforeAll(async () => {
+    // Route-module transformation is fixture setup, outside the HTTP control
+    // operation whose latency each test measures.
+    await Promise.all([import("../routes/execution-workspaces.js"), import("../middleware/index.js")]);
+  }, 30_000);
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpawn.mockReset();
@@ -289,6 +295,35 @@ describe("execution workspace runtime control conflict and failure reconciliatio
         return { id: "operation-1", status: "succeeded" };
       },
     });
+  });
+
+  it.each([
+    { route: "runtime-commands", action: "run", source: "empty" },
+    { route: "runtime-commands", action: "run", source: "git" },
+    { route: "runtime-commands", action: "repair", source: "empty" },
+    { route: "runtime-services", action: "start", source: "git" },
+  ] as const)("rejects remote $source $route/$action before controller file or job operations", async ({ route, action, source }) => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({
+      cwd: "/workspaces/remote-only", providerType: "cloud_sandbox", providerRef: "/workspaces/remote-only",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1,
+        snapshotId: null, source: source === "empty" ? { kind: "empty" }
+          : { kind: "git", repoUrl: "https://github.com/example/work.git", ref: "main" },
+        location: null, writerRunId: null, dirty: false } },
+      config: { workspaceRuntime: { jobs: [{ name: "verify", command: "node verify.js" }],
+        services: [{ name: "app", command: "node app.js" }] } },
+    }));
+    const response = await request(await createApp())
+      .post(`/api/execution-workspaces/${executionWorkspaceId}/${route}/${action}`)
+      .send(action === "run" ? { workspaceCommandId: "job:verify" } : {});
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body).toMatchObject({ code: "remote_workspace_runtime_commands_unsupported" });
+    expect(mockEnsurePersistedExecutionWorkspaceAvailable).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.createRecorder).not.toHaveBeenCalled();
+    expect(mockRunWorkspaceJobForControl).not.toHaveBeenCalled();
+    expect(mockStartRuntimeServices).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockClaimRuntimeLease).not.toHaveBeenCalled();
   });
 
   it("returns a stable 409 while a managed control is genuinely live", async () => {

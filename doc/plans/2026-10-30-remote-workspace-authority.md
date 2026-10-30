@@ -1,18 +1,73 @@
 # Remote workspaces with disposable webservers
 
 Date: 2026-10-30
-Status: Implementation in progress on `codex/remote-workspace-authority` in the
-`463c/paperclip` worktree. No production deployment or volume removal performed.
+Status: Implemented and in review in [PR #18403](https://github.com/paperclipai/paperclip/pull/18403).
+The feature remains off by default. No production deployment or volume removal
+has been performed.
 
-Execution record (2026-10-30): portable archive/storage, native preparation and
-finalization, remote file access, source retention, and opt-in configuration are
-implemented. Focused archive/storage checks pass against disposable Postgres;
-remote file service/browser checks pass. The synthetic prepare/save/restore case
-also passed against the private disposable S3 test bucket. These are component
-and service proofs, not a live native Runner continuity pass. Migration/retention,
-full regression checks, current-master integration, and the new explicit Daytona
-Product E2E workflow remain on the critical path. The dedicated disposable Docker
-Postgres avoids the host's exhausted embedded-Postgres semaphore quota.
+Execution record (2026-10-30): native remote preparation, encrypted saved versions,
+portable restore, ordinary file access, Stop/failure recovery, guarded closure,
+retention, and explicit migration are implemented. The branch includes current
+master through `18b1637b63`. Required recursive typecheck and the full build pass.
+Complete test coverage is running in supported parallel shards. The original
+serial test invocation was deliberately interrupted after eleven minutes; its
+log is retained. Its recorded general-server workload alone exceeds ninety serial
+minutes, so an interrupted command is not recorded as a passing suite.
+
+Focused evidence uses real Postgres through migration 0419 and real child-process
+filesystem execution. Twelve lifecycle tests cover cold restore without the original
+allocation or Git origin, staged/unstaged/untracked Git work, separate tasks sharing
+one writer, lost provisioning replies, storage failure, stale publication, and
+current Git credential context. Eight transport regressions cover filesystem
+confinement, receipt writes, lost preparation/restore replies, saved-checkout reuse
+without a credential refresh, and trusted SSH rewrites. Archive (17), storage (7),
+migration (7), and retention (10) cases pass. The runtime controls (148), workspace
+service controls (85), lifecycle controls (6), file routes (21 plus 50 existing),
+recovery cases (144), manual runtime command controls (20), and Files UI
+component tests (33) pass. Map and token checks pass. An actual S3
+prepare/save/restore case passes using only generated synthetic files.
+
+A separate 128 MiB experiment captured, encrypted, loaded, and restored synthetic
+data with a matching independent SHA256. All 122 concurrent loopback HTTP probes
+succeeded, with a maximum measured latency of 11.2 ms. Peak process RSS was
+456.7 MiB, up 167.6 MiB from its loaded baseline. This is a local object-backend
+experiment under concurrent test load. It is not a production throughput or low
+memory guarantee.
+
+Live Daytona acceptance is **not verified**. The zero-retry campaign stopped at
+image qualification before agent creation. Its saved eval credential also failed
+an independent API read with HTTP 401. The attempt and provisional creation name
+are retained privately; provider absence cannot be certified with an invalid key.
+A current credential is required before retry. Active native controller continuity
+also depends on [PR #18343](https://github.com/paperclipai/paperclip/pull/18343).
+A separate ordinary browser check of the saved-copy S3 path is in progress.
+The streamlined desktop task shell also crashes for a control task with no
+workspace. That counterfactual identifies an existing SidePanelTabs issue; the
+remaining file check uses the supported classic task interface.
+
+Material failures remain in the evidence record. The first required typecheck
+found a missing experimental flag in a UI fixture; the fixture was fixed and the
+full command passed. Initial embedded-Postgres checks hit the host semaphore
+limit; fresh task-owned Docker databases provide the DB evidence above. Existing
+recovery tests exposed cross-test retained-candidate history; isolated comparisons
+pass, and the full 144-case repeat passes with company-scoped fixture cleanup.
+Parallel checks also exceeded the original disposable database limit of forty
+connections. The task database now allows two hundred connections. The failed
+run is retained separately; complete coverage is running again, and individual
+remaining failures are compared in isolation rather than assumed unrelated.
+
+The first automated review scored 3/5 and identified four valid gaps. Fixes now
+retain later managed-repository commits, reject unsupported manual commands before
+local filesystem access, remove completed remote export staging with durable
+cleanup retry records, and preserve safe portable Git remotes/tracking settings.
+Their regression tests pass. A fresh review is required for these changes.
+
+V1 admission rejects read-only cross-project referenced folders because the
+qualified native sandbox cannot enforce their write boundary. It also rejects
+custom remote close cleanup/teardown commands until a qualified remote maintenance
+path exists. Manual workspace jobs, services, repairs, and runtime commands also
+fail before local filesystem access; commands can run through an agent task. Same-project mutable managed repositories are supported. Confirmed
+saved files do not certify unknown external actions or permit their replay.
 
 This replaces the earlier workspace plan that retained a webserver checkout as
 the main working copy. It implements the workspace portion of the broader

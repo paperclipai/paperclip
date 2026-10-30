@@ -114,8 +114,8 @@ export async function prepareRemoteRepository(input: {
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
   if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
   const origin=await git(['remote','get-url','origin']);if(origin!==input.repoUrl)throw Error('repository_origin_changed');
-  const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit&&head!==input.pinnedCommit)throw Error('repository_pin_changed');
-  const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:head,branchName:branch}));
+  const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit)await git(['cat-file','-e',input.pinnedCommit+'^{commit}']);
+  const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:input.pinnedCommit||head,branchName:branch}));
   })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
   const payload = { ...input, target: undefined, resolveGitAuth: undefined };
   const prior = JSON.parse(await command(input.target, ["-e", script, input.remoteCwd,
@@ -147,6 +147,22 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
   })().catch(()=>{process.exitCode=1});`;
   await command(target, ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
   return { directory, helper, archive: path.posix.join(directory, "workspace.pcws"), receipt: path.posix.join(directory, "receipt.json") };
+}
+
+/** Only immutable operation staging is removed; working files are never a target. */
+export async function cleanupRemoteWorkspaceArchive(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
+}) {
+  if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
+  const script = String.raw`const fs=require('node:fs/promises'),path=require('node:path');(async()=>{
+   const [root,id]=process.argv.slice(1);if(!path.isAbsolute(root)||!/^[a-f0-9-]{36}$/.test(id))throw Error('invalid');
+   const dir=path.join(root,'.paperclip-runtime','workspace-snapshots',id);let current='/';
+   for(const part of dir.split('/').filter(Boolean)){current=path.join(current,part);
+    const entry=await fs.lstat(current).catch(e=>{if(e.code==='ENOENT')return null;throw e});if(!entry)return;
+    if(!entry.isDirectory()||entry.isSymbolicLink())throw Error('unsafe');}
+   await fs.rm(dir,{recursive:true,force:true});
+  })().catch(()=>{process.stderr.write('remote_workspace_export_cleanup_failed');process.exitCode=1});`;
+  await command(input.target, ["-e", script, input.remoteCwd, input.operationId]);
 }
 
 export async function captureRemoteWorkspaceArchive(input: {
@@ -183,7 +199,9 @@ export async function captureRemoteWorkspaceArchive(input: {
 export async function restoreRemoteWorkspaceDirectory(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string;
 }) {
-  const operationId = randomUUID();
+  if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
+  const id = input.restorationIdentity;
+  const operationId = `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
   const staged = await installArchiveHelper(input.target, parent, operationId);
@@ -211,4 +229,5 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
   })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
   await command(input.target, ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
+  await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: parent, operationId });
 }

@@ -98,6 +98,46 @@ describe("portable remote workspace archives", () => {
     const second = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "second.pcws") });
     expect(second.manifestDigest).toBe(first.manifestDigest); expect(second.sha256).toBe(first.sha256);
   });
+  it("preserves portable secondary remotes and tracking settings without local paths or executable configuration", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "file"), "portable tracking\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    const head = await git(cwd, "rev-parse", "HEAD");
+    await git(cwd, "remote", "add", "origin", "https://github.com/synthetic/work.git");
+    await git(cwd, "remote", "add", "upstream", "ssh://git@example.invalid/team/base.git");
+    await git(cwd, "config", "--add", "remote.upstream.url", "https://backup.example.invalid/team/base.git");
+    await git(cwd, "config", "remote.upstream.pushurl", "git@example.invalid:team/publish.git");
+    await git(cwd, "update-ref", "refs/remotes/upstream/main", head);
+    await git(cwd, "config", "branch.main.remote", "upstream");
+    await git(cwd, "config", "branch.main.merge", "refs/heads/main");
+    await git(cwd, "config", "branch.main.rebase", "true");
+    await git(cwd, "remote", "add", "local-cache", path.join(root, "old-host-cache.git"));
+    await git(cwd, "config", "branch.cache.remote", "local-cache");
+    await git(cwd, "config", "branch.cache.merge", "refs/heads/main");
+    for (const [key, value] of [["core.hooksPath", path.join(root, "old-host-hooks")], ["core.worktree", cwd],
+      ["filter.synthetic.smudge", "echo SYNTHETIC_SENSITIVE"], ["credential.helper", "echo SYNTHETIC_SENSITIVE"],
+      ["include.path", path.join(root, "old-host-gitconfig")]]) await git(cwd, "config", key!, value!);
+    const snapshot = await capture(cwd); await fs.rm(cwd, { recursive: true });
+    const restored = await restore(snapshot);
+    expect(await git(restored, "remote")).toBe("origin\nupstream");
+    expect(await git(restored, "config", "--get-all", "remote.upstream.url")).toBe("ssh://git@example.invalid/team/base.git\nhttps://backup.example.invalid/team/base.git");
+    expect(await git(restored, "remote", "get-url", "--push", "upstream")).toBe("git@example.invalid:team/publish.git");
+    expect(await git(restored, "config", "remote.upstream.fetch")).toBe("+refs/heads/*:refs/remotes/upstream/*");
+    expect(await git(restored, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")).toBe("upstream/main");
+    expect(await git(restored, "config", "branch.main.rebase")).toBe("true");
+    const configuration = await fs.readFile(path.join(restored, ".git", "config"), "utf8");
+    expect(configuration).not.toContain(root); expect(configuration).not.toContain("SYNTHETIC_SENSITIVE");
+    expect(configuration).not.toContain("local-cache"); expect(configuration).not.toContain('branch "cache"');
+    await git(restored, "fsck", "--full", "--no-dangling");
+  });
+  it.each(["https://synthetic-token@github.com/team/repo.git", "https://github.com/team/repo.git?access_token=SYNTHETIC_ONLY"])(
+    "rejects credentials in any saved remote URL: %s", async remoteUrl => {
+      const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+      await fs.writeFile(path.join(cwd, "file"), "source\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+      await git(cwd, "remote", "add", "upstream", remoteUrl);
+      await expect(capture(cwd)).rejects.toThrow("credential_in_git_remote");
+      await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
   it("omits reinstallable dependencies while preserving deliberately tracked files", async () => {
     const cwd = await source(); await fs.writeFile(path.join(cwd, "package.json"), "{}\n");
     await fs.mkdir(path.join(cwd, "node_modules")); await fs.writeFile(path.join(cwd, "node_modules", "dependency"), "reinstall\n");
@@ -133,11 +173,16 @@ describe("portable remote workspace archives", () => {
   });
   it("executes the generated helper in a separate Node process", async () => {
     const cwd = await source(); await fs.writeFile(path.join(cwd, "file"), "remote helper\n");
+    await git(cwd, "init", "-q", "-b", "main"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    await git(cwd, "remote", "add", "upstream", "https://example.invalid/team/base.git");
+    await git(cwd, "config", "branch.main.remote", "upstream"); await git(cwd, "config", "branch.main.merge", "refs/heads/main");
     const script = path.join(root, "helper.cjs"), archivePath = path.join(root, "remote.pcws"), target = path.join(root, "remote-restored");
     await fs.writeFile(script, remoteWorkspaceArchiveScript());
     const receipt = JSON.parse((await execute(process.execPath, [script, "capture", cwd, archivePath])).stdout);
     await fs.rm(cwd, { recursive: true });
     await execute(process.execPath, [script, "restore", archivePath, target, receipt.manifestDigest]);
     expect(await fs.readFile(path.join(target, "file"), "utf8")).toBe("remote helper\n");
+    expect(await git(target, "remote", "get-url", "upstream")).toBe("https://example.invalid/team/base.git");
+    expect(await git(target, "config", "branch.main.remote")).toBe("upstream");
   });
 });

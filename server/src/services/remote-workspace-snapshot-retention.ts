@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -64,6 +64,17 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
     const at = now(), result = { checked: 0, pinned: 0, scheduled: 0, deleted: 0, failed: 0, truncated: false };
     const rows = await db.select().from(executionWorkspaceSnapshots).where(and(
       sql`${executionWorkspaceSnapshots.status} <> 'deleted'`,
+      // Ordinary execution notifications must not turn each healthy current
+      // version into a per-workspace maintenance read. A version with a stale
+      // deadline still needs one pass to clear it; orphaned versions need grace.
+      or(ne(executionWorkspaceSnapshots.status, "committed"), isNotNull(executionWorkspaceSnapshots.deleteAfter),
+        sql`not exists (select 1 from ${executionWorkspaces} w
+          where w.company_id = ${executionWorkspaceSnapshots.companyId}
+            and w.id = ${executionWorkspaceSnapshots.executionWorkspaceId}
+            and w.metadata->'remoteWorkspace'->>'snapshotId' = ${executionWorkspaceSnapshots.id}::text)`),
+      or(isNull(executionWorkspaceSnapshots.deleteAfter),
+        lte(executionWorkspaceSnapshots.deleteAfter, at),
+        eq(executionWorkspaceSnapshots.status, "committed")),
       after ? sql`${executionWorkspaceSnapshots.id} > ${after}::uuid` : undefined,
     )).orderBy(asc(executionWorkspaceSnapshots.id)).limit(batch + 1);
     result.truncated = rows.length > batch;
@@ -119,6 +130,9 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         }
         await db.update(executionWorkspaceSnapshots).set({ status: "deleted", deleteAfter: null, lastError: null, updatedAt: at })
           .where(and(eq(executionWorkspaceSnapshots.id, claimed.id), eq(executionWorkspaceSnapshots.status, "delete_requested")));
+        // A parent inspected earlier in this page can now lose its last pin.
+        // Revisit it once instead of waiting for an unrelated execution event.
+        if (claimed.parentSnapshotId) rescanRequested = true;
         result.deleted++;
       } catch (error) {
         if (signal?.aborted) throw error;

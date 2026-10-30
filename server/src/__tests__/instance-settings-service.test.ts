@@ -62,6 +62,7 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
+      remoteWorkspaceStorageEnabled: false,
       enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,

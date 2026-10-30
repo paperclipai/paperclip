@@ -117,6 +117,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       await expect(restoreRemoteWorkspaceDirectory(input)).resolves.toBeUndefined();
       expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("saved synthetic files\n");
       expect(await fs.readFile(path.join(root, "newer.txt"), "utf8")).toBe("retain later edits\n");
+      expect(await fs.readdir(path.join(scratch, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
       await expect(restoreRemoteWorkspaceDirectory({ ...input, restorationIdentity: "b".repeat(64) })).rejects.toThrow();
       expect(await fs.readFile(path.join(root, "newer.txt"), "utf8")).toBe("retain later edits\n");
     } finally { await captured.cleanup(); }
@@ -212,6 +213,24 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await expect(prepareRemoteRepository({ ...input, repoUrl: `${origin}-foreign` })).rejects.toThrow("remote_workspace_operation_failed");
     expect(resolveGitAuth).not.toHaveBeenCalled();
     expect(await fs.readFile(path.join(root, "unsaved.txt"), "utf8")).toBe("preserve local work\n");
+  });
+
+  it("keeps the preparation pin and later agent commits across the next admission", async () => {
+    const origin = await repository(), { remote } = target(), root = path.join(workspace, "managed");
+    const prepared = await prepareRemoteRepository({ target: remote, remoteCwd: root,
+      repoUrl: origin, ref: "HEAD", resolveGitAuth: async () => null });
+    await fs.writeFile(path.join(root, "source.txt"), "agent committed work\n");
+    await git(root, "commit", "-am", "Agent progress");
+    const head = (await git(root, "rev-parse", "HEAD")).stdout.trim();
+    expect(head).not.toBe(prepared.pinnedCommit);
+    await fs.writeFile(path.join(root, "untracked.txt"), "still in progress\n");
+    await fs.rm(origin, { recursive: true, force: true });
+    const resolveGitAuth = vi.fn(async () => { throw new Error("origin unavailable"); });
+    expect(await prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl: origin,
+      ref: "HEAD", pinnedCommit: prepared.pinnedCommit, resolveGitAuth })).toEqual(prepared);
+    expect((await git(root, "rev-parse", "HEAD")).stdout.trim()).toBe(head);
+    expect(await fs.readFile(path.join(root, "untracked.txt"), "utf8")).toBe("still in progress\n");
+    expect(resolveGitAuth).not.toHaveBeenCalled();
   });
 
   it("uses trusted SSH rewrites only for clone and ignores ambient Git configuration", async () => {

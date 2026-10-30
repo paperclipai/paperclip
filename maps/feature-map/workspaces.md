@@ -74,6 +74,8 @@ time. Confirm browse, preview, and download agree. A missing allocation with
 unsaved work must report unavailability rather than show an old save as current.
 Close must retain dirty/unfinished work and reject custom cleanup/teardown
 commands; a clean saved workspace can release compute while retaining files.
+Manual runtime commands, jobs, repairs, and service starts must reject remote
+workspaces before local filesystem access; agent task execution remains supported.
 The archive, storage, migration, retention, and lifecycle regression suites
 exercise these contracts separately. This recipe records required deployment
 checks; it does not claim a live provider or webserver replacement passed.
