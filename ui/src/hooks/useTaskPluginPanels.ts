@@ -40,7 +40,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     companyId: savedTask && panels.length > 0 && !errorMessage ? issue?.companyId : null,
     issueId: issue?.id, issueQueryRef: issue?.id ?? "pending", assigneeAgentId: issue?.assigneeAgentId,
   });
-  const { data: runs, isError: runsError } = useQuery({
+  const { data: runs, isError: runsError, isPending: runsPending } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
     enabled: savedTask && panels.length > 0 && !errorMessage,
@@ -139,5 +139,6 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     slot,
   })) : EMPTY_PANELS,
   [savedTask, errorMessage, agentId, panels, run?.id, runsError, active, slots, availableKey]);
-  return { panels: manualPanels, isLoading: savedTask && isLoading && !errorMessage };
+  return { panels: manualPanels, isLoading: savedTask && !errorMessage
+    && (isLoading || (panels.length > 0 && runsPending)) };
 }

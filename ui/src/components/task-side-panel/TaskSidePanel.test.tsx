@@ -204,13 +204,14 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain(`Plugin viewer ${pluginPanel.entityId}`);
   });
 
-  it("restores a saved manual view after plugin discovery finishes", async () => {
+  it.each([false, true])("restores a saved manual view after discovery (different assignee=%s)", async differentAssignee => {
     const tab = taskPanelPluginTab(pluginPanel);
     writeTaskSidePanelState("user-1", "company-1", "task-1", {
       state: { tabs: [tab], activeTabId: tab.id },
       launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: 1,
     });
-    await render(panel({ pluginPanels: [], pluginPanelsLoading: true }));
+    await render(panel({ pluginPanels: differentAssignee
+      ? [{ ...pluginPanel, entityId: "assigned-agent", runId: undefined, autoOpen: false }] : [], pluginPanelsLoading: true }));
     expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Plugin viewer");
     await render(panel({ pluginPanels: [{ ...pluginPanel, runId: undefined, autoOpen: false }] }));

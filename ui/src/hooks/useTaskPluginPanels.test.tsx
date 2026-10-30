@@ -62,6 +62,19 @@ it("keeps restored views pending until plugin discovery settles", async () => {
   expect(panels).toEqual([{ entityId: "agent", autoOpen: false, slot }]);
 });
 
+it.each(["assigned-agent", null])("waits for the running agent before settling saved views (assignee=%s)", async assigneeAgentId => {
+  const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
+  plugin.slots = [manual];
+  let resolve!: (value: LiveRunForIssue[]) => void;
+  list.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  await render({ ...issue, assigneeAgentId });
+  expect(loading).toBe(true);
+  await act(async () => { resolve([{ ...run, agentId: "running-agent" }]); });
+  await render({ ...issue, assigneeAgentId });
+  expect(loading).toBe(false);
+  expect(panels).toEqual([{ entityId: "running-agent", runId: "run", autoOpen: false, slot: manual }]);
+});
+
 it("offers manual access while idle without reading activation history or readiness", async () => {
   list.mockResolvedValue([]);
   history.mockResolvedValue([]);
