@@ -9677,27 +9677,30 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(
-            and(
-              eq(issueRelations.companyId, parent.companyId),
-              eq(issueRelations.relatedIssueId, parent.id),
-              eq(issueRelations.type, "blocks"),
-            ),
+        await db.transaction(async tx => {
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, parent.companyId),
+                eq(issueRelations.relatedIssueId, parent.id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            );
+          await syncBlockedByIssueIds(
+            parent.id,
+            parent.companyId,
+            [
+              ...new Set([
+                ...existingBlockers.map((row) => row.blockerIssueId),
+                child.id,
+              ]),
+            ],
+            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            tx,
           );
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [
-            ...new Set([
-              ...existingBlockers.map((row) => row.blockerIssueId),
-              child.id,
-            ]),
-          ],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
+        });
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],

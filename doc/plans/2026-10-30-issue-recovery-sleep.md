@@ -1,13 +1,17 @@
 # Issue recovery without periodic scans
 
-Four existing owners reconstruct their current obligations once at startup. Committing source writes invalidate only their company. The coordinator keeps scopes, per-issue deadlines, and per-entry failures in memory. Its pending check does not query the database.
+The issue recovery owners reconstruct their current obligations once at startup. Committing source writes invalidate only their company. The coordinator keeps scopes, per-issue deadlines, and per-entry failures in memory. Its pending check does not query the database.
 
 | Owner | Durable truth and producer boundary | Deadline or event | Exit |
 | --- | --- | --- | --- |
 | Stranded assignment | Visible assigned todo/in-progress/review issues; issue create/update/checkout/release; run lifecycle and execution control; agent/company/budget/configuration; interaction, approval and subtree hold changes | A committed eligibility change. A transient continuation uses the latest finish plus the existing exponential delay. | An execution path, durable wait, escalation, or current ineligibility. |
+| Orphan blocker assignment | Agent-created unassigned todo/blocked blockers with a nonterminal dependent; issue, relation, agent and company changes | Once per changed company, independent of assignment candidates. | Assigned, no longer blocking, or creator cannot execute until its next eligibility change. |
+| Active recovery actions | Active/escalated action records, including actions on completed sources; action, issue, run and wait changes | Once per changed company, independent of assignment candidates. | Resolved, restored path, explicit hold or a separately owned retry. |
 | Resolved dependency | Blocked assigned issues and company-scoped blocker relations; blocker status or relation changes through issue service and import; run/control and pause gate changes | The committing change. A failed enqueue retains that issue with error backoff. | Existing idempotent wake, live path, unresolved dependency or deliberate self-block. |
 | Task watchdog | Active issue watchdogs and their current source subtree; normal watchdog upsert/disable; issue/comment/document/work-product and wait changes | Exact source creation plus the existing 15-second first-run grace. An incomplete scan retains the watchdog with error backoff. | Live path, open/reviewed reusable review, disabled configuration, or ineligible source. |
 | Stale issue lock | Existing checkout/execution run references; issue and run lifecycle changes | A committing ownership change, or the fresh owning controller's saved lease expiry. | No stale reference, a valid owner, or the existing guarded terminalization and lock clear. |
+
+Reconstruction uses keyset pages of at most100rows. Repeated company hints coalesce reconstruction for30seconds. Already-known entry deadlines preempt that spacing without an early probe on each comment. Scheduling suppression is read once per pass. A failed read keeps scoped backoff debt. The two subsidiary company repairs do not run inside the per-issue loop. Legacy direct aggregate API calls retain both repairs.
 
 The owner methods accept company and issue/watchdog identity. A narrowed lock check still reads other same-company references before using terminal-issue authority. A stale terminal alias cannot end an active issue's shared run. The controller lease owner supplies its fresh expiry; the existing write predicate revalidates the observed boot ID and database-clock expiry.
 
@@ -16,3 +20,5 @@ Producer coverage uses the existing run-dispatch, execution-control, issue-revie
 The new owners replace only these four startup and periodic calls. Deferred comments, silent active runs and residual orphan/resource recovery retain their existing backstop until the next slice. Every previously migrated native-owner skip remains unchanged.
 
 A controlled process test prints an execution proof but cannot apply a task disposition. The test operator completes that task through issue service. If the existing continuation policy already saved a disposition-repair retry, the test preserves it until its stored deadline. Only after all provider work has joined does it advance the clock; dispatch then revalidates the completed task and cancels the retry. The final quiet proof requires no registered deadlines, no tracked in-flight work and no owner SQL over twenty former polling minutes. It does not claim a saved future retry is already drained.
+
+Active action repair has no separate grace or lease countdown. Its delayed disposition repair first writes a scheduled-retry run, then mirrors the date into action wakePolicy.retryAt and timeoutAt. The dispatch owner owns that saved run deadline. Other skipped gates wait for their existing execution, wait, pause, budget, or finalizer producer; the company action worker does not add a polling fallback.

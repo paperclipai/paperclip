@@ -4245,7 +4245,9 @@ export function heartbeatService(
 
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
-        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true }),
+        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
+        orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
+        recoveryActions: recovery.reconcileActiveRecoveryActions,
         dependencies: reconcileResolvedDependencyWakes,
         locks: sweepStaleIssueLocks,
         watchdogs: reconcileTaskWatchdogs,
