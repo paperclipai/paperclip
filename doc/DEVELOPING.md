@@ -902,6 +902,11 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+Database-work tests that intentionally roll back signaled writes must stop their
+coordinator and call `reconcileDatabaseWork` for the affected queue during
+teardown. Deleting fixture rows does not retire process-local uncertain
+transactions; retaining them can add unrelated retry deadlines to the next test.
+
 #### Embedded Postgres template cache
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)

@@ -611,6 +611,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         <ReconnectCard
           connection={connection}
           galleryEntry={logoEntry}
+          retainedAgentId={retainedAgentGrant?.subjectAgentId}
           canReconnect={canReconnect}
           reconnectUnavailableMessage={reconnectUnavailableMessage}
           onReconnect={onReconnect ? () => onReconnect(connection) : (connection.connectionPurpose === "ai" || isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey)) ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}

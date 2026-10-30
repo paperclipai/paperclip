@@ -147,6 +147,7 @@ function KeySection({
 export function ReconnectCard({
   connection,
   galleryEntry,
+  retainedAgentId,
   onReconnected,
   onReconnect,
   canReconnect = true,
@@ -154,6 +155,7 @@ export function ReconnectCard({
 }: {
   connection: ToolConnection;
   galleryEntry: AppDefinition | null;
+  retainedAgentId?: string | null;
   onReconnected: () => void;
   onReconnect?: () => void;
   canReconnect?: boolean;
@@ -161,12 +163,18 @@ export function ReconnectCard({
 }) {
   const { pushToast } = useToast();
   const reconnectOAuth = useMutation({
-    // Reconnect is not a new identity choice. Personal-only connections must
-    // put the replacement token back on the signed-in user's existing grant;
-    // shared and legacy fallback connections keep using the organization slot.
-    mutationFn: () => connection.credentialPolicy === "per_user"
-      ? toolsApi.startOAuth(connection.id, { asCurrentUser: true })
-      : toolsApi.startOAuth(connection.id),
+    mutationFn: () => {
+      if (connection.credentialPolicy === "per_user") {
+        return toolsApi.startOAuth(connection.id, { asCurrentUser: true });
+      }
+      if (connection.credentialPolicy === "per_agent") {
+        if (!retainedAgentId) {
+          throw new Error("The dedicated agent identity could not be found. Reload the page to try again.");
+        }
+        return toolsApi.startOAuth(connection.id, { asAgentId: retainedAgentId });
+      }
+      return toolsApi.startOAuth(connection.id);
+    },
     onSuccess: async (start) => {
       try {
         const target = await prepareOAuthNavigation(start);
