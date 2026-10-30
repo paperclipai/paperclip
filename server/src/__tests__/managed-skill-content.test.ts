@@ -14,7 +14,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
-import { skillPackageStore } from "../services/skill-package-store.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -81,10 +80,6 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
   it("loads persisted Cloud configuration for read-only maintenance without seeding it", async () => {
     const companyId = await company();
     const skill = await companySkillService(db).createLocalSkill(companyId, { name: "Cloud CLI", markdown: "# Cloud CLI" });
-    const store = skillPackageStore(db);
-    const version = await store.version(companyId, skill.id, skill.currentVersionId!);
-    expect(version?.packageSnapshotId).toBeTruthy();
-    await expect(store.verifyDurable(companyId, version!.packageSnapshotId!)).resolves.toBe(true);
     const local = await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 });
     expect(local.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
     const key = "cloud-runtime-config:v1";

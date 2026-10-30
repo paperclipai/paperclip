@@ -78,7 +78,7 @@ export function sourceDependencies(file, source) {
       mocks.push(call.arguments[0].value);
     }
   }
-  function visit(node, parent = null) {
+  function visit(node, parent = null, grandparent = null) {
     if (!node || typeof node !== "object") return;
     if (node.type?.startsWith("TS") && !["TSImportEqualsDeclaration", "TSEnumDeclaration", "TSEnumMember",
       "TSModuleDeclaration", "TSModuleBlock", "TSExportAssignment", "TSParameterProperty"].includes(node.type)) {
@@ -86,9 +86,9 @@ export function sourceDependencies(file, source) {
       return;
     }
     const dataKey = parent && ((["Property", "ObjectProperty", "MethodDefinition", "PropertyDefinition"].includes(parent.type)
-      && parent.key === node && !parent.computed && !parent.shorthand)
+      && grandparent?.type !== "ObjectPattern" && parent.key === node && !parent.computed && !parent.shorthand)
       || (parent.type === "MemberExpression" && parent.property === node && !parent.computed
-        && !["globalThis", "window", "self"].includes(parent.object.name)));
+        && !/^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)));
     if ((node.type === "ImportDeclaration" && node.importKind !== "type")
       || (["ExportNamedDeclaration", "ExportAllDeclaration"].includes(node.type) && node.exportKind !== "type")) {
       if (node.source) importSource(node.source);
@@ -110,6 +110,11 @@ export function sourceDependencies(file, source) {
     }
     if (node.type === "CallExpression") {
       const name = calleeName(node.callee);
+      if (node.callee.type === "MemberExpression" && mockBindings.has(node.callee.object.name)
+        && /^(mock|doMock)$/.test(node.callee.property.name)
+        && literal(node.arguments[0]) && /^(?:node:)?(?:fs(?:\/promises)?|path(?:\/posix|\/win32)?|url)$/.test(node.arguments[0].value)) {
+        reasons.add("mocked filesystem path resolution");
+      }
       if (/^(?:vi|vitest)\.(?:mock|doMock|importActual|importMock)$/.test(name)) {
         importSource(node.arguments[0]);
       }
@@ -124,8 +129,8 @@ export function sourceDependencies(file, source) {
       if (!viteGlob && /\b(?:fetch|eval|Function|glob|globSync)\b/.test(name)) reasons.add("external input or dynamic code");
     }
     for (const value of Object.values(node)) {
-      if (Array.isArray(value)) value.forEach((child) => visit(child, node));
-      else if (value && typeof value === "object" && value.type) visit(value, node);
+      if (Array.isArray(value)) value.forEach((child) => visit(child, node, parent));
+      else if (value && typeof value === "object" && value.type) visit(value, node, parent);
     }
   }
   visit(ast.program);
@@ -192,7 +197,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (!reviewed && source.reasons.length) throw new Error(`Opaque setup dependency: ${file}`);
       for (const specifier of source.imports) {
         if (isBuiltin(specifier)) {
-          if (!reviewed && !pureBuiltins.has(specifier.replace(/^node:/, "")) && !coveredBuiltins.includes(specifier)) throw new Error(`Opaque setup builtin: ${specifier}`);
+          if (!reviewed && !pureBuiltins.has(specifier.replace(/^node:/, "")) && !coveredBuiltins.includes(specifier.replace(/^node:/, ""))) throw new Error(`Opaque setup builtin: ${specifier}`);
           continue;
         }
         if (reviewed && review.external.includes(specifier)) continue;

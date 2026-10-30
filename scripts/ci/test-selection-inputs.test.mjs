@@ -21,6 +21,10 @@ test("data properties and erased types are not global loaders or mock bypasses",
     'fetch("https://example.invalid");',
     'const load = globalThis.fetch; load("https://example.invalid");',
     'const make = globalThis.Function; make("return 1");',
+    'const scope = globalThis; const make = scope.Function; make("return 1");',
+    'const {Function: make} = globalThis; make("return 1");',
+    'const {fetch: request} = globalThis; request("https://example.invalid");',
+    'import {vi as mocker} from "vitest"; mocker.mock("node:path", () => ({join: () => "/other.ts"}));',
     'import {vi} from "vitest"; vi.mock("./input", function() { return arguments[0](); });',
     'import {vi} from "vitest"; vi.importActual("./input");',
     'const result = (fetch("https://example.invalid") as unknown);',
@@ -50,10 +54,12 @@ test("file input edges require module-relative paths and non-escaping read APIs"
     'import fs from "node:fs"; import path from "node:path"; const root = path.dirname(import.meta.filename); const input = path.join(root, "leaf.ts"); fs.readFileSync(input);',
     'import {promises as fs} from "node:fs"; import {fileURLToPath} from "node:url"; fs.readFile(fileURLToPath(new URL("./leaf.ts", import.meta.url)));',
   ]) {
-    assert.deepEqual(analyze(source), { covered: ["node:fs"], inputs: ["/repo/ui/src/leaf.ts"] });
+    assert.deepEqual(analyze(source), { covered: ["fs"], inputs: ["/repo/ui/src/leaf.ts"] });
   }
   for (const source of [
     'import fs from "node:fs"; fs.readFileSync(process.env.INPUT);',
+    'import {readFileSync as known} from "node:fs"; import {readFileSync as unknown} from "fs"; known(new URL("./leaf.ts", import.meta.url)); unknown(process.env.INPUT);',
+    'import {readFileSync as known} from "fs"; import {readFileSync as unknown} from "node:fs"; known(new URL("./leaf.ts", import.meta.url)); unknown(process.env.INPUT);',
     'import fs from "node:fs"; fs.readFileSync("src/leaf.ts");',
     'import fs from "node:fs"; const read = fs.readFileSync; read(new URL("./leaf.ts", import.meta.url));',
     'import {readFileSync as read} from "node:fs"; function load(read) { read(new URL("./leaf.ts", import.meta.url)); }',

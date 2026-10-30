@@ -23,7 +23,8 @@ export function repositoryFileInputs(file, program) {
     if (node.type === "ImportDeclaration") {
       for (const spec of node.specifiers) {
         bind(spec.local);
-        imports.set(spec.local.name, { source: node.source.value, name: spec.type === "ImportSpecifier" ? spec.imported.name : "*" });
+        const source = filesystem.test(node.source.value) ? node.source.value.replace(/^node:/, "") : node.source.value;
+        imports.set(spec.local.name, { source, name: spec.type === "ImportSpecifier" ? spec.imported.name : "*" });
       }
     }
     if (node.type === "VariableDeclarator") {

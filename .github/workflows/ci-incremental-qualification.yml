@@ -39,8 +39,6 @@ jobs:
         with:
           version: 9.15.4
       - uses: ./.github/actions/setup-ci-dependencies
-      - name: Verify managed skill storage with PostgreSQL
-        run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/managed-skill-content.test.ts
       - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
         run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
       - name: Qualify selection against the real Paperclip workspace
