@@ -837,6 +837,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
+      // Pi exits 0 when the model output limit truncates the final turn. The
+      // machine-readable marker lets the run liveness classifier tell a
+      // genuinely completed turn apart from a turn that was cut off mid-way.
+      const finalTruncated = attempt.parsed.finalStopReason === "length";
+      const finalMessageEmpty = !attempt.parsed.finalTurnText.trim();
       const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;
       const fallbackErrorMessage = parsedError || stderrLine || `Pi exited with code ${rawExitCode ?? -1}`;
 
@@ -849,8 +854,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
-        // code; every other result carries no code here.
-        errorCode: attempt.proc.errorCode ?? null,
+        // code; a turn cut off at the output limit with no completion surfaces
+        // the typed `pi_completion_truncated` code; every other result carries
+        // no code here.
+        errorCode: attempt.proc.errorCode ?? (finalTruncated && finalMessageEmpty ? "pi_completion_truncated" : null),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -867,6 +874,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(finalTruncated
+            ? {
+                finalStopReason: attempt.parsed.finalStopReason,
+                finalMessageEmpty,
+              }
+            : {}),
         },
         summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
         clearSession: Boolean(clearSessionOnMissingSession),
