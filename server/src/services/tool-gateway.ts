@@ -783,10 +783,15 @@ function gatewaySessionFromRow(
   };
 }
 
-function timeoutMs(value: number | undefined, tool?: ToolGatewayDescriptor) {
-  if (!Number.isFinite(value)) return tool?.providerType === "paperclip_github_chat"
-    ? GITHUB_BOT_TOOL_TIMEOUT_MS
-    : DEFAULT_TOOL_TIMEOUT_MS;
+export function resolveToolExecutionTimeoutMs(
+  value: number | undefined,
+  tool?: Pick<ToolGatewayDescriptor, "providerType">,
+) {
+  if (!Number.isFinite(value)) {
+    if (tool?.providerType === "paperclip_github_chat") return GITHUB_BOT_TOOL_TIMEOUT_MS;
+    if (tool?.providerType === "mcp_local_stdio") return 60_000;
+    return DEFAULT_TOOL_TIMEOUT_MS;
+  }
   return Math.max(
     1,
     Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)),
@@ -7620,7 +7625,7 @@ export function createToolGatewayService(
           throw new ToolGatewayHttpError(403, current.explanation, current.reasonCode);
         }
       }
-      const executionTimeoutMs = timeoutMs(args.timeoutMs, args.tool);
+      const executionTimeoutMs = resolveToolExecutionTimeoutMs(args.timeoutMs, args.tool);
       connectedMcpExecution =
         (args.tool.providerType === "mcp_remote_http" || args.tool.providerType === "provider_rest")
           ? await executeRemoteHttpTool(
@@ -8432,7 +8437,7 @@ export function createToolGatewayService(
 
     try {
       await assertCurrentGatewayIssuer(session, tool, parameters, invocation.id, true);
-      const executionTimeoutMs = timeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
+      const executionTimeoutMs = resolveToolExecutionTimeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
       const result =
         (tool.providerType === "mcp_remote_http" || tool.providerType === "provider_rest")
           ? (
@@ -11108,7 +11113,7 @@ export function createToolGatewayService(
 
       try {
         await assertCurrentGatewayIssuer(session, tool, effectiveParameters, invocationId, !!input.approvedActionRequestId);
-        const executionTimeoutMs = timeoutMs(input.timeoutMs, tool);
+        const executionTimeoutMs = resolveToolExecutionTimeoutMs(input.timeoutMs, tool);
         if (
           tool.providerType === "paperclip_plugin" &&
           (!session.agentId || !session.runId)
