@@ -1,3 +1,4 @@
+import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -131,10 +132,32 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     if (descriptor && remoteCwd !== descriptor.remoteCwd) throw invalid("cwd_reference_mismatch");
     if (descriptor && lease.executionWorkspaceId && lease.executionWorkspaceId !== descriptor.workspaceId)
       throw invalid("workspace_reference_mismatch");
-    const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    const history = await db.select().from(environmentLeases).where(and(
       ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
-      eq(environmentLeases.providerLeaseId, lease.providerLeaseId))).limit(1);
-    if (other) throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+      eq(environmentLeases.providerLeaseId, lease.providerLeaseId)));
+    const predecessors = retiredReusableLeasePredecessors(lease, history);
+    if (!predecessors || (predecessors.length && (run.runtimeMode !== "native" || !descriptor || lease.metadata?.agentId !== run.agentId)))
+      throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    const predecessorRuns = predecessors.map(item => item.heartbeatRunId!);
+    const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, predecessorRuns))) : [];
+    const priorOwners = predecessorRuns.length ? await db.select({ runId: nativeRunFinalizations.runId,
+      phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns),
+        eq(nativeRunFinalizations.issueId, input.issueId))) : [];
+    for (const predecessor of predecessors) {
+      const prior = priors.find(item => item.id === predecessor.heartbeatRunId);
+      const priorReference = readNativeWorkspaceSyncReference(prior?.runnerProfileJson?.nativeWorkspaceSync);
+      const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
+      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId || prior.nativeIssueId !== input.issueId ||
+          !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
+          (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
+          !priorOwner || priorOwner.leaseOwner || !["committed", "terminal_failure", "applied"].includes(priorOwner.phase) ||
+          !priorReference || priorReference.state !== "finalized" || !priorReference.finalHostSha256 ||
+          priorReference.leaseId !== predecessor.id || priorReference.providerLeaseId !== lease.providerLeaseId ||
+          priorReference.workspaceId !== descriptor!.workspaceId || priorReference.remoteCwd !== remoteCwd)
+        throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    }
     // Snapshot export writes only a new staging directory. A native baseline
     // merge additionally needs exclusive ownership of its host destination.
     if (descriptor) {
