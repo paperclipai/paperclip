@@ -902,6 +902,13 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+ACPX credential tests share the host's TCP port namespace. A private temporary
+home does not reserve its deterministic two-of-three lease ports, which overlap
+with ephemeral client ports. Grok fixtures check all three candidates and may
+choose another fresh home up to eight times before staging. They release only
+their own probe listeners. Staging itself runs once; any collision or ownership
+failure after fixture preparation must remain a test failure.
+
 #### Embedded Postgres template cache
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
