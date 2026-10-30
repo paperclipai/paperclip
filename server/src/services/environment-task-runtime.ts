@@ -1,5 +1,5 @@
 import { attachSandboxCreation, environmentService } from "./environments.js";
-import { createOwnedSandbox } from "./sandbox-creation-operations.js";
+import { createOwnedSandbox, recordSandboxCreationResource } from "./sandbox-creation-operations.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { readWorkspaceProviderBinding } from "@paperclipai/shared";
@@ -243,6 +243,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           runId:identity.runId,creationOperationId:identity.id,agentId:run!.agentId,adapterType:"paperclip_runner",
           ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? {requestedExpiresAt:metadata.runnerTaskRequestedExpiresAt} : {})}));
         if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
+        await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
+          environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId });
         const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
           runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
         const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,

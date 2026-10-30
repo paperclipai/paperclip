@@ -98,8 +98,12 @@ A deleted company also records manual reconciliation before credential lookup or
 cleanup transfer. A company lock fences deletion during the transfer transaction.
 That manual diagnostic has no automatic timer and does not prevent idle. The row
 must be reconciled before retrying the same request. Other providers do not yet
-claim automatic creation lookup. Generic plugin operations retain identity only;
-they do not copy credentials or provider payloads into the operation record.
+claim automatic creation lookup. Generic plugin operations retain identity only, including a returned task resource
+ID before expiry checks or lease attachment. A failed or ambiguous attachment keeps
+that known ID for reconciliation; it does not authorize unconditional release.
+These operations do not copy credentials, resolved configuration, or provider
+payloads into the operation record. A lost provider reply can still leave the
+resource ID unknown.
 
 ## Legacy deferred orphan buffers
 

@@ -1,6 +1,6 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, lte, or, sql } from "drizzle-orm";
 import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
@@ -72,6 +72,22 @@ export async function createOwnedSandbox(
   }
   const lease = await create({ id, runId });
   return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
+}
+
+/** Keep an already returned resource identity even when task attachment fails.
+ * This enriches the existing owner; it never transfers or reopens ownership. */
+export async function recordSandboxCreationResource(db: Db, input: {
+  id: string; companyId: string; environmentId: string; providerLeaseId: string;
+}): Promise<void> {
+  const [recorded] = await db.update(sandboxCreationOperations).set({
+    metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || ${JSON.stringify({ creationProviderLeaseId: input.providerLeaseId })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(eq(sandboxCreationOperations.id, input.id), eq(sandboxCreationOperations.companyId, input.companyId),
+    eq(sandboxCreationOperations.originalEnvironmentId, input.environmentId),
+    or(sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' is null`,
+      sql`${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' = ${input.providerLeaseId}`),
+  )).returning({ id: sandboxCreationOperations.id });
+  if (!recorded) throw new Error("Sandbox creation resource identity changed");
 }
 
 export async function recoverSandboxCreations(db: Db,

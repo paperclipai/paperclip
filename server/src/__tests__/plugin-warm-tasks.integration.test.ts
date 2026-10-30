@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issues, plugins, projects, sandboxCreationOperations } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { recordSandboxCreationResource } from "../services/sandbox-creation-operations.js";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -143,6 +144,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const operations=await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId,f.companyId));
   const pending=operations.filter(row=>row.state === "pending");
   expect(pending).toHaveLength(1);expect(pending[0].requestKey).toBe(next.lease.providerLeaseId);
+  expect(pending[0].metadata.creationProviderLeaseId).toBe("task-2");expect(pending[0].config).toEqual({});
   expect(f.acquireRequests.at(-1)?.creationOperationId).toBe(pending[0].id);
   const creates=f.acquireRequests.length;
   await expect(runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"describe"}})).rejects.toThrow("reconcile the same task");
@@ -150,9 +152,40 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   await db.update(sandboxCreationOperations).set({nextAttemptAt:new Date(0)}).where(eq(sandboxCreationOperations.id,pending[0].id));
   await runtime().flushDeferredOrphanCleanups();
   const [manual]=await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id,pending[0].id));
-  expect(manual.state).toBe("needs_reconciliation");
+  expect(manual.state).toBe("needs_reconciliation");expect(manual.metadata.creationProviderLeaseId).toBe("task-2");
+  await runtime().flushDeferredOrphanCleanups();expect(f.acquireRequests).toHaveLength(creates);
+  expect(f.calls).not.toContain("environmentReleaseLease");
   expect(await readdir(disk)).toEqual([]);
   await rm(disk,{recursive:true,force:true});
+ });
+
+ it("retains the known replacement identity after a committed attachment response is lost",async()=>{
+  const f=await fixture();await f.nextRun();const next=await f.acquire();f.stopped();
+  const transaction=db.transaction.bind(db);let lost=false;
+  const response=vi.spyOn(db,"transaction").mockImplementation((async(...args:any[])=>{
+   const result=await (transaction as any)(...args);
+   if(!lost && result?.providerLeaseId === "task-2") {lost=true;throw new Error("Attachment commit response lost");}
+   return result;
+  }) as typeof db.transaction);
+  try {
+   await expect(f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"describe"}})).rejects.toThrow("reconcile the same task");
+  } finally {response.mockRestore();}
+  expect(lost).toBe(true);
+  const operations=await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId,f.companyId));
+  const replacement=operations.find(operation=>operation.requestKey === next.lease.providerLeaseId)!;
+  expect(replacement).toMatchObject({state:"attached",leaseId:next.lease.id,metadata:{creationProviderLeaseId:"task-2"}});
+  const identity={id:replacement.id,companyId:f.companyId,environmentId:replacement.originalEnvironmentId,providerLeaseId:"task-2"};
+  await recordSandboxCreationResource(db,identity);
+  await expect(recordSandboxCreationResource(db,{...identity,providerLeaseId:"different-resource"})).rejects.toThrow("identity changed");
+  await expect(recordSandboxCreationResource(db,{...identity,companyId:randomUUID()})).rejects.toThrow("identity changed");
+  expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id,replacement.id)))[0])
+   .toMatchObject({state:"attached",metadata:{creationProviderLeaseId:"task-2"}});
+  const [saved]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,next.lease.id));
+  expect(saved).toMatchObject({providerLeaseId:"task-2",status:"active"});
+  await db.update(sandboxCreationOperations).set({nextAttemptAt:new Date(0)}).where(eq(sandboxCreationOperations.id,replacement.id));
+  await f.runtime().flushDeferredOrphanCleanups();
+  expect((await f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"describe"}})).taskId).toBe("task-2");
+  expect(f.acquireRequests).toHaveLength(2);expect(f.calls).not.toContain("environmentReleaseLease");
  });
 
  it.each(["added","removed"] as const)("retires retained mounts when an authorized project is %s after controller restart",async mode=>{
