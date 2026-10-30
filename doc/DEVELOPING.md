@@ -900,6 +900,11 @@ the development server's unbundled module graph on each navigation. Browser
 assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
+The queued legacy-recovery browser fixture starts the Retry request before
+releasing its simulated live-process hold, then verifies HTTP 202 admission.
+Its saved comment can otherwise complete automatically and remove Retry before
+the click reaches the server.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 #### Embedded Postgres template cache

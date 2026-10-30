@@ -103,7 +103,7 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
             response.request().postDataJSON()?.observedRunId === sourceRunId),
           retry.click(),
         ]);
-        expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
+        expect(response.status(), await response.text()).toBe(202);
       } else if (action === "automatic_message") {
         // No Retry, duplicate message, or status change: the saved input runs.
       } else if (action === "message") {

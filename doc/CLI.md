@@ -355,6 +355,9 @@ pnpm paperclipai env-lab status --json
 pnpm paperclipai env-lab down
 ```
 
+SSH Git workspace transfers use temporary-file templates with trailing `XXXXXX`,
+so bundle import and export do not require GNU `mktemp` suffix support.
+
 All client commands support:
 
 - `--data-dir <path>`
