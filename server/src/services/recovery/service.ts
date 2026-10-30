@@ -195,6 +195,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 5 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+const LEGACY_ORPHAN_REAPER_HANDOFF_MS = 10 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -6193,6 +6194,19 @@ export function recoveryService(
 
     // Neither authority applies. The run is still live, so leave it alone.
     if (!issueTerminalStatus && !processGone) {
+      return { terminalized: false, status: run.status };
+    }
+
+    const controllerLeaseExpiresAtMs =
+      run.controllerLeaseExpiresAt?.getTime() ?? null;
+    if (
+      !issueTerminalStatus &&
+      processGone &&
+      run.runtimeMode === "legacy" &&
+      controllerLeaseExpiresAtMs !== null &&
+      Date.now() - Math.max(run.updatedAt.getTime(), controllerLeaseExpiresAtMs) <
+        LEGACY_ORPHAN_REAPER_HANDOFF_MS
+    ) {
       return { terminalized: false, status: run.status };
     }
 
