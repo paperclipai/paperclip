@@ -52,7 +52,7 @@ function declineReplyEvidence(input: ConnectionGuidanceDeclineInput) {
   const native = input.nativeFinalReply;
   const nativeAttributed = input.caseId === "service-decline" && validDecision && native?.source === "native-turn"
     && native.agentId === input.leadAgentId && native.observedAfterReload && native.visible && native.settled && native.nativeFinal
-    && native.finalEvent?.body === (native.sourceBody ?? native.body) && taskReplyContentMatches(native, native.finalEvent.body)
+    && typeof native.sourceBody === "string" && native.finalEvent?.body === native.sourceBody && taskReplyContentMatches(native, native.finalEvent.body)
     && (native.anchor === `${native.runId}:turn` || native.anchor?.startsWith(`${native.runId}:turn:`) === true)
     && input.runs.some(run => run.id === native.runId && run.agentId === input.leadAgentId && run.nativeIssueId === input.issueId
       && run.runtimeMode === "native" && run.status === "succeeded" && Date.parse(run.startedAt ?? "") >= resolvedAt

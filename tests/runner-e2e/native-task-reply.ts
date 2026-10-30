@@ -5,9 +5,9 @@ import { taskReplyContentMatches, type ReplyContentPart } from "./task-reply-con
 type Row = Record<string, any>;
 export interface TaskReplyObservation {
   body: string; anchor: string | null; settled: boolean; nativeFinal: boolean; visible: boolean;
-  content?: ReplyContentPart[]; origin?: string; pageUrl?: string;
+  content?: ReplyContentPart[]; origin?: string; pageUrl?: string; knownCompanyPrefixes?: string[];
 }
-export type BoundTaskFinalReply = Omit<Awaited<ReturnType<typeof readBoundTaskFinalReply>>, "sourceBody"> & { sourceBody?: string };
+export type BoundTaskFinalReply = Awaited<ReturnType<typeof readBoundTaskFinalReply>>;
 
 /** Native task replies can render from a saved turn before a completion comment
  * is projected. Respect an explicit presentation decision when one exists. */
@@ -85,14 +85,14 @@ export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElemen
 /** Observe the real task thread after a fresh load, rather than a finish summary
  * or a provider's claimed result. The caller separately validates task/run scope. */
 export async function readBoundTaskFinalReply(input: {
-  page: Page; runId: string; agentId: string; expectedText?: string; deadlineAt: number;
+  page: Page; runId: string; agentId: string; expectedText?: string; deadlineAt: number; knownCompanyPrefixes: string[];
   load(): Promise<{ run: Row; comments: Row[]; events: Row[] }>;
 }) {
   await input.page.reload();
   const replies = input.page.getByTestId("task-chat-thread").getByTestId("task-chat-agent-bubble");
   const observe = () => replies.evaluateAll(observeTaskReplyElements);
   const read = async () => {
-    const state = await input.load(), all = await observe();
+    const state = await input.load(), all = (await observe()).map(row => ({ ...row, knownCompanyPrefixes: input.knownCompanyPrefixes }));
     const match = state.run.id === input.runId ? uniqueBoundTaskReply(all, state.run, input.agentId, state.comments, input.expectedText, state.events) : null;
     return { ...state, match };
   };

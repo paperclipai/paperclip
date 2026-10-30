@@ -9,8 +9,17 @@ it("parses CommonMark escapes, entities, inline formatting and paragraph boundar
 });
 
 it("rejects unsupported Markdown rather than stripping unknown or invisible content", () => {
-  for (const source of ["Visible <!-- hidden -->", "Visible ![image](https://fixture.test/image.png)", "~~Visible~~"])
+  for (const source of ["Visible <!-- hidden -->", "Visible ![image](https://fixture.test/image.png)", "|Column|\n|---|\n|Visible|"])
     expect(taskReplyContentMatches({ body: "Visible" }, source)).toBe(false);
+});
+
+it("uses production GFM autolinks and issue linking with the viewer's known companies", () => {
+  const context = { pageUrl: "https://fixture.test/QA/issues/QA-1", knownCompanyPrefixes: ["QA"] };
+  expect(taskReplyContentMatches({ ...context, body: "Depends on QA-123.", content: [{ text: "Depends on " },
+    { href: "/QA/issues/QA-123", label: "QA-123", decorated: true }, { text: "." }] }, "Depends on QA-123.")).toBe(true);
+  expect(taskReplyContentMatches({ ...context, body: "See https://example.com/", content: [{ text: "See " },
+    { href: "https://example.com/", label: "https://example.com/" }] }, "See https://example.com/")).toBe(true);
+  expect(taskReplyContentMatches({ ...context, body: "Depends on TREE-604." }, "Depends on TREE-604.")).toBe(true);
 });
 
 it("uses the production company prefix and current task URL without accepting a changed target", () => {

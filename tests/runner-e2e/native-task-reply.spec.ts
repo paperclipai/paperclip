@@ -20,6 +20,23 @@ test("the QA tsx loader produces a self-contained browser callback", async ({ pa
   expect(observations[0].content.some((part: any) => part.label === "QA-123" && part.decorated)).toBe(true);
 });
 
+for (const [source, html, passes] of [
+  ["Depends on QA-123.", "Depends on <a data-mention-kind='issue' href='/QA/issues/QA-123'>QA-123</a>.", true],
+  ["See https://example.com/", "See <a href='https://example.com/'>https://example.com/</a>", true],
+  ["Depends on TREE-604.", "Depends on TREE-604.", true],
+  ["Depends on QA-123.", "Depends on <a data-mention-kind='issue' href='/QA/issues/QA-999'>QA-123</a>.", false],
+  ["See https://example.com/", "See <a href='https://other.test/'>https://example.com/</a>", false],
+] as const) test(`reloaded auto-linked content: ${source} (${passes})`, async ({ page }) => {
+  const url = "https://fixture.test/QA/issues/QA-1";
+  await page.route(url, route => route.fulfill({ contentType: "text/html", body:
+    `<div data-testid='task-chat-thread'><div data-thread-anchor='selected'><div data-testid='task-chat-agent-bubble'>${html}</div></div></div>` }));
+  await page.goto(url);
+  const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", knownCompanyPrefixes: ["QA"], deadlineAt: Date.now() + (passes ? 3000 : 300),
+    load: async () => ({ run, comments: [{ ...comment, body: source }], events: [] }) });
+  if (passes) expect((await result).sourceBody).toBe(source);
+  else await expect(result).rejects.toThrow();
+});
+
 for (const [name, content, passes] of [
   ["decorated document link and bold text", rendered, true],
   ["ordinary link with its source label", rendered.replace(" data-mention-kind='issue'", "").replace(">QA-123</a>", ">Connection outcome</a>"), true],
@@ -32,7 +49,7 @@ for (const [name, content, passes] of [
   await page.route("https://fixture.test/QA/issues/QA-123", route => route.fulfill({ contentType: "text/html", body:
     `<div data-testid='task-chat-thread'><div data-thread-anchor='selected'><div data-testid='task-chat-agent-bubble'>${content}</div></div></div>` }));
   await page.goto("https://fixture.test/QA/issues/QA-123");
-  const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", deadlineAt: Date.now() + (passes ? 3000 : 300),
+  const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", knownCompanyPrefixes: ["QA"], deadlineAt: Date.now() + (passes ? 3000 : 300),
     load: async () => ({ run, comments: [comment], events: [] }) });
   if (passes) {
     const receipt = await result;
@@ -55,7 +72,7 @@ for (const [sourceHref, renderedHref, passes] of [
   await page.route(url, route => route.fulfill({ contentType: "text/html", body:
     `<div data-testid='task-chat-thread'><div data-thread-anchor='selected'><div data-testid='task-chat-agent-bubble'>Read <a href='${renderedHref}'>Outcome</a></div></div></div>` }));
   await page.goto(url);
-  const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", deadlineAt: Date.now() + (passes ? 3000 : 300),
+  const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", knownCompanyPrefixes: ["QA"], deadlineAt: Date.now() + (passes ? 3000 : 300),
     load: async () => ({ run, comments: [{ ...comment, body: `Read [Outcome](${sourceHref})` }], events: [] }) });
   if (passes) expect((await result).pageUrl).toBe(url);
   else await expect(result).rejects.toThrow();
