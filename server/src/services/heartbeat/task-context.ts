@@ -297,11 +297,13 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
+    includePlanBody: false,
   }) + chatCompletionInstruction(context);
   const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
+    includePlanBody: false,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
   if (issueRef) {

@@ -162,6 +162,36 @@ describe("buildPaperclipTaskMarkdown", () => {
       taskPlan,
     })).not.toContain("ACCEPTANCE_PHRASE");
   });
+  it("replaces repeated plan text with exact revision evidence only in the compact variant", () => {
+    const taskPlan = { documentId: "document", revisionId: "revision", revisionNumber: 7,
+      body: "ACCEPTANCE_PHRASE and detailed requirements.\n".repeat(400) };
+    for (const workMode of ["standard", "planning", "ask"]) {
+      const input = { issue: { id: "task", identifier: "TASK-1", title: "Work", workMode }, taskPlan };
+      const full = buildPaperclipTaskMarkdown(input);
+      const compact = buildPaperclipTaskMarkdown({ ...input, includeDescription: false, includePlanBody: false });
+      expect(full).toContain(taskPlan.body.trim());
+      expect(compact).not.toContain("ACCEPTANCE_PHRASE");
+      expect(compact).toContain("revision 7 (revision)");
+      expect(compact).toContain("/api/issues/task/documents/plan");
+      expect(compact).toContain("If this exact revision is not already in the resumed session");
+      expect(compact).toContain("Follow the current work mode and any required approvals");
+      expect(compact.length).toBeLessThan(full.length / 3);
+      if (workMode === "planning") expect(compact).toContain("Make the plan only");
+      if (workMode === "ask") expect(compact).toContain("Answer the question directly");
+      const changed = buildPaperclipTaskMarkdown({ ...input, taskPlan: { ...taskPlan, revisionId: "new-revision", body: "Changed scope" }, includePlanBody: false });
+      expect(changed).toContain("new-revision");
+      expect(changed).not.toContain("revision 7 (revision)");
+    }
+  });
+
+  it("preserves rejected-plan restrictions when plan text is compacted", () => {
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "task", identifier: null, title: "Work", workMode: "planning" },
+      taskPlan: { documentId: "doc", revisionId: "rev", revisionNumber: 1, body: "Do the work" },
+      planReview: { status: "rejected", reason: "Revise the design first" }, includePlanBody: false });
+    expect(prompt).toContain("The user rejected the plan");
+    expect(prompt).toContain("This is not approval to implement");
+  });
+
   it("hands an accepted chat plan to assigned project tasks using the approved revision", () => {
     const prompt = buildPaperclipTaskMarkdown({
       issue: { id: "chat", identifier: null, title: "Agent chat", workMode: "planning", conversationAgentId: "agent", description: null },

@@ -70,6 +70,7 @@ export function buildPaperclipTaskMarkdown(input: {
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
+  includePlanBody?: boolean;
   // Current wake events are rendered by the structured wake prompt on
   // adapter lanes. Keep the legacy default for standalone callers.
   includeWakeComments?: boolean;
@@ -305,7 +306,9 @@ export function buildPaperclipTaskMarkdown(input: {
         "",
         `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
-        fenceTaskText(input.taskPlan.body.trim()),
+        ...(input.includePlanBody === false
+          ? [`If this exact revision is not already in the resumed session, read it before implementation: GET /api/issues/${encodeURIComponent(issue.id)}/documents/plan (or its /revisions list for a retained revision). Verify the document and revision; never substitute a later draft or infer approval.`]
+          : [fenceTaskText(input.taskPlan.body.trim())]),
       );
     }
   }
