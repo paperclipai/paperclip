@@ -72,6 +72,7 @@ Common optional fields:
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs) or `cilium` (CiliumNetworkPolicy + FQDN allow-list). |
 | `runtimeClassName` | (none) | e.g. `kata-fc` for Firecracker-backed microVMs. Cluster must have the RuntimeClass installed. |
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
+| `podAntiAffinity` | (none) | Soft pod anti-affinity (`sandbox-cr` backend only). `{ enabled: boolean, topologyKey?: string }`. Spreads agent pods across nodes within the same tenant namespace. Default topologyKey is `kubernetes.io/hostname`. |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
