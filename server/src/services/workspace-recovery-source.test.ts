@@ -89,7 +89,9 @@ describe("workspace source verification diagnostics", () => {
       activityService(db).runsForIssue(f.companyId, f.issueId),
     ]);
     expect(runs?.resultJson?.opaque).toBeUndefined();
-    expect({ run: runs?.resultJson?.workspaceRestoreFailure, activity: activity[0].resultJson?.workspaceRestoreFailure })
+    const activityResult = activity[0].resultJson;
+    expect({ run: runs?.resultJson?.workspaceRestoreFailure,
+      activity: activityResult && "workspaceRestoreFailure" in activityResult ? activityResult.workspaceRestoreFailure : undefined })
       .toEqual({ run: code, activity: code });
   });
 
