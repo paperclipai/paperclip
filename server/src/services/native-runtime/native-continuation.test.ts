@@ -40,7 +40,7 @@ describe("native continuation event projection", () => {
     expect(JSON.parse(text).taskChanges).toEqual({ description: issue.description });
     expect(text).toContain("CHILD_RESULT");
   });
-  it.each([{ fallbackFetchNeeded: true }, { recovery: { cause: "interrupted" } }, { externalChatExecutionBound: true }, { reason: "issue_assigned" }])("retains bootstrap framing for special wakes: %j", (extra) => {
+  it.each([{ fallbackFetchNeeded: true }, { recovery: { cause: "interrupted" } }, { externalChatExecutionBound: true }, { reason: "issue_assigned" }, { slackFinalResponseUndelivered: true }])("retains bootstrap framing for special wakes: %j", (extra) => {
     expect(build({ ...wake, ...extra })).toBeNull();
   });
 });

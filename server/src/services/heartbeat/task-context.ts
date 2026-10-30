@@ -5,6 +5,7 @@ import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-uti
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
 import { chatCompletionInstruction } from "../chat-completion-delivery.js";
+import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { getConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { getIssueContinuationSummaryDocument } from "../issue-continuation-summary.js";
@@ -120,6 +121,16 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
         })
       : null;
   context.executionContinuation = executionContinuation;
+  const slackFinalResponseUndelivered =
+    issueContext?.chatAssignedAgentId === agent.id &&
+    issueContext.chatProvider === "slack" &&
+    (await resolveChatRunPresentationAuthorizationReason(db, {
+      companyId: agent.companyId,
+      issueId: issueContext.id,
+      runId: run.id,
+    })) === "internal_agent_write"
+      ? { externalThreadId: issueContext.chatExternalThreadId }
+      : null;
   const paperclipWakePayload = await buildPaperclipWakePayload({
     db,
     companyId: agent.companyId,
@@ -145,6 +156,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     simplifiedEnglishInteractions:
       experimentalInstanceSettings.enableSimplifiedEnglishInteractions ===
       true,
+    slackFinalResponseUndelivered: slackFinalResponseUndelivered !== null,
   });
   if (paperclipWakePayload) {
     context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
@@ -236,6 +248,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     slackCommand: issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatSlackCommand
       : null,
+    slackFinalResponseUndelivered,
     nativeRunner: agent.adapterType === "paperclip_runner",
     interaction: {
       kind: readNonEmptyString(context.interactionKind),
