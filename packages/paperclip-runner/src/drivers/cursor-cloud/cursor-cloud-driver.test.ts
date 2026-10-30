@@ -59,6 +59,16 @@ class Peer {
   }
 }
 
+function maintainedMutations(peer: Peer, maxResponseBytes?: number) {
+  const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    const result = new URL(String(url)).pathname === "/v1/agents" ? await peer.createAgent(body) : await peer.createRun(peer.native!.agentId, body);
+    return new Response(JSON.stringify(result), { headers: { "content-type": "application/json" } });
+  });
+  const client = new CursorCloudClient({ apiKey: "private-cursor-key", fetch, maxResponseBytes });
+  return { fetch, client: { ...peer, createAgent: client.createAgent.bind(client), createRun: client.createRun.bind(client), streamRun: peer.streamRun.bind(peer) } };
+}
+
 async function fixture(peer = new Peer(), extra: Partial<CursorCloudDriverOptions> = {}) {
   const root = await mkdtemp("/tmp/cc-"); roots.push(root);
   const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText", text: "accepted" }] }));
@@ -876,11 +886,71 @@ describe("Cursor Cloud native driver", () => {
     expect(f.events.some(event => event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false)).toBe(true);
   });
 
+  it.each(["fresh", "follow-up"] as const)("settles an encoded request rejected before fetch for a %s turn", async phase => {
+    const peer = new Peer();
+    const { client, fetch } = maintainedMutations(peer);
+    const f = await fixture(peer, { client });
+    if (phase === "follow-up") {
+      await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
+      await peer.created.promise;
+      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+    }
+    const before = { fetch: fetch.mock.calls.length, getAgent: peer.getAgent.mock.calls.length, getRun: peer.getRun.mock.calls.length, cancel: peer.cancelRun.mock.calls.length };
+    const text = "\u0001".repeat(400_000);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1_048_576);
+    expect(Buffer.byteLength(JSON.stringify({ prompt: { text } }))).toBeGreaterThan(2_097_152);
+    const turn = await f.session.startTurn({ message: { role: "user", text } });
+    await waitFor(() => f.events.some(event => event.turnId === turn.turnId &&
+      (event.eventType === "turn.failed" || event.payload.code === "cursor_cloud_remote_state_unknown")));
+    expect(fetch).toHaveBeenCalledTimes(before.fetch);
+    expect(await f.session.read()).toMatchObject({ phase: "idle", providerStatus: "REJECTED" });
+    expect(f.events.some(event => event.turnId === turn.turnId && event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false)).toBe(true);
+    await f.session.interrupt!();
+    expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
+    expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
+    expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
+    const snapshot = await f.session.snapshot(); await f.session.detachControllerForRestart(); await f.pump;
+    const recovered = await new CursorCloudDriver(f.options).recoverSession(snapshot);
+    expect(recovered.recovered).toBe(true);
+    const restored = recovered.session!; sessions.push(restored);
+    expect(await restored.read()).toMatchObject({ phase: "idle", providerStatus: "REJECTED" });
+    await restored.attachRun!({ runId: "paperclip-after-size-rejection" });
+    distinctFollowup(peer); peer.release = deferred();
+    const next = await restored.startTurn({ message: { role: "user", text: "A smaller admitted task" } });
+    await vi.waitFor(async () => expect(await restored.read()).toMatchObject({ phase: "running", turnId: next.turnId }));
+    expect(fetch).toHaveBeenCalledTimes(before.fetch + 1);
+    await restored.interrupt!();
+  });
+
+  it.each(["fresh", "follow-up"] as const)("keeps a %s oversized response fenced after the mutation was sent", async phase => {
+    const peer = new Peer();
+    const mutations = maintainedMutations(peer, 1024);
+    const f = await fixture(peer, { client: mutations.client });
+    if (phase === "follow-up") {
+      await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
+      await peer.created.promise; await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+    }
+    const before = mutations.fetch.mock.calls.length;
+    mutations.fetch.mockImplementationOnce(async (url, init) => {
+      const input = JSON.parse(String(init?.body));
+      const accepted = new URL(String(url)).pathname === "/v1/agents" ? await peer.createAgent(input) : await peer.createRun(peer.native!.agentId, input);
+      return new Response(JSON.stringify({ ...accepted, padding: "x".repeat(2048) }), { headers: { "content-type": "application/json" } });
+    });
+    const turn = await f.session.startTurn({ message: { role: "user", text: "Remote work may have started" } });
+    await waitFor(() => f.events.some(event => event.turnId === turn.turnId && event.payload.code === "cursor_cloud_remote_state_unknown"));
+    expect(mutations.fetch).toHaveBeenCalledTimes(before + 1);
+    expect(await f.session.read()).toMatchObject({ phase: "creating" });
+    expect(f.events.some(event => event.turnId === turn.turnId && event.payload.remoteWorkAccepted === false)).toBe(false);
+    await expect(f.session.startTurn({ message: { role: "user", text: "Do not replace uncertain work" } })).rejects.toThrow("unresolved remote work");
+  });
+
   it.each((["fresh", "follow-up"] as const).flatMap(phase =>
-    (["stop_write", "rejection_write"] as const).map(overlap => ({ phase, overlap }))))(
-    "commits a rejected $phase create across $overlap before Stop and the next turn", async ({ phase, overlap }) => {
+    (["stop_write", "rejection_write"] as const).flatMap(overlap =>
+      (["http_422", "unsent_payload"] as const).map(rejection => ({ phase, overlap, rejection }))))) (
+    "commits a rejected $phase create across $overlap before Stop and the next turn ($rejection)", async ({ phase, overlap, rejection }) => {
       const peer = new Peer();
-      const f = await fixture(peer);
+      const mutations = rejection === "unsent_payload" ? maintainedMutations(peer) : null;
+      const f = await fixture(peer, mutations ? { client: mutations.client } : {});
       if (phase === "follow-up") {
         await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
         await peer.created.promise;
@@ -889,10 +959,19 @@ describe("Cursor Cloud native driver", () => {
       }
       const entered = deferred(), rejectCreate = deferred(), stopHeld = deferred(), releaseStop = deferred();
       const rejectionHeld = deferred(), releaseRejection = deferred();
-      (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
-        entered.resolve(); await rejectCreate.promise;
-        throw new CursorCloudClientError("http_error", { status: 422 });
-      });
+      if (!mutations) {
+        (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
+          entered.resolve(); await rejectCreate.promise;
+          throw new CursorCloudClientError("http_error", { status: 422 });
+        });
+      } else if (phase === "fresh") {
+        const create = mutations.client.createAgent;
+        mutations.client.createAgent = async (input, options) => { entered.resolve(); await rejectCreate.promise; return create(input, options); };
+      } else {
+        const create = mutations.client.createRun;
+        mutations.client.createRun = async (id, input, options) => { entered.resolve(); await rejectCreate.promise; return create(id, input, options); };
+      }
+      const fetchesBefore = mutations?.fetch.mock.calls.length;
       const before = { getAgent: peer.getAgent.mock.calls.length, getRun: peer.getRun.mock.calls.length, cancel: peer.cancelRun.mock.calls.length };
       const originalWrite = CursorCloudCheckpointStore.prototype.write;
       let pausedStop = false, pausedRejection = false;
@@ -913,7 +992,7 @@ describe("Cursor Cloud native driver", () => {
       const stop = () => stopped = f.session.interrupt!().then(() => ({ error: null }), error => ({ error }))
         .finally(() => { stopDone = true; });
       try {
-        const turn = await f.session.startTurn({ message: { role: "user", text: "Rejected task" } });
+        const turn = await f.session.startTurn({ message: { role: "user", text: rejection === "unsent_payload" ? "\u0001".repeat(400_000) : "Rejected task" } });
         await entered.promise;
         if (overlap === "stop_write") {
           stop(); await stopHeld.promise;
@@ -937,6 +1016,7 @@ describe("Cursor Cloud native driver", () => {
         expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
         expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
         expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
+        if (mutations) expect(mutations.fetch).toHaveBeenCalledTimes(fetchesBefore!);
         const snapshot = await f.session.snapshot();
         await f.session.detachControllerForRestart(); await f.pump;
         const recovered = await new CursorCloudDriver(f.options).recoverSession(snapshot);
@@ -1007,14 +1087,23 @@ describe("Cursor Cloud native driver", () => {
     } finally { oldReleased.resolve(); release.resolve(); await snapshot; write.mockRestore(); }
   });
 
-  it.each(["fresh", "follow-up"] as const)("keeps a rejected %s create fenced when its settlement cannot commit", async phase => {
-    const peer = new Peer(), f = await fixture(peer);
+  it.each((["fresh", "follow-up"] as const).flatMap(phase =>
+    (["http_422", "unsent_payload"] as const).map(rejection => ({ phase, rejection })),
+  ))("keeps a rejected $phase create fenced when its settlement cannot commit ($rejection)", async ({ phase, rejection }) => {
+    const peer = new Peer(), mutations = rejection === "unsent_payload" ? maintainedMutations(peer) : null;
+    const f = await fixture(peer, mutations ? { client: mutations.client } : {});
     if (phase === "follow-up") {
       await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } }); await peer.created.promise;
       await f.session.interrupt!(); await acknowledgeTerminal(f.session);
     }
     const entered = deferred(), rejected = deferred();
-    (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
+    if (mutations) {
+      const launch = phase === "fresh" ? mutations.client.createAgent : mutations.client.createRun;
+      vi.spyOn(mutations.client, phase === "fresh" ? "createAgent" : "createRun").mockImplementationOnce(async (...args: unknown[]) => {
+        entered.resolve(); await rejected.promise;
+        return (launch as (...values: unknown[]) => Promise<never>)(...args);
+      });
+    } else (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
       entered.resolve(); await rejected.promise; throw new CursorCloudClientError("http_error", { status: 422 });
     });
     peer.getAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 404 }));
@@ -1024,10 +1113,12 @@ describe("Cursor Cloud native driver", () => {
         ? Promise.reject(new Error("injected rejection checkpoint failure")) : originalWrite.call(this, value);
     });
     try {
-      const turn = await f.session.startTurn({ message: { role: "user", text: "Rejected task" } }); await entered.promise;
+      const before = mutations?.fetch.mock.calls.length;
+      const turn = await f.session.startTurn({ message: { role: "user", text: mutations ? "\u0001".repeat(400_000) : "Rejected task" } }); await entered.promise;
       const stopped = f.session.interrupt!().then(() => null, error => error);
       rejected.resolve();
       expect(await stopped).toMatchObject({ message: expect.stringContaining("remains fenced") });
+      if (mutations) expect(mutations.fetch).toHaveBeenCalledTimes(before!);
       expect(await f.session.read()).toMatchObject({ phase: "stopping", turnId: turn.turnId });
       await expect(f.session.startTurn({ message: { role: "user", text: "Cannot replace unresolved custody" } })).rejects.toThrow("unresolved remote work");
       const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);

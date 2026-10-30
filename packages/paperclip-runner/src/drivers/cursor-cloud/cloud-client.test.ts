@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CursorCloudClient,
   CursorCloudClientError,
+  isCursorCloudUnsentRequestError,
   isCursorCloudRunActive,
 } from "./cloud-client.js";
 
@@ -155,7 +156,9 @@ describe("Cursor Cloud v1 HTTP client", () => {
     expect(externalHeaders).toEqual([{}]);
     expect(calls[0]?.authorization).toBe(`Bearer ${API_KEY}`);
     expect(calls[1]?.authorization).toBeUndefined();
-    await expect(client.downloadArtifact(AGENT, "proof.bin", { maxBytes: 4 })).rejects.toMatchObject({ code: "payload_too_large" });
+    const downloadError = await client.downloadArtifact(AGENT, "proof.bin", { maxBytes: 4 }).catch(error => error);
+    expect(downloadError).toMatchObject({ code: "payload_too_large" });
+    expect(isCursorCloudUnsentRequestError(downloadError)).toBe(false);
     const downloads = calls.filter(call => call.path === "/download").length;
     host = "cloud-agent-artifacts.s3.us-east-1.amazonaws.com";
     await expect(client.downloadArtifact(AGENT, "proof.bin")).rejects.toMatchObject({ code: "invalid_response" });
@@ -186,9 +189,14 @@ describe("Cursor Cloud v1 HTTP client", () => {
     let calls = 0;
     const baseUrl = await serve((_request, response) => { calls += 1; json(response, { items: ["x".repeat(1_024)] }); });
     const client = new CursorCloudClient({ apiKey: API_KEY, baseUrl, maxRequestBytes: 100, maxResponseBytes: 100 });
-    await expect(client.createAgent({ prompt: { text: "x".repeat(200) } })).rejects.toMatchObject({ code: "payload_too_large" });
+    const requestError = await client.createAgent({ prompt: { text: "x".repeat(200) } }).catch(error => error);
+    expect(requestError).toMatchObject({ code: "payload_too_large" });
+    expect(isCursorCloudUnsentRequestError(requestError)).toBe(true);
     expect(calls).toBe(0);
-    await expect(client.listModels()).rejects.toMatchObject({ code: "payload_too_large" });
+    const responseError = await client.listModels().catch(error => error);
+    expect(responseError).toMatchObject({ code: "payload_too_large" });
+    expect(isCursorCloudUnsentRequestError(responseError)).toBe(false);
+    expect(isCursorCloudUnsentRequestError(new CursorCloudClientError("payload_too_large"))).toBe(false);
     expect(calls).toBe(1);
   });
 
@@ -274,7 +282,9 @@ describe("Cursor Cloud SSE wire protocol", () => {
       else response.flushHeaders();
     });
     const client = new CursorCloudClient({ apiKey: API_KEY, baseUrl, maxSseFrameBytes: 100 });
-    await expect(collect(client.streamRun(AGENT, RUN))).rejects.toMatchObject({ code: "payload_too_large" });
+    const streamError = await collect(client.streamRun(AGENT, RUN)).catch(error => error);
+    expect(streamError).toMatchObject({ code: "payload_too_large" });
+    expect(isCursorCloudUnsentRequestError(streamError)).toBe(false);
     const idleClient = new CursorCloudClient({ apiKey: API_KEY, baseUrl, streamIdleTimeoutMs: 35 });
     await expect(collect(idleClient.streamRun(AGENT, RUN))).rejects.toMatchObject({ code: "timeout" });
   });
