@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,6 +89,18 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.execute(sql`create or replace function reject_fixture_write() returns trigger language plpgsql as $$ begin raise exception 'Fixture database write unavailable'; end $$`);
     await db.execute(sql.raw(`create trigger ${trigger} before insert on ${table} for each row execute function reject_fixture_write()`));
   }
+  it("can reapply the creation migration without losing a committed intent", async () => {
+    loseReply = true; await expect(acquire()).rejects.toThrow("Lost provider reply");
+    const [before] = await db.select().from(sandboxCreationOperations);
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0417_vengeful_loners.sql", import.meta.url), "utf8");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      for (const statement of migration.split("--> statement-breakpoint").map(value => value.trim()).filter(Boolean)) {
+        await db.execute(sql.raw(statement));
+      }
+    }
+    expect(await db.select().from(sandboxCreationOperations)).toEqual([before]);
+    expect(creates).toBe(1);
+  });
   it("fails before the external action when the durable admission write fails", async () => {
     await rejectWrites("sandbox_creation_operations", "reject_fixture_creation");
     await expect(acquire()).rejects.toThrow();

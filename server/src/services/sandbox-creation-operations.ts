@@ -1,7 +1,7 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, lte } from "drizzle-orm";
-import { environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
+import { environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS } from "./environment-cleanup-state.js";
