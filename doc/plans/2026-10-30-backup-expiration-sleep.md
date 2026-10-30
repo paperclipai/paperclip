@@ -55,3 +55,9 @@ Acceptance uses isolated real PostgreSQL for service writes, transaction signals
 safety checks, resume pointer deletion, and restart reconstruction. A temporary
 filesystem is the controlled storage boundary. These tests do not claim cloud
 object storage behavior, deployed sleep, or fleet savings.
+
+Review validation also covers expired-only directories whose listing fails with
+EIO or EACCES. Only ENOENT means absent; other listing failures retain retry debt.
+Both controls failed before the fix; all 104 expiration tests pass afterward.
+Executor release tests assert both the preserved broad cleanup scope and the
+precise source identity used for backup invalidation.

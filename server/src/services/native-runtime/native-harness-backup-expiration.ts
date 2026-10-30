@@ -352,7 +352,7 @@ export function nativeHarnessBackupExpirationService(
 
   async function settleLeftovers(backupRoot: string) {
     const current = path.join(backupRoot, "current");
-    for (const name of await fs.readdir(backupRoot).catch(() => [] as string[])) {
+    for (const name of (await fs.readdir(backupRoot).catch(missingPath)) ?? []) {
       const target = path.join(backupRoot, name);
       if (name.startsWith(RETIRING_PREFIX) && UUID_PATTERN.test(name.slice(RETIRING_PREFIX.length))) {
         if (!(await isRealDirectory(current))) await fs.rename(target, current);
