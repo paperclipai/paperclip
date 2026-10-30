@@ -1176,6 +1176,15 @@ export interface IssueCommentMetadataSection {
   rows: IssueCommentMetadataRow[];
 }
 
+/**
+ * Attribution stamped on comment-only writes by a non-assignee agent. Never an
+ * authorization input: the comment gate decides access before this is derived.
+ */
+export interface IssueCommentCrossAssigneeContext {
+  trigger: "linked_checkout" | "mention" | "visible_issue";
+  viaIssueId?: string | null;
+}
+
 export interface IssueCommentMetadata {
   version: 1;
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
@@ -1194,6 +1203,7 @@ export interface IssueCommentMetadata {
     reason: string;
     assigneeAgentId: string | null;
   };
+  crossAssignee?: IssueCommentCrossAssigneeContext | null;
   sections: IssueCommentMetadataSection[];
 }
 
