@@ -12,6 +12,10 @@ packages:
   - server
   - ui
   - cli
+  # CAN-SPAM opt-out origin + global suppression list (K-20062). Zero
+  # dependencies, but it must be a workspace importer or nothing runs its
+  # tests in CI and the compliance control can silently rot.
+  - marketing/can-spam
 
 # Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
 # versions read patch configuration only from the workspace manifest.
