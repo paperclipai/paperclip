@@ -23,7 +23,7 @@ import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
-import { coordinatorAttentionQueryKey, pendingDecisionTaskIds } from "@/lib/coordinator-attention";
+import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
@@ -86,11 +86,11 @@ export function CoordinatorTasks() {
     getNextPageParam: (last, _pages, offset) => last.hasNextPage ? offset + pageSize : undefined,
     enabled: !!companyId && !needsAttention,
   });
-  const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!),
-    queryFn: () => attentionApi.list(companyId!, { all: true }), enabled: !!companyId && needsAttention });
+  const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!),
+    queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && needsAttention });
   // Resolve every pending task in bounded index batches, including tasks outside
   // the first list page. Keep full task enrichment out of the collection read.
-  const attentionIds = needsAttention ? [...pendingDecisionTaskIds(attention.data?.items ?? [])] : [];
+  const attentionIds = needsAttention ? attention.data?.taskIds ?? [] : [];
   const attentionBatches = Array.from({ length: Math.ceil(attentionIds.length / 100) }, (_, index) => attentionIds.slice(index * 100, (index + 1) * 100));
   const attentionTasks = useQueries({ queries: attentionBatches.map(ids => ({
     queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, originKind, ids],
@@ -173,7 +173,7 @@ export function CoordinatorTasks() {
     }, { replace: true });
   };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: coordinatorAttentionQueryKey(companyId!) }); },
+    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
   });
   const error = (needsAttention ? attention.error ?? attentionTasks.find(task => task.error)?.error : tasks.error)
     ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error

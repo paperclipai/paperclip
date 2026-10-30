@@ -11,6 +11,7 @@ import { TaskListColumnHeader, TaskListColumnSettings, TaskListViewport } from "
 import { TaskRowGroup } from "./TaskRowGroup";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { useTaskRowBudget } from "../hooks/useTaskRowBudget";
 
 export type TaskListItem = {
   issue: Issue;
@@ -71,11 +72,20 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     }
   };
   const { roots, childMap } = buildIssueTree(sortTaskListItems(items.map(item => item.issue), sort ?? defaultTaskListSort, sortValue));
+  const rowIds: string[] = [];
+  const collectRows = (issue: Issue) => {
+    rowIds.push(issue.id);
+    if (!collapsed.has(issue.id)) for (const child of childMap.get(issue.id) ?? []) collectRows(child);
+  };
+  roots.forEach(collectRows);
+  const { limit, hasMore, sentinel, loadMore } = useTaskRowBudget(rowIds);
+  const renderedIds = new Set(rowIds.slice(0, limit));
   const updateColumns = (next: readonly TaskListColumnId[]) => {
     setColumns(next);
     if (sort && !next.includes(sort.column)) setSort(undefined);
   };
   const renderBranch = (issue: Issue, depth: number): ReactNode => {
+    if (!renderedIds.has(issue.id)) return null;
     const item = visibleById.get(issue.id)!;
     const children = childMap.get(issue.id) ?? [];
     const expanded = !collapsed.has(issue.id);
@@ -118,14 +128,19 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
       <TaskListColumnHeader sort={sort} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
       {items.length === 0 ? emptyState : (
         <div aria-label={`${density} task list`}>
-          {[...groups].map(([label, groupRoots]) => (
+          {[...groups].map(([label, groupRoots]) => groupRoots.some(issue => renderedIds.has(issue.id)) ? (
             <Fragment key={label}>
               {label ? <IssueGroupHeader label={label} className="task-list-group-heading" trailing={<span className="text-xs text-muted-foreground">{groupRoots.length}</span>} /> : null}
-              {groupRoots.map(issue => <TaskRowGroup key={issue.id} role="rowgroup" aria-label={`${issue.title} task group`}>{renderBranch(issue, 0)}</TaskRowGroup>)}
+              {groupRoots.filter(issue => renderedIds.has(issue.id)).map(issue => <TaskRowGroup key={issue.id} role="rowgroup" aria-label={`${issue.title} task group`}
+                data-density={density} className={childMap.get(issue.id)?.length ? undefined : "task-row-deferred"}>{renderBranch(issue, 0)}</TaskRowGroup>)}
             </Fragment>
-          ))}
+          ) : null)}
         </div>
       )}
+      {hasMore ? <div ref={sentinel} className="flex items-center gap-3 py-2 text-sm text-muted-foreground">
+        <span>Rendering {Math.min(limit, rowIds.length)} of {rowIds.length} tasks</span>
+        <Button variant="outline" size="sm" onClick={loadMore}>Show more tasks</Button>
+      </div> : null}
     </TaskListViewport>
   );
 }

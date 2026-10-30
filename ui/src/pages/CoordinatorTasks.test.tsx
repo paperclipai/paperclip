@@ -3,9 +3,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionItem } from "@paperclipai/shared";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
-import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
 import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
@@ -14,7 +13,7 @@ import { queryKeys } from "@/lib/queryKeys";
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
-vi.mock("@/api/attention", () => ({ attentionApi: { list: mocks.attention } }));
+vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
@@ -41,11 +40,10 @@ vi.mock("@/components/TaskList", async importOriginal => ({
 describe("Coordinator tasks using the proposed table", () => {
   let root: Root, host: HTMLDivElement, client: QueryClient;
   const pending = createIssue({ id: "pending", companyId: "company", status: "todo", parentId: null, title: "Needs a channel answer" });
-  const decision = { subject: { kind: "interaction", id: "question" }, relatedIssue: { id: pending.id } } as AttentionItem;
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
     mocks.liveRuns.mockResolvedValue([]);
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, subject: { kind: "interaction", id: "approval" } }] });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id] });
     mocks.get.mockResolvedValue(pending);
     mocks.list.mockImplementation(async (_company, filters) => filters.q ? [] : filters.ids ? [pending] : [createIssue({ id: "unrelated-review", companyId: "company", status: "in_review", parentId: null })]);
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -122,7 +120,7 @@ describe("Coordinator tasks using the proposed table", () => {
 
   it("batches pending task reads instead of fetching one enriched detail per decision", async () => {
     const ids = Array.from({ length: 105 }, (_, index) => `task-${index}`);
-    mocks.attention.mockResolvedValue({ items: ids.map(id => ({ ...decision, relatedIssue: { id } })) });
+    mocks.attention.mockResolvedValue({ taskIds: ids });
     mocks.list.mockImplementation(async (_company, filters) => filters.ids.map((id: string) => createIssue({ id, companyId: "company", parentId: null })));
     await mount("/issues?view=needs_attention");
     expect(mocks.get).not.toHaveBeenCalled();
@@ -135,11 +133,11 @@ describe("Coordinator tasks using the proposed table", () => {
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["pending"]);
     expect(mocks.get).not.toHaveBeenCalled();
     expect(mocks.list).toHaveBeenCalledExactlyOnceWith("company", expect.objectContaining({ ids: [pending.id], projection: "index" }), expect.anything());
-    // The same cache update used by Needs You removes the task only after its
-    // last decision has resolved; no parallel status-based queue is involved.
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [decision] }));
+    // Canonical attention invalidation refreshes the complete task membership.
+    // No parallel status-based queue is involved.
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [pending.id] }));
     await vi.waitFor(() => expect(host.querySelectorAll("[data-task-id]")).toHaveLength(1));
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [] }));
     await vi.waitFor(() => expect(host.textContent).toContain("No tasks need a decision."));
   });
   it("filters live tasks and updates when a run finishes, excluding terminal tasks with stale runs", async () => {
@@ -262,7 +260,7 @@ describe("Coordinator tasks using the proposed table", () => {
   });
   it("retains workspace scope when switching to Needs attention", async () => {
     const other = createIssue({ id: "other-workspace", companyId: "company", parentId: null, executionWorkspaceId: "other-workspace" });
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: other.id } }] });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, other.id] });
     mocks.list.mockResolvedValue([pending, other]);
     await mount(`/issues?view=needs_attention&workspace=${pending.executionWorkspaceId}`);
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual([pending.id]);
@@ -271,7 +269,7 @@ describe("Coordinator tasks using the proposed table", () => {
   it("retains authoritative participant scope in Needs attention, including tasks assigned to another agent", async () => {
     const participated = { ...pending, assigneeAgentId: "another-assignee" };
     const unrelated = createIssue({ id: "unrelated-agent", companyId: "company", parentId: null });
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: unrelated.id } }] });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, unrelated.id] });
     mocks.list.mockImplementation(async (_company, filters) => filters.participantAgentId === "participant" && (!filters.ids || filters.ids[0] === pending.id) ? [participated] : []);
     await mount("/issues?participantAgentId=participant");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Needs attention")!.click());
