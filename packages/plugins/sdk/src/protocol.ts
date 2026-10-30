@@ -1716,7 +1716,11 @@ export interface WorkerToHostMethods {
 
   // HTTP
   "http.fetch": [
-    params: { url: string; init?: Record<string, unknown> },
+    params: {
+      url: string;
+      init?: Record<string, unknown>;
+      companyId?: string;
+    },
     result: { status: number; statusText: string; headers: Record<string, string>; body: string },
   ];
 

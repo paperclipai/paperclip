@@ -341,6 +341,12 @@ export interface PluginLocalFolderDeclaration {
   requiredFiles?: string[];
 }
 
+export interface PluginPrivateNetworkHostDeclaration {
+  hostKey: string;
+  displayName: string;
+  description?: string;
+}
+
 /**
  * Declares a normal Paperclip project that a plugin can provision and later
  * resolve by stable key within each company.
@@ -760,6 +766,7 @@ export interface PaperclipPluginManifestV1 {
   skills?: PluginManagedSkillDeclaration[];
   /** Trusted local folders this plugin can configure and access by stable key. */
   localFolders?: PluginLocalFolderDeclaration[];
+  privateNetworkHosts?: PluginPrivateNetworkHostDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
   /**

@@ -507,6 +507,49 @@ export function pluginRegistryService(db: Db) {
       });
     },
 
+    patchCompanySettingsEntry: async (
+      pluginId: string,
+      companyId: string,
+      topLevelKey: string,
+      entryKey: string,
+      entryValue: Record<string, unknown> | null,
+      options?: { lastError?: string | null },
+    ): Promise<PluginCompanySettings> => {
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
+
+      const existingSettingsJson = sql`coalesce(${pluginCompanySettings.settingsJson}, '{}'::jsonb)`;
+      const topLevelPath = sql`array[${topLevelKey}]::text[]`;
+      const path = sql`array[${topLevelKey}, ${entryKey}]::text[]`;
+      const settingsJsonWithTopLevelKey = sql`jsonb_set(${existingSettingsJson}, ${topLevelPath}, coalesce(${pluginCompanySettings.settingsJson}->${topLevelKey}, '{}'::jsonb), true)`;
+      const patchedSettingsJson =
+        entryValue === null
+          ? sql`(${existingSettingsJson} #- ${path})`
+          : sql`jsonb_set(${settingsJsonWithTopLevelKey}, ${path}, ${JSON.stringify(entryValue)}::jsonb, true)`;
+      const initialSettingsJson = entryValue === null ? {} : { [topLevelKey]: { [entryKey]: entryValue } };
+      const hasLastErrorOverride = options ? Object.prototype.hasOwnProperty.call(options, "lastError") : false;
+
+      return db
+        .insert(pluginCompanySettings)
+        .values({
+          pluginId,
+          companyId,
+          enabled: true,
+          settingsJson: initialSettingsJson,
+          ...(hasLastErrorOverride ? { lastError: options!.lastError ?? null } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [pluginCompanySettings.companyId, pluginCompanySettings.pluginId],
+          set: {
+            settingsJson: patchedSettingsJson,
+            updatedAt: new Date(),
+            ...(hasLastErrorOverride ? { lastError: options!.lastError ?? null } : {}),
+          },
+        })
+        .returning()
+        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+    },
+
     // ----- Entities -------------------------------------------------------
 
     /**
