@@ -606,6 +606,7 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
       // Other close errors can mean controller authority is still live.
       const retiredWithoutCheckpoint = options?.discardUnsettledSession === true
         && error instanceof NativeSessionCloseUnrecoverableError
+        && error.semanticToolsSettled
         && pluginTaskSessionOwners.get(entry.session)?.isRetired() === true;
       if (!retiredWithoutCheckpoint) {
         try { await entry.instructionWorkingCopy?.retirementFailed?.(); }

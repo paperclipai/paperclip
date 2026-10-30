@@ -9202,7 +9202,7 @@ describe("native warm session supervision", () => {
       await closeIdleWarmNativeSessionsForRestart();
     });
 
-    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound"] as const)(
+    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic"] as const)(
       "handles a permanently rejected plugin close during reset (%s)", async mode => {
         const { base, next, run } = fixture(`identity-poisoned-close-${mode}`);
         const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
@@ -9230,7 +9230,7 @@ describe("native warm session supervision", () => {
           runnerInstanceId: "runner", runnerIngressAuthorized: true,
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
         const registration = await owner.registration({} as never, base.binding.runId);
-        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed") : new NativeSessionCloseUnrecoverableError();
+        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed") : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");
         let closePromise: Promise<void> | undefined;
         const close = vi.fn(() => closePromise ??= (async () => {
           await registration.release();
