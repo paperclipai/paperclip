@@ -91,9 +91,18 @@ The original head passed full-workspace typecheck and build. A later required
 Linux CI shard failed the unchanged managed-skill maintenance CLI fixture in
 `managed-skill-content.test.ts`: it returned `unavailable_or_corrupt_package`
 where `local_storage` was expected. Both the isolated case and the complete
-unchanged 17-test file pass against fresh local PostgreSQL. The Linux cause is
-not established; this is retained as an unresolved CI failure, not called a flake.
-The current-head required CI result remains the completion gate.
+unchanged 17-test file pass against fresh local PostgreSQL. The original Linux cause is
+not established; that failure is retained and is not called a flake.
+
+After merging current master, the same fixture failed locally because the new
+managed-Cloud policy from PR #18350 correctly refuses local disk. A separate
+test-only prerequisite commit changes that fixture to the real S3 provider with
+a controlled HTTP endpoint, valid fixture credentials, and a stable test key.
+It verifies remote reads without seeding or mutating runtime configuration,
+rejects corrupt and missing objects, and recovers after restoring canonical bytes.
+The full existing 17-test file passes with these failure controls. Production
+configuration validation remains unchanged. Current-head required CI remains
+the completion gate.
 
 ## Existing limitations outside this migration
 
