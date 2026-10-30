@@ -160,6 +160,9 @@ Capability ID: `skills/testing`.
 Scope: ui
 Storybook: Studio test inputs/configuration, running, question/approval, result and failed test states.
 Production: Run bounded test of actual saved version with correct selected account/environment; inspect persisted test detail and eligible interaction response.
+Remote Runner selection accepts the Studio test work mode and preserves its
+restricted scope; live qualification must cover the saved version delivered to
+the selected Computer, including a skill with no permanent agent assignment.
 Sources: Source: [SkillStudio.tsx](../../ui/src/pages/SkillStudio.tsx), [companySkills.ts](../../ui/src/api/companySkills.ts). Tests: [SkillStudio.test.tsx](../../ui/src/pages/SkillStudio.test.tsx), [company-skill-test-runs-service.test.ts](../../server/src/__tests__/company-skill-test-runs-service.test.ts)
 
 ### Documentation scope: Skills, Skill Studio, and teams

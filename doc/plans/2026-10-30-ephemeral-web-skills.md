@@ -215,3 +215,31 @@ handoff, and production volume removal are outside this slice.
 - Required CI gates `ci / verify` and `ci / e2e` passed on `07fffa749`.
   Latest check rollup: 52 success, two skipped, one cancelled advisory review
   job; Greptile separately completed at 5/5 with no unresolved threads.
+
+- Candidate `07fffa749` deployed successfully through core-only test request
+  `d4e172e8-a861-48cc-ae9c-e2f26c8ee636`, Cloud run `41106109829`.
+  B is deployment `ed70e789-22c3-4b93-93de-da61d7f30ca4`, replica
+  `16fbb2e8-a7b3-4f32-a483-bc2f5c77a8ee`, with
+  `PAPERCLIP_HOME=/tmp/ephemeral-skills-b`. Local health confirmed the code SHA;
+  provider console confirmed A's home and marker absent. The unassigned fork
+  opened as v2 with zero agents. Studio acknowledged a supporting-file edit to
+  the primary managed skill as v7 (`durable-skill-payload-B-20261030`).
+- Independent verification on B read 23 saved versions: 21 `remote_storage`
+  results and two `database_release_snapshot` results. No corrupt, missing,
+  local-storage or provider-mismatch results. The next cursor returned zero.
+- Live Studio test EPH-5, test `9c4f3775-2793-46c6-b09d-e3343e0e4c65`,
+  heartbeat `7fe45977-a061-408b-b7c5-5721a7e9f08b`, passed the repaired plugin
+  wiring but failed native admission: `skill_test` was excluded by Runner's
+  task-mode allowlist and execution-input parser. This failure is retained;
+  the Studio acceptance requirement remains pending a deployed retry.
+- Follow-up admits and preserves `skill_test` through the existing native
+  selection, execution contract and tool bindings. It does not relabel tests
+  as standard work. Existing task-bound JWT restrictions and read-only assigned
+  MCP behavior remain with their authorization owners. No executor refactor or
+  Rust protocol change is needed. Older images that reject this mode cannot
+  continue a new Studio test; rollback qualification settles tests first.
+- Follow-up local checks: 78 admission/input tests, 109 Runner contract tests,
+  40 assigned-MCP tests, and three real-HTTP skill-test scope regressions passed.
+  Initial scope/MCP attempts encountered sandbox socket restrictions; permitted
+  retries passed. Runner TypeScript/Rust checks and server TypeScript check
+  passed. Maps remain aligned (35 areas, 192 capabilities).

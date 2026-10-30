@@ -184,7 +184,7 @@ type Binding = {
   connectorAssignments?: Pick<ConnectorAssignment, "tools">[];
   assignedMcpTools?: Awaited<ReturnType<typeof createAssignedMcpTools>>;
   apiToolsEnabled?: boolean;
-  workMode?: "standard" | "planning" | "ask";
+  workMode?: "standard" | "planning" | "ask" | "skill_test";
   casesEnabled?: boolean;
   workspaceRoot?: string;
   workspaceBridge?: boolean;

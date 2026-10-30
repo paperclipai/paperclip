@@ -219,6 +219,11 @@ Gaps: No dedicated native orchestration binding; generic REST calls retain
 skills.test policy, task-assignment authorization, responsible-user intersection and
 admitted skill-test JWT scope.
 
+Studio's `skill_test` work mode is admitted through native Runner selection and
+preserved in execution input. The existing task-bound JWT scope still restricts
+REST access, and assigned MCP tools remain read-only in this mode. Admission does
+not convert a test into a standard task or expand its authority.
+
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and
 PATCH `/api/companies/{companyId}/skill-sources/{sourceId}/settings` with expected revision
