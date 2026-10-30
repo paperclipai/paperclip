@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agentApiKeys, agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
 import type { AgentApiKeyScope } from "@paperclipai/shared";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
@@ -12,6 +12,7 @@ import { activityService } from "../services/activity.js";
 import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
 import { conversationReplay, deliverConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
+import { CROSS_ISSUE_INFLUENCE_LIMIT } from "../services/cross-issue-influence-limit.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 
@@ -45,6 +46,54 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
   const keySend = (f: Fixture, token: string, value: unknown = input) => fetch(`${server.apiUrl}/api/agents/me/chat/messages`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "x-paperclip-run-id": f.runId },
     body: JSON.stringify(value),
+  });
+  const spendInfluence = (f: Fixture, count: number) => server.db.insert(activityLog).values(Array.from({ length: count }, (_, index) => ({
+    companyId: f.companyId, actorType: "agent" as const, actorId: f.agentId, agentId: f.agentId, runId: f.runId,
+    action: "issue.cross_issue_influence_observed", entityType: "issue", entityId: f.issueId,
+    details: { kind: ["comment", "update", "interaction_resolution"][index % 3] },
+  })));
+
+  it.each(["native", "http"])("enforces the shared run cap for %s delivery without creating an empty chat", async transport => {
+    const f = await fixture();
+    await spendInfluence(f, CROSS_ISSUE_INFLUENCE_LIMIT);
+    if (transport === "native") {
+      await expect(f.authority.execute({ tool: "send_chat_message", arguments: input, callId: randomUUID() }))
+        .rejects.toMatchObject({ status: 429, details: { code: "cross_issue_influence_cap_exceeded", cap: CROSS_ISSUE_INFLUENCE_LIMIT } });
+    } else {
+      const response = await httpSend(f);
+      expect(response.status, await response.clone().text()).toBe(429);
+      expect(await response.json()).toMatchObject({ details: { code: "cross_issue_influence_cap_exceeded", cap: CROSS_ISSUE_INFLUENCE_LIMIT } });
+    }
+    const snapshot = await f.snapshot();
+    expect(snapshot.comments).toEqual([]);
+    expect(snapshot.issues.filter(issue => issue.conversationAgentId)).toEqual([]);
+    expect(snapshot.activity).toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+  });
+
+  it("charges a committed message once across retries, recovery and conflicting content", async () => {
+    const f = await fixture(), receipt = (await send(f))!;
+    expect((await httpSend(f)).status).toBe(200);
+    expect(await f.authority.recover({ tool: "send_chat_message", arguments: input, callId: randomUUID() }))
+      .toMatchObject({ result: { commentId: receipt.commentId, replayed: true } });
+    expect((await httpSend(f, { ...input, body: "Different content" })).status).toBe(409);
+    expect(await f.authority.recover({ tool: "send_chat_message", arguments: { ...input, idempotencyKey: "not-committed" }, callId: randomUUID() })).toBeNull();
+    expect((await f.snapshot()).activity.filter(row => row.action === "issue.cross_issue_influence_observed")).toHaveLength(1);
+    expect((await f.snapshot()).comments).toHaveLength(1);
+  });
+
+  it("cannot race native and HTTP delivery past the shared final slot", async () => {
+    const f = await fixture();
+    await spendInfluence(f, CROSS_ISSUE_INFLUENCE_LIMIT - 1);
+    const outcomes = await Promise.all([
+      f.authority.execute({ tool: "send_chat_message", arguments: { ...input, idempotencyKey: "native-last-slot" }, callId: randomUUID() })
+        .then(() => 201, error => error.status),
+      httpSend(f, { ...input, idempotencyKey: "http-last-slot" }).then(response => response.status),
+    ]);
+    expect(outcomes.sort()).toEqual([201, 429]);
+    const snapshot = await f.snapshot();
+    expect(snapshot.activity.filter(row => row.action === "issue.cross_issue_influence_observed")).toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+    expect(snapshot.comments).toHaveLength(1);
+    expect(snapshot.issues.filter(issue => issue.conversationAgentId)).toHaveLength(1);
   });
 
   it("supports standard task API keys without changing agent and run attribution", async () => {

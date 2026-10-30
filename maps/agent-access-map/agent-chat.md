@@ -52,6 +52,9 @@ agents and execution-task writes that bypass this path. Comment/audit persistenc
 retains real agent/run attribution and server-owned source provenance.
 Credential scope, responsible human and external authorizer remain part of access
 checks. API keys are rechecked under a row lock before the delivery commits.
+New deliveries spend the existing shared per-run cross-issue influence budget;
+receipt retries and recovery spend no extra slot. Exhaustion returns the standard 429
+denial and rolls back the attempted delivery, including first-chat creation.
 
 `GET /api/companies/{companyId}/chats` and its detail endpoint include the current
 human's unread state. `POST /api/issues/{id}/read` accepts an optional

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { agentApiKeys, agents, companies, companyMemberships, heartbeatRuns, issueComments, issues, nativeRunResults, type Db } from "@paperclipai/db";
 import { agentApiKeyScopeSchema, isUuidLike, sendChatMessageSchema, type AgentApiKeyScope } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, tooManyRequests } from "../errors.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor } from "./authorization.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -13,6 +13,7 @@ import { resolveActorSourceTrustForIssue } from "./source-trust.js";
 import { resolveTaskWatchdogMutationScope } from "./task-watchdog-scope.js";
 import { readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { nativeRunKeyScope } from "./native-runtime/native-skill-test-scope.js";
+import { crossIssueInfluenceLimitError, observeCrossIssueInfluence } from "./cross-issue-influence-limit.js";
 
 type Actor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null;
   keyScope?: AgentApiKeyScope | null; onBehalfOfUserId?: string | null;
@@ -164,6 +165,14 @@ export async function sendAgentChatMessage(
       return receipt(prior.id, true);
     }
     if (options.receiptOnly) return null;
+    const influence = await observeCrossIssueInfluence(tx, { companyId: actor.companyId, agentId: actor.agentId,
+      runId: actor.runId, responsibleUserId: userId, targetIssueId: conversation.id,
+      targetIssueIdentifier: conversation.identifier, kind: "comment" });
+    if (influence && !influence.allowed) {
+      const denial = crossIssueInfluenceLimitError(influence, { actorLabel: current.agent.name,
+        assigneeLabel: current.agent.name, issueIdentifier: conversation.identifier });
+      throw tooManyRequests(denial.error, denial.details);
+    }
     const sourceTrust = await resolveActorSourceTrustForIssue({ db: tx, issue: source,
       actor: { actorType: "agent", actorId: actor.agentId, agentId: actor.agentId, runId: actor.runId } });
     const comment = await svc.addComment(conversation.id, input.body, { agentId: actor.agentId, runId: actor.runId }, {

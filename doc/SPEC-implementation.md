@@ -2128,6 +2128,10 @@ Skill-test and task-bridge credentials cannot publish into standing chats.
 Persisted skill-test run boundaries remain in force after a task-mode change.
 Preserve the credential and external-user access intersection and recheck key
 revocation, scope and responsible-person identity before commit.
+Each new delivery charges the shared per-run cross-issue influence cap in the
+same transaction. Retries, conflicting content and receipt-only recovery do not
+spend another slot. Cap exhaustion returns the canonical 429 response and leaves
+no message or newly created conversation behind.
 
 The chat messaging service atomically creates a waiting conversation if needed
 and commits an attributed issue comment and audit record. Agent request IDs are

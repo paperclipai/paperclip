@@ -5766,10 +5766,10 @@ registry.registerPath({
 registry.registerPath({
   method: "post", path: "/api/agents/me/chat/messages", tags: ["agents"],
   summary: "Send a task message to the agent's own chat",
-  description: "Requires the assigned agent's active standard task run and an active responsible human. Resolves or creates that agent's conversation automatically. Company visibility, task permissions, Stop and retry safety apply. Does not wake the chat agent or change task status.",
+  description: "Requires the assigned agent's active standard task run, standard credentials and an active responsible human. Resolves or creates that agent's conversation automatically. Company visibility, task permissions, Stop and the shared cross-issue run cap apply. Equivalent retries do not spend another slot. Does not wake the chat agent or change task status.",
   request: { body: jsonBody(sendChatMessageSchema) },
   responses: { 200: r.ok(), 201: { ...r.ok(), description: "Message saved" }, 400: r.badRequest,
-    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
 });
 
 const agentCommentaryAcknowledgementSchema = z.object({
