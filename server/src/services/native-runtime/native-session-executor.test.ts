@@ -693,7 +693,7 @@ describe("remote controller restart adoption", () => {
   });
   it.each(["timeout", "transport"] as const)("records a marker %s without retaining transport text", async failure => {
     vi.useFakeTimers();
-    onTestFinished(() => vi.useRealTimers());
+    onTestFinished(() => { vi.useRealTimers(); });
     const { target, execute } = fixture();
     const transportError = new Error("private bridge response");
     const original = execute.getMockImplementation()!;
@@ -757,7 +757,7 @@ describe("remote controller restart adoption", () => {
   });
   it.each(["liveness", "timeout", "transport"] as const)("retains the reason for a failed process %s probe", async failure => {
     vi.useFakeTimers();
-    onTestFinished(() => vi.useRealTimers());
+    onTestFinished(() => { vi.useRealTimers(); });
     const { target, execute } = fixture();
     const original = execute.getMockImplementation()!;
     const transportError = new Error("provider_transport_failed: private bridge response");
