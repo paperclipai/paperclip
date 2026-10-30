@@ -67,7 +67,7 @@ import {
 import {
   claudeModelUsageTotals,
   claudeModelReceipts,
-  parseClaudeStreamJson, createClaudeStreamParser,
+  parseClaudeStreamJson, createClaudeStreamParser, parseClaudeSessionUsageTotals,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -787,6 +787,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     hasMatchingSessionCwd &&
     hasMatchingExecutionTarget;
   const sessionId = canResumeSession ? runtimeSessionId : null;
+  // --resume reports session totals; the previous run's totals turn them back into per-run usage.
+  const sessionBaseline = sessionId ? parseClaudeSessionUsageTotals(runtimeSessionParams.usageTotals) : null;
   if (runtimeSessionId && !isValidUuid) {
     await onLog(
       "stdout",
@@ -957,13 +959,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const consumeAccounting = createClaudeStreamParser();
+    const consumeAccounting = createClaudeStreamParser({ sessionBaseline });
     const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
       const parsed = consumeAccounting(stdout);
       return { usage: parsed.usage ?? undefined, usageBasis: "per_run", costUsd: parsed.costUsd,
         provider: "anthropic", biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
         billingType, model: Object.keys(parseObject(parsed.resultJson?.modelUsage)).length > 1 ? "mixed" : parsed.model || model,
-          usageByModel: claudeModelReceipts(parsed.resultJson?.modelUsage), complete: parsed.resultJson !== null };
+          usageByModel: claudeModelReceipts(parsed.modelUsage), complete: parsed.resultJson !== null };
     });
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       onProcessStopped: providerStop.beginInvocation(),
@@ -985,7 +987,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     await accountingLog.flush();
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
+    const parsedStream = parseClaudeStreamJson(proc.stdout, { sessionBaseline });
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
     return { proc, parsedStream, parsed };
   };
@@ -1012,7 +1014,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
+      // A resumed run can print its result and then hang. Its cost is charged
+      // here, so move the stored totals forward or the next resume charges it again.
+      const timedOutUsageTotals =
+        sessionId && parsedStream.sessionUsageTotals?.sessionId === sessionId
+          ? parsedStream.sessionUsageTotals
+          : null;
       return {
+        ...(timedOutUsageTotals && !opts.clearSessionOnMissingSession
+          ? { sessionParams: { ...runtimeSessionParams, sessionId, usageTotals: timedOutUsageTotals } }
+          : {}),
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
@@ -1022,7 +1033,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: "anthropic",
         biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
         model: Object.keys(parseObject(parsedStream.resultJson?.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
-        usageByModel: claudeModelReceipts(parsedStream.resultJson?.modelUsage),
+        usageByModel: claudeModelReceipts(parsedStream.modelUsage),
         billingType,
         costUsd: parsedStream.costUsd,
         errorMessage: `Timed out after ${timeoutSec}s`,
@@ -1092,7 +1103,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: "anthropic",
         biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
         model: Object.keys(parseObject(parsedStream.resultJson?.modelUsage)).length > 1 ? "mixed" : parsedStream.model || model,
-        usageByModel: claudeModelReceipts(parsedStream.resultJson?.modelUsage),
+        usageByModel: claudeModelReceipts(parsedStream.modelUsage),
         billingType,
         costUsd: parsedStream.costUsd,
         errorMessage: fallbackErrorMessage,
@@ -1119,7 +1130,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const fallbackModelUsageTotals = parsedStream.usage ? null : claudeModelUsageTotals(parsed.modelUsage);
+    const fallbackModelUsageTotals = parsedStream.usage ? null : claudeModelUsageTotals(parsedStream.modelUsage ?? parsed.modelUsage);
     const usage =
       parsedStream.usage ??
       fallbackModelUsageTotals ??
@@ -1159,6 +1170,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
     const shouldDropSessionForPoison = poisonedPreviousMessageId;
     const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
+    // Keep the previous totals when this invocation reported none, so the next
+    // resume still subtracts from the right point.
+    const sessionUsageTotals =
+      parsedStream.sessionUsageTotals?.sessionId === resolvedSessionId
+        ? parsedStream.sessionUsageTotals
+        : sessionBaseline?.sessionId === resolvedSessionId
+        ? sessionBaseline
+        : null;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -1173,6 +1192,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        ...(sessionUsageTotals ? { usageTotals: sessionUsageTotals } : {}),
       } as Record<string, unknown>)
       : null;
     const errorMessage = failed
@@ -1271,7 +1291,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       errorMeta,
       usage,
-      usageByModel: claudeModelReceipts(parsed.modelUsage),
+      usageByModel: claudeModelReceipts(parsedStream.modelUsage ?? parsed.modelUsage),
       ...(usageBasis ? { usageBasis } : {}),
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
