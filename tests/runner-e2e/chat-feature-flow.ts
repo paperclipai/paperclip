@@ -144,7 +144,7 @@ export async function runChatFeatureFlow(context: {
     expect((await api.get<FeatureTask>(`/api/issues/${encodeURIComponent(savedTask.identifier ?? savedTask.id)}`)).id).toBe(savedTask.id);
     await page.goto(sourceUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
-    await input.capture("chat-feature-result", "Created task and retained source conversation", "chat-feature-result.png");
+    await input.capture("final-state", "Created task and retained source conversation", "final-state.png");
     input.check?.("browser-result-access", true, "The exact linked task loaded in the browser and the source conversation survived reload.");
     return { issue: observation.source!, runs: chatFeatureExecutionRuns(observation) };
   } catch (error) {

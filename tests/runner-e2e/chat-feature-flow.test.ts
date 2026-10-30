@@ -4,29 +4,37 @@ import type { ChatFlowInput, ChatIssue } from "./chat-flow.js";
 import { runChatFeatureFlow } from "./chat-feature-flow.js";
 import { chatFeatureScenarios } from "./chat-feature-cases.js";
 
+const polling = vi.hoisted(() => ({ failScenario: true }));
+vi.mock("@playwright/test", async importOriginal => ({
+  ...await importOriginal<typeof import("@playwright/test")>(),
+  expect: (actual: { isVisible?(): Promise<boolean> }, message?: string) => Object.assign(expect(actual, message), {
+    toBeVisible: async () => expect(await actual.isVisible!()).toBe(true),
+  }),
+}));
 vi.mock("./api.js", async importOriginal => ({
   ...await importOriginal<typeof import("./api.js")>(),
   pollUntil: async (input: { label: string; load(): Promise<unknown> }) => {
     const value = await input.load();
-    if (input.label.startsWith("chat scenario")) throw new Error("Original scenario failure");
+    if (polling.failScenario && input.label.startsWith("chat scenario")) throw new Error("Original scenario failure");
     return value;
   },
 }));
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); polling.failScenario = true; });
 
-it.each(["refresh", "save"])("keeps the last observed checks when final %s fails", async boundary => {
+function fixture(boundary?: string) {
   vi.spyOn(chatFlow, "sendChatMessage").mockResolvedValue();
-  const query = chatFeatureScenarios.find(scenario => scenario.id === "tasks.delegate-announcement")!.query;
+  const caseId = boundary ? "delegate-announcement" : "create-backlog";
+  const query = chatFeatureScenarios.find(scenario => scenario.id === `tasks.${caseId}`)!.query;
   const source: ChatIssue = { id: "chat", companyId: "company", title: "CEO", status: "in_review",
     assigneeAgentId: "ceo", conversationState: "waiting" };
   const task = { id: "task", identifier: "EVA-2", companyId: "company", title: "Launch announcement",
-    assigneeAgentId: "morgan", projectId: "launch", status: "todo", parentId: null };
+    assigneeAgentId: "morgan", projectId: "launch", status: boundary ? "todo" : "backlog", parentId: null };
   const runs = [{ id: "handoff", companyId: "company", agentId: "ceo", status: "succeeded",
     runtimeMode: "native", contextSnapshot: { issueId: "chat" } }];
   const comments = [
     { id: "human", issueId: "chat", body: query, authorUserId: "person", createdAt: "2026-10-30T10:00:00Z" },
-    { id: "reply", issueId: "chat", body: "Assigned Morgan: EVA-2.", authorAgentId: "ceo", createdByRunId: "handoff", createdAt: "2026-10-30T10:00:10Z" },
+    { id: "reply", issueId: "chat", body: "Assigned Morgan: EVA-2, saved in backlog.", authorAgentId: "ceo", createdByRunId: "handoff", createdAt: "2026-10-30T10:00:10Z" },
   ];
   const scopes = [{ scopeType: "company", scopeId: "company" }, ...["ceo", "morgan"].map(scopeId => ({ scopeType: "agent", scopeId }))];
   const api = {
@@ -36,7 +44,9 @@ it.each(["refresh", "save"])("keeps the last observed checks when final %s fails
       if (path.includes("issues?includeAgentCreatedTasks=true&limit=100")) return [task];
       if (path.endsWith("/comments?order=asc")) return comments;
       if (path.endsWith("/documents")) return [];
-      if (path.endsWith("/activity")) return [{ action: "issue.created", agentId: "ceo", details: { status: "todo" } }];
+      if (path.endsWith("/activity")) return [{ action: "issue.created", agentId: "ceo", details: { status: task.status } }];
+      if (path === "/api/issues/EVA-2") return task;
+      if (path.includes("/events?")) return [];
       if (path.endsWith("/budgets/overview")) return { policies: scopes.map(scope => ({ ...scope,
         amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" })) };
       return { budgetMonthlyCents: 500, lifecycleState: "ready", status: "idle" };
@@ -47,21 +57,33 @@ it.each(["refresh", "save"])("keeps the last observed checks when final %s fails
   const evidence = vi.fn(async (name: string) => {
     if (boundary === "save" && name === "chat-feature.json") throw new Error("Final evidence write failed");
   });
+  const locator = {
+    isVisible: async () => true,
+    locator: () => locator, getByRole: () => locator, nth: () => locator, click: vi.fn(),
+    evaluateAll: async (_callback: unknown, target?: unknown) => target ? 0 : ["/EVA/issues/EVA-2"],
+  };
+  const capture = vi.fn();
   const input = {
     api, nonce: "fixture", workspacePath: "/fixture",
-    page: { locator: () => ({ locator: () => ({ evaluateAll: async () => ["/EVA/issues/EVA-2"] }) }) },
+    page: { locator: () => locator, getByTestId: () => locator, reload: vi.fn(), goto: vi.fn(), url: () => "http://fixture.invalid/chat" },
     fixtures: { company: { id: "company" }, agent: { id: "ceo" }, environment: { id: "local" }, secretRefs: {} },
-    execution: { environment: { id: "local" }, task: { id: "delegate-announcement", expectedRunCount: 3,
+    execution: { environment: { id: "local" }, task: { id: caseId, expectedRunCount: boundary ? 3 : 1,
       buildVisibleMarker: () => "ACORN123", turnTimeoutMs: 120_000 },
       profile: { credential: "OPENROUTER_API_KEY", buildAgent: () => ({ adapterConfig: {} }) } },
-    evidence, check: (id: string, passed: boolean) => checks.push({ id, passed }),
+    evidence, capture, check: (id: string, passed: boolean) => checks.push({ id, passed }),
   } as unknown as ChatFlowInput;
   let refreshes = 0;
-  await expect(runChatFeatureFlow({ input, issue: () => source, allRuns: async () => runs,
+  const context = { input, issue: () => source, allRuns: async () => runs,
     refreshIssue: async () => {
       if (++refreshes > 1 && boundary === "refresh") throw new Error("Final observation read failed");
     },
-  })).rejects.toThrow("Original scenario failure");
+  };
+  return { context, checks, evidence, capture };
+}
+
+it.each(["refresh", "save"])("keeps the last observed checks when final %s fails", async boundary => {
+  const { context, checks, evidence } = fixture(boundary);
+  await expect(runChatFeatureFlow(context)).rejects.toThrow("Original scenario failure");
   expect(evidence).toHaveBeenCalledWith("chat-feature-evidence-error.json", expect.objectContaining({ incomplete: true }));
   expect(checks).toEqual(expect.arrayContaining([
     { id: "one-assigned-task", passed: true }, { id: "agent-created-task", passed: true },
@@ -69,4 +91,14 @@ it.each(["refresh", "save"])("keeps the last observed checks when final %s fails
     { id: "completion-result-access", passed: false },
   ]));
   expect(checks).toHaveLength(14);
+});
+
+it("retains required final evidence after the feature flow verifies browser readback", async () => {
+  polling.failScenario = false;
+  const { context, checks, evidence, capture } = fixture();
+  await expect(runChatFeatureFlow(context)).resolves.toMatchObject({ issue: { id: "chat" }, runs: [{ id: "handoff" }] });
+  expect(checks.every(check => check.passed)).toBe(true);
+  expect(checks).toContainEqual({ id: "browser-result-access", passed: true });
+  expect(capture).toHaveBeenCalledWith("final-state", expect.any(String), "final-state.png");
+  expect(evidence).toHaveBeenCalledWith("api-state.json", expect.objectContaining({ issue: expect.objectContaining({ id: "chat" }) }));
 });
