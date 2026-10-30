@@ -76,6 +76,16 @@ describe("Coordinator tasks using the proposed table", () => {
     await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
   });
 
+  it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {
+    const routine = createIssue({ id: "routine-decision", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine decision" });
+    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: routine.id } }] });
+    mocks.list.mockResolvedValue([routine]);
+    await mount("/issues?view=needs_attention&originKind=routine_execution");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [pending.id, routine.id], originKind: "routine_execution" }), expect.anything());
+    expect(host.textContent).toContain("Routine decision");
+    expect(host.textContent).not.toContain("couldn’t load");
+  });
+
   it("loads diagnostics for visible production board cards and retains their next-step badges", async () => {
     vi.stubGlobal("IntersectionObserver", class {
       constructor(private callback: IntersectionObserverCallback) {}

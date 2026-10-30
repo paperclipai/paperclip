@@ -213,6 +213,19 @@ function issueMatchesExternalObjectStatusFilter(
   }
 }
 
+/** Keep creation visibility and routine origin consistent across collection reads. */
+export function issueCreationRequestFilters(
+  state: Pick<IssueFilterState, "routineTasksOnly" | "showAgentCreatedTasks">,
+  enableAgentCreatedVisibilityFilter = false,
+) {
+  if (state.routineTasksOnly) {
+    return { originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true };
+  }
+  return enableAgentCreatedVisibilityFilter
+    ? { includeRoutineExecutions: true, includeAgentCreatedTasks: state.showAgentCreatedTasks }
+    : {};
+}
+
 export function applyIssueFilters(
   issues: Issue[],
   state: IssueFilterState,

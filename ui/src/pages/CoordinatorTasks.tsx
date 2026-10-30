@@ -93,13 +93,13 @@ export function CoordinatorTasks() {
   const attentionIds = needsAttention ? [...pendingDecisionTaskIds(attention.data?.items ?? [])] : [];
   const attentionBatches = Array.from({ length: Math.ceil(attentionIds.length / 100) }, (_, index) => attentionIds.slice(index * 100, (index + 1) * 100));
   const attentionTasks = useQueries({ queries: attentionBatches.map(ids => ({
-    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, ids],
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, originKind, ids],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const rows = await issuesApi.listCompact(companyId!, {
-        ids, projection: "index", limit: 100, q: deferredQuery || undefined, participantAgentId,
+        ids, projection: "index", limit: 100, q: deferredQuery || undefined, participantAgentId, originKind,
         includeAgentCreatedTasks: true, includeRoutineExecutions: true,
       }, { signal });
-      if (!deferredQuery && !participantAgentId && ids.some(id => !rows.some(row => row.id === id))) {
+      if (!deferredQuery && !participantAgentId && !originKind && ids.some(id => !rows.some(row => row.id === id))) {
         throw new Error("Some tasks with pending decisions couldn’t load.");
       }
       return rows;
