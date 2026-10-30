@@ -63,6 +63,32 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     appendRunEvent,
     getCurrentUserRedactionOptions,
   } = input;
+  // Only sanitized performance diagnostics may outlive their callback. Slow
+  // persistence applies backpressure instead of retaining an unbounded backlog.
+  let diagnosticTail = Promise.resolve();
+  let pendingDiagnostics = 0;
+  let pendingDiagnosticBytes = 0;
+  let diagnosticsClosed = false;
+  const enqueueDiagnostic = async (write: () => Promise<void>, bytes: number) => {
+    while (!diagnosticsClosed && pendingDiagnostics > 0 &&
+      (pendingDiagnostics >= 32 || pendingDiagnosticBytes + bytes > 256 * 1024)) {
+      await diagnosticTail;
+    }
+    if (diagnosticsClosed) return;
+    pendingDiagnostics += 1;
+    pendingDiagnosticBytes += bytes;
+    diagnosticTail = diagnosticTail.then(write).catch(() => undefined).finally(() => {
+      pendingDiagnostics -= 1;
+      pendingDiagnosticBytes -= bytes;
+    });
+    // An oversized event is never retained behind other work or acknowledged
+    // before its write settles.
+    if (bytes > 256 * 1024) await diagnosticTail;
+  };
+  const flushDiagnosticEvents = async () => {
+    diagnosticsClosed = true;
+    await diagnosticTail;
+  };
   let handle: RunLogHandle | null = null;
   let stdoutExcerpt = "";
   let stderrExcerpt = "";
@@ -307,7 +333,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         color: event.color,
         message: event.message,
         payload: event.payload,
-      });
+      }, { enqueueDiagnostic });
     };
 
     return {
@@ -327,6 +353,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     },
     outputProgressState,
     flushOutputProgress,
+    flushDiagnosticEvents,
     // Finalization awaits I/O and can receive more output before persisting excerpts.
     get stdoutExcerpt() {
       return stdoutExcerpt;

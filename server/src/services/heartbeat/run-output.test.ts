@@ -261,3 +261,64 @@ describe("object-backed diagnostic recording", () => {
     expect(writes.filter((write) => write.lastOutputSeq !== undefined)).toHaveLength(2);
   });
 });
+
+describe("performance diagnostic persistence lifetime", () => {
+  async function diagnosticAttempt(write: (name: string) => Promise<void>, bytes = 1024) {
+    const row = { ...newRunRow };
+    const output = createHeartbeatRunOutput(createRunRowDb(row), {
+      run: row as Run, runId: row.id!, issueId: null,
+      runLogStore: createDurableRunLogStore({ basePath: baseDir }),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      secretKeys: new Set(), getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      appendRunEvent: async (_run, event, options) => {
+        const persist = () => write(event.message ?? "");
+        if (event.eventType === "run.performance.span" && options?.enqueueDiagnostic) await options.enqueueDiagnostic(persist, bytes);
+        else await persist();
+      },
+    });
+    return { output, ...(await output.begin(row as Run)) };
+  }
+  it("drains accepted diagnostics in order after a failed write and closes admission", async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const persisted: string[] = [];
+    const attempt = await diagnosticAttempt(async name => {
+      if (name === "first") { await barrier; throw new Error("diagnostic sink unavailable"); }
+      persisted.push(name);
+    });
+    await attempt.onAdapterEvent({ eventType: "run.performance.span", message: "first" });
+    await attempt.onAdapterEvent({ eventType: "run.performance.span", message: "second" });
+    let drained = false;
+    const flush = attempt.output.flushDiagnosticEvents().then(() => { drained = true; });
+    await attempt.onAdapterEvent({ eventType: "run.performance.span", message: "too late" });
+    expect(drained).toBe(false);
+    expect(persisted).toEqual([]);
+    release(); await flush;
+    expect(persisted).toEqual(["second"]);
+    await attempt.output.flushDiagnosticEvents();
+  });
+  it.each([{ bytes: 1024, capacity: 32 }, { bytes: 200 * 1024, capacity: 1 }])(
+    "applies backpressure to bound queued diagnostic count and bytes ($bytes bytes)", async ({ bytes, capacity }) => {
+      let release!: () => void;
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const persisted: string[] = [];
+      const attempt = await diagnosticAttempt(async name => { await barrier; persisted.push(name); }, bytes);
+      for (let index = 0; index < capacity; index++) await attempt.onAdapterEvent({ eventType: "run.performance.span", message: String(index) });
+      let accepted = false;
+      const overflow = attempt.onAdapterEvent({ eventType: "run.performance.span", message: "overflow" }).then(() => { accepted = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(accepted).toBe(false);
+      release(); await overflow; await attempt.output.flushDiagnosticEvents();
+      expect(persisted).toEqual([...Array.from({ length: capacity }, (_, index) => String(index)), "overflow"]);
+    },
+  );
+  it("waits for a single oversized diagnostic instead of acknowledging a buffered write", async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const attempt = await diagnosticAttempt(async () => barrier, 300 * 1024);
+    let accepted = false;
+    const event = attempt.onAdapterEvent({ eventType: "run.performance.span", message: "oversized" }).then(() => { accepted = true; });
+    await new Promise<void>(resolve => setImmediate(resolve)); expect(accepted).toBe(false);
+    const flush = attempt.output.flushDiagnosticEvents(); release(); await Promise.all([event, flush]);
+  });
+});

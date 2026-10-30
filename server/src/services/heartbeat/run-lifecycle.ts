@@ -534,7 +534,8 @@ function buildRunEventRuntimeProgress(input: {
   const normalizedEventType = input.eventType.toLowerCase();
   if (
     normalizedEventType === "lifecycle" ||
-    normalizedEventType === "adapter.invoke"
+    normalizedEventType === "adapter.invoke" ||
+    normalizedEventType === "run.performance.span"
   ) {
     return null;
   }
@@ -2102,6 +2103,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       payload?: Record<string, unknown>;
       retryExhaustion?: AppendHeartbeatRunEventInput["retryExhaustion"];
     },
+    options?: {
+      enqueueDiagnostic?: (write: () => Promise<void>, bytes: number) => Promise<void>;
+    },
   ) {
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
@@ -2129,7 +2133,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       payload: sanitizedPayload ?? null,
       at: eventAt,
     });
-    const persistedEvent = await appendHeartbeatRunEvent(db, {
+    const persistedInput: AppendHeartbeatRunEventInput = {
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
@@ -2140,43 +2144,56 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       message: sanitizedMessage,
       payload: sanitizedPayload,
       retryExhaustion: event.retryExhaustion,
-    });
-    if (persistedEvent.disposition === "duplicate") return;
-    const seq = persistedEvent.row.seq;
+    };
+    const runStatus = run.status;
+    const write = async () => {
+      const persistedEvent = await appendHeartbeatRunEvent(db, persistedInput);
+      if (persistedEvent.disposition === "duplicate") return;
+      const seq = persistedEvent.row.seq;
 
-    publishLiveEvent({
-      companyId: run.companyId,
-      type: "heartbeat.run.event",
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        issueId,
-        seq,
-        eventType: event.eventType,
-        stream: event.stream ?? null,
-        level: event.level ?? null,
-        color: event.color ?? null,
-        message: sanitizedMessage ?? null,
-        currentToolName: progress?.currentToolName ?? null,
-        lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
-        lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
-        payload: sanitizedPayload ?? null,
-      },
-    });
-    if (progress && isHeartbeatRunRuntimeStatusActive(run.status)) {
-      const status = setHeartbeatRunRuntimeStatus({
-        companyId: run.companyId,
-        issueId,
-        agentId: run.agentId,
-        runId: run.id,
-        phase: progress.phase,
-        message: progress.message,
-        updatedAt: eventAt,
-        currentToolName: progress.currentToolName,
-        lastAssistantSnippet: progress.lastAssistantSnippet,
-        lastEventAt: progress.lastEventAt,
+      publishLiveEvent({
+        companyId: persistedInput.companyId,
+        type: "heartbeat.run.event",
+        payload: {
+          runId: persistedInput.runId,
+          agentId: persistedInput.agentId,
+          issueId,
+          seq,
+          eventType: persistedInput.eventType,
+          stream: persistedInput.stream ?? null,
+          level: persistedInput.level ?? null,
+          color: persistedInput.color ?? null,
+          message: sanitizedMessage ?? null,
+          currentToolName: progress?.currentToolName ?? null,
+          lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
+          lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
+          payload: sanitizedPayload ?? null,
+        },
       });
-      if (status) publishHeartbeatRunRuntimeProgress(status);
+      if (progress && isHeartbeatRunRuntimeStatusActive(runStatus)) {
+        const status = setHeartbeatRunRuntimeStatus({
+          companyId: persistedInput.companyId,
+          issueId,
+          agentId: persistedInput.agentId,
+          runId: persistedInput.runId,
+          phase: progress.phase,
+          message: progress.message,
+          updatedAt: eventAt,
+          currentToolName: progress.currentToolName,
+          lastAssistantSnippet: progress.lastAssistantSnippet,
+          lastEventAt: progress.lastEventAt,
+        });
+        if (status) publishHeartbeatRunRuntimeProgress(status);
+      }
+    };
+    if (
+      persistedInput.eventType === "run.performance.span" &&
+      !persistedInput.retryExhaustion && !persistedInput.payload?.prpEvent &&
+      options?.enqueueDiagnostic
+    ) {
+      await options.enqueueDiagnostic(write, Buffer.byteLength(JSON.stringify(persistedInput)));
+    } else {
+      await write();
     }
   }
 

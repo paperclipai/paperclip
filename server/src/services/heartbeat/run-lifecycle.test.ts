@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
 import { publishLiveEvent } from "../live-events.js";
-import { getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
+import { clearHeartbeatRunRuntimeStatus, getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -347,6 +347,56 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(progressed?.lastUsefulActionAt).toBeInstanceOf(Date);
     },
   );
+
+  it("keeps embedded protocol payloads synchronous even under a performance label", async () => {
+    const { run } = await fixture();
+    const lifecycle = createHeartbeatLifecycle(db, callbacks(db));
+    const enqueueDiagnostic = vi.fn(async () => undefined);
+    await lifecycle.appendRunEvent(run, {
+      eventType: "run.performance.span", payload: { prpEvent: {} },
+    }, { enqueueDiagnostic });
+    expect(enqueueDiagnostic).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id))).toHaveLength(1);
+  });
+
+  it("queues only immutable redacted performance diagnostics without projecting stale activity", async () => {
+    const { run } = await fixture();
+    const deps = callbacks(db);
+    deps.getCurrentUserRedactionOptions.mockResolvedValueOnce({ enabled: true, userNames: ["alice"], homeDirs: ["/Users/alice"] });
+    deps.getCurrentUserRedactionOptions.mockResolvedValueOnce({ enabled: true, userNames: ["bob"], homeDirs: ["/Users/bob"] });
+    const lifecycle = createHeartbeatLifecycle(db, deps);
+    const writes: Array<() => Promise<void>> = [];
+    const enqueueDiagnostic = vi.fn(async (write: () => Promise<void>, bytes: number) => {
+      expect(bytes).toBeGreaterThan(0);
+      writes.push(write);
+    });
+    for (const name of ["alice", "bob"]) {
+      const payload = { path: `/Users/${name}/project`, token: "test-credential-material" };
+      await lifecycle.appendRunEvent(run, {
+        eventType: "run.performance.span", message: `Opening /Users/${name}/project`, payload,
+      }, { enqueueDiagnostic });
+      payload.path = "caller mutation";
+    }
+    expect(deps.getCurrentUserRedactionOptions).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id))).toHaveLength(0);
+    await lifecycle.appendRunEvent(run, { eventType: "tool.started", payload: { toolName: "read_file" } }, { enqueueDiagnostic });
+    expect(enqueueDiagnostic).toHaveBeenCalledTimes(2);
+    const toolStatus = getHeartbeatRunRuntimeStatus(run.id);
+    expect(toolStatus?.currentToolName).toBe("read_file");
+    await writes[0]();
+    expect(getHeartbeatRunRuntimeStatus(run.id)).toEqual(toolStatus);
+    clearHeartbeatRunRuntimeStatus(run.id);
+    await writes[1]();
+    expect(getHeartbeatRunRuntimeStatus(run.id)).toBeNull();
+    const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id)).orderBy(heartbeatRunEvents.seq);
+    const diagnostics = rows.filter(row => row.eventType === "run.performance.span");
+    expect(diagnostics).toHaveLength(2);
+    for (const row of diagnostics) {
+      const text = JSON.stringify({ message: row.message, payload: row.payload });
+      for (const sensitive of ["alice", "bob", "test-credential-material", "caller mutation"]) expect(text).not.toContain(sensitive);
+      expect(vi.mocked(publishLiveEvent).mock.calls.some(([event]) => event.type === "heartbeat.run.event" && event.payload?.seq === row.seq)).toBe(true);
+    }
+  });
 
   it("reads current redaction settings for each event and persists the published sanitized payload", async () => {
     const { run } = await fixture();

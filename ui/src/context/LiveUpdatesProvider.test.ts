@@ -453,6 +453,14 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     ]);
   });
 
+  it("does not project delayed performance diagnostics as live run activity", () => {
+    expect(__liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload({
+      runId: "run-1", agentId: "agent-1", issueId: "issue-1",
+      eventType: "run.performance.span", message: "runner span: task.prepare (100ms)",
+      lastEventAt: "2026-04-06T12:00:01.000Z",
+    }, "2026-04-06T12:00:10.000Z", "heartbeat.run.event")).toBeNull();
+  });
+
   it("uses the heartbeat event timestamp for run event status patches", () => {
     expect(
       __liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload(

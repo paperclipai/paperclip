@@ -113,6 +113,7 @@ import {
 } from "../home-paths.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
+import { NativeControllerDetachedForRestartError } from "../services/native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../services/native-runtime/native-runner-ownership.js";
 import { nativeCompletionSource } from "../services/native-runtime/completion-contracts.js";
 import { nativeCompletionFeedback } from "../services/native-runtime/native-completion-feedback.js";
@@ -1527,6 +1528,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       )
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
+
+  it.each(["success", "failure", "detach", "ownership"] as const)(
+    "drains sanitized diagnostics before the heartbeat attempt leaves through %s", async outcome => {
+      await withTempPaperclipHome(async () => {
+        const { runId } = await seedQueuedIssueRunFixture();
+        let release!: () => void;
+        const barrier = new Promise<void>(resolve => { release = resolve; });
+        let reachedSink!: () => void;
+        const sinkStarted = new Promise<void>(resolve => { reachedSink = resolve; });
+        const originalAppend = runEvents.appendHeartbeatRunEvent;
+        const append = vi.spyOn(runEvents, "appendHeartbeatRunEvent").mockImplementation(async (db, event) => {
+          if (event.runId === runId && event.eventType === "run.performance.span") {
+            reachedSink(); await barrier;
+          }
+          return originalAppend(db, event);
+        });
+        let providerReturned = false;
+        mockAdapterExecute.mockImplementationOnce(async input => {
+          const runtime = input as { onEvent: (event: { eventType: string; message: string }) => Promise<void> };
+          await runtime.onEvent({ eventType: "run.performance.span", message: "synthetic startup diagnostic" });
+          await sinkStarted; providerReturned = true;
+          if (outcome === "failure") throw new Error("synthetic provider failure");
+          if (outcome === "detach") throw new NativeControllerDetachedForRestartError();
+          if (outcome === "ownership") throw new NativeRunnerOwnershipUnverifiedError();
+          return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+            summary: "Synthetic completed work.", provider: "test", model: "test-model" };
+        });
+        const heartbeat = heartbeatService(db);
+        try {
+          await heartbeat.resumeQueuedRuns();
+          await waitForValue(async () => providerReturned);
+          let drained = false;
+          const drain = heartbeat.waitForRunExecutionDrain(runId).then(() => { drained = true; });
+          await new Promise<void>(resolve => setImmediate(resolve));
+          expect(drained).toBe(false);
+          release(); await drain;
+          const rows = await db.select().from(heartbeatRunEvents).where(and(
+            eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "run.performance.span"),
+          ));
+          expect(rows).toHaveLength(1);
+          expect(rows[0].message).toBe("synthetic startup diagnostic");
+        } finally { release(); append.mockRestore(); }
+      });
+    },
+  );
 
   async function seedQueuedIssueRunFixture() {
     const companyId = randomUUID();

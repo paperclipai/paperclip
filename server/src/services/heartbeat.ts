@@ -3669,6 +3669,8 @@ export function heartbeatService(
           runId, err, identityRedactor, requiredWorkspaceRestoreEvidence, legacyAdapterEntered,
           goalCheckpointSession, previousSessionDisplayId, taskSession,
         });
+      } finally {
+        await runOutput.flushDiagnosticEvents();
       }
     } catch (outerErr) {
       if (
