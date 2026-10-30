@@ -77,6 +77,13 @@ and existing environment/secret mechanisms retain responsibility for those
 bytes. Restart tests prove configuration restoration under a different home;
 they do not prove durable file, secret, or backup storage.
 
+The decision signing service still uses `PAPERCLIP_DECISION_SIGNING_SECRET` when
+supplied and otherwise reads or creates its instance key file before the database
+connection. The local encrypted secret provider still uses its environment key
+or existing key-file mechanism. Those byte-storage fallbacks are outside this
+configuration migration. Qualification must account for them separately; this
+PR does not establish file-free secret storage on Cloud.
+
 ## Internal update and migration interface
 
 `cloudRuntimeConfigService(db)` provides `inspectStored(handle?)`,
