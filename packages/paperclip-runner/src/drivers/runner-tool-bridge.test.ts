@@ -1,6 +1,5 @@
 import { readNativeSemanticReceipt, semanticInputSha256, type SemanticToolReceipt, type SemanticToolResult } from "./semantic-tool-receipt.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
-import { requestHumanInputAction } from "../protocol-actions/request-human-input.js";
 import { connect } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,21 +38,6 @@ async function rpc(
 }
 
 describe("runner semantic MCP bridge", () => {
-  it("returns bounded schema-derived question guidance before dispatch", async () => {
-    const handler = vi.fn(async () => ({ disposition: "applied" }));
-    const bridge = await startRunnerToolBridge({ tools: [{ name: "request_human_input",
-      inputSchema: requestHumanInputAction.live.descriptor.inputSchema }], handler });
-    bridges.push(bridge);
-    const result = await (await rpc(bridge, { id: "invalid-question", method: "tools/call", params: {
-      name: "paperclip_request_human_input", arguments: { idempotencyKey: "question", interactionKind: "questions",
-        title: "Choose a time", prompt: "Morning or Afternoon?", continuationPolicy: "wake_assignee", payload: { version: 2 } },
-    } })).json() as { result: { isError: boolean; content: Array<{ text: string }> } };
-    expect(result.result.isError).toBe(true);
-    expect(result.result.content[0]!.text).toContain("questionSet");
-    expect(result.result.content[0]!.text).toContain("/payload/version must be equal to constant (expected 1)");
-    expect(Buffer.byteLength(result.result.content[0]!.text)).toBeLessThanOrEqual(2048);
-    expect(handler).not.toHaveBeenCalled();
-  });
   it.each([false, true])("preloads only essential public Claude task tools when opted in (%s)", async preloadClaudeTaskTools => {
     const bridge = await startRunnerToolBridge({
       preloadClaudeTaskTools,

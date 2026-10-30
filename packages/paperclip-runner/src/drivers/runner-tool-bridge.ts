@@ -8,7 +8,6 @@ import {
 } from "node:http";
 
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
-import { toolInputValidationMessage } from "./tool-input-errors.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -314,10 +313,16 @@ async function handleRequest(
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
+    const detail = validator?.errors
+      ?.map(
+        (error) =>
+          `${error.instancePath || "/"} ${error.message ?? "is invalid"}`,
+      )
+      .join("; ");
     writeToolError(
       response,
       id,
-      toolInputValidationMessage(validator?.errors),
+      `Invalid tool input${detail ? `: ${detail}` : "."}`,
     );
     return;
   }
