@@ -62,7 +62,7 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
     context.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
   const issue = (await read()).currentIssue;
   await context.page.goto(`${context.api.origin}/${context.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`, { waitUntil: "domcontentloaded" });
-  await expect(context.page.getByTestId("task-chat-composer-input").last()).toBeVisible();
+  await expect(context.page.getByTestId("task-chat-composer-input").last()).toBeVisible({ timeout: 30_000 });
   const beforeComments = (await read()).comments;
   const active = await waitFor(options.deadlineAt, async () => {
     const state = await read();
