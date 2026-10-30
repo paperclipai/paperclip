@@ -223,8 +223,12 @@ actors before any TestOps mutation. A later dispatch or replay cannot reuse that
 approved number. Missing or uncertain metadata stops; an uncertain request needs
 reconciliation rather than a new send. The nonce and launch search provide
 additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
-this one-time administrator fence. The operation parameter identifier and launch
-nonce are also protected configuration, not dispatch inputs.
+this one-time administrator fence. The launch nonce is protected configuration,
+not a dispatch input. `CHAT_TESTOPS_OPERATION_PARAMETER_ID` is required only when
+the registered job defines `operation`; the launcher sets that parameter to
+`evaluate`. An official job with only `Branch` keeps its exact
+`refs/heads/master` value and uses the fixed workflow's `evaluate` default.
+Unknown parameters and other branch values are rejected.
 
 `CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
 integration. The launcher verifies its project, type and enabled state, then binds

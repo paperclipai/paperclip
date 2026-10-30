@@ -6,14 +6,13 @@ import { materializeSelectedSkills, rehydratePinnedSkillAssets } from "../servic
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companySkillRepositorySnapshots, companies, createDb, instanceSettings } from "@paperclipai/db";
+import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -81,53 +80,29 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
   it("loads persisted Cloud configuration for read-only maintenance without seeding it", async () => {
     const companyId = await company();
     const skill = await companySkillService(db).createLocalSkill(companyId, { name: "Cloud CLI", markdown: "# Cloud CLI" });
-    const [version] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, skill.currentVersionId!));
-    const [snapshot] = await db.select().from(companySkillRepositorySnapshots)
-      .where(eq(companySkillRepositorySnapshots.id, (version!.repositorySnapshotId ?? version!.packageSnapshotId)!));
-    const receipt = snapshot!.storage!;
-    const objects = new Map(await Promise.all([receipt.manifestKey, receipt.archiveKey].map(async objectKey =>
-      [objectKey, await fs.readFile(path.join(root, "objects", objectKey))] as const)));
-    const fetched = new Set<string>();
-    const bucket = "cloud-cli-fixture";
-    const server = createServer((request, response) => {
-      const pathname = new URL(request.url!, "http://127.0.0.1").pathname;
-      const prefix = `/${bucket}/`;
-      const objectKey = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : "";
-      const body = objects.get(objectKey);
-      if (!body || !["GET", "HEAD"].includes(request.method!)) { response.writeHead(404).end(); return; }
-      if (request.method === "GET") fetched.add(objectKey);
-      response.writeHead(200, { "Content-Length": body.length, ETag: '"fixture"' });
-      response.end(request.method === "HEAD" ? undefined : body);
-    });
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    const local = await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 });
+    expect(local.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
     const key = "cloud-runtime-config:v1";
+    const run = (phase: string) => promisify(execFile)(process.execPath, [
+      "--import", fileURLToPath(import.meta.resolve("tsx")),
+      fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
+      `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
+    ], { env: { ...process.env, DATABASE_URL: database.connectionString,
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
+      PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: "managed-skill-cli-fixture",
+      PAPERCLIP_STORAGE_S3_REGION: "us-east-1", PAPERCLIP_SECRETS_MASTER_KEY: "12345678901234567890123456789012" },
+      timeout: 60_000, maxBuffer: 1024 * 1024 });
+    await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
+    expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
+    const [persisted] = await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } }).returning();
     try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Missing object storage fixture address");
-      await db.update(companySkillRepositorySnapshots).set({ storage: { ...receipt, provider: "s3" } })
-        .where(eq(companySkillRepositorySnapshots.id, snapshot!.id));
-      const run = (phase: string) => promisify(execFile)(process.execPath, [
-        "--import", fileURLToPath(import.meta.resolve("tsx")),
-        fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
-        `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
-      ], { env: { ...process.env, DATABASE_URL: database.connectionString,
-        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-        PAPERCLIP_SECRETS_MASTER_KEY: Buffer.alloc(32, 1).toString("base64"),
-        PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: bucket, PAPERCLIP_STORAGE_S3_REGION: "us-east-1",
-        PAPERCLIP_STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`, PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "true", PAPERCLIP_STORAGE_S3_PREFIX: "",
-        AWS_ACCESS_KEY_ID: "fixture", AWS_SECRET_ACCESS_KEY: "fixture", AWS_SESSION_TOKEN: undefined,
-        AWS_PROFILE: undefined, AWS_DEFAULT_PROFILE: undefined }, timeout: 60_000, maxBuffer: 1024 * 1024 });
-      await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
-      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
-      await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
       const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
-      expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
+      expect(eligibility.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
-      expect(verification.results).toEqual([expect.objectContaining({ status: "remote_storage" })]);
-      expect(fetched).toEqual(new Set([receipt.manifestKey, receipt.archiveKey]));
+      expect(verification.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "provider_mismatch" })]);
+      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toEqual([persisted]);
     } finally {
-      try { await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key)); }
-      finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     }
   }, 180_000);
 
