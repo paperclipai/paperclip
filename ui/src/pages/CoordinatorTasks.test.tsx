@@ -76,7 +76,7 @@ describe("Coordinator tasks using the proposed table", () => {
 
   it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {
     const routine = createIssue({ id: "routine-decision", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine decision" });
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: routine.id } }] });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, routine.id] });
     mocks.list.mockResolvedValue([routine]);
     await mount("/issues?view=needs_attention&originKind=routine_execution");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [pending.id, routine.id], originKind: "routine_execution" }), expect.anything());
