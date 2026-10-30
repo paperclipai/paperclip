@@ -1226,7 +1226,8 @@ export const providerDescriptorSchema = {
         "acpx",
         "openai_dot",
         "grok_bot",
-        "muse"
+        "muse",
+        "cursor_cloud"
       ]
     },
     "driver": {
@@ -1238,7 +1239,8 @@ export const providerDescriptorSchema = {
         "acpx_runtime",
         "openai_dot_mcp",
         "grok_bot_mcp",
-        "muse_external"
+        "muse_external",
+        "cursor_cloud_api"
       ]
     },
     "model": {
@@ -1532,6 +1534,19 @@ export const providerDescriptorSchema = {
             },
             "executionKind": {
               "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "cursor_cloud"
+            },
+            "driver": {
+              "const": "cursor_cloud_api"
+            },
+            "executionKind": {
+              "const": "local_process"
             }
           }
         }

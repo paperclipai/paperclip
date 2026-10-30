@@ -117,6 +117,7 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
  */
 export interface NativeSessionCancellation {
   cleanup: Promise<void>;
+  terminalDrainTimeoutMs?: number;
 }
 
 export interface NativeSessionSnapshotOptions {

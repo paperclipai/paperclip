@@ -9,6 +9,12 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const verifiedProviderEntrypoints = Object.freeze([
   Object.freeze({
+    name: "cursor-cloud-app-server-proxy",
+    source: resolve(packageRoot, "src/cli/cursor-cloud-app-server-proxy.ts"),
+    output: resolve(packageRoot, "dist/cli/cursor-cloud-app-server-proxy.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/cursor-cloud-app-server-proxy.cjs"),
+  }),
+  Object.freeze({
     name: "provision-antigravity",
     source: resolve(packageRoot, "scripts/provision-antigravity.mjs"),
     output: resolve(packageRoot, "dist/cli/provision-antigravity.js"),

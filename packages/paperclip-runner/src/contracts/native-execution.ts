@@ -1,3 +1,4 @@
+import { parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "./cursor-cloud.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
@@ -116,6 +117,7 @@ export interface NativeAcpxProfileSnapshot {
 }
 
 export type NativeProviderConfig =
+  | { kind: "cursor_cloud"; model: string; cursorCloud: NativeCursorCloudConfig }
   | { kind: "codex"; model: string | null; approvalPolicy?: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode?: NativeOpenCodePermissionMode }
   | {
@@ -150,7 +152,7 @@ export type NativeProviderConfig =
 export type NativeProviderConfigV4 =
   | { kind: "codex"; model: string | null; approvalPolicy: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode: NativeOpenCodePermissionMode }
-  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" }>
+  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" | "cursor_cloud" }>
   | {
       kind: "acpx";
       agent: NativeAcpxAgent;
@@ -191,7 +193,7 @@ export interface NativeExecutionInputV1 {
   };
   session: {
     normalizedSessionId: string | null;
-    driverKind: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
+    driverKind: "cursor_cloud_api" | "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
     protocolVersion: 1;
     lifecyclePolicy: NativeSessionLifecyclePolicy;
   };
@@ -526,7 +528,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
   if (
     (
-      session.driverKind !== "codex_app_server"
+      session.driverKind !== "cursor_cloud_api"
+      && session.driverKind !== "codex_app_server"
       && session.driverKind !== "opencode_server"
       && session.driverKind !== "claude_managed_agents_api"
       && session.driverKind !== "aws_agentcore_harness_api"
@@ -565,17 +568,20 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ? { kind: "codex", model: null }
     : record(input.provider, "input.provider");
   if (
-    provider.kind !== "codex"
+    provider.kind !== "cursor_cloud"
+    && provider.kind !== "codex"
     && provider.kind !== "opencode"
     && provider.kind !== "claude_managed"
     && provider.kind !== "aws_agentcore"
     && provider.kind !== "acpx"
   ) {
-    throw new NativeExecutionInputError("input.provider.kind must be codex, opencode, claude_managed, aws_agentcore, or acpx");
+    throw new NativeExecutionInputError("input.provider.kind must be cursor_cloud, codex, opencode, claude_managed, aws_agentcore, or acpx");
   }
   exactKeys(
     provider,
-    provider.kind === "claude_managed"
+    provider.kind === "cursor_cloud"
+      ? ["kind", "model", "cursorCloud"]
+      : provider.kind === "claude_managed"
       ? ["kind", "model", "managedProfile", "maxSessionListCostUsd"]
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
@@ -589,7 +595,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     "input.provider",
   );
   if (
-    (provider.kind === "codex" && session.driverKind !== "codex_app_server")
+    (provider.kind === "cursor_cloud" && session.driverKind !== "cursor_cloud_api")
+    || (provider.kind === "codex" && session.driverKind !== "codex_app_server")
     || (provider.kind === "opencode" && session.driverKind !== "opencode_server")
     || (provider.kind === "claude_managed" && session.driverKind !== "claude_managed_agents_api")
     || (provider.kind === "aws_agentcore" && session.driverKind !== "aws_agentcore_harness_api")
@@ -604,7 +611,12 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
   let parsedProvider: NativeProviderConfigV9 | NativeProviderConfig | NativeProviderConfigV5;
-  if (provider.kind === "claude_managed") {
+  if (provider.kind === "cursor_cloud") {
+    if (!isV5 || !providerModel || providerModel.length > 240 || /[\x00-\x1f\x7f]/.test(providerModel) || lifecyclePolicy.mode !== "per_turn") {
+      throw new NativeExecutionInputError("Cursor Cloud requires a model and per-turn lifecycle in a v5 or later input");
+    }
+    parsedProvider = { kind: "cursor_cloud", model: providerModel, cursorCloud: parseNativeCursorCloudConfig(provider.cursorCloud) };
+  } else if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
     }
@@ -990,7 +1002,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     return {
       schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V1,
       task: structuredClone(input.task),
-      workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+      workspace: input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
         ? null
         : { cwd: input.workspace.cwd },
       completionContract: structuredClone(input.completionContract.contract),
@@ -1016,7 +1028,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       },
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
-      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
       completionContract: {
         ...structuredClone(input.completionContract.contract),
         criteria: input.completionContract.contract.criteria.map((criterion) => {
@@ -1039,7 +1051,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     },
     executionMode: input.executionMode,
     planningContext: structuredClone(input.planningContext),
-    workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+    workspace: input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
       ? null
       : { cwd: input.workspace.cwd },
     completionContract: structuredClone(input.completionContract.contract),

@@ -292,6 +292,23 @@ describe("native backend factory", () => {
     });
   });
 
+  it("reports Cursor Cloud capabilities without inheriting native Codex promises", async () => {
+    const input = execution({ kind: "cursor_cloud", model: "explicit-model", cursorCloud: {
+      schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/project" }],
+    } });
+    input.session.driverKind = "cursor_cloud_api";
+    const backend = createRunnerdNativeSessionBackend(preparedExecution(input), {
+      transportFactory: () => { throw new Error("descriptor must not launch the transport"); },
+    });
+    const descriptor = await backend.descriptor();
+    expect(descriptor).toMatchObject({ name: "cursor_cloud_api", version: "cursor-cloud-v1", capabilities: {
+      resume: true, dynamicTools: true, runtimeRequestResolution: false, runtimeRequestHandoff: false,
+      steering: false, goals: false, threadLineage: false,
+      unsupported: expect.arrayContaining(["native_permissions", "native_questions", "preprompt_model_acknowledgment"]),
+    } });
+    expect(descriptor.capabilities.typedEventFamilies).toBeUndefined();
+  });
+
   it("defers remote ACPX workspace admission to the runner filesystem", async () => {
     const remoteWorkspace = "/home/daytona/paperclip-workspace";
     const transport = new FakeCodexTransport();

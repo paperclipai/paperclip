@@ -588,7 +588,22 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       if (id === pagedCompany) pageTimes.push(Date.now());
       return prune(id, options);
     };
-    await startRetention(5000, service); await settled();
+    await startRetention(5000, service);
+    // Real SQL and filesystem work must settle before advancing to another deadline.
+    // Advancing a second on every pending observation invents gaps between pages.
+    const settleBy = performance.now() + 10_000;
+    for (;;) {
+      while (idleWorkSnapshot().active > 0) {
+        if (performance.now() >= settleBy) throw new Error("Retention work did not settle within ten seconds");
+        await realDelay(5);
+      }
+      const next = coordinator!.nextWakeAt();
+      if (next === null) break;
+      if (performance.now() >= settleBy) throw new Error("Retention work did not settle within ten seconds");
+      await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+    }
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(coordinator!.nextWakeAt()).toBeNull();
     expect(pageTimes.length).toBeGreaterThan(5);
     expect(Math.max(...pageTimes.slice(1).map((at, index) => at - pageTimes[index]!))).toBeLessThan(3000);
     expect(await exists(expiring)).toBe(false); await quiet();

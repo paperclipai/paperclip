@@ -53,6 +53,7 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 // (1s). Allow that bounded settlement plus transport scheduling; never treat
 // elapsed time or a cancellation acknowledgement as usage/terminal evidence.
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
+const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 type NativeSessionCleanupDomain = string;
 
@@ -959,7 +960,11 @@ async function consumeTurn(
       const drainAbort = new AbortController();
       const stopDrain = () => drainAbort.abort(appendAbort.signal.reason);
       appendAbort.signal.addEventListener("abort", stopDrain, { once: true });
-      const drainMs = Math.min(GOVERNED_ACCOUNTING_DRAIN_MS, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : GOVERNED_ACCOUNTING_DRAIN_MS);
+      const requestedDrainMs = cancellation.terminalDrainTimeoutMs;
+      const terminalDrainMs = typeof requestedDrainMs === "number" && Number.isSafeInteger(requestedDrainMs)
+        && requestedDrainMs > 0 && requestedDrainMs <= MAX_GOVERNED_ACCOUNTING_DRAIN_MS
+        ? requestedDrainMs : GOVERNED_ACCOUNTING_DRAIN_MS;
+      const drainMs = Math.min(terminalDrainMs, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : terminalDrainMs);
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
       const drained = (async () => {
         while (!drainAbort.signal.aborted) {
@@ -2613,7 +2618,11 @@ export async function executeNativeSession(
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
             requestedCollaborationMode:
-              "executionMode" in input ? input.executionMode : "default",
+              // Paperclip planning remains in the envelope and tool authority.
+              // Cloud's qualified harness exposes only default collaboration.
+              input.provider.kind === "cursor_cloud"
+                ? "default"
+                : "executionMode" in input ? input.executionMode : "default",
           });
           await checkpoint();
         }

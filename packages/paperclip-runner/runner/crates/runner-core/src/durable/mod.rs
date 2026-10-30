@@ -187,6 +187,12 @@ pub struct OpenCodeLaunchProfile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorCloudLaunchProfile {
+    pub command: QualifiedLaunchArtifact,
+    pub proxy_script: QualifiedLaunchArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerConfig {
     pub connect_url: String,
     pub ca_bundle_path: Option<PathBuf>,
@@ -201,6 +207,7 @@ pub struct DurableRunnerConfig {
     pub runner_digest: String,
     pub acpx_launch_profile: Option<AcpxLaunchProfile>,
     pub opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    pub cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     pub max_outbox_bytes: usize,
     pub p0_reserve_bytes: usize,
     pub max_frame_bytes: usize,
@@ -339,6 +346,25 @@ impl DurableRunnerConfig {
                 ));
             }
         }
+        if let Some(profile) = self.cursor_cloud_launch_profile.as_ref() {
+            if [&profile.command, &profile.proxy_script]
+                .iter()
+                .any(|artifact| {
+                    !artifact.path.is_absolute()
+                        || artifact.path.to_str().is_none()
+                        || artifact.sha256.len() != 71
+                        || !artifact.sha256.starts_with("sha256:")
+                        || !artifact.sha256[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                || profile.command.path == profile.proxy_script.path
+            {
+                return Err(DurableRunnerError::invalid(
+                    "Cursor Cloud runner launch profile is malformed",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -362,6 +388,7 @@ mod tests {
             runner_digest: "sha256:digest".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 1024 * 1024,
             p0_reserve_bytes: 64 * 1024,
             max_frame_bytes: 64 * 1024,
