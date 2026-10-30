@@ -11,7 +11,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const now = new Date('2026-10-30T00:00:00Z');
 const daysAgo = days => new Date(now.getTime() - days * DAY_MS);
 
-const lockfile = packageKeys => [
+const REGISTRY = '{integrity: sha512-x}';
+
+// Each entry is a key, or [key, resolution] for a non-registry resolution.
+const lockfile = entries => [
   "lockfileVersion: '9.0'",
   '',
   'importers:',
@@ -24,7 +27,10 @@ const lockfile = packageKeys => [
   '',
   'packages:',
   '',
-  ...packageKeys.flatMap(key => [`  ${key}:`, '    resolution: {integrity: sha512-x}', '']),
+  ...entries.flatMap(entry => {
+    const [key, resolution] = Array.isArray(entry) ? entry : [entry, REGISTRY];
+    return [`  ${key}:`, `    resolution: ${resolution}`, '    engines: {node: \'>=18\'}', ''];
+  }),
   'snapshots:',
   '',
   '  snapshot-only@9.9.9:',
@@ -39,17 +45,53 @@ const timesFrom = table => async (name, version) => {
 };
 
 test('parses plain, quoted and scoped package keys from the packages section only', () => {
-  const keys = parseLockfilePackages(lockfile(["'@scope/pkg@2.0.0'", 'left-pad@1.3.0']));
-  assert.deepEqual([...keys].sort(), ['@scope/pkg@2.0.0', 'left-pad@1.3.0']);
+  const packages = parseLockfilePackages(lockfile([
+    "'@scope/pkg@2.0.0'",
+    'left-pad@1.3.0',
+    ['gitdep@https://codeload.github.com/o/r/tar.gz/abc', '{tarball: https://codeload.github.com/o/r/tar.gz/abc}'],
+  ]));
+  assert.deepEqual([...packages].sort(), [
+    ['@scope/pkg@2.0.0', REGISTRY],
+    ['gitdep@https://codeload.github.com/o/r/tar.gz/abc', '{tarball: https://codeload.github.com/o/r/tar.gz/abc}'],
+    ['left-pad@1.3.0', REGISTRY],
+  ]);
 });
 
 test('lists only package versions the refresh adds', () => {
   const base = lockfile(['left-pad@1.3.0', 'old@1.0.0']);
   const head = lockfile(['left-pad@1.3.0', 'old@1.1.0', "'@scope/new@0.1.0'"]);
   assert.deepEqual(addedPackageVersions(base, head), [
-    { key: '@scope/new@0.1.0', name: '@scope/new', version: '0.1.0' },
-    { key: 'old@1.1.0', name: 'old', version: '1.1.0' },
+    { key: '@scope/new@0.1.0', name: '@scope/new', version: '0.1.0', resolution: REGISTRY },
+    { key: 'old@1.1.0', name: 'old', version: '1.1.0', resolution: REGISTRY },
   ]);
+});
+
+test('lists an existing version whose resolution changed', () => {
+  const swapped = ['left-pad@1.3.0', '{tarball: https://example.com/left-pad-1.3.0.tgz}'];
+  assert.deepEqual(addedPackageVersions(lockfile(['left-pad@1.3.0']), lockfile([swapped])), [
+    { key: 'left-pad@1.3.0', name: 'left-pad', version: '1.3.0', resolution: swapped[1] },
+  ]);
+});
+
+test('holds unquoted URL keys and registry-looking keys with non-registry resolutions', async () => {
+  const entries = addedPackageVersions(lockfile([]), lockfile([
+    ['gitdep@https://codeload.github.com/o/r/tar.gz/abc', '{tarball: https://codeload.github.com/o/r/tar.gz/abc}'],
+    ['sneaky@1.0.0', '{integrity: sha512-x, tarball: https://example.com/sneaky.tgz}'],
+  ]));
+  const result = await checkReleaseAge(entries, {
+    fetchPublishTime: timesFrom({ 'sneaky@1.0.0': daysAgo(400) }),
+    now,
+    minAgeMs: DAY_MS,
+  });
+  assert.equal(result.eligible, false);
+  assert.equal(result.checked, 2);
+  assert.deepEqual(
+    Object.fromEntries(result.held.map(h => [h.name, h.reason])),
+    {
+      gitdep: 'not a registry version',
+      sneaky: 'not a registry resolution: {integrity: sha512-x, tarball: https://example.com/sneaky.tgz}',
+    },
+  );
 });
 
 test('is eligible when every added version is old enough', async () => {

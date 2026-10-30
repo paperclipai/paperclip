@@ -41,12 +41,22 @@ test("a held refresh keeps its versions through the next master run's artifact",
   const reuse = step("Reuse versions from a held refresh");
   assert.match(reuse, /gh run list --workflow refresh-lockfile\.yml --branch master --status success/);
   assert.match(reuse, /gh run download "\$run_id" --name held-pnpm-lock/);
+  assert.match(
+    reuse,
+    /if \[ "\$\(sha256sum < pnpm-lock\.yaml\)" != "\$\(cat "\$held\/source-lock\.sha256"\)" \]; then[\s\S]*?exit 0\n          fi\n          cp "\$held\/pnpm-lock\.yaml" pnpm-lock\.yaml/,
+    "a held lock must only be reused while master still has the lock it was resolved from",
+  );
   assert.doesNotMatch(reuse, /chore\/refresh-lockfile/, "the PR branch is writable by others and must not seed resolution");
 
-  assert.equal(condition("Save held lockfile for the next refresh"), "steps.release-age.outputs.eligible == 'false'");
+  for (const name of ["Stage held lockfile", "Save held lockfile for the next refresh"]) {
+    assert.equal(condition(name), "steps.release-age.outputs.eligible == 'false'");
+  }
+  const stage = step("Stage held lockfile");
+  assert.match(stage, /cp pnpm-lock\.yaml "\$RUNNER_TEMP\/held-upload\/pnpm-lock\.yaml"/);
+  assert.match(stage, /sha256sum < "\$RUNNER_TEMP\/base-pnpm-lock\.yaml" > "\$RUNNER_TEMP\/held-upload\/source-lock\.sha256"/);
   const save = step("Save held lockfile for the next refresh");
   assert.match(save, /name: held-pnpm-lock/);
-  assert.match(save, /path: pnpm-lock\.yaml/);
+  assert.match(save, /path: \$\{\{ runner\.temp \}\}\/held-upload\//);
 });
 
 test("the bot merges only the commit this job pushed", () => {

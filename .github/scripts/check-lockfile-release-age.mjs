@@ -17,23 +17,37 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const PACKAGE_KEY = /^ {2}(?:'([^']+)'|([^\s'][^:]*)):\s*$/;
+// Every 2-space-indented line in `packages:` is an entry key. Keys can contain
+// colons (URL and git dependencies), so match up to the final colon.
+const PACKAGE_KEY = /^ {2}(\S.*):\s*$/;
+const RESOLUTION = /^ {4}resolution: (.+?)\s*$/;
+// A registry tarball is locked by integrity alone. A tarball URL, git repo or
+// directory resolution names its own source and needs a human.
+const REGISTRY_RESOLUTION = /^\{integrity: [^,{}]+\}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Returns the `name@version` keys of the lockfile's top-level `packages:` section. */
+/** Maps each key of the lockfile's top-level `packages:` section to its resolution. */
 export function parseLockfilePackages(text) {
-  const keys = new Set();
+  const packages = new Map();
   let inPackages = false;
+  let key = null;
   for (const line of text.split('\n')) {
     if (/^\S/.test(line)) {
       inPackages = line.trimEnd() === 'packages:';
+      key = null;
       continue;
     }
     if (!inPackages) continue;
-    const match = PACKAGE_KEY.exec(line);
-    if (match) keys.add((match[1] ?? match[2]).replace(/\(.*$/, ''));
+    const keyMatch = PACKAGE_KEY.exec(line);
+    if (keyMatch) {
+      key = keyMatch[1].replace(/^'(.*)'$/, '$1').replace(/\(.*$/, '');
+      packages.set(key, '');
+      continue;
+    }
+    const resolutionMatch = key && RESOLUTION.exec(line);
+    if (resolutionMatch) packages.set(key, resolutionMatch[1]);
   }
-  return keys;
+  return packages;
 }
 
 export function splitPackageKey(key) {
@@ -42,13 +56,13 @@ export function splitPackageKey(key) {
   return { name: key.slice(0, at), version: key.slice(at + 1) };
 }
 
-/** Package versions in headText that baseText does not have. */
+/** Package entries in headText that baseText lacks or resolves differently. */
 export function addedPackageVersions(baseText, headText) {
   const base = parseLockfilePackages(baseText);
   return [...parseLockfilePackages(headText)]
-    .filter(key => !base.has(key))
-    .sort()
-    .map(key => ({ key, ...splitPackageKey(key) }));
+    .filter(([key, resolution]) => base.get(key) !== resolution)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, resolution]) => ({ key, ...splitPackageKey(key), resolution }));
 }
 
 export async function fetchNpmPublishTime(name, version, fetchImpl = fetch) {
@@ -85,8 +99,9 @@ export async function checkReleaseAge(entries, {
   return { eligible: held.length === 0, checked: entries.length, held };
 }
 
-async function holdReason({ name, version }, fetchPublishTime, now, minAgeMs) {
+async function holdReason({ name, version, resolution }, fetchPublishTime, now, minAgeMs) {
   if (!SEMVER.test(version)) return 'not a registry version';
+  if (!REGISTRY_RESOLUTION.test(resolution ?? '')) return `not a registry resolution: ${resolution || 'missing'}`;
   let published;
   try {
     published = await fetchPublishTime(name, version);

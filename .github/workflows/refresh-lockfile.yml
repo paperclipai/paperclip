@@ -56,12 +56,20 @@ jobs:
               --json databaseId,event \
               --jq '[.[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")][0].databaseId // empty'
           )"
-          if [ -n "$run_id" ] && gh run download "$run_id" --name held-pnpm-lock --dir "$RUNNER_TEMP/held-lock" 2>/dev/null; then
-            cp "$RUNNER_TEMP/held-lock/pnpm-lock.yaml" pnpm-lock.yaml
-            echo "Resolving from the lockfile held by run $run_id."
-          else
+          held="$RUNNER_TEMP/held-lock"
+          if [ -z "$run_id" ] || ! gh run download "$run_id" --name held-pnpm-lock --dir "$held" 2>/dev/null; then
             echo "The previous refresh held nothing. Resolving from master."
+            exit 0
           fi
+          # Reuse the held lock only while master still has the lock it was
+          # resolved from. A lock change on master, such as a maintainer's
+          # correction, supersedes it.
+          if [ "$(sha256sum < pnpm-lock.yaml)" != "$(cat "$held/source-lock.sha256")" ]; then
+            echo "The lockfile on master changed after run $run_id held its refresh. Resolving from master."
+            exit 0
+          fi
+          cp "$held/pnpm-lock.yaml" pnpm-lock.yaml
+          echo "Resolving from the lockfile held by run $run_id."
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
@@ -208,12 +216,19 @@ jobs:
           fi
           echo "::notice title=Lockfile PR held::Added package versions are too new to merge without review. See $PR_URL"
 
+      - name: Stage held lockfile
+        if: steps.release-age.outputs.eligible == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/held-upload"
+          cp pnpm-lock.yaml "$RUNNER_TEMP/held-upload/pnpm-lock.yaml"
+          sha256sum < "$RUNNER_TEMP/base-pnpm-lock.yaml" > "$RUNNER_TEMP/held-upload/source-lock.sha256"
+
       - name: Save held lockfile for the next refresh
         if: steps.release-age.outputs.eligible == 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: held-pnpm-lock
-          path: pnpm-lock.yaml
+          path: ${{ runner.temp }}/held-upload/
           if-no-files-found: error
           retention-days: 7
 
