@@ -123,7 +123,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     nativeRestartRecovery?: NativeRestartRecoveryClaim;
     onNativeExecutionLeaseAcquired?: () => Promise<void>;
   }) => Promise<void>;
-  scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date) => void;
+  scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date, mode?: "restart") => void;
   cancelHeartbeatNativeRun: (input: {
     db: Db; runId: string; reason: string; runtimeMode: string | null;
   }) => Promise<unknown>;
@@ -1001,6 +1001,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "bootstrap_incomplete",
       );
       for (const disposition of dispositions) {
+        if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
+          scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
+        }
         const run = await getRun(disposition.runId);
         if (run) {
           const isClaim =

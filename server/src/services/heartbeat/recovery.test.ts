@@ -872,6 +872,16 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
   });
 
+  it("retains a live remote owner's actual lease deadline without dispatching competing work", async () => {
+    const deps = callbacks(db);
+    const runId = randomUUID(), retryAt = new Date(Date.now() + 60_000);
+    native.claims.mockResolvedValue([{ kind: "awaiting_evidence", runId, reason: "remote_controller_lease_live", retryAt }]);
+    const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
+    expect(result.awaitingEvidenceRunIds).toEqual([runId]);
+    expect(deps.scheduleNativeSessionResumeDispatch).toHaveBeenCalledWith(runId, retryAt, "restart");
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("retains shutdown ownership until background native cleanup physically settles", async () => {
     const deps = callbacks(db);
     let settle!: () => void;

@@ -2167,8 +2167,11 @@ digest. Earlier live qualification results keep their original profile identity.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its
-saved checkpoint and exact sandbox process identity. The prior controller must
-be stopped, its result committed, and the successor must hold current task and
+saved checkpoint and exact sandbox process identity. For an externally persisted
+controller with validated recovery metadata, the prior lease must be released
+and its result committed. A PID in the replacement container does not establish
+whether the prior remote controller is alive. Legacy file-backed recovery retains
+its stopped-process check. The successor must hold current task and
 coordinator authority. Recovery reconnects through the prior run's route before
 the authenticated run attachment changes authority. Unavailable identity probes
 have a shared 30-second retry budget; an identity conflict never permits replay.
@@ -2647,3 +2650,44 @@ The existing prior-owner, suspended-state and backup checks still decide whether
 the next turn may start. Missing checkpoints and ambiguous identity remain
 blocked; restoration does not authorize a new provider session or change the
 configured lifecycle policy.
+
+Remote admission also handles the absence of both native controller projections.
+`native-controller-recovery.ts` selects the existing bounded task/session source
+and restores its encrypted PRP records before admission reads local identity.
+It reconstructs the supervisor envelope from `runnerProfileJson.sessionCheckpoint`
+and the private `nativeControllerRecovery` metadata. Missing, incompatible, or
+mixed evidence holds the continuation; it does not authorize fresh execution.
+The 32-candidate boundary and newer-progress barriers remain in force. Exhausted
+history and current-run progress cannot establish fresh-bootstrap proof.
+
+The version-one metadata contains a digest of the exact redacted stored snapshot,
+configuration digests and the PRP checkpoint binding. It is bounded to 4 KiB,
+excluded from public run projections, and saved by `checkpointSession` in its
+existing snapshot transaction. No second snapshot writer, per-text-chunk query,
+pool, or recurring scan is added. A null checkpoint binding records an incomplete
+publication and prevents expiration. Snapshot and result writes recheck the
+coordinator generation and lease after lock waits, including the existing limited
+post-result maintenance exception.
+
+For per-turn direct sandbox recovery, the executor reads the retained Runner's
+suspended lifecycle through the recorded sandbox lease and validates its complete
+identity and lack of pending delivery/cleanup. Only a lifecycle projection is
+cached locally; provider files remain on the execution host. Prepared tasks use
+their existing `read_state` contract. The normal snapshot rebinder, tool-contract
+checks and current admission authority still govern the next turn.
+
+An active remote owner causes startup recovery to retain the obligation at the
+actual lease deadline. The existing recovery dispatch timer is rearmed on drain
+resume; successful reconciliation leaves no recurring recovery work. Upgrade
+diagnostics retain their existing `ready` meaning and add bounded retained-pointer
+header evidence. That inventory is preliminary, reports partial coverage, and
+does not certify workspace durability or volume removal.
+
+`importNativeControllerRecovery` is an internal one-source operation for the
+migration owner while old controller files remain available. It requires the
+admitted configuration digest and exact supervisor snapshot, locks the issue,
+coordinator and run in order, rejects live or unsettled ownership, and publishes
+only missing metadata. Repeating the same import is a no-op. Normal lifecycle
+checkpoints publish the metadata without a separate migration write. Disk-free
+rollback requires a server that reads this envelope; earlier local-only readers
+remain outside that rollback contract.

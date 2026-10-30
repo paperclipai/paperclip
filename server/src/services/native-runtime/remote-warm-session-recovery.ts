@@ -3,6 +3,7 @@ import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunF
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { readNativeControllerRecovery } from "./native-controller-recovery.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -60,7 +61,12 @@ export async function inspectRemoteWarmSessionRecovery(input: {
       terminal?.envelope?.normalizedSessionId !== identity.normalizedSessionId ||
       Object.entries(identity).some(([key, value]) => (control.identity as Record<string, unknown>)?.[key] !== value)) return deny();
   const assertPriorStopped = async () => {
-    const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(), requireStoppedController: true });
+    const persistedRecovery = readNativeControllerRecovery(prior.run.runnerProfileJson?.nativeControllerRecovery,
+      prior.run.runnerProfileJson?.sessionCheckpoint);
+    // A PID in another webserver container cannot prove life or death. New
+    // durable controllers are fenced by the database lease and current turn.
+    const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(), requireStoppedController: true,
+      remoteLeaseFenced: persistedRecovery !== null });
     if (!stopped.allowed) return deny();
   };
   await assertPriorStopped();

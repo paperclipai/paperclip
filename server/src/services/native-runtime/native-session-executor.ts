@@ -179,6 +179,8 @@ import {
   nativeRunResults,
 } from "@paperclipai/db";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { assertNativeRetainedSandboxBinding, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { nativeSha256 } from "./canonical.js";
@@ -5752,6 +5754,27 @@ async function restorePerTurnRunnerdController(input: {
   const root = scopedRunnerdStateRoot(input.execution);
   const identity = readRunnerdDurableIdentity(root);
   const reference = identity ?? readRunnerdDurableIdentity(root, true);
+  if (!reference) {
+    const restored = await restoreNativeControllerProjections(input.db, input.execution, root);
+    const target = input.runnerExecutionTarget;
+    // Prepared tasks use their existing read_state owner below. Direct sandbox
+    // sessions also keep lifecycle evidence on the execution host, not on B's disk.
+    if (restored && target.transport === "sandbox" && !target.runnerTask) {
+      const prior = readRunnerdDurableIdentity(root);
+      if (!prior || typeof prior.runId !== "string") throw new Error("native_controller_recovery_missing_evidence:restored_identity");
+      if (!target.runner) throw new Error("native_controller_recovery_dependency_unavailable:runner_state_reader");
+      await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
+      const stateDirectory = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+        createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex"), "runner");
+      const state = await readRemoteRunnerState({ runner: target.runner, stateDirectory });
+      if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
+        || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
+        throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");
+      }
+      savePluginRunnerCheckpoint(root, state, prior);
+    }
+    return;
+  }
   if (!durableIdentityMatchesSession(reference, input.execution)) return;
   if (identity?.runId === input.execution.binding.runId) return;
   const restored = await restoreNativeRunnerCheckpoint(input.db,
@@ -5773,6 +5796,9 @@ async function restoreWarmRunnerdController(input: {
   const root = scopedRunnerdStateRoot(input.execution);
   const identity = readRunnerdDurableIdentity(root);
   const reference = identity ?? readRunnerdDurableIdentity(root, true);
+  if (!idleWarmNativeSessionOwnerRunId(input) && (!reference || !existsSync(nativeSessionCheckpointPath(input.execution)))) {
+    if (await restoreNativeControllerProjections(input.db, input.execution, root)) return;
+  }
   if (!durableIdentityMatchesSession(reference, input.execution)) return;
   const retainedRunId = idleWarmNativeSessionOwnerRunId(input);
   let runId = retainedRunId ?? reference.runId;
@@ -5797,6 +5823,23 @@ async function restoreWarmRunnerdController(input: {
     { companyId: input.execution.binding.companyId, issueId, runId }, root, nativeSessionKey(input.execution));
   // A legacy file-backed root still follows its existing prior-owner checks.
   if (!restored && !identity) throw new Error("native_runner_checkpoint_missing");
+}
+
+async function restoreNativeControllerProjections(db: Db, execution: NativeExecutionInput, root: string): Promise<boolean> {
+  const recovered = await resolveNativeControllerRecovery(db, {
+    ...execution.binding, currentRunId: execution.binding.runId, normalizedSessionId: nativeSessionKey(execution),
+  });
+  if (recovered.kind === "no_prior_execution") return false;
+  if (recovered.kind === "waiting_for_owner") {
+    throw Object.assign(new Error("native_controller_recovery_waiting_for_owner"), { retryAt: recovered.deadline });
+  }
+  if (recovered.kind !== "recoverable") throw new Error(`native_controller_recovery_${recovered.kind}:${recovered.reason}`, { cause: recovered.cause });
+  recovered.checkpoint.restoreSessionDirectory(root);
+  if (execution.session.lifecyclePolicy.mode === "warm") {
+    persistWarmNativeCheckpoint(execution, recovered.metadata.configDigest, recovered.snapshot,
+      recovered.metadata.processConfigDigest ?? undefined);
+  }
+  return true;
 }
 
 function nativeHarnessEnvironmentFingerprint(
@@ -8233,6 +8276,7 @@ async function executePaperclipNativeSessionWithinScope(
   const executionLeaseTtlMs = input.runnerExecutionTarget?.kind === "remote"
     ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   let attempt: number;
+  let controllerGeneration = 0;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
@@ -8413,6 +8457,7 @@ async function executePaperclipNativeSessionWithinScope(
             .returning({ runId: nativeRunFinalizations.runId })
             .then((rows) => rows[0] ?? null);
           if (!claimed) throw new Error("native_session_lease_lost");
+          controllerGeneration = nextControllerGeneration;
           await tx
             .update(heartbeatRuns)
             .set({
@@ -8626,6 +8671,10 @@ async function executePaperclipNativeSessionWithinScope(
         && nativeSessionStartups.get(input.execution.binding.runId) === startupForAdmission) return;
     assertControllerActive();
   };
+  const controllerCompatibility = {
+    configDigest: nativeSessionConfigDigest(input.execution, input.runnerExecutionTarget?.kind ?? "local"),
+    processConfigDigest: warmNativeProcessConfigDigest(input) ?? null,
+  };
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
     {
@@ -8643,6 +8692,11 @@ async function executePaperclipNativeSessionWithinScope(
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       assertControllerActive,
       assertRunAdmissionActive,
+      nativeRecovery: input.useRunnerd && !input.backend && input.runnerExecutionTarget?.kind === "remote" ? {
+        compatibility: controllerCompatibility,
+        owner: { ...input.execution.binding, authorityRunId: input.execution.binding.runId,
+          bootId: controller.bootId, leaseOwner, generation: controllerGeneration },
+      } : undefined,
       onResultCommitted: async () => {
         const at=Date.now();
         await trace.record({name:"completion.result_committed",parentName:"native.session.execute",startedAtMs:at,endedAtMs:at});
@@ -8940,10 +8994,7 @@ async function executePaperclipNativeSessionWithinScope(
       : null;
   const warmConfigDigest =
     lifecyclePolicy.mode === "warm"
-      ? nativeSessionConfigDigest(
-          input.execution,
-          input.runnerExecutionTarget?.kind ?? "local",
-        )
+      ? controllerCompatibility.configDigest
       : null;
   const configuredEnvironmentDigest = createHash("sha256")
     .update(JSON.stringify(configuredEnvironment(input.runnerEnvironment)))
@@ -9334,12 +9385,13 @@ async function executePaperclipNativeSessionWithinScope(
                 if (startup) startup.governedWait = true;
               }
               snapshot = identityRedactor.redact(snapshot);
+              if (input.runnerExecutionTarget?.kind === "remote") snapshot = redactRunnerApiPayloads(snapshot);
               if (warmSessionId !== null && warmConfigDigest !== null) {
                 await persistWarmNativeCheckpoint(
                   input.execution,
                   warmConfigDigest,
                   snapshot,
-                  warmNativeProcessConfigDigest(input),
+                  controllerCompatibility.processConfigDigest ?? undefined,
                 );
               }
               if (

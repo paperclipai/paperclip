@@ -1,7 +1,7 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
-import { and, asc, eq, gt, or } from "drizzle-orm";
+import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
@@ -9,6 +9,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeRunnerCheckpoints,
 } from "@paperclipai/db";
 import type {
   CompleteControlPlaneRunInput,
@@ -30,6 +31,9 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { createNativeControllerRecovery, type NativeControllerCompatibility } from "./native-controller-recovery.js";
+import { getTableColumns } from "drizzle-orm";
+import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -90,6 +94,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+  readonly #nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
 
   constructor(
     db: Db,
@@ -105,6 +110,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+      nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
     } = {},
   ) {
     this.#db = db;
@@ -116,6 +122,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#onEventPersistence = options.onEventPersistence;
     this.#onResultCommitted = options.onResultCommitted;
     this.#onDuplicateEvent = options.onDuplicateEvent;
+    this.#nativeRecovery = options.nativeRecovery;
   }
 
   #assertActive(options?: { signal: AbortSignal }): void {
@@ -201,17 +208,44 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       || this.#sessionId !== identity.sessionId
     ) throw new Error("native_session_checkpoint_binding_mismatch");
     await this.#db.transaction(async (tx) => {
-      const run = await tx.select().from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
+      const recovery = this.#nativeRecovery;
+      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
+      const lockedRun = tx.$with("snapshot_run").as(tx.select().from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update"));
+      // Project the locking CTE's tuples, including any update committed while
+      // the lock waited. A second scan of heartbeat_runs could see an old MVCC tuple.
+      const runColumns = Object.fromEntries(Object.keys(getTableColumns(heartbeatRuns)).map(key =>
+        [key, lockedRun[key as keyof typeof heartbeatRuns.$inferSelect]])) as unknown as ReturnType<typeof getTableColumns<typeof heartbeatRuns>>;
+      const selected = await tx.with(lockedRun).select({ run: runColumns, now: sql<Date>`clock_timestamp()`, ...(recovery ? {
+        checkpointHeader: sql<Record<string, unknown> | null>`(select material from ${nativeRunnerCheckpoints}
+          where ${nativeRunnerCheckpoints.runId} = ${this.#binding.runId}
+            and ${nativeRunnerCheckpoints.companyId} = ${this.#binding.companyId}
+            and ${nativeRunnerCheckpoints.issueId} = ${this.#binding.issueId}
+            and ${nativeRunnerCheckpoints.part} = 'header')`,
+        } : {}),
+      }).from(lockedRun).limit(1)
         .then((rows) => rows[0] ?? null);
+      const run = selected?.run;
       this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
+      }
+      // The run row lock may have waited beyond our lease. Generation cannot
+      // change while we hold the coordinator, but wall-clock expiry still can.
+      if (recovery && owner) await validateNativeRunnerCheckpointOwner(tx, recovery.owner,
+        { ...owner, now: selected!.now }, !snapshot.semanticResult);
+      const header = recovery && selected?.checkpointHeader
+        ? inspectNativeRunnerUpgradeHeader(this.#binding, selected.checkpointHeader) : null;
+      if (header && (header.normalizedSessionId !== identity.sessionId || header.runnerInstanceId !== this.#binding.sourceInstanceId)) {
+        throw new Error("native_session_checkpoint_prp_binding_mismatch");
       }
       await tx.update(heartbeatRuns).set({
         runnerProfileJson: {
           ...record(run.runnerProfileJson),
           sessionCheckpoint: structuredClone(snapshot) as unknown as Record<string, unknown>,
+          ...(recovery ? { nativeControllerRecovery: createNativeControllerRecovery(snapshot, recovery.compatibility,
+            header ? { runId: this.#binding.runId, runnerInstanceId: header.runnerInstanceId,
+              normalizedSessionId: header.normalizedSessionId } : null) } : {}),
         },
         sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
         nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
@@ -392,12 +426,18 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       await tx.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
         .for("key share");
+      const recovery = this.#nativeRecovery;
+      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
       this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_result_binding_mismatch");
+      }
+      if (recovery && owner) {
+        const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+        await validateNativeRunnerCheckpointOwner(tx, recovery.owner, { ...owner, now: clock.now }, false);
       }
 
       const callerConditions = [eq(nativeRunResults.serverFingerprint, serverFingerprint)];
@@ -411,6 +451,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
         return false;
       }
+      if (owner?.resultId) throw new Error("structured_result_replay_conflict");
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,

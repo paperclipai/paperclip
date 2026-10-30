@@ -7,7 +7,7 @@ and backup validation against a deterministic fake Codex process in Linux. It
 checks the same runner process identity and one provider process across three warm
 turns, provider history reuse, and verified suspension at idle close. Separate
 cases kill the actual controller process and recover the next turn. They reject
-a still-live controller and a replacement sandbox before reconnecting. Legacy
+a live execution lease and a replacement sandbox before reconnecting. Legacy
 checkpoints and changed process configuration require verified suspension and
 replacement, while preserving the conversation and starting each turn once.
 Recovery can restart a provider to refresh its tool contract; process reuse is
@@ -23,6 +23,23 @@ Buffered transport messages and close notifications can arrive synchronously on
 subscription. The controller must register the connection before subscribing so
 completed message processing can drain and the suspended session can retire.
 It does not qualify a live model or a sandbox provider API.
+
+The `diskless` and `diskless-per-turn` cases delete both native controller
+directories after A completes, continue in a separate B process, delete those
+directories after B completes, and continue in C. They use the production source
+selector and snapshot rebinder for per-turn admission, followed by the real
+native executor. They do not inject PRP files or edit leases to produce recovery.
+Warm mode verifies compatible process reuse; per-turn mode verifies the existing
+suspension and history-resume policy. These component tests preserve workspace
+and remote sandbox storage, and use one source revision in three processes.
+They do not qualify distinct application releases or complete webserver disk loss.
+
+`native-controller-recovery.integration.test.ts` separately verifies encrypted
+database discovery, one-source import, idempotency, live-owner waiting, corrupt
+bindings and paginated inventory. `native-session-resume-projection.test.ts`
+retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+counts and stale-generation rejection are exercised by the control-plane port
+tests; incomplete-publication retention is exercised by the expiration tests.
 
 Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.
 The executor tests cover Claude and Codex, including reopening blocked work.
@@ -265,8 +282,10 @@ adapters, database loss and destroyed sandboxes are outside this guarantee.
 
 The empty-controller-cache test uses a real Rust runner and scripted provider
 in separate directories, removes the controller directory, then restores solely
-from Postgres. It checks unchanged runner/provider process identities and one
-provider turn start. Build the host runner and fake provider first, then run:
+from Postgres. It waits for natural lease expiry and checks unchanged
+runner/provider process identities and one provider turn start. It explicitly
+restores the transport checkpoint, so it does not prove application startup
+discovery by itself. Build the host runner and fake provider first, then run:
 
 ```sh
 PAPERCLIP_TEST_CONTROLLER_OUTAGE_MS=300000 pnpm exec vitest run \

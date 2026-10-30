@@ -94,6 +94,7 @@ export type NativeRestartRecoveryDisposition =
       kind: "awaiting_evidence" | "blocked" | "already_finalized";
       runId: string;
       reason: string;
+      retryAt?: Date;
     };
 
 export function nextNativeProviderAttempt(
@@ -668,6 +669,7 @@ export async function claimNativeRestartRecoveries(input: {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: takeover.reason,
+          ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt } : {}),
         } as const;
       }
 

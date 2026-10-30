@@ -361,12 +361,57 @@ volume dependencies and concurrent-server behavior are qualified. Sources checke
 Implementation is underway on `codex/native-controller-disk-independent-recovery`.
 The related Cloud policy work merged as paperclip-cloud PR #1048; it retains
 compatibility checks and drain fallback and does not implement this component.
-No new runtime or hosted qualification has passed yet.
+Verified locally: metadata/source-selection/lock-wait checks (21 tests), readiness
+and recovery scheduling (55 tests), durable discovery/import/inventory (7 tests),
+and the complete native executor suite. The combined executor/selection/retention
+run passed 1,063 tests and exposed two overbroad retention guards; those guards
+were corrected and all 75 retention cases then passed. The snapshot fence test
+also checks stale result acceptance and lease expiry during a run-row lock wait.
+
+Both warm and per-turn fixtures passed three separate controller processes,
+deleting both native controller directories before B and again before C. They
+check provider history, Runner identity, invocation counts, and the existing
+suspension policy. Per-turn uses the production admission selector and snapshot
+rebinder. These processes use the same candidate source, not distinct release
+artifacts. Workspace and remote sandbox storage remain available. This is not
+full-webserver filesystem-loss evidence.
+
+Both direct and prepared-task transport cases passed the 300-second outage with
+natural lease expiry. The 8/512/8,192-chunk SQL test passed: each sample used seven
+control transactions and twelve changed checkpoint records, with zero recovery
+SQL/transactions/rows during the text interval and zero idle SQL. The long sample
+included normal lease renewals. Its cluster-wide WAL values include simultaneous
+test migrations and are diagnostic only, not a load acceptance measurement.
+
+Workspace typecheck, build, and map structural checks passed. The full repository
+test command and additional warm compatibility cases are running. The paired
+300-controller/10,000-task workload now includes actual snapshot persistence.
+Its initial host pilot missed throughput gates; an isolated Linux client/database
+pilot is underway. Database cost acceptance, distinct-release application startup,
+compatible rollback, and native Daytona qualification remain open. Daytona needs
+an immutable qualification image; an asynchronous question requests that fixture.
+No production deployment or complete zero-downtime acceptance is claimed.
+
+Failures retained in the implementation record: sandbox listener denial and host
+embedded-Postgres startup limits; a corrected missing `phase` in a new fixture;
+a corrected unexecuted clock query in result persistence; Linux fixture builds
+first failed on shared build storage and then missing protocol source files,
+resolved by a container-local build with the complete inputs. The 8,192-chunk
+case exposed a test-provider cap of 4,096 (expanded in the test binary), then
+exceeded the old short-stream wait limit. Its longer measurement now uses the
+normal 60-second lease and renewal rather than an artificially long owner lease.
+The long-stream renewal fixture initially omitted the controller PID/start identity;
+renewal correctly rejected it. Complete fixture identity fixed the test. Per-turn
+characterization then exposed the missing remote suspended-lifecycle projection;
+that is now verified against the bound surviving sandbox. The fixture also now
+uses the existing admission snapshot rebinder, which its warm-only predecessor
+omitted. The first benchmark attempts lacked ES-module setup and the observer's
+pg_stat_statements extension; the isolated Linux pilot needed its native Sharp
+dependency. No database-load acceptance claim has been made from failed attempts.
 There is no Paperclip issue bound to this local chat; this versioned source plan
 is the handoff, rather than an upload to an unrelated company or issue.
 
-Next action: reconcile the latest uninterrupted-upgrades changes, then add the
-marker-free warm/per-turn characterization described above. Its result decides
-the minimum missing native envelope/discovery change. Full-home application
+Next action: complete the remaining native qualification and compatibility cells,
+retain reproducible measurements, and prepare the reviewed PR. Full-home application
 acceptance remains dependent on workspace/backup durability; no controller-only
 test can waive that gate.

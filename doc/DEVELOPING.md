@@ -2485,6 +2485,17 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+For remote controller disk-loss work, use the existing control-plane snapshot
+transaction and `native-controller-recovery.ts`; do not add a second snapshot
+writer. The private versioned metadata is limited to 4 KiB. Its importer handles
+one verified retained source while the source disk is available. Workspace and
+provider-backup migrations remain with their storage owners. See
+[the continuity verification guide](testing-native-remote-continuity.md) for
+the direct/prepared transport and three-controller continuation fixtures.
+An upgrade readiness report contains preliminary native evidence, not permission
+to remove a deployment volume. Keep the checkpoint pool bounded and measure all
+pools when qualifying database cost; the current size of two is a default.
+
 Custom source-mode HTTP launchers should create their listener with
 `createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
 API origin as `apiUrl`. This registers the native Runner WebSocket transport

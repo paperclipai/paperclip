@@ -1331,6 +1331,9 @@ export function heartbeatService(
   }
 
   function resumeQueuedRunsAfterDrain() {
+    for (const [runId, deadline] of nativeRecoveryDeadlines) {
+      scheduleNativeSessionResumeDispatch(runId, deadline, "restart");
+    }
     const promise = heartbeatQueue.resumeQueuedRunsAfterDrain();
     activeWakeupPromises.add(promise);
     void promise.then(
@@ -1706,10 +1709,15 @@ export function heartbeatService(
     }
   }
 
+  // Native ownership waits survive a temporary drain without adding a polling
+  // loop. A process restart rediscovers the same deadlines from coordinator rows.
+  const nativeRecoveryDeadlines = new Map<string, Date>();
   function scheduleNativeSessionResumeDispatch(
     runId: string,
     nextAttemptAt: Date,
+    mode?: "restart",
   ) {
+    if (mode === "restart") nativeRecoveryDeadlines.set(runId, nextAttemptAt);
     const prior = nativeSessionResumeDispatchTimers.get(runId);
     if (prior) clearTimeout(prior);
     const delayMs = Math.max(0, nextAttemptAt.getTime() - Date.now());
@@ -1718,6 +1726,11 @@ export function heartbeatService(
       nativeSessionResumeDispatchTimers.delete(runId);
       void (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
+        if (mode === "restart") {
+          nativeRecoveryDeadlines.delete(runId);
+          await recoverNativeRunsAfterRestart(new Date(), [runId]);
+          return;
+        }
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
@@ -1739,6 +1752,7 @@ export function heartbeatService(
           },
         });
       })().catch((error) => {
+        if (mode === "restart") scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), "restart");
         logger.error(
           { err: error, runId },
           "failed to dispatch scheduled native session resume",
