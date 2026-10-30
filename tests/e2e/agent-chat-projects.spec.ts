@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 import { idle, json, send, setup } from "./agent-chat.shared";
@@ -656,3 +657,89 @@ test("disabling the experiment lets an active turn settle and keeps idle history
     await f.restore();
   }
 });
+
+for (const cancellationStatus of [200, 500]) {
+  test(`fixture restore resets experimental settings when cancellation returns ${cancellationStatus}`, async ({
+    playwright,
+  }) => {
+    const original = {
+      enableAgentChat: false,
+      enableClassicTaskInterface: true,
+    };
+    const settings = { ...original };
+    const requests: string[] = [];
+    let agentCount = 0;
+    const server = createServer(async (req, res) => {
+      const route = `${req.method} ${req.url}`;
+      requests.push(route);
+      let body: unknown;
+      if (req.url === "/api/instance/settings/experimental") {
+        if (req.method === "PATCH") {
+          let data = "";
+          for await (const chunk of req) data += chunk.toString();
+          Object.assign(settings, JSON.parse(data));
+        }
+        body = settings;
+      } else if (route === "POST /api/companies") {
+        body = { id: "company-1", issuePrefix: "CHAT" };
+      } else if (route === "POST /api/companies/company-1/agents") {
+        body = { id: `agent-${++agentCount}` };
+      } else if (route === "GET /api/companies/company-1/chats/agent-1") {
+        body = null;
+      } else if ([
+        "GET /api/companies/company-1/issues",
+        "GET /api/companies/company-1/projects",
+        "GET /api/companies/company-1/heartbeat-runs",
+      ].includes(route)) {
+        body = [];
+      } else if (route === "GET /api/companies/company-1/live-runs") {
+        body = [{ id: "run-1" }];
+      } else if (route === "POST /api/heartbeat-runs/run-1/cancel") {
+        res.statusCode = cancellationStatus;
+        body = cancellationStatus === 500
+          ? { error: "Internal server error" }
+          : { id: "run-1", status: "cancelled" };
+      } else {
+        res.statusCode = 404;
+        body = { error: `Unexpected fixture request: ${route}` };
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(body));
+    });
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture server address");
+    const request = await playwright.request.newContext({
+      baseURL: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const fixture = await setup(request);
+      expect(settings).toEqual({
+        enableAgentChat: true,
+        enableClassicTaskInterface: false,
+      });
+      if (cancellationStatus === 500) {
+        await expect(fixture.restore()).rejects.toThrow(
+          '500 {"error":"Internal server error"}',
+        );
+      } else {
+        await fixture.restore();
+      }
+      expect(settings).toEqual(original);
+      expect(requests.filter((route) => route.endsWith("/cancel"))).toEqual([
+        "POST /api/heartbeat-runs/run-1/cancel",
+      ]);
+      expect(requests.filter((route) =>
+        route === "PATCH /api/instance/settings/experimental",
+      )).toHaveLength(2);
+    } finally {
+      await request.dispose();
+      const closed = Promise.withResolvers<void>();
+      server.close((error) => error ? closed.reject(error) : closed.resolve());
+      await closed.promise;
+    }
+  });
+}

@@ -144,6 +144,54 @@ describe("cursor_cloud execute", () => {
     getRunMock.mockReset();
   });
 
+  describe.each([false, true])("model selection (resumed=%s)", (resumed) => {
+    it.each([
+      ["composer-2.5", { id: "composer-2.5", params: [{ id: "fast", value: "false" }] }],
+      ["  composer-2.5  ", { id: "composer-2.5", params: [{ id: "fast", value: "false" }] }],
+      ["composer-2.5-fast", { id: "composer-2.5-fast" }],
+      ["gpt-5.4", { id: "gpt-5.4" }],
+      [undefined, undefined],
+      ["   ", undefined],
+    ])("passes the requested selection to the SDK for %s", async (configuredModel, expectedModel) => {
+      const sdkAgent = createMockSdkAgent();
+      createMock.mockResolvedValue(sdkAgent);
+      resumeMock.mockResolvedValue(sdkAgent);
+      const ctx = createContext();
+      if (configuredModel === undefined) delete ctx.config.model;
+      else ctx.config.model = configuredModel;
+      if (resumed) {
+        ctx.runtime.sessionParams = {
+          cursorAgentId: "agent-previous",
+          runtime: "cloud",
+          envType: "cloud",
+          repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+        };
+      }
+
+      const result = await execute(ctx);
+
+      expect(result.exitCode).toBe(0);
+      if (resumed) {
+        expect(resumeMock).toHaveBeenCalledTimes(1);
+        expect(resumeMock.mock.calls[0]?.[0]).toBe("agent-previous");
+        expect(createMock).not.toHaveBeenCalled();
+      } else {
+        expect(createMock).toHaveBeenCalledTimes(1);
+        expect(resumeMock).not.toHaveBeenCalled();
+      }
+      const agentOptions = resumed ? resumeMock.mock.calls[0]?.[1] : createMock.mock.calls[0]?.[0];
+      expect(sdkAgent.send).toHaveBeenCalledTimes(1);
+      const sendOptions = sdkAgent.send.mock.calls[0]?.[1];
+      if (expectedModel === undefined) {
+        expect(agentOptions).not.toHaveProperty("model");
+        expect(sendOptions).not.toHaveProperty("model");
+      } else {
+        expect(agentOptions.model).toEqual(expectedModel);
+        expect(sendOptions?.model).toEqual(expectedModel);
+      }
+    });
+  });
+
   it.each([false, true])("sends the central chat directive to Cursor Cloud (custom=%s)", async (custom) => {
     const sdkAgent = createMockSdkAgent();
     createMock.mockResolvedValue(sdkAgent);

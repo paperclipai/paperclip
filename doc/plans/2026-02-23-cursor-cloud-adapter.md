@@ -19,6 +19,16 @@ It is a remote orchestration adapter with:
 3. polling fallback for reliability
 4. synthesized stdout events for Paperclip UI/CLI
 
+### Current SDK model selection
+
+The `cursor_cloud` adapter uses `@cursor/sdk`. An explicit
+`adapterConfig.model: "composer-2.5"` sends
+`{ id: "composer-2.5", params: [{ id: "fast", value: "false" }] }`
+to agent creation, session resume, and prompt send. This preserves the standard
+Composer selection in the SDK request. Other model IDs, including
+`composer-2.5-fast`, remain unchanged. An absent or blank model sends no model
+selection. These are request-shape guarantees, not verified provider billing.
+
 ## Key V1 Decisions
 
 1. **Auth to Cursor API** uses `Authorization: Bearer <CURSOR_API_KEY>`.

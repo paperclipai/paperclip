@@ -900,6 +900,21 @@ the development server's unbundled module graph on each navigation. Browser
 assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
+The Agent Chat shared fixture restores its original instance experimental settings
+even when live-run cleanup fails. A failed cancellation still fails the test; it
+is not retried or ignored. Run
+`pnpm test:e2e tests/e2e/agent-chat-projects.spec.ts --grep "fixture restore"`
+to check both successful cancellation and an HTTP 500 response without leaking
+experimental settings into the following tests.
+
+Plugin scheduling tests advance settlement to the coordinator's registered wake.
+They do not add a virtual second on every assertion retry while PostgreSQL reads
+are in flight. The cron-change regression also holds a real `plugin_jobs` table
+lock for three seconds and checks that the job runs only at its recomputed
+deadline. Run it with
+`pnpm --filter @paperclipai/server exec vitest run src/__tests__/plugin-scheduled-work.test.ts`.
+The idle-work assertion and its five-second wait remain unchanged.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 #### Embedded Postgres template cache

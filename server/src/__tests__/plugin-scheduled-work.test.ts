@@ -1,6 +1,7 @@
 import { finishServiceShutdown } from "../shutdown.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { createDb, plugins, pluginJobs, pluginJobRuns } from "@paperclipai/db";
@@ -58,8 +59,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   const job = (key = "hourly", schedule = "0 * * * *") => pluginRegistryService(db).upsertJob(pluginId, key, { schedule });
   const runs = () => db.select().from(pluginJobRuns).where(eq(pluginJobRuns.pluginId, pluginId));
   async function settled() {
+    await vi.advanceTimersByTimeAsync(0);
     await vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+      const next = coordinator!.nextWakeAt();
+      if (idleWorkSnapshot().active > 0 && next !== null) {
+        await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+      }
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 5000 });
   }
@@ -176,11 +181,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await due(); await start(); await completed();
     await pluginJobStore(db).syncJobDeclarations(pluginId, []); await quiet(); expect(await runs()).toHaveLength(1);
   });
-  it("recomputes a changed cron schedule", async () => {
+  it.each([0, 3000])("recomputes a changed cron schedule with a %i ms database read lock", async (readLockMs) => {
     await job("changed", "0 0 1 1 *"); await start(); await settled();
-    await job("changed", "* * * * *"); await settled();
-    expect(coordinator!.nextWakeAt()! - Date.now()).toBeLessThanOrEqual(60_000);
-    await vi.advanceTimersByTimeAsync(60_000); await completed();
+    await job("changed", "* * * * *");
+    let locked: Promise<unknown> | undefined;
+    if (readLockMs > 0) {
+      const acquired = Promise.withResolvers<void>();
+      locked = db.transaction(async tx => {
+        await tx.execute(sql`lock table plugin_jobs in access exclusive mode`);
+        acquired.resolve();
+        await realDelay(readLockMs);
+      });
+      await Promise.race([acquired.promise, locked]);
+    }
+    try { await settled(); } finally { await locked; }
+    const deadline = coordinator!.nextWakeAt()!;
+    expect(deadline - Date.now()).toBeGreaterThan(0);
+    expect(deadline - Date.now()).toBeLessThanOrEqual(60_000);
+    expect(rpc).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(deadline - Date.now()); await completed();
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc.mock.calls[0][2]).toMatchObject({ job: { scheduledAt: new Date(deadline).toISOString() } });
   });
   it("retries failed completion persistence without repeating the plugin side effect", async () => {
     await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
