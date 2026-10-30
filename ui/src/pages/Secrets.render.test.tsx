@@ -465,6 +465,62 @@ describe("Secrets page layout", () => {
     });
   });
 
+  it("marks Local encrypted as default only when no other provider vault is default", async () => {
+    const root = createRoot(container);
+    const renderVaults = (configs: CompanySecretProviderConfig[]) => (
+      <ProviderVaultsTab
+        providers={providers}
+        providerConfigs={configs}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+        onCreate={vi.fn()}
+        onEdit={vi.fn()}
+        onDisable={vi.fn()}
+        onRemove={vi.fn()}
+        onSetDefault={vi.fn()}
+        onHealthCheck={vi.fn()}
+        onImportSecrets={vi.fn()}
+        pendingActionId={null}
+      />
+    );
+    const localVaults = providerConfigs.map((config) => ({
+      ...config,
+      isDefault: false,
+    })) as CompanySecretProviderConfig[];
+
+    await act(async () => {
+      root.render(renderVaults(localVaults));
+    });
+    await flushReact();
+
+    expect(
+      container.querySelector("#provider-vaults-local_encrypted h2")
+        ?.textContent,
+    ).toBe("Local encrypted (default)");
+
+    await act(async () => {
+      root.render(
+        renderVaults(
+          localVaults.map((config) => ({
+            ...config,
+            isDefault: config.provider === "aws_secrets_manager",
+          })),
+        ),
+      );
+    });
+    await flushReact();
+
+    expect(
+      container.querySelector("#provider-vaults-local_encrypted h2")
+        ?.textContent,
+    ).toBe("Local encrypted");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("refreshes existing AWS secrets from a provider vault card", async () => {
     const root = await renderSecrets(container);
 
@@ -879,6 +935,59 @@ describe("Secrets page layout", () => {
     expect(secretValueTextarea?.className).toContain("min-w-0");
     expect(secretValueTextarea?.className).toContain("overflow-x-hidden");
     expect(secretValueTextarea?.className).toContain("break-all");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("prefers a usable non-local default vault when creating a secret", async () => {
+    mockSecretsApi.providerConfigs.mockResolvedValue([
+      { ...providerConfigs[0], isDefault: true },
+      { ...providerConfigs[1], isDefault: true },
+    ] as CompanySecretProviderConfig[]);
+    mockSecretsApi.create.mockResolvedValue(
+      makeCompanySecret({
+        provider: "aws_secrets_manager",
+        providerConfigId: "vault-aws",
+      }),
+    );
+    const root = await renderSecrets(container);
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    expect((document.getElementById("new-secret-provider") as HTMLSelectElement).value).toBe(
+      "aws_secrets_manager",
+    );
+    expect((document.getElementById("new-secret-vault") as HTMLSelectElement).value).toBe(
+      "vault-aws",
+    );
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "AWS test token");
+      setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
+    });
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create secret",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        provider: "aws_secrets_manager",
+        providerConfigId: "vault-aws",
+      }),
+    );
 
     await act(async () => {
       root.unmount();
