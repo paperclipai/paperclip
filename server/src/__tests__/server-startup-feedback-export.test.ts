@@ -641,6 +641,7 @@ describe("startServer feedback export wiring", () => {
       expect(cloudRuntimeStartupMocks.telemetry).toHaveBeenCalledExactlyOnceWith({ enabled: false });
       expect(createBetterAuthInstanceMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ authDisableSignUp: true, port: 4321 }), expect.anything());
       expect(started.listenPort).toBe(4321);
+      expect(cloudMigrationMocks.qualify.mock.invocationCallOrder[0]).toBeLessThan(createAppMock.mock.invocationCallOrder[0]!);
     } finally {
       release?.();
       vi.unstubAllEnvs();
@@ -661,11 +662,14 @@ describe("startServer feedback export wiring", () => {
   });
 
   it("stops before configuration consumers when the atomic Cloud migration fails", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
     cloudMigrationMocks.migrate.mockRejectedValueOnce(new Error("migration did not commit"));
-    await expect(startServer()).rejects.toThrow("migration did not commit");
-    expect(cloudRuntimeStartupMocks.initialize).not.toHaveBeenCalled();
-    expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
-    expect(createAppMock).not.toHaveBeenCalled();
+    try {
+      await expect(startServer()).rejects.toThrow("migration did not commit");
+      expect(cloudRuntimeStartupMocks.initialize).not.toHaveBeenCalled();
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {

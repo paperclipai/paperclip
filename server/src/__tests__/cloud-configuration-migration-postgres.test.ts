@@ -302,4 +302,24 @@ const keys = ["adapter-settings:v1", "cloud-runtime-config:v1", "cloud-configura
     expect(missing?.blockers).toContainEqual(expect.objectContaining({ code: "current_image_catalog_unavailable" }));
     expect((await migration().inspectStored())?.lastPackageMismatch?.blockers).toContainEqual(expect.objectContaining({ code: "current_image_catalog_unavailable" }));
   });
+
+  it.skipIf(process.platform === "win32")("detects changed pnpm dependency bytes in a builtin package overlap comparison", async () => {
+    await legacy();
+    const image = fixture();
+    await install(image);
+    await migration().migrate();
+    const dependency = path.join(image.packageRoot, "node_modules", ".pnpm", "dep@1.0.0", "node_modules", "dep");
+    await fs.mkdir(dependency, { recursive: true });
+    await fs.writeFile(path.join(dependency, "index.js"), "export const value = 1;");
+    await fs.symlink(path.relative(path.join(image.packageRoot, "node_modules"), dependency), path.join(image.packageRoot, "node_modules", "dep"));
+    const installs = image.installs.map(({ distribution: _distribution, ...install }) => install);
+    const loader = loaderFor(image);
+    const original = await migration().qualify({ installs, loadManifest: (root) => loader.loadManifest(root) });
+    expect(original.configurationPackagesEligible).toBe(true);
+    await fs.writeFile(path.join(dependency, "index.js"), "export const value = 2;");
+    const changed = await migration(peer, homeB).qualify({ installs, loadManifest: (root) => loader.loadManifest(root), expectedPackageEvidenceDigest: original.packageEvidenceDigest });
+    expect(changed.configurationPackagesEligible).toBe(true);
+    expect(changed.samePackageOverlapEligible).toBe(false);
+    expect(changed.overlapBlockers).toContainEqual(expect.objectContaining({ code: "package_evidence_changed" }));
+  });
 });

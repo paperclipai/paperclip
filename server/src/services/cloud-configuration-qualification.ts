@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { BUNDLED_PLUGIN_CATALOG, resolveBundledCatalogRoot, resolveBundledPluginInstalls, type ResolvedBundledPlugin } from "./bundled-plugins.js";
+import { BUNDLED_PLUGIN_CATALOG, resolveBundledCatalogRoot, resolveBundledPluginInstalls, resolveManagedBundledPluginKeys, type ResolvedBundledPlugin } from "./bundled-plugins.js";
 import { readDistributionPluginCatalog } from "./distribution-plugin-catalog.js";
 import { createBundledPluginPackageResolver } from "./bundled-plugin-package.js";
 import { cloudConfigurationMigrationService } from "./cloud-configuration-migration.js";
@@ -18,7 +18,7 @@ export async function qualifyCloudConfigurationForCurrentImage(db: Db, options: 
   let installs: ResolvedBundledPlugin[];
   try {
     const distribution = readDistributionPluginCatalog(catalogRoot, BUNDLED_PLUGIN_CATALOG);
-    installs = resolveBundledPluginInstalls(getManagedInstanceConfig(env)?.plugins.autoInstall ?? [], {
+    installs = resolveBundledPluginInstalls(resolveManagedBundledPluginKeys(getManagedInstanceConfig(env)?.plugins.autoInstall, env) ?? [], {
       catalogRoot, env, enforceCatalogRoot: true, distributionPlugins: distribution,
     });
   } catch {
