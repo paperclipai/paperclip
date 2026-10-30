@@ -173,6 +173,17 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect(await service.listVersions(companyId, skill.id)).toHaveLength(1);
   });
 
+  it("does not overwrite a metadata edit committed while content was being prepared", async () => {
+    const companyId = await company();
+    const service = companySkillService(db);
+    const skill = await service.createLocalSkill(companyId, { name: "Metadata race", markdown: "# Original" });
+    await expect(service.updateFile(companyId, skill.id, "SKILL.md", "# Candidate", null, { publication: {
+      beforeLock: async () => { await service.updateSkill(companyId, skill.id, { description: "Acknowledged metadata" }); },
+    } })).rejects.toMatchObject({ status: 409 });
+    expect(await service.getById(companyId, skill.id)).toMatchObject({ description: "Acknowledged metadata", currentVersionId: skill.currentVersionId });
+    expect(await service.readFile(companyId, skill.id, "SKILL.md")).toMatchObject({ content: "# Original" });
+  });
+
   it("restores the exact historical inventory and preserves history through rename and fork", async () => {
     const companyId = await company();
     const service = companySkillService(db);

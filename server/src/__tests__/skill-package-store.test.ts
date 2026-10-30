@@ -83,6 +83,26 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     return { companyId, id, store, skills, service, resolve };
   }
 
+  it("keeps unchanged linked-local execution on the verified manifest path with complete metadata indexes", async () => {
+    const companyId = await company();
+    vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
+    const directory = path.join(home, `linked-${companyId}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Linked");
+    await fs.writeFile(path.join(directory, "support.txt"), "unchanged support");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "linked", slug: "linked", name: "Linked",
+      markdown: "# Linked", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }] }).returning();
+    const service = companySkillService(db);
+    const version = await service.createVersion(companyId, skill!.id);
+    const resolve = () => service.listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill!.key]), snapshotLatest: true });
+    await resolve();
+    const read = vi.spyOn(fs, "readFile");
+    const [runtime] = await resolve();
+    expect(runtime?.versionId).toBe(version.id);
+    expect(read.mock.calls.filter(([file]) => String(file).endsWith("support.txt"))).toHaveLength(0);
+  });
+
   it("orders skill and package locks consistently with an edit's dedicated upload connection", async () => {
     const f = await fixture();
     const skill = f.skills[0]!.skill;

@@ -33,6 +33,13 @@ export type StoredSkillVersion = typeof companySkillVersions.$inferSelect;
 export function skillVersionFileMap(files: Array<Pick<CompanySkillVersionFileInventoryEntry, "path" | "kind" | "encoding">>): SkillPackageFileMapping[] {
   return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" as const }));
 }
+export function skillVersionUsesWholePackage(version: Pick<StoredSkillVersion, "packageFileMap">, manifest: SkillPackageManifest) {
+  if (!version.packageFileMap) return true;
+  const paths = new Set(version.packageFileMap.map(file => file.path));
+  return paths.size === manifest.files.length && version.packageFileMap.length === manifest.files.length
+    && version.packageFileMap.every(file => file.path === file.sourcePath)
+    && manifest.files.every(file => paths.has(file.path));
+}
 type ReadScope = { db: Db; descriptors: Map<string, Promise<Descriptor>>; durable: Map<string, Promise<boolean>>; versions: Map<string, StoredSkillVersion> };
 const readScope = new AsyncLocalStorage<ReadScope>();
 export function withSkillPackageReadScope<T>(db: Db, action: () => Promise<T>): Promise<T> {

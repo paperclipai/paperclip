@@ -95,3 +95,31 @@ handoff, and production volume removal are outside this slice.
   Current Cloud policy uses `test.paperclip.app` for branch experiments. The local
   Cloud checkout's older runbook missed this boundary. Qualification is moving to
   an owned disposable test tenant; the rejected request made no tenant deployment.
+- All 53 applicable CI checks passed at `0dc9a42a6f` (two skipped checks).
+  The next review found that complete metadata indexes bypassed the unchanged
+  linked-local manifest shortcut. Whole-package identity mappings now retain that
+  shortcut; subsets and remapped paths still use their projected inventory.
+- A new concurrency regression reproduced a content save overwriting an already
+  acknowledged metadata edit. Publication now checks the metadata fields it will
+  replace as well as the version head, and returns 409 when they changed during
+  preparation. The managed-content and catalog suites passed after this fix.
+- Local package/project checks hit timing limits while an older full-suite worker
+  remained active for over 80 minutes. That task-owned run was stopped; it is not
+  recorded as a full-suite pass. All four isolated package cases then passed,
+  including the two previous timeout failures and the linked-local regression.
+  Final project-access/process qualification is running sequentially. Server
+  typecheck passed with both final fixes.
+- Correct disposable branch-test tenant:
+  https://ephemeral-skills-qa-oct-30.test.paperclip.app
+  Stack `stack-ephemeral-skills-qa-oct-30` is pinned user-managed. Baseline A
+  `6518b323528b2b595c5949c3ed2c57a8d2438cb6` is confirmed serving from image
+  `ghcr.io/paperclipai/paperclip:sha-6518b323528b2b595c5949c3ed2c57a8d2438cb6-cloud`.
+  Deploy request `19c33461-d232-453a-bdd1-ba357459be48`, campaign
+  `fleet-campaign-1793366873548`, Cloud run `41094804453`: one target succeeded.
+  The user approved saving the same OpenAI key to this test tenant; its remote
+  Codex environment verification succeeded on a Paperclip Computer.
+- Studio created unassigned managed skill `3ade7878-8aaf-47c7-aebd-7da23a8afb5d`
+  (Ephemeral Skills Proof), with instructions, `references/value.txt`, and
+  `scripts/prove.sh`. Remote agent `300911d4-590d-4a26-b1c0-c80db14fa072` is
+  preparing the executable flag through the ordinary API. Fresh-home replacement,
+  delivered-byte verification and compatible rollback remain pending.

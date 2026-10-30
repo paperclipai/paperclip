@@ -3,7 +3,7 @@ import { notifySkillVersionRetention } from "./skill-version-retention-notificat
 import { managedSkillContent, type SkillContentPublication } from "./managed-skill-content.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { verifyFileManifest } from "./file-manifest-cache.js";
-import { skillPackageStorageEnabled, skillPackageStore, skillVersionFileMap, skillVersionMetadataColumns, withSkillPackageReadScope, type StoredSkillVersion } from "./skill-package-store.js";
+import { skillPackageStorageEnabled, skillPackageStore, skillVersionFileMap, skillVersionUsesWholePackage, skillVersionMetadataColumns, withSkillPackageReadScope, type StoredSkillVersion } from "./skill-package-store.js";
 import { skillPackageRuntime } from "./skill-package-runtime.js";
 import type { SkillPackageFileMapping } from "@paperclipai/db";
 import { ensureSkillCacheDirectory, protectedVersions, withSkillVersionCacheLock } from "./skill-version-cache.js";
@@ -6164,8 +6164,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         ? await resolveExistingSkillDirectory(normalizeSkillDirectory(skill)) : null;
       const installedVersion = installedDirectory && skill.currentVersionId
         ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null;
-      const installedUnchanged = installedDirectory && installedVersion?.packageSnapshotId && !installedVersion.packageFileMap
-        ? await verifyFileManifest(installedDirectory, (await packages.manifest(companyId, installedVersion.packageSnapshotId)).files)
+      const installedManifest = installedVersion?.packageSnapshotId
+        ? await packages.manifest(companyId, installedVersion.packageSnapshotId) : null;
+      const installedUnchanged = installedDirectory && installedVersion && installedManifest
+        && skillVersionUsesWholePackage(installedVersion, installedManifest)
+        ? await verifyFileManifest(installedDirectory, installedManifest.files)
         : false;
       if (skill.sourceType === "local_path" && skill.metadata?.sourceKind !== "paperclip_bundled"
         && !installedUnchanged && options.snapshotLatest && unpinned && (!skill.currentVersionId || installedDirectory)) {
@@ -6179,7 +6182,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
             ? [{ path: "SKILL.md", kind: "skill" as const, content: skill.markdown }] : null;
         if (inventory) {
           const previous = installedVersion ?? (skill.currentVersionId ? await readVersionMetadata(companyId, skill.id, skill.currentVersionId) : null);
-          const previousHash = previous?.packageSnapshotId && !previous.packageFileMap
+          const previousHash = previous?.packageSnapshotId && skillVersionUsesWholePackage(previous,
+            installedManifest ?? await packages.manifest(companyId, previous.packageSnapshotId))
             ? (await packages.descriptor(companyId, previous.packageSnapshotId)).contentHash
             : previous ? skillSnapshotHash(await packages.versionFiles(previous)) : null;
           if (previousHash !== skillSnapshotHash(inventory)) {

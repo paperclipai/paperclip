@@ -10,6 +10,7 @@ import { assertSkillSnapshotPath, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_F
 
 export type SkillContentTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type SkillContentRow = typeof companySkills.$inferSelect;
+const contentMetadataFields = ["name", "description", "iconUrl", "color", "tagline", "authorName", "homepageUrl", "categories", "metadata"] as const;
 export type SkillContentActor = { type: "agent" | "user" | "system"; agentId?: string | null; userId?: string | null };
 export type PreparedSkillContent = {
   files: CompanySkillVersionFileInventoryEntry[];
@@ -109,7 +110,7 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
     return { skill: saved!, version: version! };
   }
 
-  async function publish(base: Pick<SkillContentRow, "id" | "companyId" | "slug" | "key" | "sourceType" | "currentVersionId"> & { accessSourceId?: string | null }, candidate: PreparedSkillContent,
+  async function publish(base: Pick<SkillContentRow, "id" | "companyId" | "slug" | "key" | "sourceType" | "currentVersionId" | typeof contentMetadataFields[number]> & { accessSourceId?: string | null }, candidate: PreparedSkillContent,
     fields: Partial<typeof companySkills.$inferInsert>, actor: SkillContentActor | null = null,
     options: SkillContentPublication = {}) {
     if (options.expectedVersionId !== undefined && options.expectedVersionId !== base.currentVersionId) {
@@ -125,6 +126,10 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
       if (current.currentVersionId !== base.currentVersionId || current.key !== base.key || current.sourceType !== base.sourceType
         || current.accessSourceId !== (base.accessSourceId ?? null)) {
         throw conflict("Skill version changed. Read the current version before retrying.");
+      }
+      if (contentMetadataFields.some(field => Object.hasOwn(fields, field)
+        && JSON.stringify(current[field]) !== JSON.stringify(base[field]))) {
+        throw conflict("Skill metadata changed. Read the current skill before retrying.");
       }
       await options.validate?.(tx);
       return append(tx, current, candidate, actor, options, fields);
