@@ -35,6 +35,11 @@ visible-row details independently when verifying `tasks/organize`: row heights,
 title bounds, and the first-row origin should remain stable. Test nested expansion,
 scrolling to more rows, and detail/back navigation; a collection projection must
 never suppress the full task instruction fetch.
+Coordinator Tasks uses the same index and visible-row enrichment. Needs attention
+resolves pending task IDs in batches of at most 100; it does not fetch enriched
+task detail for every decision. Search and participant filters stay on the server.
+Cold Coordinator detail must stay compact when Classic settings arrive before
+the personal workspace preference. Verify explicit history expansion afterward.
 
 ### `new-task`
 
@@ -43,6 +48,8 @@ Use New task from the global launcher, task list, or project task view.
 ### `task-list`
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
+Filters → **Routine tasks** selects tasks created by routine runs. The
+`/issues?view=all&originKind=routine_execution` link opens that selection.
 
 ### `task-detail`
 
@@ -90,7 +97,7 @@ Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search 
 
 Task and inbox rows omit the system interruption labels **Thinking**, **Trying again soon**, and **Retry available**. [Shared row tests](../../ui/src/components/IssueRow.test.tsx) cover working, scheduled-retry, and failed interruptions in both row presentations, including suppression of replacement recovery chips. Task status and other relevant badges remain visible; retry controls remain inside the task conversation.
 
-Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
+Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 
