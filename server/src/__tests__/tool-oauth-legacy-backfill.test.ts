@@ -11,7 +11,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -323,5 +323,240 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
       actorType: "system",
     })).resolves.toBe("legacy-access-token");
     expect(resolveSpy).toHaveBeenCalled();
+  });
+
+  it("locks the parent secret row before its version rows when the backfill rotates an existing secret, matching rotate()'s order", async () => {
+    // The new version row insert runs inside this same transaction. That
+    // differs from `rotate()`, which inserts outside its own locking
+    // transaction. The insert's foreign key holds a `for key share` lock
+    // on the parent row before the transaction reaches the statements this
+    // test orders. A `for update nowait` probe cannot tell that lock apart
+    // from the parent-row update this test looks for. Both lock modes
+    // block that probe. A `for share nowait` probe can tell them apart.
+    // The insert's `for key share` lock allows a `for share nowait` probe
+    // to proceed. The parent-row update does not allow it. The probe fails
+    // only after that update has run.
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `legacy-oauth-lock-${randomUUID()}`,
+      name: `Legacy OAuth Lock ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: `Legacy OAuth Lock Connection ${randomUUID()}`,
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: {
+        url: "https://legacy-lock.example.test/mcp",
+        oauth: {
+          provider: "legacy",
+          access_token: "legacy-access-token-rotated",
+        },
+      },
+      transportConfig: {},
+      credentialSecretRefs: [],
+      credentialRefs: [],
+    }).returning();
+
+    const deterministicKey = `tool-connection/${connection!.id}/oauth/access-token`;
+    const [existingSecret] = await db.insert(companySecrets).values({
+      companyId: company.id,
+      key: deterministicKey,
+      name: `Existing OAuth access ${randomUUID()}`,
+      provider: "local_encrypted",
+      providerConfigId: null,
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef: null,
+      latestVersion: 1,
+      createdByUserId: "test",
+      lastRotatedAt: new Date(),
+    }).returning();
+    await db.insert(companySecretVersions).values({
+      secretId: existingSecret!.id,
+      version: 1,
+      material: { scheme: "local_encrypted_v1", iv: "iv", tag: "tag", ciphertext: "cipher" },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      status: "current",
+      createdByUserId: "test",
+    });
+
+    let holderPidReady!: (pid: number) => void;
+    const holderPidPromise = new Promise<number>((resolve) => { holderPidReady = resolve; });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx
+        .select({ id: companySecretVersions.id })
+        .from(companySecretVersions)
+        .where(and(
+          eq(companySecretVersions.secretId, existingSecret!.id),
+          eq(companySecretVersions.version, 1),
+        ))
+        .for("update");
+      const [backend] = (await tx.execute(sql`select pg_backend_pid() as pid`)) as unknown as Array<{ pid: number }>;
+      holderPidReady(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidPromise;
+
+    const backfillCall = backfillLegacyToolOAuthTokens(db);
+
+    let backfillBlocked = false;
+    try {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = (await db.execute(
+          sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          backfillBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(backfillBlocked).toBe(true);
+      const shareProbe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`select 1 from company_secrets where id = ${existingSecret!.id} for share nowait`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((shareProbe as { cause?: unknown })?.cause ?? shareProbe)).toMatch(/could not obtain lock/i);
+    } finally {
+      releaseHolder();
+    }
+    await holder;
+    const result = await backfillCall;
+    expect(result).toMatchObject({ rotatedSecrets: 1, accessTokensBackfilled: 1 });
+    const [updatedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, existingSecret!.id));
+    expect(updatedSecret).toMatchObject({ latestVersion: 2 });
+  });
+
+  it("updates the parent secret row before it inserts the new version row when it rotates an existing secret", async () => {
+    // A separate transaction holds an uncommitted version row at the same
+    // secret id and version number the backfill will compute. The unique
+    // index on (secret id, version) then blocks the backfill's own insert
+    // of that row until the holder ends. The block happens at the insert
+    // statement itself, so a probe of the parent row at that exact moment
+    // tells the two possible orders apart. If the backfill updates the
+    // parent row first, the update's row lock makes a `for share nowait`
+    // probe fail while the backfill is blocked. If the backfill inserts
+    // the version row first, it blocks before it reaches the parent row,
+    // so the same probe succeeds.
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `legacy-oauth-lock-order-${randomUUID()}`,
+      name: `Legacy OAuth Lock Order ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: `Legacy OAuth Lock Order Connection ${randomUUID()}`,
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: {
+        url: "https://legacy-lock-order.example.test/mcp",
+        oauth: {
+          provider: "legacy",
+          access_token: "legacy-access-token-rotated-again",
+        },
+      },
+      transportConfig: {},
+      credentialSecretRefs: [],
+      credentialRefs: [],
+    }).returning();
+
+    const deterministicKey = `tool-connection/${connection!.id}/oauth/access-token`;
+    const [existingSecret] = await db.insert(companySecrets).values({
+      companyId: company.id,
+      key: deterministicKey,
+      name: `Existing OAuth access ${randomUUID()}`,
+      provider: "local_encrypted",
+      providerConfigId: null,
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef: null,
+      latestVersion: 1,
+      createdByUserId: "test",
+      lastRotatedAt: new Date(),
+    }).returning();
+    await db.insert(companySecretVersions).values({
+      secretId: existingSecret!.id,
+      version: 1,
+      material: { scheme: "local_encrypted_v1", iv: "iv", tag: "tag", ciphertext: "cipher" },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      status: "current",
+      createdByUserId: "test",
+    });
+
+    let holderPidReady!: (pid: number) => void;
+    const holderPidPromise = new Promise<number>((resolve) => { holderPidReady = resolve; });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const releaseHolderError = new Error("release the held version row");
+    const holder = db
+      .transaction(async (tx) => {
+        await tx.insert(companySecretVersions).values({
+          secretId: existingSecret!.id,
+          version: 2,
+          material: { scheme: "local_encrypted_v1", iv: "iv", tag: "tag", ciphertext: "cipher" },
+          valueSha256: "value-sha-holder",
+          fingerprintSha256: "fingerprint-sha-holder",
+          status: "current",
+          createdByUserId: "test",
+        });
+        const [backend] = (await tx.execute(sql`select pg_backend_pid() as pid`)) as unknown as Array<{ pid: number }>;
+        holderPidReady(backend.pid);
+        await holderReleased;
+        throw releaseHolderError;
+      })
+      .catch((error: unknown) => {
+        if (error !== releaseHolderError) throw error;
+      });
+    const holderPid = await holderPidPromise;
+
+    const backfillCall = backfillLegacyToolOAuthTokens(db);
+
+    let backfillBlocked = false;
+    try {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = (await db.execute(
+          sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+        )) as unknown as Array<unknown>;
+        if (rows[0]) {
+          backfillBlocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(backfillBlocked).toBe(true);
+      const shareProbe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`select 1 from company_secrets where id = ${existingSecret!.id} for share nowait`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((shareProbe as { cause?: unknown })?.cause ?? shareProbe)).toMatch(/could not obtain lock/i);
+    } finally {
+      releaseHolder();
+    }
+    await holder;
+    const result = await backfillCall;
+    expect(result).toMatchObject({ rotatedSecrets: 1, accessTokensBackfilled: 1 });
+    const [updatedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, existingSecret!.id));
+    expect(updatedSecret).toMatchObject({ latestVersion: 2 });
   });
 });
