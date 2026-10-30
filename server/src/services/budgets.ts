@@ -181,6 +181,18 @@ export function budgetPoliciesForRun(companyId: string, agentId: string | null, 
   );
 }
 
+function admissionScopes(companyId: string, agentId: string | null, projectId: string | null) {
+  return [{ scopeType: "company" as BudgetScopeType, scopeId: companyId },
+    ...(agentId ? [{ scopeType: "agent" as BudgetScopeType, scopeId: agentId }] : []),
+    ...(projectId ? [{ scopeType: "project" as BudgetScopeType, scopeId: projectId }] : [])];
+}
+
+async function computeActiveObservedSpends(db: Db, policies: PolicyRow[]): Promise<Array<ObservedSpend | undefined>> {
+  const observed = await computeObservedSpends(db, policies.filter(policy => policy.isActive));
+  let next = 0;
+  return policies.map(policy => policy.isActive ? observed[next++] : undefined);
+}
+
 function unpricedUsageBlocks(policy: PolicyRow, observed: ObservedSpend) {
   return policy.unpricedUsagePolicy !== "allow"
     && (observed.unpricedEventCount > 0 || observed.unknownBrowserRunCount > 0);
@@ -586,17 +598,17 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   }
 
   async function reconcileScope(companyId: string, scopeType: BudgetScopeType, scopeId: string,
-    prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpend[] }) {
+    prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: Array<ObservedSpend | undefined> }) {
     const scope = prepared?.scope ?? await resolveScopeRecord(db, scopeType, scopeId);
     if (scope.companyId !== companyId) throw notFound("Budget scope not found");
     const policies = prepared?.policies ?? await db.select().from(budgetPolicies).where(and(
       eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, scopeType), eq(budgetPolicies.scopeId, scopeId),
     ));
     let recoveringPolicy: PolicyRow | undefined;
-    const observations = prepared?.observations ?? await computeObservedSpends(db, policies);
+    const observations = prepared?.observations ?? await computeActiveObservedSpends(db, policies);
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
-      if (observedBlocks(policy, observed)) {
+      if (observed && observedBlocks(policy, observed)) {
         await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy, !scope.budgetHeld);
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
@@ -612,11 +624,11 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       }
       // An open native coordinator must finish the original run's accounting.
       // Deny fresh work without pausing/cancelling that recovery or its hold.
-      if (policy.isActive && policy.hardStopEnabled && policy.amount > 0 && observed.recoveringRunCount > 0) recoveringPolicy ??= policy;
+      if (observed && policy.isActive && policy.hardStopEnabled && policy.amount > 0 && observed.recoveringRunCount > 0) recoveringPolicy ??= policy;
       // A closed UTC window, inactive policy, or budget raise releases only
       // budget-owned pauses. Manual pauses remain operator decisions.
       await resolveOpenIncidentsForPolicy(policy.id, "approved", "budget_service", "hard");
-      if (!policy.isActive || !policy.notifyEnabled || compareCents(observed.totalExact, Math.ceil(policy.amount * policy.warnPercent / 100)) < 0) {
+      if (!observed || !policy.isActive || !policy.notifyEnabled || compareCents(observed.totalExact, Math.ceil(policy.amount * policy.warnPercent / 100)) < 0) {
         await resolveOpenIncidentsForPolicy(policy.id, "approved", "budget_service", "soft");
       }
     }
@@ -710,18 +722,15 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
   async function evaluateAdmissionInTransaction(companyId: string, agentId: string | null,
     context?: { issueId?: string | null; projectId?: string | null }) {
-    const scopes: Array<{ scopeType: BudgetScopeType; scopeId: string }> = [
-      { scopeType: "company", scopeId: companyId }, ...(agentId ? [{ scopeType: "agent" as const, scopeId: agentId }] : []),
-      ...(context?.projectId ? [{ scopeType: "project" as const, scopeId: context.projectId }] : []),
-    ];
+    const scopes = admissionScopes(companyId, agentId, context?.projectId ?? null);
     const records = await Promise.all(scopes.map(scope => resolveScopeRecord(db, scope.scopeType, scope.scopeId)));
     if (records.some(scope => scope.companyId !== companyId)) throw notFound("Budget scope not found");
     const policies = await db.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, companyId),
       budgetPoliciesForRun(companyId, agentId, context?.projectId ?? null)));
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeActiveObservedSpends(db, policies);
     const reservationIndexes = policies.map((policy, i) => policy.isActive && policy.hardStopEnabled && policy.metric === "billed_cents" && policy.amount > 0 ? i : -1).filter(i => i >= 0);
     const admission = (block: Awaited<ReturnType<typeof reconcileScope>>) => ({ block,
-      policies: reservationIndexes.map(i => policies[i]), observations: reservationIndexes.map(i => observations[i]) });
+      policies: reservationIndexes.map(i => policies[i]), observations: reservationIndexes.map(i => observations[i]!) });
     for (const [index, { scopeType, scopeId }] of scopes.entries()) {
       const indexes = policies.map((policy, i) => policy.scopeType === scopeType && policy.scopeId === scopeId ? i : -1).filter(i => i >= 0);
       const block = await reconcileScope(companyId, scopeType, scopeId, { scope: records[index],
@@ -1126,14 +1135,29 @@ export async function reconcileDueBudgetPolicies(db: Db, options: { startup?: bo
   return { nextCursor: rows.length === 100 ? rows[rows.length - 1].id : null };
 }
 
+async function admissionNeedsAccountingLock(db: Db, companyId: string, agentId: string | null, projectId: string | null) {
+  for (const { scopeType, scopeId } of admissionScopes(companyId, agentId, projectId)) {
+    const scope = await resolveScopeRecord(db, scopeType, scopeId);
+    if (scope.companyId !== companyId) throw notFound("Budget scope not found");
+    if (scope.paused || scope.budgetHeld) return true;
+  }
+  const [policy] = await db.select({ id: budgetPolicies.id }).from(budgetPolicies).where(and(
+    eq(budgetPolicies.companyId, companyId), budgetPoliciesForRun(companyId, agentId, projectId),
+    or(and(eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true), sql`${budgetPolicies.amount} > 0`), openIncidentScope),
+  )).limit(1);
+  return Boolean(policy);
+}
+
 export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
   const reads = budgetServiceInTransaction(db);
   const mutate = <T>(companyId: string, work: (service: ReturnType<typeof budgetServiceInTransaction>) => Promise<T>) =>
     withAccountingTransaction(db, companyId, (tx, publications) => work(budgetServiceInTransaction(tx, publications)));
   return {
     ...reads,
-    evaluateAdmission: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
-      mutate(companyId, service => service.evaluateAdmission(companyId, agentId, context)),
+    evaluateAdmission: async (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
+      await admissionNeedsAccountingLock(db, companyId, agentId, context?.projectId ?? null)
+        ? mutate(companyId, service => service.evaluateAdmission(companyId, agentId, context))
+        : { block: null, policies: [] as PolicyRow[], observations: [] as ObservedSpend[] },
     evaluateAffectedScopes: (companyId: string, agentId: string | null, projectId: string | null) =>
       mutate(companyId, service => service.evaluateAffectedScopes(companyId, agentId, projectId)),
     reconcileScope: (companyId: string, scopeType: BudgetScopeType, scopeId: string) =>
@@ -1142,8 +1166,10 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     upsertPolicy: (companyId: string, input: BudgetPolicyUpsertInput, actorUserId: string | null) =>
       mutate(companyId, service => service.upsertPolicy(companyId, input, actorUserId)),
     evaluateCostEvent: (event: typeof costEvents.$inferSelect) => mutate(event.companyId, service => service.evaluateCostEvent(event)),
-    getInvocationBlock: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
-      mutate(companyId, service => service.getInvocationBlock(companyId, agentId, context)),
+    getInvocationBlock: async (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
+      await admissionNeedsAccountingLock(db, companyId, agentId, context?.projectId ?? null)
+        ? mutate(companyId, service => service.getInvocationBlock(companyId, agentId, context))
+        : null,
     resolveIncident: (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) =>
       mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId)),
   };

@@ -3698,6 +3698,10 @@ Budget admission and settlement share the company accounting lock. They evaluate
 only the company, responsible agent, and applicable project. Running usage is an
 internal exposure projection, not a provisional ledger charge. Cancellation and
 lifecycle effects run through the delivery coordinator after accounting commits.
+Budget service admission checks (`getInvocationBlock`, `evaluateAdmission`)
+skip the lock when no scope is paused or budget-held, no active hard-stop policy
+applies, and no applicable policy has an open incident. Spend is observed only
+for active policies. Reservations before paid work always take the lock.
 
 The final provider gate commits a dispatch claim before entering provider code.
 The reservation and native recovery lease generation fence duplicate handoffs;
