@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -83,10 +83,18 @@ const { PaperclipControlPlanePort: BaselinePort } = await load(
 const require = createRequire(path.join(repoRoot, "server/package.json"));
 const postgres = createRequire(path.join(repoRoot, "packages/db/package.json"))("postgres");
 const { and, eq, desc } = require("drizzle-orm");
+const pressure = (base: string, name: string) => {
+  const file = path.join(base, name + ".pressure");
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : null;
+};
 const pgResources = () => {
   const raw = fs.readFileSync(path.join(pgCgroup, "cpu.stat"), "utf8");
   return {
     cpuUsec: Number(raw.match(/usage_usec (\d+)/)![1]),
+    throttledUsec: Number(raw.match(/throttled_usec (\d+)/)?.[1] ?? 0),
+    throttledPeriods: Number(raw.match(/nr_throttled (\d+)/)?.[1] ?? 0),
+    cpuPressure: pressure(pgCgroup, "cpu"),
+    memoryPressure: pressure(pgCgroup, "memory"),
     memoryBytes: Number(fs.readFileSync(path.join(pgCgroup, "memory.current"), "utf8")),
   };
 };
@@ -96,6 +104,8 @@ const revision = (directory: string) =>
     encoding: "utf8",
   }).trim();
 const provenance = {
+  harnessSha256: createHash("sha256").update(fs.readFileSync(fileURLToPath(import.meta.url))).digest("hex"),
+  lockObserver: { intervalMs: 25, nominalQueriesPerSecond: 40, includedInPostgresCpu: true },
   baselineRevision: process.env.BENCH_BASELINE_REVISION ?? revision(baselineRoot),
   candidateRevision: process.env.BENCH_CANDIDATE_REVISION ?? revision(repoRoot),
   candidateDiff:
@@ -132,6 +142,58 @@ const summary = (a: number[]) => {
     max: b.at(-1) ?? 0,
   };
 };
+// Sampling reports bounded estimates for observed episodes, never exact lock time.
+// A wait shorter than a polling gap can be missed entirely. Query text is excluded.
+function observeLockWaits(monitor: any, intervalMs = 25) {
+  const active = new Map<string, any>();
+  const episodes: any[] = [];
+  const gaps: number[] = [];
+  const errors: string[] = [];
+  let previous = performance.now(), stopped = false;
+  let poll: Promise<void> | undefined;
+  let samples = 0;
+  const collect = async () => {
+    const rows = await monitor`select a.pid,a.application_name,a.query_start::text as query_start,a.wait_event,l.waitstart::text as wait_start,extract(epoch from clock_timestamp()-l.waitstart)*1000 as wait_age_ms from pg_stat_activity a join pg_locks l on l.pid=a.pid and not l.granted and l.waitstart is not null where a.datname=current_database() and a.application_name!='benchmark-observer' and a.wait_event_type='Lock'`;
+    const now = performance.now(), gap = now - previous;
+    gaps.push(gap);
+    samples++;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const key = `${row.pid}/${row.query_start}/${row.wait_start}/${row.wait_event}`;
+      seen.add(key);
+      const old = active.get(key);
+      if (old) { old.lastMs = now; old.wait_age_ms = Number(row.wait_age_ms); }
+      else active.set(key, { ...row, firstMs: now, lastMs: now, precedingGapMs: gap });
+    }
+    for (const [key, episode] of active) {
+      if (seen.has(key)) continue;
+      episodes.push({ ...episode, observedLowerMs: Number(episode.wait_age_ms),
+        estimatedUpperMs: Number(episode.wait_age_ms) + now - episode.lastMs, rightCensored: false });
+      active.delete(key);
+    }
+    previous = now;
+  };
+  const timer = setInterval(() => {
+    if (stopped || poll) return;
+    poll = collect().catch((e: any) => errors.push(e.message)).finally(() => { poll = undefined; });
+  }, intervalMs);
+  return { async stop() {
+    stopped = true;
+    clearInterval(timer);
+    await poll;
+    await collect().catch((e: any) => errors.push(e.message));
+    for (const episode of active.values()) episodes.push({ ...episode,
+      observedLowerMs: Number(episode.wait_age_ms), estimatedUpperMs: null, rightCensored: true });
+    const byPool = Object.fromEntries(["benchmark-application", "paperclip-controller-lease", "paperclip-runner-checkpoint"].map(pool => {
+      const selected = episodes.filter(e => e.application_name === pool);
+      return [pool, { observedEpisodes: selected.length,
+        observedLowerMs: summary(selected.map(e => e.observedLowerMs)),
+        estimatedUpperMs: summary(selected.filter(e => e.estimatedUpperMs !== null).map(e => e.estimatedUpperMs)) }];
+    }));
+    return { intervalMs, samples, gapsMs: summary(gaps), errors, byPool, episodes,
+      limits: "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive." };
+  } };
+}
 async function setup() {
   await admin.unsafe(`create database ${templateName}`);
   const u = databaseUrl(templateName);
@@ -496,6 +558,34 @@ async function run(variant: string, n: number, trial: number, durationMs: number
     onnotice: () => {},
     connection: { application_name: "benchmark-observer" },
   });
+  if (mode === "pilot") {
+    // Verify the observer against one deliberately held row lock before measured work.
+    const calibration = observeLockWaits(monitor);
+    let locked!: () => void, release!: () => void;
+    const acquired = new Promise<void>(r => { locked = r; });
+    const held = new Promise<void>(r => { release = r; });
+    const blocker = db.$client.begin(async (tx: any) => {
+      await tx`select 1 from native_run_finalizations where run_id=${items[0].runId} for update`;
+      locked();
+      await held;
+    });
+    await acquired;
+    const waiterStarted = performance.now();
+    const waiter = checkpointDb(db).$client.begin(async (tx: any) => {
+      await tx`select 1 from native_run_finalizations where run_id=${items[0].runId} for update`;
+    });
+    // postgres.js BEGIN returns a lazy Promise; observing it starts the contender.
+    const waiting = Promise.resolve(waiter);
+    await sleep(250);
+    const releasedAtMs = performance.now() - waiterStarted;
+    release();
+    await Promise.all([blocker, waiting]);
+    await sleep(50);
+    const observed = await calibration.stop();
+    metrics.lockCalibration = { intentionalHoldMs: 250, releasedAtMs,
+      transactionElapsedMs: performance.now() - waiterStarted, observed };
+    assert(observed.episodes.some((e: any) => e.application_name === "paperclip-runner-checkpoint" && e.observedLowerMs >= 100), "Lock observer did not detect the deliberate row wait");
+  }
   await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60000) });
   await db.$client.unsafe("analyze");
   // Warm normal queries before measuring, identical in each arm.
@@ -523,6 +613,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
     metrics.peakPending = Math.max(metrics.peakPending, pending.size);
   }
   measuring = true;
+  const lockWaitObserver = observeLockWaits(monitor);
   const started = performance.now(),
     startedAt = new Date().toISOString();
   await writeFile(
@@ -715,6 +806,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
   await Promise.allSettled([...pending]);
   await Promise.allSettled(renewals.map((r) => r.stop()));
   metrics.drainMs = performance.now() - drainStart;
+  metrics.lockWait = await lockWaitObserver.stop();
   metrics.elapsedMs = performance.now() - started;
   metrics.startedAt = startedAt;
   metrics.endedAt = new Date().toISOString();
@@ -736,6 +828,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
   metrics.walBytes = Number(wal.bytes);
   const pgAfter = pgResources();
   metrics.postgresCpuUsec = pgAfter.cpuUsec - pgBefore.cpuUsec;
+  metrics.postgresResources = { before: pgBefore, after: pgAfter, throttledUsec: pgAfter.throttledUsec - pgBefore.throttledUsec, throttledPeriods: pgAfter.throttledPeriods - pgBefore.throttledPeriods };
   metrics.postgresMemoryBytes = pgAfter.memoryBytes;
   metrics.postgresPeakSampledMemoryBytes = Math.max(
     pgBefore.memoryBytes,
@@ -751,6 +844,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
     Object.keys(after.stat).map((k) => [k, Number(after.stat[k]) - Number(before.stat[k])]),
   );
   metrics.statements = after.statements;
+  metrics.lockObserverSql = after.statements.filter((s: any) => /pg_locks.*waitstart|waitstart.*pg_locks/.test(s.query));
   metrics.tableStats =
     await monitor`select relname,n_tup_ins,n_tup_upd,n_tup_del,n_dead_tup from pg_stat_user_tables where relname in ('native_runner_checkpoints','native_run_finalizations','heartbeat_runs','issues') order by relname`;
   const [storage] =
@@ -780,6 +874,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
     ((metrics.nodeCpu.user + metrics.nodeCpu.system) / 1000 / metrics.elapsedMs) * 100;
   metrics.correctnessPassed =
     metrics.errors.length === 0 &&
+    metrics.lockWait.errors.length === 0 &&
     metrics.renewalLosses === 0 &&
     metrics.dropped === 0 &&
     metrics.normalCompleted === metrics.normalOffered &&
@@ -814,6 +909,7 @@ async function run(variant: string, n: number, trial: number, durationMs: number
   return metrics;
 }
 try {
+  await admin.unsafe("create extension if not exists pg_stat_statements");
   await setup();
   if (mode === "pilot") {
     if (!(await run("candidate", 10, 9, 25000)).passed) process.exitCode = 1;
@@ -884,7 +980,7 @@ try {
       measurementLimits: [
         "Database request latency is not HTTP latency",
         "Pool queue includes client encoding; BEGIN response includes network time",
-        "pg_stat_statements execution includes lock waits; samples report concurrent lock waiters, not a lock latency distribution",
+        "pg_stat_statements execution includes lock waits; lock episodes report sampled duration bounds, with short waits potentially missed",
         "Peak memory is sampled once a second",
         "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide",
       ],

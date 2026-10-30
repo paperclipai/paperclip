@@ -343,11 +343,17 @@ for inspection until the disposable cluster is removed.
 
 The report counts SQL across all three pools, actual snapshot/PRP transactions,
 changed records/bytes, WAL, database CPU, sampled memory, pool admission,
-transaction latency, lock-waiter samples and database request latency. Pool
-admission ends at connection assignment/BEGIN encoding; BEGIN response time is
-separate. Postgres execution time includes lock waits. This does **not** yet
-provide a lock-wait latency distribution or HTTP latency. Report those limits;
-do not call this whole-application load qualification.
+transaction latency and database request latency. Pool admission ends at
+connection assignment/BEGIN encoding; BEGIN response time is separate.
+Postgres execution time includes lock waits. A 25 ms observer uses PostgreSQL's
+`pg_locks.waitstart` to report duration bounds for observed lock episodes by pool.
+The pilot calibrates it against an intentional 250 ms row-lock wait. Short waits
+can be missed, and delayed samples widen the estimated upper bound. The nominal
+40 observer queries per second contribute to measured database CPU and statement
+statistics. Reports include actual sample counts, sampling gaps, CPU pressure,
+quota throttling and the measurement harness hash. They do not provide exact
+lock-exclusive SQL execution time or HTTP latency; this is component load
+qualification.
 
 Correctness and absolute gates must pass for acceptance.
 Dropped operations invalidate paired comparisons. The report retains failures

@@ -2461,7 +2461,13 @@ The same four installed-package pins also admit three existing local native
 Codex cells: `first-task.runner-codex.local.task-card-accept`,
 `everyday-workflows.runner-codex.local.build-revise`, and
 `agent-chat.runner-codex.local.continuity-restart`. Select exact IDs; other
-Codex cells, legacy profiles and remote environments remain outside this lane.
+Codex cells and legacy profiles remain outside this lane. The two explicit
+Daytona controller-recovery cells are also admitted:
+`everyday-workflows.runner-codex.daytona.recover-controller` and
+`daytona-restart-continuity.runner-codex.daytona.recover-controller`.
+The latter uses the 300-second outage and retained-session follow-up. Daytona
+cells require the pinned installed plugin described below. Admission support
+does not establish that either cell has passed against installed artifacts.
 These reuse the onboarding, independently checked file/revision, and restart
 graders. They require separately authorized provider access and are not executed
 by the provider-free release smoke.
