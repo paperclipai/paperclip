@@ -941,7 +941,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (policy.companyId !== companyId || policy.scopeType !== incident.scopeType || policy.scopeId !== incident.scopeId) {
         throw notFound("Budget scope not found");
       }
-      const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+      const scope = input.action === "keep_paused"
+        ? await resolveSummaryScopeRecord(db, companyId, policy.scopeType as BudgetScopeType, policy.scopeId)
+        : await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
       if (scope.companyId !== companyId) throw notFound("Budget scope not found");
       if (input.action === "raise_budget_and_resume") {
         const nextAmount = Math.max(0, Math.floor(input.amount ?? 0));

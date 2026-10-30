@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, budgetIncidents, budgetPolicies, companies, costEvents, createDb, projects, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agents, approvals, budgetIncidents, budgetPolicies, companies, costEvents, createDb, projects, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -16,7 +16,7 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(async () => {
-    await db.delete(budgetIncidents); await db.delete(budgetPolicies); await db.delete(costEvents);
+    await db.delete(budgetIncidents); await db.delete(approvals); await db.delete(budgetPolicies); await db.delete(costEvents);
     await db.delete(projects); await db.delete(agents); await db.delete(companies);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
@@ -53,7 +53,7 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
     expect(await db.select().from(budgetIncidents)).toEqual(incidentsBefore);
     expect(await db.select().from(costEvents)).toEqual(costsBefore);
   });
-  it("still rejects admission, policy changes and incident resolution for missing agents and projects", async () => {
+  it("rejects missing-scope budget grants but can dismiss their historical incidents", async () => {
     const { companyId, agentId } = await fixture(), missingId = randomUUID(), service = budgetService(db);
     await expect(service.evaluateAdmission(companyId, missingId)).rejects.toThrow("Agent not found");
     await expect(service.evaluateAdmission(companyId, agentId, { projectId: missingId })).rejects.toThrow("Project not found");
@@ -61,17 +61,26 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
       await expect(service.upsertPolicy(companyId, { scopeType, scopeId: missingId, amount: 100 })).rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
       const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType, scopeId: missingId,
         windowKind: "calendar_month_utc", amount: 100 }).returning();
-      const [incident] = await db.insert(budgetIncidents).values({ companyId, policyId: policy!.id, scopeType, scopeId: missingId,
+      const [approval] = await db.insert(approvals).values({ companyId, type: "budget_override_required", payload: {} }).returning();
+      const [incident] = await db.insert(budgetIncidents).values({ companyId, policyId: policy!.id, approvalId: approval!.id, scopeType, scopeId: missingId,
         metric: "billed_cents", windowKind: "calendar_month_utc", windowStart: new Date("2020-01-01"), windowEnd: new Date("2020-02-01"),
         thresholdType: "hard", amountLimit: 100, amountObserved: 101 }).returning();
       const before = { policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
-        agents: await db.select().from(agents), costs: await db.select().from(costEvents) };
-      for (const action of ["raise_budget_and_resume", "keep_paused"] as const) {
-        await expect(service.resolveIncident(companyId, incident!.id, { action, amount: 200 }, "board"))
-          .rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
-        expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
-          agents: await db.select().from(agents), costs: await db.select().from(costEvents) }).toEqual(before);
-      }
+        agents: await db.select().from(agents), costs: await db.select().from(costEvents), approvals: await db.select().from(approvals) };
+      await expect(service.resolveIncident(companyId, incident!.id, { action: "raise_budget_and_resume", amount: 200 }, "board"))
+        .rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
+      expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+        agents: await db.select().from(agents), costs: await db.select().from(costEvents), approvals: await db.select().from(approvals) }).toEqual(before);
+      const dismissed = await service.resolveIncident(companyId, incident!.id, { action: "keep_paused" }, "board");
+      expect(dismissed).toMatchObject({ companyId, policyId: policy!.id, scopeId: missingId, scopeName: `Deleted ${scopeType}`, status: "dismissed" });
+      const { status: _status, resolvedAt: _resolvedAt, updatedAt: _updatedAt, ...preserved } = incident!;
+      const [saved] = await db.select().from(budgetIncidents).where(eq(budgetIncidents.id, incident!.id));
+      expect(saved).toMatchObject({ ...preserved, status: "dismissed", resolvedAt: expect.any(Date) });
+      expect((await db.select().from(approvals).where(eq(approvals.id, approval!.id)))[0]).toMatchObject({ status: "rejected" });
+      expect(await db.select().from(budgetPolicies)).toEqual(before.policies);
+      expect(await db.select().from(agents)).toEqual(before.agents);
+      expect(await db.select().from(costEvents)).toEqual(before.costs);
+      expect((await service.overview(companyId)).activeIncidents.some(row => row.id === incident!.id)).toBe(false);
     }
   });
 
@@ -85,12 +94,15 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
       thresholdType: "hard", amountLimit: 200, amountObserved: 201 }).returning();
     const service = budgetService(db);
     await expect(service.overview(companyId)).rejects.toThrow("Budget scope not found");
-    const before = { policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
-      agents: await db.select().from(agents), costs: await db.select().from(costEvents) };
-    for (const action of ["raise_budget_and_resume", "keep_paused"] as const) {
-      await expect(service.resolveIncident(companyId, incident!.id, { action, amount: 300 }, "board")).rejects.toThrow("Budget scope not found");
-      expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
-        agents: await db.select().from(agents), costs: await db.select().from(costEvents) }).toEqual(before);
+    for (const scopeId of [foreignAgentId, randomUUID()]) {
+      await db.update(budgetIncidents).set({ scopeId }).where(eq(budgetIncidents.id, incident!.id));
+      const before = { policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+        agents: await db.select().from(agents), costs: await db.select().from(costEvents) };
+      for (const action of ["raise_budget_and_resume", "keep_paused"] as const) {
+        await expect(service.resolveIncident(companyId, incident!.id, { action, amount: 300 }, "board")).rejects.toThrow("Budget scope not found");
+        expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+          agents: await db.select().from(agents), costs: await db.select().from(costEvents) }).toEqual(before);
+      }
     }
   });
 
