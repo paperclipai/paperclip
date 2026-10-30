@@ -3232,6 +3232,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <>
                               {tailRunId || optimisticRunnerStartup ? (
                                 <div data-testid="task-chat-live-transcript">
+                                  <TaskChatShimmerScope items={tailItems}>
                                   <TaskChatRunnerHeader
                                     runId={tailRunId}
                                     agentName={visibleTailAgentName}
@@ -3304,6 +3305,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       />
                                     </TaskChatShimmerScope>
                                   )}
+                                  </TaskChatShimmerScope>
                                 </div>
                               ) : null}
                               {tailTaskCreationItems.map(item => (
