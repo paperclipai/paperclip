@@ -616,14 +616,19 @@ describe("codex remote execution", () => {
       remoteDir: string;
     };
     expect(homeSyncArgs.localDir).toContain("paperclip-codex-home-sync");
-    expect(homeSyncArgs.remoteDir).toBe("/app/.paperclip-runtime/codex/home");
+    expect(homeSyncArgs.remoteDir).toBe("/app/.paperclip-runtime/runs/run-in-place/codex/home");
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("/.paperclip-runtime/persistent/codex/agent-1/home/sessions"),
+      { maxBuffer: 1024 * 1024 },
+    );
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/app");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_REALIZATION_MODE).toBe("in_place");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT).toBe("/app");
-    expect(call?.[3].env.CODEX_HOME).toBe("/app/.paperclip-runtime/codex/home");
+    expect(call?.[3].env.CODEX_HOME).toBe("/app/.paperclip-runtime/runs/run-in-place/codex/home");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/app");
   });
 
