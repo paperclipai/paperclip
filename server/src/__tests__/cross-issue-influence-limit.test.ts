@@ -162,6 +162,21 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
+  it("treats heartbeatRuns.issueId as same-issue source when snapshot is empty", async () => {
+    const fake = counterDb(0, {
+      issueId: "55555555-5555-4555-8555-555555555555",
+      contextSnapshot: {},
+    });
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
   it.each([
     ["missing", null],
     ["wrong-agent", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
