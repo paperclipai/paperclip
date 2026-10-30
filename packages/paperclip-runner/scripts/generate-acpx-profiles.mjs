@@ -14,7 +14,7 @@ const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
 // Copilot, Grok and Pi digests attest upstream releases; they change only when
-// an upstream version, platform closure or the Grok launcher changes.
+// an upstream version, the ACPX patch, a platform closure or the Grok launcher changes.
 const check = process.argv.includes("--check");
 let attestationsChanged = false;
 for (const agent of ATTESTED_ACPX_AGENTS) {

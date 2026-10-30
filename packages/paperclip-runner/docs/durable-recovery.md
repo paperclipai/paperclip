@@ -72,25 +72,15 @@ real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
 ## Profile identity
 
-Copilot (profile 92), Grok (20) and Pi (37) use upstream release attestations,
-as Claude, Codex, Cursor and Antigravity already did. Each `commandDigest` binds
-upstream versions, the ACPX patch, platform closure pins and Grok's launcher
-bytes. `scripts/acpx-release-attestations.mjs` computes them and
-`generate:acpx-profiles` writes them. A Runner source change no longer changes
-them. Every revision from 1 through the current one decodes, so saved runs reach
-recovery, and launch and recovery admission still require the exact current
-profile and digest. The source-bound identity fixtures were removed with this
-change; the history below describes those earlier profiles.
-
-## Source-bound profile history (before profile attestations)
-
-Copilot profile v68 binds the merged hot-upgrade and current master transport.
-Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
-historical records. The distinct development v66 identity is retained under
-`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
-replace the published v66 fixture. Decoding historical versions does not grant
-fresh-launch permission. Installation still requires the exact current profile,
-package and digest. These records do not establish hosted harness qualification.
+Every ACPX provider's `commandDigest` attests its upstream release. For Copilot
+(profile 92), Grok (20) and Pi (37) it binds the upstream package versions, the
+ACPX patch, the platform closure pins and, for Grok, the launcher bytes.
+`scripts/acpx-release-attestations.mjs` computes these digests and
+`generate:acpx-profiles` writes them. Runner source changes do not change them.
+Saved inputs with any profile version from 1 through the current one decode, so
+they reach recovery. Launch and recovery admission require the exact current
+profile and digest, and refuse the rest. A profile identity does not establish
+hosted harness qualification.
 
 ## External controller checkpoints
 

@@ -67,19 +67,13 @@ its native runtime identity is `native:grok` version 1.0.13. The historical
 `agentServerPackage`/`agentRuntimePackage` wire fields carry these identities,
 not npm dependencies. Existing npm-backed ACP bridges retain their package pins.
 
-Grok launch profile 7 binds the native effort, search, credential, sidecar, and
-Runner admission source, including Rust backend descriptor writes. An older
-installed pack with the same ACPX interface version cannot satisfy this profile.
-The controller stages its current verified
-pack instead. App source changes alone still permit reuse when the selected
-Grok profile matches. Historical profile versions remain decodable, but they do
-not authorize a fresh launch.
-
-From profile 20, Grok's `commandDigest` is an upstream release attestation: the
-SHA-256 of `launcher.cjs`, which admission already hashes. It changes only when
-the launcher bytes change, and no longer carries a source-identity comment.
-Runner source compatibility is guarded at the pack boundary by the provider
-pack's `contractDigest`. After changing the launcher, run
+Grok runs as launch profile 20. Its `commandDigest` attests the upstream
+release: the SHA-256 of `launcher.cjs`, which admission hashes before launch. It
+changes only when the launcher bytes change. Runner source compatibility is
+guarded at the pack boundary by the provider pack's `contractDigest`, so the
+controller reuses an installed pack only when that digest matches and stages its
+current verified pack otherwise. Earlier profile versions decode for recovery,
+but they do not authorize a fresh launch. After changing the launcher, run
 `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`; the
 `check:acpx-profiles` build gate refuses a stale digest.
 

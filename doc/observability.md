@@ -2109,9 +2109,6 @@ rank optimizations, deploy a compatible source set and inspect actual collector
 exports for parentage, concurrent ownership, widths and closed failure spans.
 Unit tests do not establish ingestion or a latency improvement.
 
-The shared ACPX instrumentation advances Grok source profile 13 to 14 and
-Copilot 84 to 85. Historical identities remain unchanged and decodable. Provider
-packages, models and permission defaults are unchanged; Pi's bound declaration
-is unchanged. These are source attestations, not evidence of fresh live provider
-qualification. Re-run compatibility qualification for the new identities before
-rollout.
+The shared ACPX instrumentation does not change any provider profile identity:
+Copilot, Grok and Pi digests attest their upstream releases, not Runner source.
+Provider packages, models and permission defaults are unchanged.

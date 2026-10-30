@@ -682,7 +682,8 @@ Remote packaging has both a worker and a controller side. Verify that the normal
 controller package can locate the correct platform companion and provider-pack
 manifest using production resolution, without extracting it manually from a
 qualification image. Docker copy/include lists must include new declarations,
-patches, and the **active** identity fixture. Bind the manifest to the directory
+patches, and the release attestation inputs that `generate:acpx-profiles` reads.
+Bind the manifest to the directory
 the loader actually consumes; a valid manifest in another directory is not proof.
 
 For remote execution, build on an appropriate host, record an immutable OCI

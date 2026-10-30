@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Copilot, Grok and Pi profile identities attest upstream releases, as Claude,
-// Codex, Cursor and Antigravity already do. They bind upstream versions and the
+// Copilot, Grok and Pi profile identities attest upstream releases, like Claude,
+// Codex, Cursor and Antigravity. They bind upstream versions and the
 // bytes a repackager copies verbatim: complete platform closures and Grok's
 // launcher. Never bind Paperclip source, absolute paths, the provider-pack
 // manifest digest or install layout; the pack contract digest guards our side.
