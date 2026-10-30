@@ -46,7 +46,8 @@ public HTTPS proxy. Controlled tests and discovery do not qualify hosted work.
 These cells remain private because raw evidence can contain provider session IDs.
 
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
-two natural-language task scenarios into local native Product E2E cells. They
+two natural-language task scenarios into local native Codex subscription and
+OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
 state/provenance checks. The broader YAML catalog remains planning inventory.

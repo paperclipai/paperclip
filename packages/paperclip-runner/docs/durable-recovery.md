@@ -70,15 +70,20 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
-## Source-bound profile history
+## Profile identity
 
-Copilot profile v68 binds the merged hot-upgrade and current master transport.
-Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
-historical records. The distinct development v66 identity is retained under
-`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
-replace the published v66 fixture. Decoding historical versions does not grant
-fresh-launch permission. Installation still requires the exact current profile,
-package and digest. These records do not establish hosted harness qualification.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+For Copilot (profile 92), Grok (20) and Pi (37) it binds the upstream package
+versions, the platform closure pins and, for Grok, the launcher bytes.
+`scripts/acpx-release-attestations.mjs` computes these digests and
+`generate:acpx-profiles` writes them. Runner source changes do not change them.
+Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts.
+Saved inputs with any profile version from 1 through the current one decode, so
+they reach recovery. Launch and recovery admission require the exact current
+profile and digest, and refuse the rest. A profile identity does not establish
+hosted harness qualification.
 
 ## External controller checkpoints
 

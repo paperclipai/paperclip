@@ -5,7 +5,7 @@ import type { RunnerProfileFixture, RunnerTaskFixture } from "./types.js";
 
 export const CHAT_FEATURE_SUITE = "chat-features";
 export const CHAT_FEATURE_BUDGET_CENTS = 500;
-export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v1";
+export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v2";
 export const CHAT_FEATURE_CASES = ["create-backlog", "delegate-announcement"] as const;
 export type ChatFeatureCase = typeof CHAT_FEATURE_CASES[number];
 export interface ChatScenario {
@@ -36,7 +36,7 @@ export function readChatFeatureScenarios(text = readFileSync(new URL("./chat-sce
 export const chatFeatureScenarios = readChatFeatureScenarios();
 export const chatFeatureDefinitionDigest = createHash("sha256").update([
   "chat-feature-cases.ts", "chat-feature-flow.ts", "chat-feature-scoring.ts", "chat-flow.ts",
-  "completion-updates.ts", "redaction.ts", "launch.ts", "chat-scenarios/tasks.yaml", "chat-scenarios/defaults.yaml",
+  "completion-updates.ts", "non-execution-wake.ts", "redaction.ts", "launch.ts", "chat-scenarios/tasks.yaml", "chat-scenarios/defaults.yaml",
   "../../server/src/services/agent-conversations.ts",
 ].map(file => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n")).digest("hex");
 

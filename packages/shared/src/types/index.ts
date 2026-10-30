@@ -45,6 +45,8 @@ export type {
   DecisionHistoryPage,
   AttentionDetailImage,
   AttentionFeed,
+  AttentionSummary,
+  AttentionTaskIndex,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,

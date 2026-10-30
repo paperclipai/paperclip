@@ -1532,8 +1532,11 @@ Every continuation carries the triggering request, ordered user direction, inter
 ### Remote runner process evidence
 
 A failed remote health request does not prove that runnerd stopped. Read-only
-process checks retry transient transport failures up to three times within one
-30-second budget. Missing or changed identity, an unknown process generation,
+process checks retry transient transport failures within one 30-second budget,
+with backoff from 250 milliseconds to two seconds between failed reads. Fast
+failures do not exhaust that budget after three attempts. Each read uses at
+most ten seconds of the remaining budget. Signals still have one attempt when
+their acknowledgement is lost. Missing or changed identity, an unknown process generation,
 and exhausted health reads retain uncertainty. They do not authorize a signal,
 replacement launch, or provider replay. Confirmed predecessor exit permits the
 transport to attempt recovery within its existing reconnect deadline. Repeated

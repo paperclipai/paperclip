@@ -268,3 +268,27 @@ credential helpers, or command proxies can implement the same semantics.
 Deploy the updated Core and plugin together. A configured
 GitHub connection on an older task provider returns an explicit upgrade error.
 Unconfigured providers continue ordinary work without authenticated GitHub access.
+
+Managed GitHub command providers must retain the qualified provider executable
+and arguments. Supply helper discovery through the task environment instead of
+wrapping that executable. Claude ACPX preserves explicit `BASH_ENV`, `ZDOTDIR`,
+`GH_CONFIG_DIR`, and `PAPERCLIP_GITHUB_LAUNCHER_DIR` selectors across the sidecar
+boundary. It does not forward GitHub tokens or broker capabilities to the provider.
+The helper reads the current task capability at invocation, including after warm
+reuse. These selectors must come from the trusted environment owner.
+Reference helpers mark only their child operation and reject re-entry before resolving
+another executable or capturing credentials. A PATH shim that calls a helper's
+absolute path fails with `launcher_recursion_rejected` (exit 126), preventing
+recursive process growth. Offline Git fixtures must resolve the native binary
+outside managed helper paths and exclude runtime shell startup hooks.
+
+
+The pure launch factory exports `RUNNER_GITHUB_LAUNCHER_VERSION = 1` for this
+contract. A provider must check it as well as the host broker schema and its
+Launcher capability before advertising managed GitHub commands. The installed
+Runner must match the factory's source revision.
+
+The helper projection is marked by the controller-owned
+`PAPERCLIP_GITHUB_LAUNCHER_DIR`. Task overrides cannot supply that marker or the
+shell selectors. Run preparation strips stored bindings before secret resolution,
+and configured task-environment projections reject the shell selectors too.

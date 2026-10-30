@@ -1,3 +1,4 @@
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { describeError } from "../api/errors";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
@@ -832,7 +833,8 @@ export interface InboxSurfaceProps {
 
 export function Inbox(props: InboxSurfaceProps = {}) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  return streamlinedUiEnabled ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
+  const coordinator = useCoordinatorPresentation();
+  return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
 }
 
 function StreamlinedInbox({
