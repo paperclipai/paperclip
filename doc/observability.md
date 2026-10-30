@@ -611,6 +611,8 @@ They are children of the existing pack selection/upload path and also appear in
 the local run timing log. Their fixed names add no paths, credentials, or content
 attributes. The operator endpoint gate remains unchanged. Source installs without
 prebuilt archives retain the existing directory upload span.
+`provider_pack.directory.verify` measures expanded source verification when
+directory staging is required.
 
 Archive installation verifies the archive bytes and then the installed pack
 against the selected manifest. It does not hash the unused expanded controller
