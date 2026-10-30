@@ -1460,7 +1460,11 @@ function StreamlinedIssuesList({
 
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     selectedCompanyId, rootRef,
-    flatNavEntries.filter((entry) => entry.type === "issue").map((entry) => entry.type === "issue" ? entry.issue.id : "").join(",") + ":" + renderedIssueRowLimit,
+    JSON.stringify([
+      viewState.groupBy,
+      flatNavEntries.map((entry) => entry.type === "issue" ? ["issue", entry.issue.id] : ["group", entry.key]),
+      renderedIssueRowLimit,
+    ]),
     enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" && !collectionLoading,
     [...issues, ...hierarchy.issues],
   );
