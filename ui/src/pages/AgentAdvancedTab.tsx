@@ -145,7 +145,10 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
     <footer className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4">
       <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>Reload saved</Button>
       <div className="flex items-center gap-3">
-        <span role="status" className="text-xs text-muted-foreground">{save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : ""}</span>
+        <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          {!save.isPending && !reload.isPending && dirty ? <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-amber-500" /> : null}
+          {save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : "No unsaved changes"}
+        </span>
         <Button disabled={!dirty || busy || reloadRequired || !validation.document || !validation.changes.length} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? "Saving…" : "Save changes"}</Button>
       </div>
     </footer>
@@ -184,5 +187,5 @@ function AgentYamlEditor({ value, onChange, readOnly }: { value: string; onChang
     const view = editor.current;
     if (view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
   }, [value]);
-  return <div ref={container} className="agent-yaml-editor overflow-hidden rounded-md border border-border" />;
+  return <div ref={container} className="agent-yaml-editor overflow-hidden rounded-lg" />;
 }

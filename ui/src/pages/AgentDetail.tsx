@@ -847,6 +847,18 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
+  const [configJustSaved, setConfigJustSaved] = useState(false);
+  const configWasSavingRef = useRef(false);
+  useEffect(() => {
+    if (configWasSavingRef.current && !configSaving && !configDirty) setConfigJustSaved(true);
+    configWasSavingRef.current = configSaving;
+  }, [configSaving, configDirty]);
+  useEffect(() => {
+    if (configDirty) setConfigJustSaved(false);
+  }, [configDirty]);
+  useEffect(() => {
+    setConfigJustSaved(false);
+  }, [activeView]);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
@@ -1478,7 +1490,7 @@ export function AgentDetail() {
       )}
 
       {activeView !== "run-detail" && activeView !== "channels" && !UNTITLED_AGENT_VIEWS.has(activeView) ? (
-        <div className="-mb-4 space-y-1">
+        <div className="mb-4 space-y-1">
           <h2 className="text-lg font-semibold text-foreground">{agentDetailViewLabel(activeView)}</h2>
           {agentViewDescription(activeView, agent.name) ? (
             <p className="text-sm text-muted-foreground">{agentViewDescription(activeView, agent.name)}</p>
@@ -1615,7 +1627,14 @@ export function AgentDetail() {
       )}
 
       {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          {configSaving ? null : configDirty ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+          ) : configJustSaved ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--status-task-icon-done)" />
+          ) : null}
+          {configSaving ? "Saving changes…" : configDirty ? "Unsaved changes" : configJustSaved ? "Changes saved" : "No unsaved changes"}
+        </p>
         <div className="flex gap-2">
           <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
           <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
@@ -2168,11 +2187,12 @@ export function ConfigurationTab({
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
-        sectionLayout="cards"
+        sectionLayout="panels"
         environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
         compactTestFeedback
-        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
-        sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
+        sectionOrder={["adapter", "configuration", "environment", "environment-variables"]}
+        hiddenSections={["identity", "run-policy"]}
+        sectionTitles={{ adapter: "", configuration: "", environment: "" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
 

@@ -3323,18 +3323,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-yaml-editor .cm-editor {
   height: var(--sz-480px);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  background: var(--background);
+  font-size: var(--text-xs);
+  background: var(--agent-detail-tile);
   color: var(--foreground);
 }
 .agent-yaml-editor .cm-scroller { overflow: auto; }
 .agent-yaml-editor .cm-gutters {
-  background: var(--muted);
+  background: transparent;
   color: var(--muted-foreground);
   border-color: var(--border);
 }
 .agent-yaml-editor .cm-activeLine,
-.agent-yaml-editor .cm-activeLineGutter { background: var(--accent); }
+.agent-yaml-editor .cm-activeLineGutter { background: var(--agent-detail-tile-chip); }
 .agent-yaml-editor .cm-cursor { border-left-color: var(--foreground); }
 .agent-yaml-editor .cm-selectionBackground,
 .agent-yaml-editor .cm-focused .cm-selectionBackground { background: var(--accent); }
@@ -5117,4 +5117,49 @@ html:not(.dark) .coordinator-sidebar {
 }
 [data-agent-tile] [data-slot="toggle"][aria-checked="false"] {
   background: var(--agent-detail-switch-off);
+}
+
+/* Agent detail Harness / Secrets: AgentConfigForm's "panels" layout. */
+.agent-config-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--agent-detail-module-gap);
+}
+.agent-config-panels > [data-config-section] {
+  display: flex;
+  flex-direction: column;
+}
+.agent-config-panels > [data-config-section] > [data-agent-tile] {
+  flex: 1;
+}
+.agent-config-panels > section[aria-label="Runtime test"] {
+  order: 1;
+}
+.agent-config-panels > [data-config-section="environment-variables"] {
+  order: 2;
+  margin-top: calc(var(--agent-detail-band-gap) - var(--agent-detail-module-gap));
+}
+.agent-config-panels > :not([data-config-section]):not(section[aria-label="Runtime test"]) {
+  order: 3;
+}
+@media (min-width: 768px) {
+  .agent-config-panels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .agent-config-panels > * {
+    grid-column: 1 / -1;
+  }
+  .agent-config-panels > [data-config-section="adapter"] {
+    grid-column: 1;
+    grid-row: span 2;
+  }
+  .agent-config-panels > [data-config-section="configuration"],
+  .agent-config-panels > [data-config-section="environment"] {
+    grid-column: 2;
+  }
+}
+.agent-config-panels h3,
+.agent-config-panels + h3 {
+  font-weight: 600;
 }
