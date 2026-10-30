@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { isUuidLike, type IssueComment, type IssueQueuedCommentQueue } from "@paperclipai/shared";
 
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";
@@ -14,9 +14,11 @@ function uniqueIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((candidate) => {
-    if (typeof candidate !== "string" || !candidate || seen.has(candidate)) return [];
-    seen.add(candidate);
-    return [candidate];
+    if (typeof candidate !== "string") return [];
+    const trimmed = candidate.trim();
+    if (!isUuidLike(trimmed) || seen.has(trimmed)) return [];
+    seen.add(trimmed);
+    return [trimmed];
   });
 }
 
