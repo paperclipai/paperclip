@@ -22,7 +22,7 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Authorize your Slack app through OAuth to give agents Slack workspace tools.",
       "defaults": {
         "serverUrl": "https://mcp.slack.com/mcp",
         "authorizationEndpoint": "https://slack.com/oauth/v2/authorize",
