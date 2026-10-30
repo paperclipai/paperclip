@@ -281,3 +281,21 @@ handoff, and production volume removal are outside this slice.
   37 tests. Server typecheck and map checks passed. The initial new-test attempts
   corrected a fixture tool name and matched the existing privacy-preserving 404
   for unrelated tasks; own-task reads returned 200.
+- `350f1b377c459420a1c1474723501a4bccc6d7fc` received Greptile 5/5.
+  The native-scope review thread is resolved. Test deployment request
+  `d2480188-1fc9-4a22-a32b-16af7f439ca4` prepared in Cloud run `41110650568`;
+  candidate image build is `41110729544`.
+- The fork's C save is version `ef34d9e5-2533-497e-8411-a797117afb4a`.
+  C's durable `tool.execution.completed` event at sequence 322 was inspected
+  independently of the report: the real shell command completed with exit 0,
+  mode 555, all five expected hashes, and `skill-script-A: durable-skill-payload-B-20261030`.
+  A disposable `qualification-marker-c` was written in C's temporary home for
+  the next container replacement check.
+- Full CI at `350f1b377c` passed 50 checks but found two old `mode_denied`
+  message expectations in case/reassignment tests. Both operations are rejected
+  earlier by the native scope guard with 403. Updated the assertions and checked
+  that denial never stops another task. The case-gate regression and all 26
+  reassignment tests passed locally. Reassignment now uses the existing optional
+  external-Postgres helper; initial attempts hit exhausted embedded-Postgres
+  resources and a startup timeout, retained as failures rather than passes.
+  These follow-ups change only tests and evidence, not candidate runtime code.
