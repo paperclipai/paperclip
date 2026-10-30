@@ -193,9 +193,11 @@ function newDocumentDraftStorageKey(scope: string) {
 function loadStoredNewDocumentDraft(scope: string | null): DraftState | null {
   if (!scope) return null;
   const stored = loadStructuredDraft<Partial<DraftState> | null>(newDocumentDraftStorageKey(scope), null);
-  if (!stored || stored.isNew !== true || typeof stored.key !== "string" || typeof stored.title !== "string"
-    || typeof stored.body !== "string" || stored.baseRevisionId !== null) return null;
-  return { key: stored.key, title: stored.title, body: stored.body, baseRevisionId: null, isNew: true };
+  // Creation may finish after this pane unmounts. Its retained newer buffer
+  // then carries the confirmed revision and reopens as an edit.
+  if (!stored || typeof stored.isNew !== "boolean" || typeof stored.key !== "string" || typeof stored.title !== "string"
+    || typeof stored.body !== "string" || (stored.isNew ? stored.baseRevisionId !== null : typeof stored.baseRevisionId !== "string")) return null;
+  return { key: stored.key, title: stored.title, body: stored.body, baseRevisionId: stored.baseRevisionId ?? null, isNew: stored.isNew };
 }
 
 function clearStoredNewDocumentDraft(scope: string | null, saved?: DraftState) {
@@ -613,7 +615,10 @@ function AccountIssueDocumentsSection({
     if (autosaveDebounceRef.current) {
       clearTimeout(autosaveDebounceRef.current);
     }
-    if (draft && !draft.isNew) clearStoredDocumentDraft(draftScope, draft.key);
+    if (draft && !draft.isNew) {
+      clearStoredDocumentDraft(draftScope, draft.key);
+      clearStoredNewDocumentDraft(newDraftScope, draft);
+    }
     if (draft?.isNew) clearStoredNewDocumentDraft(newDraftScope);
     resetAutosaveState();
     setDocumentConflict(null);
@@ -692,6 +697,17 @@ function AccountIssueDocumentsSection({
     const applySaved = (saved: IssueDocument) => {
       clearStoredDocumentDraft(draftScope, normalizedKey);
       clearStoredNewDocumentDraft(newDraftScope, currentDraft);
+      const retained = currentDraft.isNew ? loadStoredNewDocumentDraft(newDraftScope) : null;
+      if (newDraftScope && retained?.isNew && retained.key.trim().toLowerCase() === normalizedKey && saved.latestRevisionId) {
+        // Keep later typing, but bind it to our successful creation even if
+        // its editor has already unmounted. Other forms/scopes stay untouched.
+        saveStructuredDraft(newDocumentDraftStorageKey(newDraftScope), {
+          ...retained,
+          key: saved.key,
+          baseRevisionId: saved.latestRevisionId,
+          isNew: false,
+        });
+      }
       setError(null);
       setDocumentConflict((current) => current?.key === normalizedKey ? null : current);
       setDraft((value) => {
@@ -985,6 +1001,13 @@ function AccountIssueDocumentsSection({
     if (!draft) return;
     if (draft.isNew) {
       if (newDraftScope) {
+        const retained = loadStoredNewDocumentDraft(newDraftScope);
+        if (retained && !retained.isNew && retained.key === draft.key.trim().toLowerCase()) {
+          // A previous mount's create can finish after this editor reopened.
+          // Promote its current text without replacing anything typed since.
+          setDraft({ ...draft, key: retained.key, baseRevisionId: retained.baseRevisionId, isNew: false });
+          return;
+        }
         if (draft.key || draft.title || draft.body) saveStructuredDraft(newDocumentDraftStorageKey(newDraftScope), draft);
         else clearStoredNewDocumentDraft(newDraftScope);
       }
