@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -171,7 +172,9 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     let loseReply = true;
     execute.mockImplementation(async input => {
       const result = await actualExecute(input);
-      if (loseReply && result.exitCode === 0) { loseReply = false; throw new Error("synthetic lost preparation reply"); }
+      if (loseReply && result.exitCode === 0 && !JSON.parse(input.args?.[3] ?? "{}").probeOnly) {
+        loseReply = false; throw new Error("synthetic lost preparation reply");
+      }
       return result;
     });
     const preparedRoot = path.join(workspace, "clone");
@@ -183,10 +186,55 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     // A second clone is now impossible; successful retry must use its durable
     // completed-preparation receipt and retain the existing folder.
     await fs.rm(origin, { recursive: true, force: true });
-    await expect(prepareRemoteWorkspaceDirectory(input)).resolves.toBeUndefined();
+    const unavailableAuth = vi.fn(async () => { throw new Error("synthetic Git credential service unavailable"); });
+    await expect(prepareRemoteWorkspaceDirectory({ ...input, resolveGitAuth: unavailableAuth })).resolves.toBeUndefined();
+    expect(unavailableAuth).not.toHaveBeenCalled();
     expect(await fs.readFile(path.join(preparedRoot, "source.txt"), "utf8")).toBe("initial synthetic source\n");
     expect(await fs.readFile(path.join(preparedRoot, "in-flight.txt"), "utf8")).toBe("preserve this unsaved work\n");
-    await expect(prepareRemoteWorkspaceDirectory({ ...input, preparationIdentity: "f".repeat(64) })).rejects.toThrow();
+    await expect(prepareRemoteWorkspaceDirectory({ ...input, preparationIdentity: "f".repeat(64), resolveGitAuth: unavailableAuth })).rejects.toThrow("remote_workspace_operation_failed");
+    expect(unavailableAuth).not.toHaveBeenCalled();
     expect(await fs.readFile(path.join(preparedRoot, "in-flight.txt"), "utf8")).toBe("preserve this unsaved work\n");
+  });
+
+  it("verifies a saved repository without resolving unavailable transport credentials", async () => {
+    const origin = await repository();
+    const { remote } = target();
+    const root = path.join(workspace, "saved-repository");
+    const prepared = await prepareRemoteRepository({ target: remote, remoteCwd: root,
+      repoUrl: origin, ref: "HEAD", resolveGitAuth: async () => null });
+    await fs.writeFile(path.join(root, "unsaved.txt"), "preserve local work\n");
+    await fs.rm(origin, { recursive: true, force: true });
+    const resolveGitAuth = vi.fn(async () => { throw new Error("synthetic Git credential service unavailable"); });
+    const input = { target: remote, remoteCwd: root, repoUrl: origin, ref: "HEAD",
+      pinnedCommit: prepared.pinnedCommit, verifyOnly: true, resolveGitAuth };
+    await expect(prepareRemoteRepository(input)).resolves.toEqual(prepared);
+    await expect(prepareRemoteRepository({ ...input, pinnedCommit: "0".repeat(40) })).rejects.toThrow("remote_workspace_operation_failed");
+    await expect(prepareRemoteRepository({ ...input, repoUrl: `${origin}-foreign` })).rejects.toThrow("remote_workspace_operation_failed");
+    expect(resolveGitAuth).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(root, "unsaved.txt"), "utf8")).toBe("preserve local work\n");
+  });
+
+  it("uses trusted SSH rewrites only for clone and ignores ambient Git configuration", async () => {
+    const origin = await repository({ revisions: true });
+    const remoteUrl = "ssh://git@127.0.0.1:1/synthetic-repository";
+    const rewrite = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${pathToFileURL(origin).href}.insteadOf`,
+      GIT_CONFIG_VALUE_0: remoteUrl };
+    const resolveGitAuth = async () => ({ configArgs: [], env: rewrite,
+      source: "company_secret" as const, secretName: "SYNTHETIC_FIXTURE" });
+    const { remote } = target({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "remote.origin.url",
+      GIT_CONFIG_VALUE_0: "synthetic-wrong-ambient-origin" });
+    const root = path.join(workspace, "rewritten-root");
+    await prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: "a".repeat(64), source: { kind: "git", repoUrl: remoteUrl, ref: "HEAD~1" }, resolveGitAuth });
+    expect(await fs.readFile(path.join(root, "source.txt"), "utf8")).toBe("initial synthetic source\n");
+    const nested = path.join(workspace, "rewritten-repository");
+    const receipt = await prepareRemoteRepository({ target: remote, remoteCwd: nested, repoUrl: remoteUrl,
+      ref: "HEAD~1", resolveGitAuth });
+    expect(await fs.readFile(path.join(nested, "source.txt"), "utf8")).toBe("initial synthetic source\n");
+    expect((await git(nested, "config", "--get", "remote.origin.url")).stdout.trim()).toBe(remoteUrl);
+    const unavailableAuth = vi.fn(async () => { throw new Error("unexpected credential lookup"); });
+    await expect(prepareRemoteRepository({ target: remote, remoteCwd: nested, repoUrl: remoteUrl,
+      ref: "HEAD~1", pinnedCommit: receipt.pinnedCommit, resolveGitAuth: unavailableAuth })).resolves.toEqual(receipt);
+    expect(unavailableAuth).not.toHaveBeenCalled();
   });
 });

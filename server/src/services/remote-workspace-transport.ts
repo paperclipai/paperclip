@@ -29,8 +29,10 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
 (async()=>{
  const [root,raw]=process.argv.slice(1), input=JSON.parse(raw);
  if (!path.isAbsolute(root)||!/^[a-f0-9]{64}$/.test(input.preparationIdentity)) throw Error('invalid_root');
- const isolated={...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
- const localEnv={...isolated};for(const key of input.authEnvKeys)delete localEnv[key];
+ const noConfig={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
+ const isolated={...process.env,...noConfig};for(const key of Object.keys(isolated))if(/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))delete isolated[key];
+ const cloneEnv={...isolated};for(const key of input.authEnvKeys)if(/^GIT_CONFIG_(COUNT|(KEY|VALUE)_\d+)$/.test(key)&&process.env[key]!==undefined)cloneEnv[key]=process.env[key];
+ const localEnv={...isolated};for(const key of input.authEnvKeys)delete localEnv[key];Object.assign(localEnv,noConfig);
  let current='/'; for(const part of path.dirname(root).split('/').filter(Boolean)) {
   current=path.join(current,part); await fs.mkdir(current,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
   const s=await fs.lstat(current); if(!s.isDirectory()||s.isSymbolicLink())throw Error('unsafe_root');
@@ -44,9 +46,10 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
   if(JSON.parse(await fs.readFile(marker,'utf8')).preparationIdentity!==input.preparationIdentity)throw Error('workspace_owner_changed');
   process.stdout.write(JSON.stringify({cwd:root}));return;
  }
+ if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}
  const staged=await fs.mkdtemp(root+'.preparing-');
  if(input.kind==='git'){
-  await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:isolated});
+  await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
   if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','--detach',input.ref],{env:localEnv});
   if(input.branchName)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','-B',input.branchName],{env:localEnv});
   await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
@@ -66,6 +69,13 @@ export async function prepareRemoteWorkspaceDirectory(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; source: RemoteWorkspaceSource; resolveGitAuth: GitRemoteAuthProvider;
   preparationIdentity: string;
 }) {
+  if (input.source.kind === "git") {
+    const prior = JSON.parse(await command(input.target, ["-e", PREPARE, input.remoteCwd,
+      JSON.stringify({ ...input.source, preparationIdentity: input.preparationIdentity,
+        authArgs: [], authEnvKeys: [], probeOnly: true })])) as { cwd?: string; cloneRequired?: boolean };
+    if (prior.cwd === input.remoteCwd) return;
+    if (prior.cloneRequired !== true) throw new Error("remote_workspace_root_changed");
+  }
   const auth = input.source.kind === "git" ? await input.resolveGitAuth(input.source.repoUrl) : null;
   const output = await command(input.target, ["-e", PREPARE, input.remoteCwd,
     JSON.stringify({ ...input.source, preparationIdentity: input.preparationIdentity,
@@ -89,16 +99,17 @@ export async function prepareRemoteRepository(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; repoUrl: string; ref: string | null;
   pinnedCommit?: string; verifyOnly?: boolean; resolveGitAuth: GitRemoteAuthProvider;
 }) {
-  const auth = await input.resolveGitAuth(input.repoUrl);
   const script = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');const exec=promisify(cp.execFile);
-  (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const env={...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
-  const localEnv={...env};for(const key of input.authEnvKeys)delete localEnv[key];const opts={env:localEnv};
+  (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const noConfig={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
+  const env={...process.env,...noConfig};for(const key of Object.keys(env))if(/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))delete env[key];
+  const cloneEnv={...env};for(const key of input.authEnvKeys)if(/^GIT_CONFIG_(COUNT|(KEY|VALUE)_\d+)$/.test(key)&&process.env[key]!==undefined)cloneEnv[key]=process.env[key];
+  const localEnv={...env};for(const key of input.authEnvKeys)delete localEnv[key];Object.assign(localEnv,noConfig);const opts={env:localEnv};
   let parent='/';for(const part of path.dirname(root).split('/').filter(Boolean)){parent=path.join(parent,part);
    await fs.mkdir(parent,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const entry=await fs.lstat(parent);
    if(!entry.isDirectory()||entry.isSymbolicLink()||await fs.realpath(parent)!==parent)throw Error('unsafe_repository_parent');}
   const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw Error('unsafe_repository')}
-  else{if(input.verifyOnly)throw Error('repository_missing');await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env});
+  else{if(input.verifyOnly)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env:cloneEnv});
    if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','--detach',input.ref],opts);}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
   if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
@@ -106,8 +117,18 @@ export async function prepareRemoteRepository(input: {
   const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit&&head!==input.pinnedCommit)throw Error('repository_pin_changed');
   const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:head,branchName:branch}));
   })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
+  const payload = { ...input, target: undefined, resolveGitAuth: undefined };
+  const prior = JSON.parse(await command(input.target, ["-e", script, input.remoteCwd,
+    JSON.stringify({ ...payload, authArgs: [], authEnvKeys: [], probeOnly: true })])) as {
+      cwd?: string; pinnedCommit?: string; branchName?: string | null; cloneRequired?: boolean;
+    };
+  if (prior.cloneRequired !== true) {
+    if (prior.cwd !== input.remoteCwd || !/^[a-f0-9]{40,64}$/.test(prior.pinnedCommit ?? "")) throw new Error("remote_workspace_repository_receipt_invalid");
+    return { cwd: prior.cwd, pinnedCommit: prior.pinnedCommit!, branchName: prior.branchName ?? null };
+  }
+  const auth = await input.resolveGitAuth(input.repoUrl);
   const output = await command(input.target, ["-e", script, input.remoteCwd,
-    JSON.stringify({ ...input, target: undefined, resolveGitAuth: undefined, authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
+    JSON.stringify({ ...payload, authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
   const value = JSON.parse(output) as { cwd: string; pinnedCommit: string; branchName: string | null };
   if (value.cwd !== input.remoteCwd || !/^[a-f0-9]{40,64}$/.test(value.pinnedCommit)) throw new Error("remote_workspace_repository_receipt_invalid");
   return value;

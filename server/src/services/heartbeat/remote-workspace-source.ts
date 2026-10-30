@@ -11,6 +11,20 @@ import { isMultiProjectWorkspaceSyncEnabled, isMultiProjectWorkspaceSyncRemoteEn
   resolveRunReferencedProjects, WorkspaceValidationFailure, type ResolvedWorkspaceForRun } from "./workspaces.js";
 import type { HeartbeatWorkspacePreparationInput } from "./workspace-preparation.js";
 
+function assertRemoteRepositorySource(repoUrl: string) {
+  const value = repoUrl.trim();
+  let networkUrl = false;
+  try {
+    const parsed = new URL(value);
+    networkUrl = ["https:", "http:", "ssh:", "git:", "git+ssh:"].includes(parsed.protocol) && Boolean(parsed.hostname);
+  } catch { /* Git also accepts scp-style SSH sources. */ }
+  const scpSource = !value.includes("://") && !/^file:/i.test(value) && !/^[a-z]:/i.test(value)
+    && /^(?:[^@:/\s]+@)?(?:\[[a-f\d:]+\]|[a-z\d.-]+):[^:\s][^\r\n]*$/i.test(value);
+  if (!networkUrl && !scpSource) throw new WorkspaceValidationFailure(
+    "Import local repository folders before using them as remote workspace sources.",
+    { reason: "remote_workspace_local_source_requires_import" });
+}
+
 /** Resolve an authorized source without materializing any controller directory. */
 export async function resolveRemoteWorkspaceSource(db: Db, input: {
   companyId: string;
@@ -39,6 +53,8 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     sourceId: string | null) => {
     const extra: NonNullable<RemoteWorkspaceSource["repositories"]> =
       (base.repositories ?? []).filter(repository => !repository.readOnly);
+    if (base.kind === "git") assertRemoteRepositorySource(base.repoUrl);
+    for (const repository of extra) assertRemoteRepositorySource(repository.repoUrl);
     const referenced = isMultiProjectWorkspaceSyncEnabled() ? await resolveRunReferencedProjects(input.issueId, anchorProjectId, {
       companyId: input.companyId,
       actor: { type: "agent", source: "agent_jwt", companyId: input.companyId,

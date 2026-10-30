@@ -234,7 +234,13 @@ describe("automatic retained workspace recovery", () => {
       const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
         actorSource: "local_implicit", observedRunId: source.id, idempotencyKey: randomUUID() });
       await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", payload: { executionWait: { reason: "remote_cleanup" } } });
+      await environmentService(db).releaseLease(settledLease.id, "released", { cleanupStatus: "success",
+        remoteExecutionTermination: remoteTerminationReceipt(settledLease, { providerLeaseId: settledLease.providerLeaseId, state: "destroyed" }) });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
       const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      expect(successor).toBeDefined();
       const readiness = await readFreshWorkspaceReadiness(db, successor);
       expect(readiness).toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
     } else {

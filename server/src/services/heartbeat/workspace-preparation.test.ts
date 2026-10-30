@@ -111,7 +111,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
-  it.each(["empty", "git"] as const)("reserves a %s remote workspace without materializing a controller checkout", async kind => {
+  it.each([
+    { kind: "empty", repoUrl: null },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git" },
+    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git" },
+    { kind: "git", repoUrl: "git@github.com:example/remote.git" },
+  ] as const)("reserves a $kind remote workspace ($repoUrl) without materializing a controller checkout", async ({ kind, repoUrl }) => {
     const { input, source, issue, envOrchestrator } = await fixture();
     const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
       driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
@@ -125,7 +130,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.policy.requestedExecutionWorkspaceMode = "agent_default";
     input.policy.useIsolatedTaskDirectory = kind === "empty";
     if (kind === "git") {
-      await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl: "https://github.com/example/remote.git", repoRef: "main" })
+      await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl, repoRef: "main" })
         .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
     }
     await rm(source, { recursive: true });
@@ -165,6 +170,24 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("Import the configured local folder");
     expect(acquire).not.toHaveBeenCalled();
   });
+
+  it.each(["file:///tmp/repository", "/tmp/repository", "../repository", "C:\\work\\repository"])(
+    "rejects local repository source %s before remote allocation", async repoUrl => {
+      const { input, issue, envOrchestrator } = await fixture();
+      input.agent.adapterType = "paperclip_runner";
+      input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+        driver: "sandbox", config: { provider: "daytona" } };
+      input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+      await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl })
+        .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+      const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+        code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_local_source_requires_import" },
+      });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
+    },
+  );
 
   it.each(["shared_workspace", "agent_default"] as const)("rejects concurrent shared writers resolved from %s before resolving a remote source", async requestedMode => {
     const { input, envOrchestrator } = await fixture();
