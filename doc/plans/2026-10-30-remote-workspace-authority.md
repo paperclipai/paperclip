@@ -8,17 +8,17 @@ has been performed.
 Execution record (2026-10-30): native remote preparation, encrypted saved versions,
 portable restore, ordinary file access, Stop/failure recovery, guarded closure,
 retention, and explicit migration are implemented. The branch includes current
-master through `18b1637b63`. Required recursive typecheck and the full build pass.
+master through `105a67b52c`. Required recursive typecheck and the full build pass.
 Complete test coverage is running in supported parallel shards. The original
 serial test invocation was deliberately interrupted after eleven minutes; its
 log is retained. Its recorded general-server workload alone exceeds ninety serial
 minutes, so an interrupted command is not recorded as a passing suite.
 
 Focused evidence uses real Postgres through migration 0419 and real child-process
-filesystem execution. Twelve lifecycle tests cover cold restore without the original
+filesystem execution. Fourteen lifecycle tests cover cold restore without the original
 allocation or Git origin, staged/unstaged/untracked Git work, separate tasks sharing
 one writer, lost provisioning replies, storage failure, stale publication, and
-current Git credential context. Eight transport regressions cover filesystem
+current Git credential context. Nine transport regressions cover filesystem
 confinement, receipt writes, lost preparation/restore replies, saved-checkout reuse
 without a credential refresh, and trusted SSH rewrites. Archive (17), storage (7),
 migration (7), and retention (10) cases pass. The runtime controls (148), workspace
@@ -62,7 +62,13 @@ The first automated review scored 3/5 and identified four valid gaps. Fixes now
 retain later managed-repository commits, reject unsupported manual commands before
 local filesystem access, remove completed remote export staging with durable
 cleanup retry records, and preserve safe portable Git remotes, tracking, and commit identity.
-Their regression tests pass. A fresh review is required for these changes.
+Their regression tests pass. The second review found a cleanup reply that could
+hide a completed restore. Restore location and cleanup receipts now publish
+together before cleanup runs. A further real regression showed stale same-run
+preparation could replace dirty file authority with a second allocation. The
+locked publication now verifies the exact dirty location and current lease.
+Both regressions failed before their fixes and pass afterward. A fresh review
+is required for these changes.
 
 V1 admission rejects read-only cross-project referenced folders because the
 qualified native sandbox cannot enforce their write boundary. It also rejects

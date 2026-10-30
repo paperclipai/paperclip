@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
   captureRemoteWorkspaceArchive,
+  cleanupRemoteWorkspaceArchive,
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   restoreRemoteWorkspaceDirectory,
@@ -114,12 +115,44 @@ describe("remote workspace transport safety with real sandbox commands", () => {
         manifestDigest: captured.manifestDigest, restorationIdentity: "a".repeat(64) };
       await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow("synthetic lost restore reply");
       await fs.writeFile(path.join(root, "newer.txt"), "retain later edits\n");
-      await expect(restoreRemoteWorkspaceDirectory(input)).resolves.toBeUndefined();
+      const restored = await restoreRemoteWorkspaceDirectory(input);
+      expect(restored.cleanupPending).toBe(true);
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
       expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("saved synthetic files\n");
       expect(await fs.readFile(path.join(root, "newer.txt"), "utf8")).toBe("retain later edits\n");
       expect(await fs.readdir(path.join(scratch, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
       await expect(restoreRemoteWorkspaceDirectory({ ...input, restorationIdentity: "b".repeat(64) })).rejects.toThrow();
       expect(await fs.readFile(path.join(root, "newer.txt"), "utf8")).toBe("retain later edits\n");
+    } finally { await captured.cleanup(); }
+  });
+
+  it("keeps a completed restore available when the staging cleanup reply is lost", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "durable synthetic files\n");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const actual = execute.getMockImplementation()!;
+      let loseCleanup = true;
+      execute.mockImplementation(async input => {
+        const result = await actual(input);
+        if (loseCleanup && input.args?.[1]?.includes("remote_workspace_export_cleanup_failed") && result.exitCode === 0) {
+          throw new Error("synthetic lost cleanup reply");
+        }
+        return result;
+      });
+      const root = path.join(scratch, "restored-after-cleanup-failure");
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) };
+      const restored = await restoreRemoteWorkspaceDirectory(input);
+      expect(restored.cleanupPending).toBe(true);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("durable synthetic files\n");
+      await expect(cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot,
+        operationId: restored.operationId })).rejects.toThrow("synthetic lost cleanup reply");
+      await fs.writeFile(path.join(root, "later.txt"), "keep later work\n");
+      loseCleanup = false;
+      const retried = await restoreRemoteWorkspaceDirectory(input);
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: retried.stagingRoot, operationId: retried.operationId });
+      expect(await fs.readFile(path.join(root, "later.txt"), "utf8")).toBe("keep later work\n");
     } finally { await captured.cleanup(); }
   });
 

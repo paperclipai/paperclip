@@ -144,6 +144,90 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.companyId, ids.company))).length).toBe(1);
   }, 60_000);
 
+  it("fences stale same-run preparation from replacing a dirty workspace allocation or lease", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("dirty-owner");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
+      lease: await lease(), target: first, assertOwned: async () => undefined });
+    await fs.writeFile(path.join(prepared.remoteRoot, "unsaved.txt"), "only the first allocation has this work\n");
+    const originalAuthority = readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)!;
+    for (const sameAllocation of [false, true]) {
+      const leaseId = randomUUID();
+      const providerLeaseId = sameAllocation ? prepared.lease.providerLeaseId! : `allocation-${leaseId}`;
+      await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company, environmentId: ids.environment,
+        heartbeatRunId: ids.run, issueId: ids.issue, provider: "daytona", providerLeaseId, status: "active" });
+      const replacementLease = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]! as EnvironmentLease;
+      const replacement = sameAllocation ? first : await target("stale-replacement");
+      await expect(prepareRemoteWorkspace({ db, storage, workspace: sameAllocation ? await workspace(reserved.id) : reserved, runId: ids.run,
+        lease: replacementLease, target: replacement, assertOwned: async () => undefined }))
+        .rejects.toThrow("remote_workspace_authority_changed");
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toEqual(originalAuthority);
+      expect(await fs.readFile(path.join(prepared.remoteRoot, "unsaved.txt"), "utf8"))
+        .toBe("only the first allocation has this work\n");
+    }
+  }, 60_000);
+
+  it("publishes a cold restored workspace despite lost cleanup replies and retries cleanup without overwriting later edits", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("restore-cleanup-source");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
+      lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "saved before the original allocation was lost\n");
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: first, assertOwned: async () => undefined });
+    await fs.rm(path.dirname(prepared.remoteRoot), { recursive: true, force: true });
+    const nextRun = randomUUID(), nextLease = randomUUID(), providerLeaseId = `allocation-${nextLease}`;
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent,
+      nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    await db.insert(environmentLeases).values({ id: nextLease, companyId: ids.company, environmentId: ids.environment,
+      heartbeatRunId: nextRun, issueId: ids.issue, provider: "daytona", providerLeaseId, status: "active" });
+    const nextWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue,
+      runId: nextRun, agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+      existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const nextTarget = await target("restore-cleanup-destination");
+    const sandbox = nextTarget as Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+    const expectedRemoteRoot = path.join(sandbox.remoteCwd, ".paperclip-workspaces", reserved.id);
+    const execute = sandbox.runner!.execute.bind(sandbox.runner!);
+    let failCleanup = true, cleanupAttempts = 0;
+    sandbox.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.args?.[1]?.includes("remote_workspace_export_cleanup_failed") && result.exitCode === 0) {
+        cleanupAttempts++;
+        if (failCleanup) throw new Error("lost restore cleanup reply");
+      }
+      return result;
+    };
+    const nextLeaseRow = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease)))[0]! as EnvironmentLease;
+    const restored = await prepareRemoteWorkspace({ db, storage, workspace: nextWorkspace, runId: nextRun,
+      lease: nextLeaseRow, target: nextTarget, assertOwned: async () => undefined });
+    expect(restored.remoteRoot).toBe(expectedRemoteRoot);
+    const location = { environmentId: ids.environment, leaseId: nextLease, providerLeaseId, remoteCwd: restored.remoteRoot };
+    expect(cleanupAttempts).toBeGreaterThan(0);
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
+      location, snapshotId: saved.snapshotId, writerRunId: nextRun, dirty: true,
+    });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease)))[0]?.metadata?.remoteCwd).toBe(restored.remoteRoot);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, nextRun)))[0]?.runnerProfileJson?.remoteWorkspace)
+      .toMatchObject({ workspaceId: reserved.id, leaseId: nextLease, providerLeaseId,
+        remoteCwd: restored.remoteRoot, state: "prepared", snapshotId: saved.snapshotId });
+    expect(await fs.readFile(path.join(restored.remoteRoot, "saved.txt"), "utf8"))
+      .toBe("saved before the original allocation was lost\n");
+    const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
+    expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
+    await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
+    failCleanup = false;
+    const transfer = vi.spyOn(sandbox.runner!, "syncIn");
+    const upload = vi.spyOn(storage, "putFile");
+    await prepareRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: nextRun,
+      lease: restored.lease, target: nextTarget, assertOwned: async () => undefined });
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, operation!.id)))[0])
+      .toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "cleaned" } } });
+    expect(await fs.readFile(path.join(restored.remoteRoot, "saved.txt"), "utf8")).toBe("later agent edits\n");
+    expect(await fs.readFile(path.join(restored.remoteRoot, "newer.txt"), "utf8")).toBe("keep untracked work\n");
+    expect(transfer).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+  }, 60_000);
+
   it("reuses one saved shared workspace across separate tasks while fencing a second writer", async () => {
     const projectId = randomUUID(), sourceId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId: ids.company, name: "Synthetic shared project" });

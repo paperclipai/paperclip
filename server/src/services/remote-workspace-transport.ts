@@ -16,9 +16,9 @@ export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | nu
   return target;
 }
 
-async function command(target: RemoteWorkspaceTarget, args: string[], env?: Record<string, string>) {
+async function command(target: RemoteWorkspaceTarget, args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const result = await target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
-    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs: 300_000, bypassSession: true });
+    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
   if (result.exitCode !== 0 || result.timedOut) throw new Error("remote_workspace_operation_failed");
   return result.stdout;
 }
@@ -162,7 +162,7 @@ export async function cleanupRemoteWorkspaceArchive(input: {
     if(!entry.isDirectory()||entry.isSymbolicLink())throw Error('unsafe');}
    await fs.rm(dir,{recursive:true,force:true});
   })().catch(()=>{process.stderr.write('remote_workspace_export_cleanup_failed');process.exitCode=1});`;
-  await command(input.target, ["-e", script, input.remoteCwd, input.operationId]);
+  await command(input.target, ["-e", script, input.remoteCwd, input.operationId], undefined, 10_000);
 }
 
 export async function captureRemoteWorkspaceArchive(input: {
@@ -229,5 +229,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
   })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
   await command(input.target, ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
-  await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: parent, operationId });
+  // Publish the restored location before cleanup can fail, stall, or lose its
+  // reply. The owner journals this receipt and then reclaims disposable staging.
+  return { operationId, stagingRoot: parent, cleanupPending: true };
 }
