@@ -22,6 +22,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   nativeRunFinalizations,
@@ -1205,6 +1206,92 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       expect(result).toMatchObject({
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
+      });
+    });
+
+    describe("interaction_pending wakes", () => {
+      async function seedInteractionWake(input: {
+        interaction?: "pending" | "resolved" | "other_addressee" | "none";
+        reviewParticipant?: boolean;
+        wakeReason?: string;
+      }) {
+        const { companyId, agentId } = await seedCompanyAndAgent();
+        const assigneeAgentId = randomUUID();
+        await seedAgent({ id: assigneeAgentId, companyId, name: "Assignee" });
+        const otherAgentId = randomUUID();
+        await seedAgent({ id: otherAgentId, companyId, name: "Other" });
+        const issueId = randomUUID();
+        await seedIssue({
+          companyId,
+          issueId,
+          status: "in_review",
+          assigneeAgentId,
+          executionState: input.reviewParticipant
+            ? {
+                status: "pending",
+                currentStageId: randomUUID(),
+                currentStageIndex: 0,
+                currentStageType: "review",
+                currentParticipant: { type: "agent", agentId: otherAgentId, userId: null },
+                returnAssignee: { type: "agent", agentId: assigneeAgentId, userId: null },
+                reviewRequest: null,
+                completedStageIds: [],
+                lastDecisionId: null,
+                lastDecisionOutcome: null,
+              }
+            : null,
+        });
+        const interactionId = randomUUID();
+        if (input.interaction && input.interaction !== "none") {
+          await db.insert(issueThreadInteractions).values({
+            id: interactionId,
+            companyId,
+            issueId,
+            kind: "request_confirmation",
+            status: input.interaction === "resolved" ? "accepted" : "pending",
+            createdByAgentId: assigneeAgentId,
+            addresseeAgentId: input.interaction === "other_addressee" ? otherAgentId : agentId,
+            payload: { version: 1, prompt: "Please confirm" } as never,
+          });
+        }
+        const runId = await seedRun({
+          companyId,
+          agentId,
+          contextSnapshot: {
+            issueId,
+            interactionId,
+            wakeReason: input.wakeReason ?? "interaction_pending",
+          },
+        });
+        return createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+          runId,
+          companyId,
+          expectedStatus: "queued",
+          now: new Date(),
+        });
+      }
+
+      it("does not cancel a wake for the non-assignee addressee of a pending interaction", async () => {
+        const result = await seedInteractionWake({ interaction: "pending" });
+        expect(result.outcome).not.toBe("cancelled");
+      });
+
+      it("does not cancel it when another agent is the in-review participant", async () => {
+        const result = await seedInteractionWake({ interaction: "pending", reviewParticipant: true });
+        expect(result.outcome).not.toBe("cancelled");
+      });
+
+      it.each(["resolved", "other_addressee", "none"] as const)(
+        "still cancels the wake when the interaction is %s",
+        async (interaction) => {
+          const result = await seedInteractionWake({ interaction });
+          expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+        },
+      );
+
+      it("still cancels a non-assignee wake with another reason", async () => {
+        const result = await seedInteractionWake({ interaction: "pending", wakeReason: "issue_assigned" });
+        expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
       });
     });
 

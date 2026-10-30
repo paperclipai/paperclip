@@ -18,6 +18,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   projects,
@@ -558,12 +559,32 @@ export function createPostgresRunDispatchAdapter(
     );
 
     const wakeCommentId = deriveCommentId(context);
-    const isInteractionWake = allowsIssueInteractionWake(
-      context,
-      ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-    );
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    // interaction_pending wakes target the interaction's addressee (e.g. a
+    // reviewer), who is not necessarily the issue assignee. Only honor one
+    // while its interaction is still pending and addressed to the run's agent.
+    const interactionId = readNonEmptyString(context.interactionId);
+    const isPendingAddresseeWake =
+      wakeReason === "interaction_pending" && issue && interactionId
+        ? await dbOrTx
+            .select({ id: issueThreadInteractions.id })
+            .from(issueThreadInteractions)
+            .where(
+              and(
+                eq(issueThreadInteractions.id, interactionId),
+                eq(issueThreadInteractions.companyId, input.companyId),
+                eq(issueThreadInteractions.issueId, issue.id),
+                eq(issueThreadInteractions.status, "pending"),
+                eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows.length > 0)
+        : false;
+    const isInteractionWake =
+      allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) ||
+      isPendingAddresseeWake;
+    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const retryReason =
       readNonEmptyString(context.retryReason) ?? input.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
