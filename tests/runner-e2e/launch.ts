@@ -606,7 +606,7 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
-      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
+      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(temporaryRoot, "artifacts-private", "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
       PAPERCLIP_RUNNER_REMOTE_BINARY_PATH:
         installedCli ? undefined : resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
@@ -789,6 +789,10 @@ async function runAttempt(input: {
       } catch (error) {
         persistedStateError = error;
       }
+    }
+    const ownedServerLog = path.join(temporaryRoot, "artifacts-private", "server.log");
+    if (manualPrivateHandoff && await access(ownedServerLog).then(() => true, () => false)) {
+      await cp(ownedServerLog, path.join(privateDir, "server.log"), { errorOnExist: true, force: false });
     }
     const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials);
     if (processResult.privateDiagnosticLeak) reporterPrivacy.push({ file: "playwright process stdout/stderr", disposition: "redacted", reason: "credential detected before diagnostic emission" });
