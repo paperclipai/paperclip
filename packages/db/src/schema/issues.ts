@@ -93,6 +93,12 @@ export const issues = pgTable(
     unblockDescriptor: jsonb("unblock_descriptor").$type<IssueUnblockDescriptor | null>(),
     blockedTransitionAt: timestamp("blocked_transition_at", { withTimezone: true }),
     blockedOwnerNotifiedAt: timestamp("blocked_owner_notified_at", { withTimezone: true }),
+    // See doc/execution-semantics.md, "Terminal transition contract". Null
+    // (or any value other than "workspace_delivery") means the done
+    // transition is ungated: every pre-existing issue keeps today's
+    // behavior unchanged.
+    completionRequirement: text("completion_requirement").$type<"workspace_delivery" | null>(),
+    completionRequirementRevision: integer("completion_requirement_revision").notNull().default(0),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
