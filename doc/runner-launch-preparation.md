@@ -79,3 +79,11 @@ The [environment task API](plugins/PLUGIN_ENVIRONMENT_TASKS.md#launch-preparatio
 defines the plugin preparation exchange. The [native plugin integration](plugins/PLUGIN_RUNNER_EXECUTION.md)
 connects the callback to task execution. A Launcher implementation remains the
 execution owner's responsibility.
+
+## Managed Git helper interpreter
+
+`githubLauncherSource({ interpreterPath })` can select an absolute Node interpreter
+owned by the execution environment. Without this option, generated helpers retain
+`#!/usr/bin/env node`. The option changes only the shebang; it does not change PATH,
+command discovery, credential handling, or helper behavior. Interpreter paths must
+be absolute and contain no whitespace or NUL bytes.
