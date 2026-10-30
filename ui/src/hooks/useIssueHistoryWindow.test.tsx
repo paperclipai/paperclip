@@ -70,3 +70,17 @@ it.each([true, false])("catches up after canceled input and a reply burst (earli
     client.clear();
   }
 });
+
+it("keeps a continuous chat compact even after its task view expanded history", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["issues", "history-expanded", "chat"], true);
+  const root = createRoot(document.createElement("div"));
+  api.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, oldestCommentId: null, hasMore: false });
+  let current: ReturnType<typeof useIssueHistoryWindow>;
+  function Probe() { current = useIssueHistoryWindow("chat", false, undefined, true); return null; }
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+    await vi.waitFor(() => expect(current!.recent.isSuccess).toBe(true));
+    expect(current!.historyExpanded).toBe(false);
+  } finally { await act(async () => root.unmount()); client.clear(); }
+});

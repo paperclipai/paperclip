@@ -14,6 +14,7 @@ export function useIssueHistoryWindow(
   issueRef: string | undefined,
   showFullHistory: boolean,
   issue?: Pick<Issue, "id" | "identifier">,
+  continuous = false,
 ) {
   const queryClient = useQueryClient();
   const expansionKey = ["issues", "history-expanded", issueRef] as const;
@@ -24,7 +25,7 @@ export function useIssueHistoryWindow(
     initialData: false,
     gcTime: Infinity,
   });
-  const historyExpanded = showFullHistory || expanded;
+  const historyExpanded = !continuous && (showFullHistory || expanded);
   const expandHistory = useCallback(() => {
     for (const ref of new Set([issueRef, issue?.id, issue?.identifier])) {
       if (ref) queryClient.setQueryData(["issues", "history-expanded", ref], true);
@@ -32,8 +33,8 @@ export function useIssueHistoryWindow(
   }, [issueRef, issue?.id, issue?.identifier, queryClient]);
   useEffect(() => {
     // Keep identifier and UUID navigation on the same expansion preference.
-    if (showFullHistory || expanded) expandHistory();
-  }, [showFullHistory, expanded, expandHistory]);
+    if (!continuous && (showFullHistory || expanded)) expandHistory();
+  }, [continuous, showFullHistory, expanded, expandHistory]);
   const recentKey = [...queryKeys.issues.comments(issueRef ?? ""), "recent"] as const;
   const recent = useQuery({
     queryKey: recentKey,
@@ -76,6 +77,7 @@ export function useIssueHistoryWindow(
       return {
         ...snapshot,
         hasMore: previous.hasMore,
+        oldestCommentId: previous.oldestCommentId,
         latestCommentId: incoming.at(-1)?.id ?? snapshot.latestCommentId,
         comments: mergeWindowComments(previous.comments, incoming, snapshot.comments),
       };
