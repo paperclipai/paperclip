@@ -46,6 +46,20 @@ export const projectWorkspaceRuntimeConfigSchema = z.object({
   serviceStates: z.record(z.string(), z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
+const urlSchema = z.string().url();
+// Git's scp-style remote, [user@]host:path. Git reads this form when no slash
+// comes before the first colon. A one-letter host would be a Windows drive.
+const SCP_STYLE_GIT_REMOTE = /^(?:[^@/\s]+@)?[^@:/\s]{2,}:(?!\/\/)\S+$/;
+
+/** A URL, or a Git scp-style remote such as `git@github.com:owner/repo.git`. */
+export function isRepositoryUrl(value: string): boolean {
+  return urlSchema.safeParse(value).success || SCP_STYLE_GIT_REMOTE.test(value);
+}
+
+const repositoryUrlSchema = z.string().refine(isRepositoryUrl, {
+  message: "Repository URL must be a URL or a Git remote such as git@host:owner/repo.git",
+});
+
 const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);
 const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
 
@@ -53,7 +67,7 @@ const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
   sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
-  repoUrl: z.string().url().optional().nullable(),
+  repoUrl: repositoryUrlSchema.optional().nullable(),
   repoRef: z.string().optional().nullable(),
   defaultRef: z.string().optional().nullable(),
   visibility: projectWorkspaceVisibilitySchema.optional(),
