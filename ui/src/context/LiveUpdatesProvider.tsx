@@ -1383,6 +1383,8 @@ function invalidateActivityQueries(
   const details = readRecord(payload.details);
   const decisionProjectionChanged = entityType === "decision" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
+    // A claim moves a card between people's views (PAP-749), so open pages refetch.
+    action?.startsWith("attention.") ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
     action === "issue.conversation_session_started" ||

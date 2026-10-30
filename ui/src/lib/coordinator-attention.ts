@@ -1,7 +1,14 @@
-import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
+import type { AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
-export const coordinatorAttentionQueryKey = (companyId: string) => [...queryKeys.attention(companyId), "coordinator", "pending"] as const;
+/**
+ * The pending feed for one person and one view (PAP-749 plan §1). The key
+ * holds the user, so switching accounts never shows the previous person's
+ * cached list. The "For you" key is shared by the page, the sidebar, the mobile
+ * navigation and the Tasks filter, so the badge always agrees with the list.
+ */
+export const coordinatorAttentionQueryKey = (companyId: string, userId: string | null, view: AttentionPersonalView) =>
+  [...queryKeys.attention(companyId), userId, view, "coordinator", "pending"] as const;
 
 /** Presentation-only assumption from the prototype, never a retention policy. */
 export const COORDINATOR_RECENT_DECISION_MS = 24 * 60 * 60 * 1_000;

@@ -264,10 +264,9 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * The sidebar badge: distinct items that either surfaced today or carry an
- * explicit decide-by deadline that is due today/past. The server computes this
- * before pagination (`deskBadgeCount`), so badge polling can fetch a small
- * first page without losing the company-wide signal.
+ * The shared badge: current "For you" cards (PAP-749 plan §1, Rule 5). The
+ * server counts it before pagination (`deskBadgeCount`), so a small first page
+ * still carries the full count. It has no day boundary.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
   return feed?.deskBadgeCount ?? 0;
@@ -282,11 +281,10 @@ export function attentionBadgeCount(feed: AttentionFeed | null | undefined): num
 //     is due today/past. No deadline set anywhere → no shelf, no claim.
 //   • "New today"   — decisions that surfaced today (arrival grouping).
 //   • "Earlier"     — everything else, older arrivals.
-// The server owns the authoritative decide-by ranking (`sort=decide`) and the
-// badge (`deskBadgeCount`); these client helpers mirror that logic *exactly*
-// (same UTC day boundaries) so the on-page split and the badge never disagree.
-// Keep in lockstep with `server/src/services/attention.ts`
-// (`decideOrder`/`isDecideNow`/`isNewToday`).
+// The server owns the authoritative decide-by ranking (`sort=decide`); these
+// client helpers mirror its UTC day boundaries exactly. Keep in lockstep with
+// `decideOrder` in `server/src/services/attention.ts`. The shelves only group
+// the desk; the badge counts "For you" cards and ignores the day (PAP-749).
 // ---------------------------------------------------------------------------
 
 const MS_PER_DAY_DECIDE = 24 * 60 * 60 * 1_000;

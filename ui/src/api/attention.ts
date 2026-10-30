@@ -1,4 +1,4 @@
-import type { AttentionFeed, AttentionFeedQuery, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
+import type { AttentionClaimResult, AttentionFeed, AttentionFeedQuery, AttentionSourceKind, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const attentionApi = {
@@ -17,6 +17,7 @@ export const attentionApi = {
     if (options.includeDismissed) params.set("includeDismissed", "true");
     if (options.archived) params.set("archived", "true");
     if (options.all) params.set("all", "true");
+    if (options.view) params.set("view", options.view);
     if (options.activitySince) params.set("activitySince", options.activitySince);
     if (options.activityUntil) params.set("activityUntil", options.activityUntil);
     if (options.queue) params.set("queue", options.queue);
@@ -26,4 +27,10 @@ export const attentionApi = {
     const query = params.toString();
     return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`);
   },
+  /** Claim an Unassigned card: you become its addressee (PAP-749 plan §1, Rule 3). */
+  claim: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+    api.post<AttentionClaimResult>(
+      `/companies/${companyId}/attention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/claim`,
+      {},
+    ),
 };

@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, History, Loader2 } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
-import type { Agent, AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
+import { accessApi } from "@/api/access";
 import { attentionApi } from "@/api/attention";
 import { agentsApi } from "@/api/agents";
 import { projectsApi } from "@/api/projects";
@@ -12,10 +13,14 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useAttentionBadge, useAttentionViewFeed, useClaimAttentionItem } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { coordinatorAttentionQueryKey, COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
+import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
+import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
+import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { AttentionAudienceLine, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
 import { DecisionResolver } from "@/components/DecisionResolver";
@@ -31,6 +36,12 @@ import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionRece
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 
 type Group = "none" | "task" | "agent" | "project";
+
+const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
+  mine: "You're caught up.",
+  unassigned: "No cards need an owner.",
+  company: "No company alerts right now.",
+};
 
 function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyId: string; agents: Agent[]; onClose: () => void; mobile?: boolean }) {
   const navigate = useNavigate();
@@ -84,6 +95,13 @@ export function CoordinatorNeedsYou() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
+  // For you is the default; Unassigned and Company live in the URL (PAP-749 Rule 3).
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM));
+  const setView = useCallback((next: typeof view) => setSearchParams(current => {
+    const params = new URLSearchParams(current);
+    if (next === "mine") params.delete(ATTENTION_VIEW_PARAM); else params.set(ATTENTION_VIEW_PARAM, next);
+    return params;
+  }, { replace: true }), [setSearchParams]);
   const reducedMotion = useReducedMotion();
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
@@ -94,10 +112,14 @@ export function CoordinatorNeedsYou() {
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
-  useEffect(() => { setSettling([]); setSavedIds(new Set()); }, [selectedCompanyId, userId]);
+  useEffect(() => { setSettling([]); setSavedIds(new Set()); }, [selectedCompanyId, userId, view]);
   const [renderLimit, setRenderLimit] = useState(40);
-  const feed = useQuery({ queryKey: coordinatorAttentionQueryKey(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
+  // Keyed by person and view; the For you key is the one the badge reads.
+  const feed = useAttentionViewFeed(selectedCompanyId, view);
+  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const claim = useClaimAttentionItem(selectedCompanyId);
+  const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
+  const userLabelMap = useMemo(() => buildCompanyUserLabelMap(directory.data?.users), [directory.data?.users]);
   const agentQuery = useQuery({ queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId });
   // Full history lives in its own paginated tab. Only the newest bounded page
   // is fetched here; its window expires visually without deleting any record.
@@ -200,6 +222,8 @@ export function CoordinatorNeedsYou() {
       </SheetContent>
     </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
+    <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} />
+    {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
     <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
       <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search decisions or task IDs…" />
       <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
@@ -209,7 +233,7 @@ export function CoordinatorNeedsYou() {
     </div>
     {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
     {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">Decisions could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div> : null}
-    {!feed.isPending && !feed.isError && filtered.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : "You're caught up."}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
+    {!feed.isPending && !feed.isError && filtered.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
     {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map((item) => {
       const issueId = item.relatedIssue?.id ?? String(item.subject.metadata?.issueId ?? "");
       const interaction = item.sourceKind === "issue_thread_interaction" && isInlineResolvable(item) && issueId;
@@ -224,6 +248,7 @@ export function CoordinatorNeedsYou() {
       <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
         onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
       {receipt ? <Receipt item={receipt} onOpen={navigate} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6">
+        <AttentionAudienceLine item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
         {interaction ? <AttentionInteractionResolver footerSlot={taskLink} presentation="coordinator-decision" companyId={selectedCompanyId} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
           if (!resolved || resolved.status === "pending") { void feed.refetch(); void recent.refetch(); return; }
           onResolved(item);

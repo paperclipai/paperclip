@@ -94,8 +94,9 @@ async function main() {
     await printStale("after startup sweep");
 
     console.log(`\n=== Needs You demo card counts by view (company ${company.id}, prefix ${company.prefix}) ===`);
-    console.log("user   | all | mine | unassigned | company");
-    console.log("-------+-----+------+------------+--------");
+    // `badge` is the shared For you badge (task 1b); it must equal `mine`.
+    console.log("user   | all | mine | unassigned | company | badge");
+    console.log("-------+-----+------+------------+---------+------");
     for (const [name, email] of Object.entries(DEMO_EMAILS)) {
       const userId = idByEmail.get(email);
       if (!userId) {
@@ -103,13 +104,15 @@ async function main() {
         continue;
       }
       const counts: Record<string, number> = {};
+      let badge = 0;
       for (const view of VIEWS) {
         const feed = await svc.list(company.id, { userId, view });
         counts[view] = feed.totalCount;
+        badge = feed.deskBadgeCount;
       }
       console.log(
         `${name.padEnd(6)} | ${String(counts.all).padStart(3)} | ${String(counts.mine).padStart(4)} | ` +
-        `${String(counts.unassigned).padStart(10)} | ${String(counts.company).padStart(7)}`,
+        `${String(counts.unassigned).padStart(10)} | ${String(counts.company).padStart(7)} | ${String(badge).padStart(5)}`,
       );
     }
 

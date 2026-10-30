@@ -37,6 +37,11 @@
  * decision owner. When set, the Unassigned-group cards route to that user's
  * "For you" list; when unset (the default) they stay in Unassigned. Re-run the
  * seed with and without it to compare the two behaviors.
+ *
+ * Views and Claim (PAP-749 task 1b): one ownerless card is already claimed by
+ * Dotta through the claim service, with the same `attention.claimed` activity
+ * entry the claim route writes. It shows in Dotta's "For you" as "Sent to you"
+ * and in nobody's Unassigned pool.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -77,6 +82,7 @@ import { costService } from "../server/src/services/costs.js";
 import { issueRecoveryActionService } from "../server/src/services/issue-recovery-actions.js";
 import { inboxDismissalService } from "../server/src/services/inbox-dismissals.js";
 import { attentionService } from "../server/src/services/attention.js";
+import { logActivity } from "../server/src/services/activity-log.js";
 import { createAgentLifecycle } from "../server/src/services/agent-lifecycle.js";
 
 // drizzle-orm and better-auth are server-package dependencies; from a repo-root
@@ -377,6 +383,19 @@ async function seed(db: Db) {
   await db.update(agents).set({ status: "paused", updatedAt: now() }).where(eq(agents.id, pausedAgent!.id));
   await db.update(issueThreadInteractions).set({ addresseeAgentId: pausedAgent!.id }).where(eq(issueThreadInteractions.id, cannotRun.id));
   card("Unassigned", "request addressed to a paused (non-invokable) agent");
+
+  // Claimed (task 1b): an ownerless card Dotta took from Unassigned. The claim
+  // makes Dotta the addressee, so it leaves every other person's pool.
+  const claimedIssue = await makeIssue({ title: "Agent-created work Dotta claimed", status: "todo", createdByAgentId: worker!.id });
+  const claimedCard = await makeInteraction(claimedIssue, "request_confirmation", { prompt: "Dotta claimed this from Unassigned." }, { title: "Claimed by Dotta", actorAgentId: worker!.id });
+  const claim = await attentionService(db).claim(companyId, {
+    sourceKind: "issue_thread_interaction", sourceId: claimedCard.id, userId: dotta, actor: await boardActorFor(db, companyId, dotta),
+  });
+  await logActivity(db, {
+    companyId, actorType: "user", actorId: dotta, action: "attention.claimed", entityType: "issue", entityId: claim.issueId, issueId: claim.issueId,
+    details: { sourceKind: claim.sourceKind, sourceId: claim.sourceId, interactionId: claim.sourceId, claimedByUserId: dotta, previousAddresseeAgentId: null },
+  });
+  card("Claimed", "ownerless card Dotta claimed (in Dotta's For you, not in Unassigned)");
 
   // =========================================================================
   // GROUP: Company — failed run after retries, agent error, budget hard stop,

@@ -3,7 +3,6 @@ import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } f
 import { ListChecks, SearchX } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
-import { attentionApi } from "@/api/attention";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useAccountIdentity } from "@/api/companies-query";
 import { issuesApi } from "@/api/issues";
@@ -22,7 +21,8 @@ import { useTaskListCollection } from "@/hooks/useTaskListCollection";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
-import { coordinatorAttentionQueryKey, pendingDecisionTaskIds } from "@/lib/coordinator-attention";
+import { pendingDecisionTaskIds } from "@/lib/coordinator-attention";
+import { useAttentionViewFeed } from "@/hooks/useAttentionViews";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
@@ -81,8 +81,8 @@ export function CoordinatorTasks() {
     getNextPageParam: (last, _pages, offset) => last.hasNextPage ? offset + pageSize : undefined,
     enabled: !!companyId && !needsAttention,
   });
-  const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!),
-    queryFn: () => attentionApi.list(companyId!, { all: true }), enabled: !!companyId && needsAttention });
+  // Tasks with a "For you" card, the same list as Needs You and its badge (PAP-749).
+  const attention = useAttentionViewFeed(companyId, "mine", { enabled: needsAttention });
   // Hydrate every pending task, including those outside the first list page.
   // Do not substitute blocked/in-review status for an actual pending decision.
   const attentionIds = needsAttention ? [...pendingDecisionTaskIds(attention.data?.items ?? [])] : [];
@@ -155,7 +155,7 @@ export function CoordinatorTasks() {
     }, { replace: true });
   };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: coordinatorAttentionQueryKey(companyId!) }); },
+    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
   });
   const error = (needsAttention ? attention.error ?? attentionTasks.find(task => task.error)?.error : tasks.error)
     ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error

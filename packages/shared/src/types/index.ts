@@ -42,6 +42,8 @@ export type {
   AttentionAudience,
   AttentionAudienceKind,
   AttentionAudienceReason,
+  AttentionClaimableSourceKind,
+  AttentionClaimResult,
   AttentionDecisionVerb,
   DecisionHistoryItem,
   DecisionHistoryQuery,
@@ -53,6 +55,7 @@ export type {
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
+  AttentionPersonalView,
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,
@@ -64,9 +67,14 @@ export type {
   AttentionSubject,
   AttentionSubjectKind,
   AttentionTriageAttribution,
+  AttentionViewCounts,
   AttentionWorkspaceRef,
 } from "./attention.js";
-export { ATTENTION_SOURCE_KINDS } from "./attention.js";
+export {
+  ATTENTION_CLAIMABLE_SOURCE_KINDS,
+  ATTENTION_PERSONAL_VIEWS,
+  ATTENTION_SOURCE_KINDS,
+} from "./attention.js";
 export type {
   DecisionQueue,
   DecisionQueueItem,

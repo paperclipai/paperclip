@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -17,8 +17,14 @@ vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspa
 vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
+vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }) } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
-  list: async () => { if (fixture.feedFail) throw new Error("Feed unavailable"); return { items: [...fixture.pending] }; },
+  claim: fixture.claim,
+  list: async (_companyId: string, options: { view?: string }) => {
+    fixture.listCalls.push(options);
+    if (fixture.feedFail) throw new Error("Feed unavailable");
+    return { items: [...(fixture.byView[options.view ?? ""] ?? fixture.pending)], viewCounts: fixture.viewCounts };
+  },
   history: async () => { if (fixture.historyFail) throw new Error("History unavailable"); return { items: [...fixture.history], nextCursor: null }; },
 } }));
 vi.mock("motion/react", () => ({
@@ -47,6 +53,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
+  fixture.byView = {}; fixture.viewCounts = undefined; fixture.listCalls = [];
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
@@ -240,5 +247,69 @@ describe("Coordinator Needs You", () => {
     fixture.setPanelVisible.mockClear();
     await click("Decision history");
     expect(fixture.setPanelVisible).toHaveBeenCalledWith(true);
+  });
+});
+
+describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
+  const mine = (id: string, reason: string) => ({ ...fixture.pending[0], id, subject: { id, kind: "interaction", title: `Mine ${id}`, metadata: { issueId: `task-${id}` } },
+    audience: { kind: "user", userId: "reviewer", reason } }) as unknown as AttentionItem;
+  const pool = { id: "pool", sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id: "pool-interaction", kind: "interaction", title: "Pool", metadata: { issueId: "task-pool" } },
+    relatedIssue: { id: "task-pool", identifier: "PAP-9", title: "Pool task", href: "/PAP/issues/PAP-9" }, activityAt: new Date().toISOString(),
+    audience: { kind: "pool", userId: null, reason: "none" } } as unknown as AttentionItem;
+  const company = { id: "alert", sourceKind: "failed_run", inlineResolvable: false, subject: { id: "run-1", kind: "run", title: "Nightly sync failed", href: "/PAP/runs/1" }, relatedIssue: null,
+    activityAt: new Date().toISOString(), audience: { kind: "user", userId: "dotta", reason: "escalation_owner" } } as unknown as AttentionItem;
+  async function render(client: QueryClient) {
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
+    await flush(); await flush();
+  }
+  const tab = (view: string) => container.querySelector<HTMLElement>(`[data-attention-view="${view}"]`)!;
+
+  it("defaults to For you with Why me?, the banner and per-person keys, then claims from Unassigned", async () => {
+    fixture.byView = { mine: [mine("m1", "addressee"), mine("m2", "reviewer")], unassigned: [pool], company: [company] };
+    fixture.viewCounts = { mine: 2, unassigned: 1, company: 1 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect(fixture.listCalls).toContainEqual({ all: true, view: "mine" });
+    expect(fixture.listCalls.some((call) => (call as { view?: string }).view !== "mine")).toBe(false);
+    expect(tab("mine").getAttribute("aria-selected")).toBe("true");
+    expect(tab("mine").textContent).toBe("For you2");
+    expect(tab("unassigned").textContent).toBe("Unassigned1");
+    expect([...container.querySelectorAll('[data-attention-audience="mine"]')].map((line) => line.textContent))
+      .toEqual(["Why me?Sent to you", "Why me?You are the reviewer"]);
+    expect(container.querySelector("[data-attention-unassigned-banner]")?.textContent).toContain("1 card needs an owner");
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "mine"], exact: false })).toBeTruthy();
+
+    await click("Open Unassigned");
+    expect(container.querySelector("[data-location]")?.textContent).toBe("?view=unassigned");
+    expect(fixture.listCalls).toContainEqual({ all: true, view: "unassigned" });
+    expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "unassigned"], exact: false })).toBeTruthy();
+    expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
+    await vi.waitFor(() => expect(container.querySelector('[data-attention-audience="pool"]')).not.toBeNull());
+    await click("Claim");
+    expect(fixture.claim).toHaveBeenCalledWith("company", "issue_thread_interaction", "pool-interaction");
+    client.clear();
+  });
+
+  it("opens Company from the URL and names another person's card with For @name", async () => {
+    fixture.url = "/decisions?view=company";
+    fixture.byView = { company: [company] };
+    fixture.viewCounts = { mine: 0, unassigned: 0, company: 1 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect(tab("company").getAttribute("aria-selected")).toBe("true");
+    expect(fixture.listCalls).toContainEqual({ all: true, view: "company" });
+    await flush();
+    expect(container.querySelector("[data-attention-for-user]")?.textContent).toBe("For @Dotta");
+    expect(container.querySelector('[data-attention-view-count="mine"]')).toBeNull();
+    client.clear();
+  });
+
+  it("shows a view-specific empty state", async () => {
+    fixture.url = "/decisions?view=unassigned";
+    fixture.byView = { unassigned: [] };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect(container.textContent).toContain("No cards need an owner.");
+    client.clear();
   });
 });

@@ -19,6 +19,7 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "person" }) }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: "person" }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
@@ -61,9 +62,9 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list).not.toHaveBeenCalled();
     // The same cache update used by Needs You removes the task only after its
     // last decision has resolved; no parallel status-based queue is involved.
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [decision] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company", "person", "mine"), { items: [decision] }));
     await vi.waitFor(() => expect(host.querySelectorAll("[data-task-id]")).toHaveLength(1));
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company", "person", "mine"), { items: [] }));
     await vi.waitFor(() => expect(host.textContent).toContain("No tasks need a decision."));
   });
   it("filters live tasks and updates when a run finishes, excluding terminal tasks with stale runs", async () => {

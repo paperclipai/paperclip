@@ -1,13 +1,17 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import express from "express";
+import request from "supertest";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   approvals,
   companies,
   companyMemberships,
   createDb,
+  inboxDismissals,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -16,6 +20,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
@@ -123,6 +129,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     issueId: string;
     workerId: string;
     addresseeUserId?: string | null;
+    addresseeAgentId?: string | null;
   }) {
     const id = randomUUID();
     await db.insert(issueThreadInteractions).values({
@@ -134,6 +141,7 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
       title: "Approve the plan",
       createdByAgentId: input.workerId,
       addresseeUserId: input.addresseeUserId ?? null,
+      addresseeAgentId: input.addresseeAgentId ?? null,
       payload: { version: 1, prompt: "Approve this plan?" },
     });
     return id;
@@ -322,5 +330,136 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
 
     const dottaMine = await list(companyId, DOTTA, "mine");
     expect(dottaMine.items.some((item) => item.subject.id === childCard)).toBe(false);
+  });
+
+  // PAP-749 task 1b: one badge (For you only, no day boundary) and Claim.
+  it("counts only current For you cards in the badge, with the same per-view counts in every view", async () => {
+    const { companyId, workerId } = await seedCompany("BDG");
+    const scottTask = await insertIssue({ companyId, createdByUserId: SCOTT, originKind: "manual" });
+    const scottCard = await insertConfirmation({ companyId, issueId: scottTask, workerId });
+    const olderScottTask = await insertIssue({ companyId, createdByUserId: SCOTT, originKind: "manual" });
+    const olderScottCard = await insertConfirmation({ companyId, issueId: olderScottTask, workerId });
+    // Three days old: the old "new today" badge left it out; an open card now stays counted.
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    await db.update(issueThreadInteractions)
+      .set({ createdAt: threeDaysAgo, updatedAt: threeDaysAgo })
+      .where(eq(issueThreadInteractions.id, olderScottCard));
+    const dottaTask = await insertIssue({ companyId, createdByUserId: DOTTA, originKind: "manual" });
+    await insertConfirmation({ companyId, issueId: dottaTask, workerId });
+    const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    await insertConfirmation({ companyId, issueId: routineTask, workerId });
+
+    const all = await list(companyId, SCOTT, "all");
+    expect(all.viewCounts.mine).toBe(2);
+    expect(all.deskBadgeCount).toBe(2);
+    expect(all.viewCounts.unassigned).toBe(1);
+    expect(all.viewCounts.company).toBeGreaterThanOrEqual(1);
+    // Counts ignore the requested view, so the tabs, banner and badge agree.
+    for (const view of ["mine", "unassigned", "company"] as const) {
+      expect((await list(companyId, SCOTT, view)).viewCounts).toEqual(all.viewCounts);
+    }
+    expect((await list(companyId, DOTTA, "all")).deskBadgeCount).toBe(1);
+
+    // A personally hidden card leaves the badge; the other person's count is unchanged.
+    const scottItem = (await list(companyId, SCOTT, "mine")).items.find((item) => item.subject.id === scottCard)!;
+    await db.insert(inboxDismissals).values({
+      companyId, userId: SCOTT, itemKey: scottItem.dismissalKey, kind: "dismiss", fingerprint: scottItem.changeFingerprint,
+    });
+    const afterDismiss = await attentionService(db).list(companyId, { userId: SCOTT, includeDismissed: true });
+    expect(afterDismiss.deskBadgeCount).toBe(1);
+    expect(afterDismiss.viewCounts.mine).toBe(1);
+  });
+
+  it("claims a pool card for one person and removes it from every other person's pool", async () => {
+    const { companyId, workerId } = await seedCompany("CLM");
+    const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    const poolCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
+    const svc = attentionService(db);
+    const board = (userId: string) => ({ type: "board" as const, source: "session" as const, userId, companyIds: [companyId], isInstanceAdmin: false });
+
+    expect((await list(companyId, DOTTA, "unassigned")).items.some((item) => item.subject.id === poolCard)).toBe(true);
+    const claim = await svc.claim(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: poolCard, userId: SCOTT, actor: board(SCOTT),
+    });
+    expect(claim).toMatchObject({ sourceId: poolCard, claimedByUserId: SCOTT, alreadyClaimed: false, issueId: routineTask });
+
+    const scottMine = await list(companyId, SCOTT, "mine");
+    expect(audienceOf(scottMine.items, poolCard)).toEqual({ kind: "user", userId: SCOTT, reason: "addressee" });
+    expect((await list(companyId, DOTTA, "unassigned")).items.some((item) => item.subject.id === poolCard)).toBe(false);
+    expect((await list(companyId, SCOTT, "unassigned")).items.some((item) => item.subject.id === poolCard)).toBe(false);
+
+    // Claiming again is a no-op; a different person gets a conflict, not a takeover.
+    await expect(svc.claim(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: poolCard, userId: SCOTT, actor: board(SCOTT),
+    })).resolves.toMatchObject({ alreadyClaimed: true });
+    await expect(svc.claim(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: poolCard, userId: DOTTA, actor: board(DOTTA),
+    })).rejects.toMatchObject({ status: 409 });
+
+    // The claim moves placement only: the resolver policy is unchanged.
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, poolCard));
+    expect(row?.addresseeUserId).toBe(SCOTT);
+    expect(row?.effectiveResolverPolicy).toBe("anyone");
+  });
+
+  it("claims a stuck agent's request but leaves a runnable agent's request with the agent", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("CLA");
+    const svc = attentionService(db);
+    const board = { type: "board" as const, source: "session" as const, userId: SCOTT, companyIds: [companyId], isInstanceAdmin: false };
+    // A paused agent cannot run, so its request reaches the pool; an agent in error still can.
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, errorAgentId));
+    const task = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    const stuck = await insertConfirmation({ companyId, issueId: task, workerId, addresseeAgentId: errorAgentId });
+    const runnable = await insertConfirmation({ companyId, issueId: task, workerId, addresseeAgentId: workerId });
+
+    await svc.claim(companyId, { sourceKind: "issue_thread_interaction", sourceId: stuck, userId: SCOTT, actor: board });
+    const [claimed] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, stuck));
+    expect(claimed).toMatchObject({ addresseeUserId: SCOTT, addresseeAgentId: null });
+
+    await expect(svc.claim(companyId, { sourceKind: "issue_thread_interaction", sourceId: runnable, userId: SCOTT, actor: board }))
+      .rejects.toMatchObject({ status: 409 });
+  });
+
+  it("serves the claim route to board users only, validates input and writes one activity entry", async () => {
+    const { companyId, workerId } = await seedCompany("CLR");
+    const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    const poolCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: {} });
+
+    function app(actor: Record<string, unknown>) {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).actor = actor;
+        next();
+      });
+      testApp.use("/api", attentionRoutes(db));
+      testApp.use(errorHandler);
+      return testApp;
+    }
+    const scott = { type: "board", source: "session", userId: SCOTT, companyIds: [companyId], isInstanceAdmin: false };
+    const outsider = { type: "board", source: "session", userId: "outsider", companyIds: [], isInstanceAdmin: false };
+    const agent = { type: "agent", source: "agent_key", companyId, agentId: workerId, runId: null };
+    const claimUrl = (kind: string, id: string) => `/api/companies/${companyId}/attention/${kind}/${id}/claim`;
+
+    await request(app(agent)).post(claimUrl("issue_thread_interaction", poolCard)).expect(403);
+    await request(app(outsider)).post(claimUrl("issue_thread_interaction", poolCard)).expect(403);
+    await request(app(scott)).post(claimUrl("nonsense", poolCard)).expect(400);
+    await request(app(scott)).post(claimUrl("issue_thread_interaction", "not-a-uuid")).expect(400);
+    await request(app(scott)).post(claimUrl("issue_thread_interaction", randomUUID())).expect(404);
+    await request(app(scott)).post(claimUrl("approval", approvalId)).expect(422);
+
+    const claimed = await request(app(scott)).post(claimUrl("issue_thread_interaction", poolCard)).expect(200);
+    expect(claimed.body).toEqual({
+      sourceKind: "issue_thread_interaction", sourceId: poolCard, claimedByUserId: SCOTT, alreadyClaimed: false,
+    });
+    await request(app(scott)).post(claimUrl("issue_thread_interaction", poolCard)).expect(200);
+
+    const entries = await db.select().from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "attention.claimed")));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ actorType: "user", actorId: SCOTT, entityType: "issue", entityId: routineTask });
+    expect(entries[0]?.details).toMatchObject({ sourceKind: "issue_thread_interaction", sourceId: poolCard, claimedByUserId: SCOTT });
   });
 });

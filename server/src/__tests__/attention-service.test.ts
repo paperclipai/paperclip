@@ -1973,19 +1973,13 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 20,
     });
-    // Desk badge = distinct items surfaced today OR with a due decide-by
-    // Everything here was seeded ~now, so every visible row
-    // counts; the whole page fits under limit:20 so items == rankedItems.
-    const startOfUtcDay = Date.UTC(
-      new Date(now).getUTCFullYear(),
-      new Date(now).getUTCMonth(),
-      new Date(now).getUTCDate(),
-    );
+    // The badge is this person's "For you" count (PAP-749 Rule 5), with no day
+    // boundary; the whole page fits under limit:20 so items == rankedItems.
     const expectedBadge = feed.items.filter(
-      (item) => new Date(item.createdAt).getTime() >= startOfUtcDay || item.decideBy === "today",
+      (item) => item.audience.kind === "user" && item.audience.userId === "board-user",
     ).length;
-    expect(expectedBadge).toBeGreaterThanOrEqual(2);
     expect(feed.deskBadgeCount).toBe(expectedBadge);
+    expect(feed.viewCounts.mine).toBe(expectedBadge);
     expect(feed.items.some((item) => item.subject.id === snoozedId)).toBe(false);
     expect(feed.items.slice(0, 3).map((item) => item.subject.id)).toEqual([
       expiringSoonId,
@@ -2018,7 +2012,8 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 1,
     });
-    expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: 2 });
+    // A queue filter narrows the page, never the shared badge.
+    expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: feed.deskBadgeCount, viewCounts: feed.viewCounts });
     expect(firstPage.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
     expect(firstPage.nextCursor).toBeTruthy();
     const secondPage = await attentionService(db).list(companyId, {

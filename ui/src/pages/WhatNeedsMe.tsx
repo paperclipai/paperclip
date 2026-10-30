@@ -3,16 +3,20 @@ import { useQuery } from "@tanstack/react-query";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorNeedsYou } from "../components/coordinator/CoordinatorNeedsYou";
 import { CheckCircle2, Inbox } from "lucide-react";
-import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionPersonalView, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
+import { accessApi } from "../api/access";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
-import { authApi } from "../api/auth";
 import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
+import { useAttentionBadge, useClaimAttentionItem } from "../hooks/useAttentionViews";
+import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
+import { buildCompanyUserLabelMap } from "../lib/company-members";
+import { AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
@@ -93,6 +97,9 @@ export function WhatNeedsMe() {
 
 function ClassicWhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
+  // The signed-in person; it keys every list so an account switch never shows
+  // the previous person's cards (PAP-749 plan §1).
+  const { userId: currentUserId } = useCoordinatorWorkspaceEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
@@ -126,6 +133,20 @@ function ClassicWhatNeedsMe() {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
   const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+  // For you is the default; Unassigned and Company live in the URL (PAP-749 Rule 3).
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM));
+  const setView = useCallback((next: AttentionPersonalView) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next === "mine") params.delete(ATTENTION_VIEW_PARAM);
+      else params.set(ATTENTION_VIEW_PARAM, next);
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const claim = useClaimAttentionItem(selectedCompanyId);
+  const claimingId = claim.isPending ? claim.variables?.id ?? null : null;
+  const handleClaim = useCallback((item: AttentionItem) => claim.mutate(item), [claim.mutate]);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -158,11 +179,13 @@ function ClassicWhatNeedsMe() {
     isLoading,
     error,
   } = useQuery({
-    // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
-    // (needed for the curtains) never inflate the badge count. Invalidating the
-    // `["attention", companyId]` prefix still cascades to this query.
+    // Keyed by person and view. Distinct from the badge's "For you" query so
+    // dismissed rows (needed for the curtains) never inflate the badge count.
+    // Invalidating the `["attention", companyId]` prefix still cascades here.
     queryKey: [
       ...queryKeys.attention(selectedCompanyId!),
+      currentUserId,
+      view,
       "with-dismissed",
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
@@ -170,9 +193,10 @@ function ClassicWhatNeedsMe() {
     queryFn: () => attentionApi.list(selectedCompanyId!, {
       includeDismissed: true,
       all: true,
+      view,
       ...activityBounds,
     }),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !!currentUserId,
     refetchOnWindowFocus: true,
   });
 
@@ -195,11 +219,12 @@ function ClassicWhatNeedsMe() {
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
   });
 
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
+  const { data: userDirectory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const userLabelMap = useMemo(() => buildCompanyUserLabelMap(userDirectory?.users), [userDirectory?.users]);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -519,7 +544,7 @@ function ClassicWhatNeedsMe() {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
 
-  if (isLoading) {
+  if (isLoading || !currentUserId) {
     return <PageSkeleton variant="approvals" />;
   }
 
@@ -529,6 +554,7 @@ function ClassicWhatNeedsMe() {
     <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="space-y-4">
         <h1 className="text-xl font-bold">Decisions</h1>
+        <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} />
         <DecisionsToolbar
           query={searchQuery}
           onQueryChange={setSearchQuery}
@@ -557,14 +583,18 @@ function ClassicWhatNeedsMe() {
         />
       </div>
 
+      {view === "mine" && (
+        <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} />
+      )}
+
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {!hasAnything ? (
-        <ZeroState />
+        <ZeroState view={view} />
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote filtered={deskItems.length > 0} />
+            <CaughtUpNote filtered={deskItems.length > 0} view={view} />
           ) : (
             <>
               {groups.map((group) => {
@@ -626,6 +656,9 @@ function ClassicWhatNeedsMe() {
                                   agents={agents}
                                   showTriage
                                   currentUserId={currentUserId}
+                                  userLabelMap={userLabelMap}
+                                  onClaim={handleClaim}
+                                  claiming={claimingId === item.id}
                                   selected={selectionFromKeyboard && selectedAttentionId === item.id}
                                 />
                               </div>
@@ -811,11 +844,17 @@ export function DecisionBundleHeader({
   );
 }
 
-function CaughtUpNote({ filtered }: { filtered: boolean }) {
+const CAUGHT_UP_TEXT: Record<AttentionPersonalView, string> = {
+  mine: "You're all caught up.",
+  unassigned: "No cards need an owner.",
+  company: "No company alerts right now.",
+};
+
+function CaughtUpNote({ filtered, view }: { filtered: boolean; view: AttentionPersonalView }) {
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your search or filters." : "You're all caught up."}
+        {filtered ? "No decisions match your search or filters." : CAUGHT_UP_TEXT[view]}
       </p>
       {filtered && (
         <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
@@ -824,16 +863,22 @@ function CaughtUpNote({ filtered }: { filtered: boolean }) {
   );
 }
 
-function ZeroState() {
+const ZERO_STATE_DETAIL: Record<AttentionPersonalView, string> = {
+  mine: "Nothing needs a decision from you right now.",
+  unassigned: "Every open card has an owner.",
+  company: "No failed runs, agent errors, budget stops or join requests.",
+};
+
+function ZeroState({ view }: { view: AttentionPersonalView }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
       <div className="mb-4 rounded-full bg-green-500/10 p-4">
         <CheckCircle2 className="h-10 w-10 text-green-500" />
       </div>
-      <p className="text-lg font-semibold text-foreground">You're all caught up</p>
+      <p className="text-lg font-semibold text-foreground">{view === "mine" ? "You're all caught up" : CAUGHT_UP_TEXT[view]}</p>
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
         <Inbox className="h-4 w-4" />
-        Nothing needs a decision from you right now.
+        {ZERO_STATE_DETAIL[view]}
       </p>
     </div>
   );

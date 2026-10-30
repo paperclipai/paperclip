@@ -33,6 +33,7 @@ import {
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
+import { AttentionAudienceLine } from "./AttentionViews";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
@@ -96,6 +97,9 @@ interface AttentionQueueRowProps {
   showTriage?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  /** Claim an ownerless card (PAP-749). Pass one stable callback for every row. */
+  onClaim?: (item: AttentionItem) => void;
+  claiming?: boolean;
   selected?: boolean;
 }
 
@@ -120,6 +124,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   showTriage = false,
   currentUserId,
   userLabelMap,
+  onClaim,
+  claiming = false,
   selected = false,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
@@ -355,6 +361,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </span>
         <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
       </div>
+
+      {/* Why this card is here (PAP-749 plan §1, Rule 4): "Why me?", "For
+          @name", or why an ownerless card is yours to answer, with Claim. */}
+      <AttentionAudienceLine
+        item={item}
+        currentUserId={currentUserId}
+        userLabelMap={userLabelMap}
+        onClaim={isHidden ? undefined : onClaim}
+        claiming={claiming}
+        className="-mt-2"
+      />
 
       {/* Collapsed-only content. It has no counterpart to morph into — the
           thumbnail strip becomes a full gallery, and an inline row's footer is

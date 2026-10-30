@@ -32,7 +32,15 @@ Open `/decisions`, then a queue at `/decisions/queues/:key` and its source item.
 
 With **Settings → Experimental → Coordinator workspace** enabled, `/decisions`
 is **Needs You**. Pending cards use the existing attention feed and canonical
-resolvers. **Tasks → Needs attention** projects the same feed as distinct tasks.
+resolvers. **Tasks → Needs attention** projects the **For you** feed as distinct tasks.
+
+Both `/decisions` surfaces switch between **For you** (default), **Unassigned**
+and **Company** (`?view=unassigned|company`); each list is cached per person and
+view. Your own cards say **Why me?**, a different person's card shows **For
+@name**, and an ownerless request card offers **Claim**, which makes you its
+addressee and removes it from everyone else's pool (`attention.claimed` activity).
+For you shows "N cards need an owner" while the pool has cards; that count is
+not in the badge.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
 resolutions resize into compact receipts while the same contained Gather Light
@@ -109,13 +117,20 @@ company/private-task isolation, and private v1 targets.
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
 Idle chats without structured requests remain absent.
+[Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
+cover the view partition, the For you badge with per-view counts, and the claim
+service and route permission matrix.
 [Current-card tests](../../server/src/__tests__/attention-current-cards.test.ts)
 cover the shared active-request predicate with Mine, the 30-day, closed-task,
 decision-deadline and 7-day Unassigned stale rules, stale approval escalation
 without withdrawal, fingerprint-only resurfacing of dismissed and snoozed cards,
 and the idempotent closed-task sweep. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
-checks that a chat-sourced canonical question reaches its original resolver and context.
+checks that a chat-sourced canonical question reaches its original resolver and context,
+and the view switch, banner, Why me?, For @name and Claim; the
+[classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions.
+The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
+show For you, Unassigned, Company and a different person's cards.
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.
@@ -194,4 +209,4 @@ Storybook: Eligible live task toast, explicit mention, quiet unrelated event, ow
 Production: Persisted participation and mentions determine per-viewer socket eligibility; quiet events still refresh caches; reload retains eligibility, unauthorized resources remain denied.
 Sources: Source: [ToastViewport.tsx](../../ui/src/components/ToastViewport.tsx), [ToastContext.tsx](../../ui/src/context/ToastContext.tsx), [LiveUpdatesProvider.tsx](../../ui/src/context/LiveUpdatesProvider.tsx), [task-toast-eligibility.ts](../../server/src/realtime/task-toast-eligibility.ts). Tests: [ToastContext.test.tsx](../../ui/src/context/ToastContext.test.tsx), [ToastViewport.test.tsx](../../ui/src/components/ToastViewport.test.tsx), [LiveUpdatesProvider.hook.test.tsx](../../ui/src/context/LiveUpdatesProvider.hook.test.tsx), [task-toast-eligibility.test.ts](../../server/src/__tests__/task-toast-eligibility.test.ts), [live-events-toast.test.ts](../../server/src/__tests__/live-events-toast.test.ts), [multi-user-authenticated.spec.ts](../../tests/e2e/multi-user-authenticated.spec.ts)
 
-Coordinator navigation counts all outstanding canonical attention items on desktop and phone, using the same complete feed as Needs You. Classic keeps its existing today-oriented badge. Task questions resolve through their original interaction; pending chat projections, counts and recorded receipts invalidate together.
+Coordinator and classic navigation, the phone bar and both Decisions pages show one badge: the person's current **For you** cards, read from the same per-person feed, with no midnight reset. Unassigned and Company counts stay on their own tabs. Task questions resolve through their original interaction; pending chat projections, counts and recorded receipts invalidate together.

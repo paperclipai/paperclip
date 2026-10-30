@@ -14,6 +14,7 @@ const fixture = vi.hoisted(() => ({ attention: vi.fn(), collapsed: false, userId
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: [] }, session: { isSuccess: true },
 }) }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
@@ -31,7 +32,8 @@ vi.mock("@/lib/router", () => ({
 const pending = (id: string) => ({ id, sourceKind: "issue_thread_interaction", subject: { id, kind: "interaction", status: "pending" },
   createdAt: "2026-10-20T12:00:00Z", activityAt: "2026-10-20T12:00:00Z" }) as AttentionItem;
 function feed(items: AttentionItem[]): AttentionFeed {
-  return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: 0,
+  return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: items.length,
+    viewCounts: { mine: items.length, unassigned: 4, company: 3 },
     nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
@@ -99,13 +101,21 @@ async function renderSidebar() {
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
 describe("Coordinator Needs You badge", () => {
-  it("counts every canonical outstanding decision even when none arrived today", async () => {
-    // Personal page filters and completed receipts are separate cache entries.
-    client.setQueryData([...coordinatorAttentionQueryKey("company"), { search: "no match" }], feed([]));
+  it("counts every For you card even when none arrived today, and never Unassigned or Company", async () => {
+    // Other views, other people and completed receipts are separate cache entries.
+    client.setQueryData(coordinatorAttentionQueryKey("company", "reviewer", "unassigned"), feed([pending("pool")]));
+    client.setQueryData(coordinatorAttentionQueryKey("company", "someone-else", "mine"), feed([]));
     client.setQueryData([...queryKeys.attention("company"), "history", "recent"], { items: [{ id: "answered-question" }] });
     await renderSidebar();
-    expect(fixture.attention).toHaveBeenCalledWith("company", { all: true });
+    expect(fixture.attention).toHaveBeenCalledWith("company", { all: true, view: "mine" });
     expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("2");
+  });
+
+  it("keys the badge by person, so a different account never reuses the cached count", async () => {
+    client.setQueryData(coordinatorAttentionQueryKey("company", "previous-user", "mine"), feed([pending("a"), pending("b"), pending("c")]));
+    fixture.attention.mockResolvedValue(feed([pending("only-mine")]));
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("1");
   });
 
   it("updates after canonical attention refreshes and removes the badge once every decision is resolved", async () => {

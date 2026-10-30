@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import type { AttentionAudience, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import {
+  ATTENTION_COMPANY_AUDIENCE_TEXT,
+  ATTENTION_POOL_AUDIENCE_TEXT,
+  attentionItemClaimable,
+  describeAttentionAudience,
+  parseAttentionView,
+  unassignedBannerText,
+} from "./attention-views";
+import { coordinatorAttentionQueryKey } from "./coordinator-attention";
+
+function item(audience: AttentionAudience, sourceKind: AttentionSourceKind = "issue_thread_interaction") {
+  return { id: "card", sourceKind, audience, subject: { id: "card" } } as unknown as AttentionItem;
+}
+
+describe("attention views (PAP-749 task 1b)", () => {
+  it("defaults to For you and keeps only the three known views", () => {
+    expect(parseAttentionView(null)).toBe("mine");
+    expect(parseAttentionView("all")).toBe("mine");
+    expect(parseAttentionView("bogus")).toBe("mine");
+    expect(parseAttentionView("unassigned")).toBe("unassigned");
+    expect(parseAttentionView("company")).toBe("company");
+  });
+
+  it("keys each list by company, person and view", () => {
+    expect(coordinatorAttentionQueryKey("c1", "scott", "mine")).not.toEqual(coordinatorAttentionQueryKey("c1", "dotta", "mine"));
+    expect(coordinatorAttentionQueryKey("c1", "scott", "mine")).not.toEqual(coordinatorAttentionQueryKey("c1", "scott", "unassigned"));
+    expect(coordinatorAttentionQueryKey("c1", "scott", "mine").slice(0, 4)).toEqual(["attention", "c1", "scott", "mine"]);
+  });
+
+  it("answers Why me? for your own card from the audience reason", () => {
+    expect(describeAttentionAudience(item({ kind: "user", userId: "scott", reason: "addressee" }), "scott"))
+      .toEqual({ kind: "mine", text: "Sent to you" });
+    expect(describeAttentionAudience(item({ kind: "user", userId: "scott", reason: "reviewer" }), "scott"))
+      .toEqual({ kind: "mine", text: "You are the reviewer" });
+    expect(describeAttentionAudience(item({ kind: "user", userId: "scott", reason: "instigator" }), "scott"))
+      .toEqual({ kind: "mine", text: "You created the original task" });
+    expect(describeAttentionAudience(item({ kind: "user", userId: "scott", reason: "escalation_owner" }), "scott"))
+      .toEqual({ kind: "mine", text: "You are the default decision owner" });
+  });
+
+  it("names the other person on a card that is not yours", () => {
+    expect(describeAttentionAudience(item({ kind: "user", userId: "dotta", reason: "addressee" }), "scott"))
+      .toEqual({ kind: "other", userId: "dotta" });
+  });
+
+  it("says why an ownerless card is answerable and offers Claim only where an addressee can be stored", () => {
+    expect(describeAttentionAudience(item({ kind: "pool", userId: null, reason: "none" }), "scott"))
+      .toEqual({ kind: "pool", text: ATTENTION_POOL_AUDIENCE_TEXT, claimable: true });
+    expect(describeAttentionAudience(item({ kind: "pool", userId: null, reason: "none" }, "decision"), "scott"))
+      .toEqual({ kind: "pool", text: ATTENTION_POOL_AUDIENCE_TEXT, claimable: false });
+    // An ownerless interaction that moved to Company after 7 days can still be claimed.
+    expect(describeAttentionAudience(item({ kind: "company", userId: null, reason: "none" }), "scott"))
+      .toEqual({ kind: "company", text: ATTENTION_COMPANY_AUDIENCE_TEXT, claimable: true });
+    expect(attentionItemClaimable(item({ kind: "company", userId: null, reason: "none" }, "failed_run"))).toBe(false);
+    expect(attentionItemClaimable(item({ kind: "user", userId: "dotta", reason: "addressee" }))).toBe(false);
+  });
+
+  it("phrases the Unassigned banner", () => {
+    expect(unassignedBannerText(1)).toBe("1 card needs an owner");
+    expect(unassignedBannerText(3)).toBe("3 cards need an owner");
+  });
+});

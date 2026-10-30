@@ -1,13 +1,14 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import type { AttentionFeedView, AttentionSortMode } from "@paperclipai/shared";
-
-const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "all"];
+import { ATTENTION_SOURCE_KINDS, type AttentionFeedView, type AttentionSortMode } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
 import { decisionHistoryService } from "../services/decision-history.js";
+import { logActivity } from "../services/activity-log.js";
 import { z } from "zod";
 import { badRequest } from "../errors.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+
+const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "all"];
 
 function optionalQueryString(value: unknown, field: string) {
   if (value === undefined) return undefined;
@@ -78,6 +79,54 @@ export function attentionRoutes(db: Db) {
       limit,
     });
     res.json(feed);
+  });
+
+  // Claim an Unassigned card (PAP-749 plan §1, Rule 3): the claimer becomes the
+  // addressee, so the card leaves every other person's pool. Board users only;
+  // it changes where the card shows, never who may answer it.
+  router.post("/companies/:companyId/attention/:sourceKind/:sourceId/claim", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const sourceKind = req.params.sourceKind as string;
+    if (!(ATTENTION_SOURCE_KINDS as readonly string[]).includes(sourceKind)) {
+      throw badRequest(`sourceKind must be one of ${ATTENTION_SOURCE_KINDS.join(", ")}`);
+    }
+    const sourceId = req.params.sourceId as string;
+    if (!z.string().uuid().safeParse(sourceId).success) throw badRequest("sourceId must be a UUID");
+
+    const claim = await svc.claim(companyId, { sourceKind, sourceId, userId: req.actor.userId, actor: req.actor });
+    if (!claim.alreadyClaimed) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "attention.claimed",
+        entityType: "issue",
+        entityId: claim.issueId,
+        issueId: claim.issueId,
+        details: {
+          sourceKind: claim.sourceKind,
+          sourceId: claim.sourceId,
+          interactionId: claim.sourceId,
+          claimedByUserId: claim.claimedByUserId,
+          previousAddresseeAgentId: claim.previousAddresseeAgentId,
+        },
+      });
+    }
+    res.json({
+      sourceKind: claim.sourceKind,
+      sourceId: claim.sourceId,
+      claimedByUserId: claim.claimedByUserId,
+      alreadyClaimed: claim.alreadyClaimed,
+    });
   });
 
   return router;

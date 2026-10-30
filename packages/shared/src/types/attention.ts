@@ -261,6 +261,35 @@ export interface AttentionAudience {
  */
 export type AttentionFeedView = "mine" | "unassigned" | "company" | "all";
 
+/** The three views the Decisions pages switch between (PAP-749 plan §1, Rule 3). */
+export const ATTENTION_PERSONAL_VIEWS = ["mine", "unassigned", "company"] as const;
+export type AttentionPersonalView = (typeof ATTENTION_PERSONAL_VIEWS)[number];
+
+/**
+ * Current cards in each view for the requesting user (PAP-749 plan §1, Rule
+ * 5). Counted before the view, date and queue filters and pagination, and
+ * without personally dismissed, snoozed or archived cards, so every surface
+ * reads the same numbers whatever it fetched.
+ */
+export type AttentionViewCounts = Record<AttentionPersonalView, number>;
+
+/**
+ * Source kinds whose card names a person through an addressee field, so Claim
+ * can store the claimer there (PAP-749 plan §1, Rule 3). Other kinds have no
+ * addressee to set yet.
+ */
+export const ATTENTION_CLAIMABLE_SOURCE_KINDS = ["issue_thread_interaction"] as const;
+export type AttentionClaimableSourceKind = (typeof ATTENTION_CLAIMABLE_SOURCE_KINDS)[number];
+
+/** Result of `POST /companies/:companyId/attention/:sourceKind/:sourceId/claim`. */
+export interface AttentionClaimResult {
+  sourceKind: AttentionClaimableSourceKind;
+  sourceId: string;
+  claimedByUserId: string;
+  /** `true` when the caller already owned the card; nothing changed. */
+  alreadyClaimed: boolean;
+}
+
 /**
  * Why a card is stale (PAP-749 plan §2, Rule 10). A stale card stays open and
  * answerable; the label only moves it to the Stale group. The server never
@@ -335,12 +364,14 @@ export interface AttentionFeed {
   generatedAt: string;
   totalCount: number;
   /**
-   * The sidebar badge: distinct items that either surfaced today ("new today")
-   * or carry an explicit decide-by deadline that is due today/past ("overdue").
-   * Computed before pagination so a small first page still reflects the
-   * company-wide load. The desk no longer editorializes about what "can wait".
+   * The one badge on the sidebar, mobile navigation and Decisions page
+   * (PAP-749 plan §1, Rule 5): current "For you" cards, the same number as
+   * `viewCounts.mine`. It does not reset at midnight; an open card stays in the
+   * count until a person answers it. Unassigned and Company are never in it.
    */
   deskBadgeCount: number;
+  /** Per-view counts for the three-view switch and the Unassigned banner. */
+  viewCounts: AttentionViewCounts;
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];

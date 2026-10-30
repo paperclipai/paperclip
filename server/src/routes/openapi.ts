@@ -1417,6 +1417,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -6149,6 +6150,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
+      view: z.enum(["mine", "unassigned", "company", "all"]).optional()
+        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6158,6 +6161,25 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  tags: ["inbox"],
+  summary: "Claim an ownerless attention card",
+  description:
+    "Requires a board user with company access. Makes the caller the addressee of an ownerless card, so it leaves every other person's Unassigned pool and joins the caller's For you view. Placement only: the resolver policy still decides who may answer. Only issue_thread_interaction cards can be claimed (422 otherwise); a card already for another person or a runnable agent returns 409; claiming your own card again returns alreadyClaimed=true. Writes an attention.claimed activity entry.",
+  request: { params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────

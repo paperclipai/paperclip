@@ -31,11 +31,10 @@ import { SidebarStarredProjects } from "./SidebarStarredProjects.production";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
-import { attentionBadgeCount } from "../lib/attention";
+import { useAttentionBadge } from "../hooks/useAttentionViews";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -87,13 +86,12 @@ export function Sidebar() {
   // item is hidden entirely until the flag is enabled (same no-flash pattern as
   // showWorkspacesLink — it defaults hidden, so no placeholder is needed).
   const showDecisions = experimentalSettings?.enableDecisions === true;
-  const { data: attentionFeed } = useQuery({
-    queryKey: queryKeys.attention(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && showDecisions,
+  // The shared "For you" badge (PAP-749 Rule 5): same query as the Decisions
+  // page and the coordinator navigation, with no midnight reset.
+  const { count: attentionCount } = useAttentionBadge(selectedCompanyId, {
+    enabled: showDecisions,
     refetchInterval: 60_000,
   });
-  const attentionCount = attentionBadgeCount(attentionFeed);
   const showCases = experimentalSettings?.enableCases === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental

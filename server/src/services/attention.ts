@@ -28,10 +28,11 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, deriveProjectUrlKey } from "@paperclipai/shared";
 import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
   AttentionAudience,
+  AttentionClaimResult,
   AttentionDecisionVerb,
   AttentionFeed,
   AttentionFeedQuery,
@@ -48,12 +49,13 @@ import type {
   AttentionStale,
   AttentionSubject,
   AttentionTriageAttribution,
+  AttentionViewCounts,
   AttentionWorkspaceRef,
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
 } from "@paperclipai/shared";
-import { badRequest } from "../errors.js";
+import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import {
@@ -519,17 +521,6 @@ function decideOrder(item: AttentionItem, now: number): [number, number] {
   }
   if (item.decideBy === "whenever") return [1, Number.MAX_SAFE_INTEGER];
   return [2, Number.MAX_SAFE_INTEGER];
-}
-
-function isDecideNow(item: AttentionItem, now: number) {
-  const [bucket, deadline] = decideOrder(item, now);
-  return bucket === 0 && deadline <= endOfUtcDay(now);
-}
-
-/** Surfaced today (arrival). Mirrors `attentionIsNewToday` in `ui/src/lib/attention.ts`. */
-function isNewToday(item: AttentionItem, now: number) {
-  const ts = timestamp(item.createdAt);
-  return ts > 0 && ts >= startOfUtcDay(now);
 }
 
 function compareDecideItems(left: AttentionItem, right: AttentionItem, now: number) {
@@ -2525,20 +2516,108 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const countsBySourceKind = emptyCounts();
       for (const item of rankedItems) countsBySourceKind[item.sourceKind] += 1;
+      // One count per view for the switch, the Unassigned banner and the shared
+      // badge (PAP-749 plan §1, Rule 5). Counted before the view, date and queue
+      // filters and pagination, so every surface reads the same numbers, and
+      // without the cards this person dismissed, snoozed or archived.
+      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0 };
+      for (const item of enrichedItems) {
+        if (item.dismissal?.isActive || item.archivedAt) continue;
+        if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
+        for (const countedView of ATTENTION_PERSONAL_VIEWS) {
+          if (audienceMatchesView(item.audience, countedView, options.userId)) viewCounts[countedView] += 1;
+        }
+      }
 
       return {
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        // Desk badge: distinct items that surfaced
-        // today OR carry an explicit decide-by deadline due today/past. Counted
-        // over the full ranked set (pre-pagination) so the sidebar badge stays
-        // company-wide accurate even on a small first page.
-        deskBadgeCount: rankedItems.filter((item) => isNewToday(item, now) || isDecideNow(item, now)).length,
+        // The badge is the "For you" count. It has no day boundary: an open
+        // card stays in it until a person answers it.
+        deskBadgeCount: viewCounts.mine,
+        viewCounts,
         nextCursor,
         countsBySourceKind,
         items,
       };
+    },
+
+    /**
+     * Claim an ownerless card (PAP-749 plan §1, Rule 3). The claimer becomes the
+     * addressee, so the card leaves the Unassigned pool of every other person
+     * and moves to the claimer's "For you". This changes placement only: the
+     * resolver policy still decides who may answer. Only sources with an
+     * addressee field can store a claim; the caller writes the activity entry.
+     */
+    claim: async (
+      companyId: string,
+      input: { sourceKind: string; sourceId: string; userId: string; actor: AuthorizationActor },
+    ): Promise<AttentionClaimResult & { issueId: string; previousAddresseeAgentId: string | null }> => {
+      if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
+        throw unprocessable("This card has no addressee to claim. Open it to act on it.");
+      }
+      const readCondition = await issueReadSqlCondition(db, input.actor);
+      const [row] = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          status: issueThreadInteractions.status,
+          addresseeUserId: issueThreadInteractions.addresseeUserId,
+          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.id, input.sourceId),
+          eq(issues.companyId, companyId),
+          readCondition,
+        ))
+        .limit(1);
+      if (!row) throw notFound("Card not found");
+      const result = {
+        sourceKind: "issue_thread_interaction" as const,
+        sourceId: row.id,
+        issueId: row.issueId,
+        claimedByUserId: input.userId,
+      };
+      if (row.addresseeUserId === input.userId) {
+        return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
+      }
+      if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+        throw conflict("This request is no longer open", { status: row.status });
+      }
+      if (row.addresseeUserId) {
+        throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
+      }
+      if (row.addresseeAgentId) {
+        // A request to an agent that can still run stays with that agent; only
+        // a stuck agent's request reaches the pool (plan §1, special conditions).
+        const companyAgentRows: AgentOrgRow[] = await db
+          .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+          .from(agents)
+          .where(eq(agents.companyId, companyId));
+        const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+        if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+          throw conflict("This request is for an agent that can still answer it");
+        }
+      }
+      // An interaction names an agent or a user, never both, so the claim
+      // replaces a stuck agent addressee. The status and empty-addressee guard
+      // make two simultaneous claims resolve to one winner.
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({ addresseeUserId: input.userId, addresseeAgentId: null, updatedAt: new Date() })
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.id, row.id),
+          inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          isNull(issueThreadInteractions.addresseeUserId),
+        ))
+        .returning({ id: issueThreadInteractions.id });
+      if (!updated) throw conflict("Someone else claimed this card first");
+      return { ...result, alreadyClaimed: false, previousAddresseeAgentId: row.addresseeAgentId };
     },
   };
 }
