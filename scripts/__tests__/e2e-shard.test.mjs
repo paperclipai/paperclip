@@ -249,7 +249,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   ]) {
     assert.match(
       jobs.get(jobId),
-      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' && /m,
+      /^ {4}if: \$\{\{ (?:always\(\) && !cancelled\(\) && needs\.gate\.result == 'success' && )?needs\.gate\.outputs\.full_ci == 'true' && /m,
       `${jobId} must run only when the gate selects full CI`,
     );
   }
@@ -263,10 +263,14 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run\]$/m,
+    /^ {4}needs: \[gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run\]$/m,
   );
   assert.equal(runAggregate(verify, true).status, 0);
   assert.equal(runAggregate(verify, false).status, 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(runAggregate(verify, true, { test_selection: result }).status, 0,
+      "an optional selector cannot block the successful original matrix");
+  }
   for (const job of ["gate", "policy", "typecheck_release_registry", "general_tests", "verify_paperclip_runner",
     "build", "docker_context_integrity", "verify_serialized_server", "canary_dry_run"]) {
     for (const result of ["failure", "cancelled", "skipped"]) {

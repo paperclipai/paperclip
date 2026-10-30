@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { acpxReleaseAttestation, ATTESTED_ACPX_AGENTS } from "./acpx-release-attestations.mjs";
+import { ACPX_RELEASE_ATTESTATIONS, acpxReleaseAttestation } from "./acpx-release-attestations.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(join(packageRoot, "acpx-profiles.json"), "utf8"));
+// Providers whose digest the generator computes; installation verifies the rest.
+const COMPUTED = Object.keys(manifest.profiles).filter(agent => ACPX_RELEASE_ATTESTATIONS[agent]?.kind !== "installed-command");
 const packageFiles = [
   "acpx-profiles.json", "package.json", "cursor-distributions.json", "cursor-contract.json", "antigravity-distributions.json",
   "scripts/acpx-release-attestations.mjs", "scripts/generate-acpx-profiles.mjs",
@@ -33,15 +35,27 @@ function relocatedPackage(t) {
 const generate = (root, ...args) => spawnSync(process.execPath, [join(root, "scripts/generate-acpx-profiles.mjs"), ...args],
   { cwd: root, env: { PATH: process.env.PATH }, encoding: "utf8", timeout: 20_000 });
 
-test("the manifest carries each provider's current release attestation", async () => {
-  for (const agent of ATTESTED_ACPX_AGENTS) {
+test("every profile declares how its digest attests the upstream release", async () => {
+  assert.deepEqual(Object.keys(ACPX_RELEASE_ATTESTATIONS).sort(), Object.keys(manifest.profiles).sort());
+  assert.deepEqual(COMPUTED.sort(), ["antigravity", "copilot", "cursor", "grok", "pi"]);
+  for (const agent of COMPUTED) {
     assert.equal(manifest.profiles[agent].commandDigest, (await acpxReleaseAttestation(agent, packageRoot)).commandDigest, agent);
   }
 });
 
+test("a new provider is told to declare its release attestation", async t => {
+  const relocated = relocatedPackage(t);
+  const path = join(relocated, "acpx-profiles.json"); const value = JSON.parse(readFileSync(path, "utf8"));
+  value.profiles.newagent = { ...value.profiles.codex };
+  writeFileSync(path, JSON.stringify(value));
+  const result = generate(relocated, "--check");
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /newagent needs a release attestation: declare how its commandDigest attests the upstream release/u);
+});
+
 test("a relocated copy of the provider inputs computes the same attestations", async t => {
   const relocated = relocatedPackage(t);
-  for (const agent of ATTESTED_ACPX_AGENTS) {
+  for (const agent of COMPUTED) {
     const here = await acpxReleaseAttestation(agent, packageRoot);
     const there = await acpxReleaseAttestation(agent, relocated);
     assert.equal(there.commandDigest, here.commandDigest, agent);
@@ -76,15 +90,43 @@ for (const [name, agents, edit] of [
     const path = join(root, "src/providers/grok/launcher.cjs");
     writeFileSync(path, `${readFileSync(path, "utf8")}\n// changed\n`);
   }],
+  ["the Cursor release declaration", ["cursor"], root => {
+    const path = join(root, "cursor-contract.json"); const value = JSON.parse(readFileSync(path, "utf8"));
+    value.nativePatch = "changed"; writeFileSync(path, JSON.stringify(value));
+  }],
+  ["the Antigravity distribution declaration", ["antigravity"], root => {
+    const path = join(root, "antigravity-distributions.json"); const value = JSON.parse(readFileSync(path, "utf8"));
+    value.version = "9.9.9"; writeFileSync(path, JSON.stringify(value));
+  }],
 ]) test(`changing ${name} changes only the affected attestations`, async t => {
   const relocated = relocatedPackage(t);
-  const before = Object.fromEntries(await Promise.all(ATTESTED_ACPX_AGENTS.map(async agent => [agent, (await acpxReleaseAttestation(agent, relocated)).commandDigest])));
+  const before = Object.fromEntries(await Promise.all(COMPUTED.map(async agent => [agent, (await acpxReleaseAttestation(agent, relocated)).commandDigest])));
   edit(relocated);
-  for (const agent of ATTESTED_ACPX_AGENTS) {
+  for (const agent of COMPUTED) {
     const after = (await acpxReleaseAttestation(agent, relocated)).commandDigest;
     if (agents.includes(agent)) assert.notEqual(after, before[agent], agent);
     else assert.equal(after, before[agent], agent);
   }
+});
+
+test("the generator refreshes a release declaration's own digest with the profile", async t => {
+  const relocated = relocatedPackage(t);
+  const path = join(relocated, "cursor-contract.json"); const contract = JSON.parse(readFileSync(path, "utf8"));
+  contract.modes = [...contract.modes, "review"];
+  writeFileSync(path, `${JSON.stringify(contract, null, 2)}\n`);
+  const stale = generate(relocated, "--check");
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /cursor commandDigest no longer matches its upstream release attestation/u);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), contract, "check mode writes nothing");
+  const refreshed = generate(relocated);
+  assert.equal(refreshed.status, 0, refreshed.stderr);
+  const { commandDigest } = await acpxReleaseAttestation("cursor", relocated);
+  assert.notEqual(commandDigest, manifest.profiles.cursor.commandDigest);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).commandDigest, commandDigest);
+  assert.equal(JSON.parse(readFileSync(join(relocated, "acpx-profiles.json"), "utf8")).profiles.cursor.commandDigest, commandDigest);
+  assert.match(readFileSync(join(relocated, "src/drivers/acpx/generated-profiles.ts"), "utf8"), new RegExp(commandDigest));
+  assert.match(readFileSync(join(relocated, "runner/crates/runner-core/src/generated_acpx_profiles.rs"), "utf8"), new RegExp(commandDigest));
+  assert.equal(generate(relocated, "--check").status, 0);
 });
 
 test("the generator refuses a stale attestation in check mode and refreshes it otherwise", async t => {
@@ -93,7 +135,7 @@ test("the generator refuses a stale attestation in check mode and refreshes it o
   writeFileSync(launcher, `${readFileSync(launcher, "utf8")}\n// changed\n`);
   const stale = generate(relocated, "--check");
   assert.notEqual(stale.status, 0);
-  assert.match(stale.stderr, /grok release attestation is stale/u);
+  assert.match(stale.stderr, /grok commandDigest no longer matches its upstream release attestation/u);
   const refreshed = generate(relocated);
   assert.equal(refreshed.status, 0, refreshed.stderr);
   const written = JSON.parse(readFileSync(join(relocated, "acpx-profiles.json"), "utf8"));
