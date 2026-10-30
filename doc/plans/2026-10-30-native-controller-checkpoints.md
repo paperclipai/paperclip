@@ -1,6 +1,7 @@
 # Native-controller recovery during webserver upgrades
 
-Date: 2026-10-30. Status: implementation authorized; qualification pending.
+Date: 2026-10-30. Status: implementation delivered; final qualification is tracked
+in [PR #18343](https://github.com/paperclipai/paperclip/pull/18343).
 Source inspected: `0c70cedce9a803bdc201324528abb35e423e7cd0` in the current task worktree.
 
 ## Goal and finish line
@@ -357,6 +358,16 @@ volume dependencies and concurrent-server behavior are qualified. Sources checke
 [deployment teardown](https://docs.railway.com/deployments/deployment-teardown).
 
 ## Current state and next action
+
+The observations below retain earlier qualification attempts and their limits.
+The PR's Verification section is the current acceptance record. The final native
+runtime candidate is `eaef0d56552c087aaa4fa68a8655282ffbd12667`; documentation-only
+updates do not change those runtime bytes. Its CI and fresh 5/5 review passed.
+The corrected source-process test has completed active adoption and a fresh
+retained follow-up. Distinct compatible rollback, installed-application and live
+Daytona gates remain under verification as of 2026-10-30 20:28 UTC. Preserve failed
+attempts when adding later passes. The rollback floor must include the idle-goal
+reader fix; an envelope-only reader is insufficient.
 
 Implementation is underway on `codex/native-controller-disk-independent-recovery`.
 The related Cloud policy work merged as paperclip-cloud PR #1048; it retains

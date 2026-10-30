@@ -308,6 +308,14 @@ The general everyday suite retains its 125-second default. These intervals are
 fault tests, not permitted HTTP deployment downtime. Both fixtures retain the
 workspace and remote sandbox; they do not prove whole-webserver disk loss.
 
+The rollback reader must support both the recovery envelope and the settled PRP
+v2 idle goal suffix. Record its actual source commit and installed tree hash.
+An older reader rejecting that journal is an unsupported rollback, not a pass.
+A backported compatibility build is a development fixture until it is released;
+do not describe it as a previously published version. Distinct source-controller
+tests, compiled native-module tests, installed CLI startup and the full Product
+E2E journey provide different evidence and must retain those scope labels.
+
 ## Database cost qualification
 
 `scripts/benchmark-native-controller-recovery.ts` compares a pinned source

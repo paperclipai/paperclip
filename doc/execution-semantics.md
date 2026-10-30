@@ -2660,6 +2660,13 @@ mixed evidence holds the continuation; it does not authorize fresh execution.
 The 32-candidate boundary and newer-progress barriers remain in force. Exhausted
 history and current-run progress cannot establish fresh-bootstrap proof.
 
+A settled warm journal may contain an authenticated idle goal-read snapshot
+after `run.terminal`. Recovery accepts only the supported PRP event v1/v2
+envelopes with the same complete attachment identity, a null goal and
+`workingNow: false`. All commands must already be complete. Active goals, new
+work, unknown versions and mixed bindings remain holds. This check adds no
+streaming persistence or database work.
+
 If admission finds a live retained controller owner, it preserves the unstarted
 business run and records the owner's actual deadline through the existing native
 resumption path. This does not consume a provider attempt or stop the retained
@@ -2699,5 +2706,6 @@ admitted configuration digest and exact supervisor snapshot, locks the issue,
 coordinator and run in order, rejects live or unsettled ownership, and publishes
 only missing metadata. Repeating the same import is a no-op. Normal lifecycle
 checkpoints publish the metadata without a separate migration write. Disk-free
-rollback requires a server that reads this envelope; earlier local-only readers
-remain outside that rollback contract.
+rollback requires a server that reads this envelope and the supported settled
+warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
+and readers lacking that suffix handling remain outside that rollback contract.
