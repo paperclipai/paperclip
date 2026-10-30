@@ -76,6 +76,7 @@ import type {
   AdapterRuntimeToolAccess,
 } from "../../adapters/index.js";
 import { createRuntimeToolsToken } from "../../runtime-tools-token.js";
+import { runScopedMcpTokenExpiresAt } from "./mcp-token-expiry.js";
 import { parseObject } from "../../adapters/utils.js";
 import {
   authorizeChatConversationForBoundRun,
@@ -940,6 +941,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
+  config?: Record<string, unknown>;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveToolAssignmentsForAgent(
@@ -1242,7 +1244,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       clientLabel: `${input.agent.name} heartbeat run`,
       ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
       allowedActions: ["tools/list", "tools/call"],
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      expiresAt: runScopedMcpTokenExpiresAt(input.config ?? {}),
     },
     actor: { agentId: input.agent.id },
   });
@@ -1272,6 +1274,7 @@ export function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  config?: Record<string, unknown>;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -1279,6 +1282,7 @@ export function createAdapterRuntimeToolAccess(input: {
     companyId: input.companyId,
     runId: input.runId,
     responsibleUserId: input.responsibleUserId,
+    expiresAt: runScopedMcpTokenExpiresAt(input.config ?? {}),
   });
   if (!minted) return undefined;
   // The normal server bootstrap always exports PAPERCLIP_API_URL. Some service
@@ -1551,7 +1555,7 @@ export async function createManagedMcpRunConfig(input: {
   if (gateways.length === 0) return null;
 
   const service = createToolGatewayService(input.db);
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  const expiresAt = runScopedMcpTokenExpiresAt(input.config);
   const managedGateways: ManagedMcpGatewayRunConfig["gateways"] = [];
   for (const gateway of gateways) {
     const token = await service.createNamedGatewayToken({

@@ -515,6 +515,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         db,
         agent,
         runId: run.id,
+        config: runtimeConfig,
         expectedAssignmentDigest: expectedNativeMcpDigest,
       }));
       if ("runtimeContext" in nativeExecution) {
@@ -759,6 +760,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         companyId: agent.companyId,
         runId: run.id,
         responsibleUserId: run.responsibleUserId,
+        config: runtimeConfig,
       });
       if (!runtimeTools) {
         logger.warn(
@@ -774,6 +776,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         db,
         agent,
         runId: run.id,
+        config: runtimeConfig,
       });
       const runtimeToolDelivery =
         adapter.runtimeToolDelivery ?? "invocation_context";
