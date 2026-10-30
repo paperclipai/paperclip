@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
@@ -193,6 +194,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               },
             };
             const updated = await db.transaction(async (tx) => {
+              await notifyGitHubCredentialChange(tx, connection);
               const [current] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
                 .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId),
                   eq(connectionGrants.status, "active"),
@@ -539,7 +541,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             refreshedAt: now().toISOString(),
           },
         };
-        const [updated] = await db
+        const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
           .update(connectionGrants)
           .set({
             providerTenant,
@@ -555,7 +557,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
             ),
           )
-          .returning();
+          .returning());
         if (!updated) {
           throw conflict(
             "OAuth credentials changed while refresh was in progress. Retry the request.",

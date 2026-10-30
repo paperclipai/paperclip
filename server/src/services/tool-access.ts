@@ -787,7 +787,7 @@ export function toolAccessService(
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
   const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
   const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
-  const { refreshManagedGitHubGrantAccess, sweepGitHubConnectionContinuity } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
+  const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
   const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
@@ -811,7 +811,7 @@ export function toolAccessService(
   const finishOAuthCatalogWithRecommendedDefaults = createOAuthCatalogCompletion(db, finishGalleryAppConnection);
   const startOAuth = createOAuthAuthorizationStart(db, { now, getConnectionRow, setupPolicy, fixedPersonalIdentityForReconnect, currentCloudConnector, vercelConnect, ensureOAuthClient, oauthEndpointsForConnection, assertOAuthEndpointUrl });
   const completeOAuthCallback = createDirectOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, setupPolicy, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, checkConnectionHealth, ensureDefaultOrganizationGrant, oauthEndpointsForConnection, exchangeOAuthToken });
-  const completePaperclipCloudConnectorCallback = createCloudOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, currentCloudConnector });
+  const completePaperclipCloudConnectorCallback = createCloudOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, currentCloudConnector, syncGitHubGrantBindings });
   const completeVercelConnectCallback = createVercelOAuthCallback(db, { now, getConnectionRow, state: oauthState, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, vercelConnect });
   const finalizeOAuthAccess = createOAuthAccessFinalization(db, { getConnectionRow, secrets, store: credentialStore, assertAgentsInCompany, finishGalleryAppConnection });
   const runtimeHealth = createToolRuntimeHealth(db, options, now, trustedRuntimeHost);
@@ -4732,6 +4732,7 @@ export function toolAccessService(
     scheduledHealth: connectionHealthSchedule(db, checkConnectionHealth),
 
     sweepGitHubConnectionContinuity,
+    nextGitHubConnectionContinuityAt,
     ...catalogReader,
     ...toolActionReviewQueue,
     ...profileService,

@@ -35,7 +35,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   beforeAll(async () => {
     if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
-    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 4 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -343,7 +343,11 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         throw new Error("fixture live subscriber failed");
       });
       try {
-        await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
+        const competing = githubConnectionEventService(db, { connector, now: () => currentTime });
+        const outcomes = await Promise.all([service.pollOnce(), competing.pollOnce()]);
+        expect(outcomes.reduce((sum, result) => sum + result.processed, 0)).toBe(1);
+        expect(outcomes.reduce((sum, result) => sum + result.duplicate, 0)).toBe(1);
+        expect(outcomes.every(result => result.failed === 0)).toBe(true);
       } finally { unsubscribe(); }
       await health.expectDeadline(currentTime.getTime() + 900_000 - (refreshed ? 60_000 : 0));
       await health.expectQuiet();

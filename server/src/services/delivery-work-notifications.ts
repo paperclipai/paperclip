@@ -107,6 +107,8 @@ export const DELIVERY_QUEUES = {
   feedback: "feedback-exports",
   chatCompletion: "chat-completions",
   connection: "connection-continuations",
+  connectionEvents: "connection-events",
+  connectionContinuity: "connection-continuity",
   gitRestorePoints: "git-restore-points",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
