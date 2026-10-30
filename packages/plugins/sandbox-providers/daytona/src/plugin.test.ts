@@ -51,6 +51,16 @@ describe("Daytona read-only resource inspection", () => {
     for (const method of [sandbox.start, sandbox.stop, sandbox.delete, sandbox.archive, sandbox.refreshData]) expect(method).not.toHaveBeenCalled();
     expect(mockCreate).not.toHaveBeenCalled();
   });
+  it.each(["active", "destroyed"])("inspects a normal lease with creation provenance by recorded ID: %s", async state => {
+    const provenance = { creationOperationId: "16cd534e-27a1-45de-a4ad-5adbb6481361" };
+    if (state === "active") mockGet.mockResolvedValue(createMockSandbox());
+    else mockGet.mockRejectedValue(new MockDaytonaNotFoundError("gone"));
+    expect(await plugin.definition.onEnvironmentInspectLease!({ ...params, leaseMetadata: provenance }))
+      .toEqual({ providerLeaseId: "sandbox-123", state });
+    expect(mockGet).toHaveBeenCalledExactlyOnceWith("sandbox-123");
+    expect(mockCreate).not.toHaveBeenCalled();
+    if (state === "destroyed") expect(await plugin.definition.onIdleDrain!(new AbortController().signal)).toBe("none");
+  });
   it("accepts only typed provider not-found as deletion proof", async () => {
     __resetDaytonaSandboxHandleCacheForTest();
     mockGet.mockRejectedValue(new MockDaytonaNotFoundError("not found"));
@@ -85,7 +95,7 @@ describe("Daytona durable creation identity", () => {
   const runId = "8cbd0194-e322-4b5b-9800-df4d5a682479";
   const params = { driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
     providerLeaseId: id, config: { apiKey: "fixture-not-a-key" },
-    leaseMetadata: { creationOperationId: id, creationRunId: runId } };
+    creationOperation: { id, runId } };
   beforeEach(() => { mockCreate.mockReset(); mockGet.mockReset(); __resetDaytonaSandboxHandleCacheForTest(); });
   afterEach(() => { vi.unstubAllEnvs(); __resetDaytonaSandboxHandleCacheForTest(); });
   function resource() { return { ...createMockSandbox({ name: `paperclip-create-${id}` }), labels: {

@@ -4058,11 +4058,9 @@ export function environmentRuntimeService(
       return driver.isPendingCleanupWorkerReady(input);
     },
 
-    // Flush the in-process orphan-cleanup buffers of every driver that keeps one.
-    // The cleanup sweep calls this each tick, so a buffered orphan lands a durable
-    // `pending_cleanup` row once the database recovers, and the same sweep tears
-    // it down. The dispatcher sums the recovered and pending counts across all
-    // drivers. A driver with no buffer contributes nothing.
+    // Recover committed creation operations before replaying legacy cleanup inputs.
+    // New creation failures retain their database operation and do not make files.
+    // Legacy buffers and files remain until their cleanup rows are durable.
     async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
       orphanRecoveryFlush ??= (async () => {
         await recoverSandboxCreations(db, async operation => {
@@ -4085,7 +4083,7 @@ export function environmentRuntimeService(
           return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
             driverKey: operation.driverKey, companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
             config: stripSandboxProviderEnvelope(resolved), providerLeaseId: operation.id,
-            leaseMetadata: { creationOperationId: operation.id, creationRunId: operation.runId },
+            creationOperation: { id: operation.id, runId: operation.runId },
           });
         });
         return flushDeferredEnvironmentCleanup(db, Array.from(drivers.values())

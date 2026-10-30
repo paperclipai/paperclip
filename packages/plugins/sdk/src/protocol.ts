@@ -702,6 +702,7 @@ export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentRe
 /** Observe this exact allocation without starting, stopping or deleting it.
  * Missing resources must be distinguished from permission/transport failures. */
 export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  creationOperation?: { id: string; runId: string };
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
 }

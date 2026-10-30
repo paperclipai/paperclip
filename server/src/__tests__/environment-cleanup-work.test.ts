@@ -1,3 +1,4 @@
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { createOwnedSandbox } from "../services/sandbox-creation-operations.js";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -114,6 +115,36 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
       expect.objectContaining({ state: "needs_reconciliation" }),
     ]));
     await quiet();
+  });
+  it("settles a deleted-company creation as manual history across restart without idle polling", async () => {
+    await start(); await quiet();
+    await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {}, metadata: {} },
+      async () => ({ providerLeaseId: "fixture-deleted-company" }));
+    await db.delete(companies).where(eq(companies.id, companyId));
+    await settle(31 * 60_000);
+    await vi.waitFor(async () => expect(await db.select().from(sandboxCreationOperations)).toEqual([
+      expect.objectContaining({ state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
+    ]));
+    await quiet();
+    worker!.stop(); await coordinator!.stop();
+    await start(); await quiet();
+    expect(releases).not.toHaveBeenCalled(); expect(inspections).not.toHaveBeenCalled();
+    const ownerId = randomUUID();
+    const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
+    expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
+      .toEqual({ version: 1, backgroundWork: "none" });
+    await quiet();
+  });
+  it("verifies ordinary cleanup carrying creation provenance and stops provider polling", async () => {
+    const lease = await pending();
+    await environmentService(db).updateLeaseMetadata(lease.id, { driver: "sandbox", creationOperationId: randomUUID() });
+    await environmentService(db).releaseLease(lease.id, "failed", { cleanupStatus: "success" });
+    await start(true);
+    expect(inspections).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ providerLeaseId: lease.providerLeaseId,
+      metadata: expect.objectContaining({ creationOperationId: expect.any(String) }) }));
+    await quiet();
+    worker!.stop(); await coordinator!.stop();
+    await start(true); expect(inspections).toHaveBeenCalledTimes(1); await quiet();
   });
   it("preserves a first creation signal during drain and disarms after atomic attachment", async () => {
     await start(); await quiet(); draining = true;

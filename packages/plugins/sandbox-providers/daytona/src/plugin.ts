@@ -2989,16 +2989,18 @@ const plugin = definePlugin(trackDaytonaHooks({
     if (!config.apiUrl && (process.env.DAYTONA_API_URL?.trim() || process.env.DAYTONA_SERVER_URL?.trim())) {
       return { providerLeaseId: params.providerLeaseId, state: "unknown" };
     }
-    if (typeof params.leaseMetadata?.creationOperationId === "string") {
-      const attemptId = params.leaseMetadata.creationOperationId;
-      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(attemptId)) throw new Error("Invalid creation operation identity");
+    if (params.creationOperation !== undefined) {
+      const { id: attemptId, runId } = params.creationOperation;
+      if (![attemptId, runId].every(value => typeof value === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))) {
+        throw new Error("Invalid creation operation identity");
+      }
       const name = `paperclip-create-${attemptId}`;
       try {
         const sandbox = await withLivenessTimeout("sandbox.creationLookup", 10_000, () => createDaytonaClient(config).get(name));
         const labels = {
           "paperclip-provider": "daytona", "paperclip-create-attempt": attemptId,
           "paperclip-company-id": params.companyId, "paperclip-environment-id": params.environmentId,
-          "paperclip-run-id": String(params.leaseMetadata.creationRunId),
+          "paperclip-run-id": runId,
         };
         if (sandbox.name !== name || Object.entries(labels).some(([key, value]) => sandbox.labels?.[key] !== value)) {
           throw new Error("Creation operation ownership does not match");

@@ -86,10 +86,13 @@ retry and permits other operations to proceed. An attached operation cannot tran
 to cleanup. Pending creation blocks instance sleep until its obligation transfers.
 
 Daytona version 0.1.10 declares creationOperationVersion 1. It uses the committed
-operation UUID in its existing creation name and labels. Recovery uses the existing
-read-only inspect hook and strict failed-creation deletion path. A missing name
-alone cannot prove a late allocation will never appear. Missing identity or an
+operation UUID in its existing creation name and labels. Recovery uses an explicit
+creationOperation request on the existing read-only inspect hook and strict failed-creation deletion path. Normal lease
+inspection still uses its recorded resource ID; creationOperationId metadata is
+provenance only. A missing name alone cannot prove a late allocation will never appear. Missing identity or an
 unsupported provider records needs_reconciliation and an operation-scoped warning.
+A deleted company also records manual reconciliation before credential lookup or
+cleanup transfer. A company lock fences deletion during the transfer transaction.
 That manual diagnostic has no automatic timer and does not prevent idle. The row
 must be reconciled before retrying the same request. Other providers do not yet
 claim automatic creation lookup. Generic plugin operations retain identity only;

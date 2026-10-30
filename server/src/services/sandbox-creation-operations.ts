@@ -1,7 +1,7 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, lte } from "drizzle-orm";
-import { environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
+import { and, eq, lte, sql } from "drizzle-orm";
+import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS } from "./environment-cleanup-state.js";
@@ -82,7 +82,8 @@ export async function recoverSandboxCreations(db: Db,
   )).limit(100);
   for (const candidate of due) {
     try {
-      const observation = await inspect(candidate);
+      const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
+      const observation = existingCompany ? await inspect(candidate) : null;
       const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
         schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
       } }) : null;
@@ -91,15 +92,18 @@ export async function recoverSandboxCreations(db: Db,
         throw new Error("Sandbox creation recovery returned foreign ownership");
       }
       await db.transaction(async tx => {
+        const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).for("key share");
         await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, candidate.originalEnvironmentId)).for("update");
         const [operation] = await tx.select().from(sandboxCreationOperations)
           .where(eq(sandboxCreationOperations.id, candidate.id)).for("update");
         if (!operation || operation.state !== "pending") return;
         await notifyEnvironmentCleanup(tx, { companyId: operation.companyId });
-        if (!cleanup) {
+        if (!company || !cleanup) {
           logger.warn({ errorKind: "sandbox_creation_needs_reconciliation", operationId: operation.id, companyId: operation.companyId },
             "Sandbox creation could not be identified; operator reconciliation is required");
-          await tx.update(sandboxCreationOperations).set({ state: "needs_reconciliation", updatedAt: new Date() })
+          await tx.update(sandboxCreationOperations).set({ state: "needs_reconciliation", updatedAt: new Date(),
+            metadata: { ...operation.metadata, creationReconciliationReason: company ? "creation_identity_unavailable" : "company_deleted" },
+          })
             .where(eq(sandboxCreationOperations.id, operation.id));
           return;
         }
@@ -113,13 +117,18 @@ export async function recoverSandboxCreations(db: Db,
           .where(eq(sandboxCreationOperations.id, operation.id));
       });
     } catch {
-      await db.transaction(async tx => {
+      const retry = await db.transaction(async tx => {
+        const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).for("key share");
         await notifyEnvironmentCleanup(tx, { companyId: candidate.companyId });
-        await tx.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(Date.now() + ENVIRONMENT_CLEANUP_RETRY_MS), updatedAt: new Date() })
+        await tx.update(sandboxCreationOperations).set(company
+          ? { nextAttemptAt: new Date(Date.now() + ENVIRONMENT_CLEANUP_RETRY_MS), updatedAt: new Date() }
+          : { state: "needs_reconciliation", updatedAt: new Date(),
+            metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationReconciliationReason":"company_deleted"}'::jsonb` })
           .where(and(eq(sandboxCreationOperations.id, candidate.id), eq(sandboxCreationOperations.state, "pending")));
+        return Boolean(company);
       });
-      logger.warn({ errorKind: "sandbox_creation_recovery_failed", operationId: candidate.id, companyId: candidate.companyId },
-        "Sandbox creation recovery will retry at its saved deadline");
+      logger.warn({ errorKind: retry ? "sandbox_creation_recovery_failed" : "sandbox_creation_needs_reconciliation", operationId: candidate.id, companyId: candidate.companyId },
+        retry ? "Sandbox creation recovery will retry at its saved deadline" : "Sandbox creation company was deleted; operator reconciliation is required");
     }
   }
 }

@@ -56,11 +56,11 @@ describe("durable sandbox creation through the runtime entry point", () => {
           return { providerLeaseId: resource, metadata: { remoteCwd: "/workspace" } };
         }
         if (method === "environmentInspectLease") {
-          const id = input.leaseMetadata.creationOperationId;
+          const id = input.creationOperation.id;
           const resource = resources.get(id);
           if (!resource) return { providerLeaseId: id, state: "unknown" };
           return { providerLeaseId: resource, state: "active", creationCleanup: { providerLeaseId: resource,
-            observedProviderLeaseId: resource, companyId, environmentId, runId: input.leaseMetadata.creationRunId, attemptId: id,
+            observedProviderLeaseId: resource, companyId, environmentId, runId: input.creationOperation.runId, attemptId: id,
             accountFingerprint: "a".repeat(64), labels: { "paperclip-create-attempt": id } } };
         }
         if (method === "environmentDestroyLease") {
@@ -204,7 +204,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await expect(acquire()).rejects.toThrow("Lost provider reply");
     const originalCall = workers.call;
     (workers as any).call = vi.fn(async (plugin: string, method: string, params: any, timeout: any) => {
-      if (method === "environmentInspectLease" && params.leaseMetadata.creationOperationId === first!.id) throw new Error("Transient fixture lookup");
+      if (method === "environmentInspectLease" && params.creationOperation.id === first!.id) throw new Error("Transient fixture lookup");
       return originalCall(plugin, method as any, params, timeout);
     });
     await due(); await runtime().flushDeferredOrphanCleanups();
@@ -219,6 +219,35 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(await db.select().from(environmentLeases)).toHaveLength(0);
     await due(); await runtime().flushDeferredOrphanCleanups();
     expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup" })]);
+  });
+  it.each(["before lookup", "during lookup", "lookup fails after deletion"])("records manual reconciliation when the company is deleted %s", async (deletion) => {
+    loseReply = true; await expect(acquire()).rejects.toThrow("Lost provider reply");
+    async function deleteCompany() {
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    }
+    if (deletion === "before lookup") await deleteCompany();
+    const originalCall = workers.call;
+    const calls = vi.fn(async (plugin: string, method: string, params: any, timeout: any) => {
+      if (method === "environmentInspectLease" && deletion !== "before lookup") {
+        await deleteCompany();
+        if (deletion === "lookup fails after deletion") throw new Error("Company credential no longer exists");
+      }
+      return originalCall(plugin, method as any, params, timeout);
+    });
+    (workers as any).call = calls;
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(sandboxCreationOperations)).toEqual([
+      expect.objectContaining({ companyId, state: "needs_reconciliation", metadata: expect.objectContaining({ creationReconciliationReason: "company_deleted" }) }),
+    ]);
+    expect(await db.select().from(environmentLeases)).toEqual([]);
+    expect(calls.mock.calls.filter(value => value[1] === "environmentInspectLease")).toHaveLength(deletion === "before lookup" ? 0 : 1);
+    const count = calls.mock.calls.length;
+    await runtime().flushDeferredOrphanCleanups(); await runtime().flushDeferredOrphanCleanups();
+    expect(calls).toHaveBeenCalledTimes(count);
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull(); expect(creates).toBe(1);
+    expect(await readdir(spool)).toEqual([]);
   });
   it("makes unsupported uncertain outcomes explicit without another creation", async () => {
     loseReply = true; await expect(acquire()).rejects.toThrow();
