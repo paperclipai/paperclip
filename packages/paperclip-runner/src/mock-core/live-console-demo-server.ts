@@ -30,7 +30,7 @@ import {
 import { redactCodexDiagnostic } from "../drivers/codex/app-server-transport.js";
 
 const MAX_BROWSER_BODY_BYTES = 64 * 1024;
-const MAX_BROWSER_EVENTS = 4096;
+export const MAX_BROWSER_EVENTS = 4096;
 const MAX_BROWSER_STRING_CHARACTERS = 16 * 1024;
 const MAX_BROWSER_TOTAL_STRING_CHARACTERS = 512 * 1024;
 const MAX_BROWSER_VALUE_NODES = 65_536;
@@ -80,8 +80,27 @@ interface DemoEntry {
   session: HarnessSession;
   capabilities: NativeSessionCapabilities;
   events: PrpEvent[];
+  /** Events shifted out of the retained ring. Cursor is droppedEvents + events.length. */
+  droppedEvents: number;
+  /** Nonzero while a subscriber is copying the retained ring, so a publish in that window is queued. */
+  replayDepth: number;
+  deferredEvents: PrpEvent[];
   subscribers: Set<ServerResponse>;
   consumeTask: Promise<void>;
+}
+
+export function absoluteBrowserEventCursor(entry: { droppedEvents: number; events: readonly unknown[] }): number {
+  return entry.droppedEvents + entry.events.length;
+}
+
+/** `after` is an absolute cursor. Shifting the ring must not turn it into an index. */
+export function retainedBrowserEventsAfter<T>(
+  entry: { droppedEvents: number; events: readonly T[] },
+  after: number,
+): T[] {
+  const start = after - entry.droppedEvents;
+  if (start >= entry.events.length) return [];
+  return entry.events.slice(Math.max(0, start));
 }
 
 interface BrowserCreateBody {
@@ -495,6 +514,7 @@ export class LiveConsoleDemoServer {
   readonly #maxSessionSubscribers: number;
   #creatingSessions = 0;
   #server: Server | null = null;
+  #streamReplayProbe: (() => void) | null = null;
 
   constructor(options: LiveConsoleDemoServerOptions) {
     this.#options = {
@@ -514,6 +534,19 @@ export class LiveConsoleDemoServer {
       MAX_CONFIGURED_SESSION_SUBSCRIBERS,
       "maxSessionSubscribers",
     );
+  }
+
+  /** Test hook. Runs after the subscriber is registered and before the retained replay is copied. */
+  setStreamReplayProbeForTests(probe: (() => void) | null): void {
+    this.#streamReplayProbe = probe;
+  }
+
+  injectBrowserEventForTests(sessionId: string, event: PrpEvent): void {
+    const entry = this.#entries.get(sessionId);
+    if (entry === undefined) throw new Error(`unknown live console session ${sessionId}`);
+    const validation = validatePrpEvent(event);
+    if (!validation.ok) throw new Error("invalid live console test event");
+    this.#appendBrowserEvent(entry, event);
   }
 
   async start(): Promise<{ host: string; port: number; url: string }> {
@@ -653,8 +686,8 @@ export class LiveConsoleDemoServer {
       const url = new URL(request.url ?? "/", "http://liveConsole.invalid");
       const after = Math.max(0, Number.parseInt(url.searchParams.get("after") ?? "0", 10) || 0);
       json(response, 200, {
-        events: entry.events.slice(after),
-        cursor: entry.events.length,
+        events: retainedBrowserEventsAfter(entry, after),
+        cursor: absoluteBrowserEventCursor(entry),
         replay: after === 0,
       });
       return;
@@ -678,11 +711,23 @@ export class LiveConsoleDemoServer {
       // last event, and Node would otherwise hold the response open with no
       // bytes sent, leaving the browser stuck in CONNECTING.
       response.write(": stream open\n\n");
-      for (const event of entry.events.slice(after)) {
-        const output = serializeBrowserJson(event);
-        if (!output.overflow) response.write(`data: ${output.serialized}\n\n`);
-      }
+      // Register first and hold publishes until the retained slice is taken.
+      // Otherwise an event published in that gap is neither replayed nor live.
       entry.subscribers.add(response);
+      entry.replayDepth += 1;
+      let replayIds = new Set<string>();
+      try {
+        this.#streamReplayProbe?.();
+        const replay = retainedBrowserEventsAfter(entry, after);
+        replayIds = new Set(replay.map((event) => event.sourceEventId));
+        for (const event of replay) {
+          const output = serializeBrowserJson(event);
+          if (!output.overflow) response.write(`data: ${output.serialized}\n\n`);
+        }
+      } finally {
+        entry.replayDepth -= 1;
+        if (entry.replayDepth === 0) this.#flushDeferred(entry, replayIds);
+      }
       const unsubscribe = () => entry.subscribers.delete(response);
       request.once("close", unsubscribe);
       response.once("close", unsubscribe);
@@ -797,6 +842,9 @@ export class LiveConsoleDemoServer {
         session,
         capabilities: descriptor.capabilities,
         events: [],
+        droppedEvents: 0,
+        replayDepth: 0,
+        deferredEvents: [],
         subscribers: new Set(),
         consumeTask: Promise.resolve(),
       };
@@ -820,18 +868,42 @@ export class LiveConsoleDemoServer {
       const event = browserSafe(rawEvent) as PrpEvent;
       const validation = validatePrpEvent(event);
       if (!validation.ok) continue;
+      this.#appendBrowserEvent(entry, event);
+    }
+  }
+
+  #appendBrowserEvent(entry: DemoEntry, event: PrpEvent): void {
+    const output = serializeBrowserJson(event);
+    if (output.overflow) return;
+    if (entry.events.length >= MAX_BROWSER_EVENTS) {
+      entry.events.shift();
+      entry.droppedEvents += 1;
+    }
+    entry.events.push(event);
+    if (entry.replayDepth > 0) {
+      entry.deferredEvents.push(event);
+      return;
+    }
+    this.#writeToSubscribers(entry, `data: ${output.serialized}\n\n`);
+  }
+
+  #writeToSubscribers(entry: DemoEntry, serialized: string): void {
+    for (const subscriber of entry.subscribers) {
+      if (subscriber.destroyed || subscriber.writableEnded) {
+        entry.subscribers.delete(subscriber);
+        continue;
+      }
+      subscriber.write(serialized);
+    }
+  }
+
+  #flushDeferred(entry: DemoEntry, replayedIds: ReadonlySet<string>): void {
+    const pending = entry.deferredEvents.splice(0);
+    for (const event of pending) {
+      if (replayedIds.has(event.sourceEventId)) continue;
       const output = serializeBrowserJson(event);
       if (output.overflow) continue;
-      if (entry.events.length >= MAX_BROWSER_EVENTS) entry.events.shift();
-      entry.events.push(event);
-      const serialized = `data: ${output.serialized}\n\n`;
-      for (const subscriber of entry.subscribers) {
-        if (subscriber.destroyed || subscriber.writableEnded) {
-          entry.subscribers.delete(subscriber);
-          continue;
-        }
-        subscriber.write(serialized);
-      }
+      this.#writeToSubscribers(entry, `data: ${output.serialized}\n\n`);
     }
   }
 
@@ -892,7 +964,7 @@ export class LiveConsoleDemoServer {
       pendingRequests: entry.session.pendingRuntimeRequests?.() ?? [],
       goal: harnessSnapshot.goal ?? null,
       lineage: entry.session.lineage?.() ?? [],
-      cursor: entry.events.length,
+      cursor: absoluteBrowserEventCursor(entry),
       snapshot,
     };
   }
