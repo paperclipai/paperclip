@@ -22,6 +22,10 @@ describe("parseBudgetDollarsToCents", () => {
     expect(parseBudgetDollarsToCents("-5")).toBeUndefined();
   });
 
+  it("rejects a negative amount that rounds to zero", () => {
+    expect(parseBudgetDollarsToCents("-0.004")).toBeUndefined();
+  });
+
   it("rejects a value that is not a number", () => {
     expect(parseBudgetDollarsToCents("ten")).toBeUndefined();
   });
