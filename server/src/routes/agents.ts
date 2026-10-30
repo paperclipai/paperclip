@@ -3276,7 +3276,9 @@ export function agentRoutes(
       const testRunner = prospectiveCursorDefault ? "paperclip" : req.body.runner;
       let providerApiTest;
       try {
-        providerApiTest = resolveProviderApiPlacement({ agent: {
+        // An explicit Legacy switch must resolve its Computer and credentials
+        // before runner selection converts the saved native adapter.
+        providerApiTest = testRunner === "legacy" ? null : resolveProviderApiPlacement({ agent: {
           adapterType: type === "cursor_cloud" && testRunner === "paperclip" ? "paperclip_runner" : type,
           adapterConfig: type === "cursor_cloud" && testRunner === "paperclip"
             ? { ...inputAdapterConfig, provider: "cursor_cloud" } : inputAdapterConfig,

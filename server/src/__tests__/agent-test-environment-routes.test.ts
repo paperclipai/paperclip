@@ -321,6 +321,107 @@ describe("agent test-environment route", () => {
     } finally { unregisterServerAdapter("paperclip_runner"); if (previous) registerServerAdapter(previous); }
   });
 
+  async function mockCursorSwitchProbes() {
+    const { getServerAdapter } = await import("../adapters/index.js");
+    const legacy = vi.spyOn(getServerAdapter("cursor_cloud"), "testEnvironment").mockImplementation(async () => ({
+      adapterType: "cursor_cloud", status: "pass", checks: [], testedAt: new Date().toISOString(),
+    }));
+    const native = vi.spyOn(getServerAdapter("paperclip_runner"), "testEnvironment").mockImplementation(async () => ({
+      adapterType: "paperclip_runner", status: "warn", testedAt: new Date().toISOString(),
+      checks: [{ code: "cursor_cloud_account_ready", level: "info", message: "Synthetic no-prompt probe" }],
+    }));
+    return { legacy, native, restore: () => { legacy.mockRestore(); native.mockRestore(); } };
+  }
+
+  function savedCursorSwitchFixture() {
+    const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const environmentId = "22222222-2222-4222-8222-222222222222";
+    const adapterConfig = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification", env: {} };
+    mockAgentService.getById.mockResolvedValue({ id, companyId: "company-1", adapterType: "paperclip_runner",
+      adapterConfig, runtimeConfig: {}, defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    const envVars = { CURSOR_API_KEY: { type: "secret_ref", secretId: "computer-key" } };
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, name: "Chosen Computer",
+      driver: "local", config: {}, envVars });
+    mockSecretService.resolveEnvBindings.mockResolvedValue({ env: { CURSOR_API_KEY: "chosen-computer-key" },
+      secretKeys: new Set(["CURSOR_API_KEY"]), manifest: [] });
+    return { id, environmentId, adapterConfig, envVars };
+  }
+
+  it.each([false, true])("tests a saved native Cursor's explicit Legacy switch on the selected Computer (legacyPrompt=%s)", async legacyPrompt => {
+    const probes = await mockCursorSwitchProbes();
+    const probe = probes.legacy;
+    try {
+      const f = savedCursorSwitchFixture();
+      const config = { ...f.adapterConfig, ...(legacyPrompt ? { promptTemplate: "Legacy prompt" } : {}) };
+      const response = await request(await createApp()).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ agentId: f.id, runner: "legacy", environmentId: f.environmentId, adapterConfig: config });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ environmentName: "Chosen Computer", executionTarget: null,
+        config: expect.objectContaining({ model: "caller-model", env: { CURSOR_API_KEY: "chosen-computer-key" },
+          ...(legacyPrompt ? { promptTemplate: "Legacy prompt" } : {}) }) }));
+      expect(probe.mock.calls[0][0].config).not.toHaveProperty("provider");
+      expect(mockSecretService.resolveEnvBindings).toHaveBeenCalledWith("company-1", f.envVars,
+        expect.objectContaining({ consumerType: "environment", consumerId: f.environmentId }));
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(probes.native).not.toHaveBeenCalled();
+    } finally { probes.restore(); }
+  });
+
+  it("fails closed on a foreign Computer before credentials for an explicit Legacy switch", async () => {
+    const probes = await mockCursorSwitchProbes();
+    try {
+      const f = savedCursorSwitchFixture();
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      const response = await request(await createApp()).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ agentId: f.id, runner: "legacy", environmentId: f.environmentId,
+          adapterConfig: { ...f.adapterConfig, promptTemplate: "Legacy prompt" } });
+      expect(response.status).toBe(403);
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveEnvBindings).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(probes.legacy).not.toHaveBeenCalled();
+      expect(probes.native).not.toHaveBeenCalled();
+    } finally { probes.restore(); }
+  });
+
+  it("keeps managed-only policy for a Legacy switch rather than testing its API controller", async () => {
+    const probes = await mockCursorSwitchProbes();
+    const probe = probes.legacy;
+    try {
+      const f = savedCursorSwitchFixture();
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+      const response = await request(await createApp()).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ agentId: f.id, runner: "legacy", environmentId: f.environmentId, adapterConfig: f.adapterConfig });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ status: "fail", checks: expect.arrayContaining([
+        expect.objectContaining({ code: "managed_sandbox_unavailable", level: "error" }),
+      ]) });
+      expect(probe).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(probes.native).not.toHaveBeenCalled();
+    } finally { probes.restore(); }
+  });
+
+  it("keeps an explicit Paperclip Cursor test API-only despite a selected Computer", async () => {
+    const probes = await mockCursorSwitchProbes();
+    const probe = probes.native;
+    try {
+      const f = savedCursorSwitchFixture();
+      const settings = { defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+      mockInstanceSettingsService.get.mockResolvedValue(settings);
+      mockInstanceSettingsService.getExperimental.mockResolvedValue(settings.experimental);
+      const response = await request(await createApp()).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ agentId: f.id, runner: "paperclip", environmentId: f.environmentId, adapterConfig: f.adapterConfig });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: null, environmentName: null,
+        config: expect.objectContaining({ provider: "cursor_cloud" }) }));
+      expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveEnvBindings).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(probes.legacy).not.toHaveBeenCalled();
+    } finally { probes.restore(); }
+  });
+
   it.each([
     { patch: { model: "" }, code: "paperclip_runner_cursor_cloud_model_required" },
     { patch: { command: "untrusted" }, code: "paperclip_runner_cursor_cloud_config_invalid" },
