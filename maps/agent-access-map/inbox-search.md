@@ -30,6 +30,14 @@ company/private-task checks. Optional `ids` and `parentIds` batches accept at mo
 The sidebar count endpoint returns only readable unread Mine task IDs; failed-run
 counts apply the run read decision. No new agent execution or mutation path is added.
 
+Blocked attention owners use the same actor read predicate as the task list,
+including private projects, inherited task restrictions, and responsible-user
+intersection. Unreadable terminal blockers remain in graph classification but
+contribute an unknown owner. Granted private blockers expose the next actor.
+[Service regressions](../../server/src/__tests__/issue-blocker-attention.test.ts)
+and [route regressions](../../server/src/__tests__/issue-access-grants-routes.test.ts)
+cover blocked list/count and ordinary-list attention; no live agent execution is claimed.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:

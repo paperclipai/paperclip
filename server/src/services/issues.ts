@@ -5667,6 +5667,7 @@ function blockedChainOwner(
   row: IssueRow,
   terminalBlockerIssueId: string | null | undefined,
   issuesById: Map<string, IssueRow>,
+  readableIssueIds: Set<string>,
   interactionByIssueId: Map<string, BlockedInboxInteractionRow>,
   approvalByIssueId: Map<string, BlockedInboxApprovalRow>,
 ): IssueBlockedInboxOwner {
@@ -5679,7 +5680,7 @@ function blockedChainOwner(
   const terminal = terminalBlockerIssueId
     ? issuesById.get(terminalBlockerIssueId)
     : undefined;
-  if (terminal && terminal.id !== row.id && terminal.visibility !== "open") {
+  if (terminalBlockerIssueId && (!terminal || !readableIssueIds.has(terminalBlockerIssueId))) {
     return unknown;
   }
   const actor = terminal ?? row;
@@ -5736,6 +5737,7 @@ async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: BlockedInboxIssueRow[],
+  readCondition?: SQL<boolean>,
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
   const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
@@ -5744,7 +5746,7 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select()
+        .select({ ...getTableColumns(issues), ownerReadable: readCondition ?? sql<boolean>`true` })
         .from(issues)
         .where(
           and(
@@ -5780,6 +5782,10 @@ async function listIssueBlockedInboxAttentionMap(
         .where(eq(agents.companyId, companyId)),
     ]);
 
+  const readableIssueIds = new Set<string>(
+    graphIssueRows.filter((issue: IssueRow & { ownerReadable: boolean }) => issue.ownerReadable === true)
+      .map((issue: IssueRow) => issue.id),
+  );
   const graphIssues = graphIssueRows as IssueRow[];
   const graphRelations = graphRelationRows as Array<{
     companyId: string;
@@ -6357,6 +6363,7 @@ async function listIssueBlockedInboxAttentionMap(
         row,
         blockerState.terminalBlockerIssueId,
         issuesById,
+        readableIssueIds,
         interactionByIssueId,
         approvalByIssueId,
       );
@@ -6636,7 +6643,7 @@ async function listBlockedInboxIssues(
     blockedByMapForIssues(dbOrTx, companyId, issueIds),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
+    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns, filters?.readCondition),
     includeLiveDescendantSummary
       ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
       : Promise.resolve(new Map<string, number>()),
@@ -6760,7 +6767,7 @@ async function countBlockedInboxIssues(
   if (rows.length === 0) return 0;
 
   const blockedInboxAttentionByIssueId =
-    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows);
+    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows, filters?.readCondition);
   const rawSearchInput = filters?.q?.trim() ?? "";
   const rawSearch = rawSearchInput.toLowerCase();
   const commentSearchMatchIssueIds = new Set<string>();
@@ -8516,7 +8523,7 @@ export function issueService(db: Db) {
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
-          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
+          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, filters?.readCondition)
           : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
       ]);
 

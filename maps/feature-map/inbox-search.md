@@ -26,6 +26,14 @@ Agent access: [companion](../agent-access-map/inbox-search.md).
 
 Use Inbox links or the corresponding task views when the combined list is enabled.
 
+Blocked chain verification: compare a public review leaf, an explicitly granted
+private leaf, and open leaves restricted by a private project or ancestor.
+Responsible shows the reviewer for readable leaves and unknown for unreadable
+leaves; revoking a grant updates the next read. Hidden owners cannot change
+stalled reason/severity. List/count agree and graph classification stays intact.
+Automated coverage: [blocked attention](../../server/src/__tests__/issue-blocker-attention.test.ts)
+and [privacy routes](../../server/src/__tests__/issue-access-grants-routes.test.ts).
+
 ### `decisions`
 
 Open `/decisions`, then a queue at `/decisions/queues/:key` and its source item.
