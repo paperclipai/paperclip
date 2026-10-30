@@ -2917,8 +2917,15 @@
     {
       "idx": 418,
       "version": "7",
-      "when": 1793395256734,
-      "tag": "0418_powerful_lady_ursula",
+      "when": 1793395364937,
+      "tag": "0418_curved_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1793400383797,
+      "tag": "0419_slippery_impossible_man",
       "breakpoints": true
     }
   ]
