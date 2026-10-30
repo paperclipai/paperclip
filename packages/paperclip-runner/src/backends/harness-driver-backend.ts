@@ -74,7 +74,10 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         .catch(() => undefined);
       throw error;
     }
-    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering);
+    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering,
+      this.#driver.retryCleanup ? (snapshot, retry) => this.#driver.retryCleanup!(toPersistedHarnessSnapshot(snapshot), {
+        signal: new AbortController().signal,
+      }) : undefined);
   }
 
   async recoverSession(
@@ -89,11 +92,6 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       return { recovered: false, reason: prevalidationFailure };
     }
     const recoveredSemanticTurn = completedSemanticTurn(snapshot);
-    const semanticTurnId =
-      recoveredSemanticTurn?.turnId ??
-      snapshot.activeTurnId ??
-      snapshot.terminalTurns?.at(-1)?.turnId ??
-      null;
     const recoveredTerminal =
       recoveredSemanticTurn && snapshot.semanticResult
         ? {
@@ -104,55 +102,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
               snapshot.semanticResult.reportedWorkDisposition,
           }
         : (snapshot.terminal ?? null);
-    // `null` is a durable "no active turn" checkpoint. Only an omitted legacy
-    // field may use the compatibility fallback; nullish coalescing here would
-    // otherwise turn a settled semantic or terminal turn back into an active
-    // one on every subsequent recovery.
-    const activeTurnId =
-      snapshot.activeTurnId === undefined
-        ? (recoveredSemanticTurn?.turnId ??
-          snapshot.terminalTurns?.at(-1)?.turnId ??
-          null)
-        : snapshot.activeTurnId;
-    const persisted: PersistedHarnessSession = {
-      driverKind: snapshot.driverKind ?? snapshot.backendKind,
-      driverSessionId: snapshot.sessionId,
-      providerSessionId: snapshot.providerSessionId,
-      ...(snapshot.providerIdentity === undefined
-        ? {}
-        : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
-      ...(snapshot.workingDirectory === undefined
-        ? {}
-        : { workingDirectory: snapshot.workingDirectory }),
-      ...(snapshot.codexUsageBaseline === undefined
-        ? {}
-        : { codexUsageBaseline: structuredClone(snapshot.codexUsageBaseline) }),
-      ...(snapshot.providerRecoveryPolicy === undefined
-        ? {}
-        : { providerRecoveryPolicy: snapshot.providerRecoveryPolicy }),
-      runId: snapshot.identity.runId,
-      normalizedSessionId: snapshot.identity.sessionId,
-      activeTurnId,
-      lastSourceSequence: parseCursor(snapshot.cursor),
-      ...(snapshot.semanticResult === undefined ||
-      snapshot.semanticResult === null
-        ? {}
-        : {
-            semanticResult: {
-              result: snapshot.semanticResult,
-              fingerprint: canonicalJson(snapshot.semanticResult),
-              turnId: semanticTurnId ?? "recovered",
-            },
-          }),
-      terminalTurns: snapshot.terminalTurns ?? [],
-      dispositionOnlyRecoveryConsumed:
-        snapshot.dispositionOnlyRecoveryConsumed ?? false,
-      dispositionOnlyRecoveryTurnId:
-        snapshot.dispositionOnlyRecoveryTurnId ?? null,
-      pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
-      goal: snapshot.goal ?? null,
-      lineage: snapshot.lineage ?? [],
-    };
+    const persisted = toPersistedHarnessSnapshot(snapshot, recoveredSemanticTurn);
     const recoveryOptions: HarnessSessionRecoveryOptions = {
       signal: options.signal,
       normalizeReplayPayload: options.normalizeReplayPayload,
@@ -186,9 +136,48 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered.session,
         recoveredTerminal,
         (await this.#driver.descriptor()).capabilities.steering,
+        this.#driver.retryCleanup ? (nativeSnapshot, _retry) => this.#driver.retryCleanup!(toPersistedHarnessSnapshot(nativeSnapshot), {
+          signal: new AbortController().signal,
+        }) : undefined,
       ),
     };
   }
+}
+
+function toPersistedHarnessSnapshot(
+  snapshot: PersistedNativeSession,
+  recoveredSemanticTurn = completedSemanticTurn(snapshot),
+): PersistedHarnessSession {
+  const semanticTurnId = recoveredSemanticTurn?.turnId ?? snapshot.activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? null;
+  // An explicit null is durable proof that no turn is active. Only legacy
+  // snapshots that omit the field use the compatibility fallback.
+  const activeTurnId = snapshot.activeTurnId === undefined
+    ? (recoveredSemanticTurn?.turnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? null)
+    : snapshot.activeTurnId;
+  return {
+    driverKind: snapshot.driverKind ?? snapshot.backendKind,
+    driverSessionId: snapshot.sessionId,
+    providerSessionId: snapshot.providerSessionId,
+    ...(snapshot.providerIdentity === undefined ? {} : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
+    ...(snapshot.workingDirectory === undefined ? {} : { workingDirectory: snapshot.workingDirectory }),
+    ...(snapshot.codexUsageBaseline === undefined ? {} : { codexUsageBaseline: structuredClone(snapshot.codexUsageBaseline) }),
+    ...(snapshot.providerRecoveryPolicy === undefined ? {} : { providerRecoveryPolicy: snapshot.providerRecoveryPolicy }),
+    runId: snapshot.identity.runId,
+    normalizedSessionId: snapshot.identity.sessionId,
+    activeTurnId,
+    lastSourceSequence: parseCursor(snapshot.cursor),
+    ...(snapshot.semanticResult == null ? {} : { semanticResult: {
+      result: snapshot.semanticResult,
+      fingerprint: canonicalJson(snapshot.semanticResult),
+      turnId: semanticTurnId ?? "recovered",
+    } }),
+    terminalTurns: snapshot.terminalTurns ?? [],
+    dispositionOnlyRecoveryConsumed: snapshot.dispositionOnlyRecoveryConsumed ?? false,
+    dispositionOnlyRecoveryTurnId: snapshot.dispositionOnlyRecoveryTurnId ?? null,
+    pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+    goal: snapshot.goal ?? null,
+    lineage: snapshot.lineage ?? [],
+  };
 }
 
 function completedSemanticTurn(
@@ -394,6 +383,7 @@ function assertProviderSessionIdentity(
 class HarnessNativeSession implements NativeSession {
   #input: OpenNativeSessionInput;
   readonly #session: HarnessSession;
+  readonly retryCleanup?: NativeSession["retryCleanup"];
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
   #protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
@@ -441,11 +431,25 @@ class HarnessNativeSession implements NativeSession {
     session: HarnessSession,
     terminal?: PrpTerminalState | null,
     steeringSupported = false,
+    retryCleanup?: (snapshot: PersistedNativeSession, input: { reason: string }) => Promise<void>,
   ) {
     this.#steeringSupported = steeringSupported;
     this.#input = structuredClone(input);
     this.#session = session;
     this.#terminal = terminal === undefined ? null : structuredClone(terminal);
+    if (retryCleanup) this.retryCleanup = async input => {
+      const snapshot = await this.snapshot();
+      if (!snapshot.terminal || snapshot.activeTurnId !== null || (snapshot.pendingRuntimeRequests?.length ?? 0) > 0) {
+        throw new Error("native session cleanup retry requires a terminal, idle, request-free snapshot");
+      }
+      const identity = snapshot.identity;
+      if (identity.runId !== this.#input.identity.runId || identity.sessionId !== this.#input.identity.sessionId ||
+          identity.companyId !== this.#input.identity.companyId || identity.issueId !== this.#input.identity.issueId ||
+          identity.agentId !== this.#input.identity.agentId) {
+        throw new Error("native session cleanup retry identity changed");
+      }
+      await retryCleanup(snapshot, input);
+    };
   }
 
   identity() {

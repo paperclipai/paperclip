@@ -103,6 +103,7 @@ export function completeRetainedNativeSessionCleanup(
     throw new NativeSessionCleanupQuarantinedError();
   const domain = JSON.stringify([
     proof.binding.companyId,
+    proof.binding.issueId,
     proof.backend.kind,
     proof.backend.name,
   ]);
@@ -133,6 +134,60 @@ export function completeRetainedNativeSessionCleanup(
   return matches.length;
 }
 
+export type NativeSessionCleanupRetryResult =
+  | "settled"
+  | "not_found"
+  | "not_operator_required"
+  | "busy"
+  | "still_incomplete";
+
+/** Retry one explicitly selected, operator-held cleanup. This only calls close
+ * on the exact retained session; it never opens a provider or replays a turn.
+ * A failed attempt remains quarantined and must still pass normal admission. */
+export async function retryQuarantinedNativeSessionCleanup(binding: {
+  companyId: string;
+  issueId: string;
+  runId: string;
+  sessionId: string;
+  agentId: string;
+  runnerInstanceId: string;
+}): Promise<NativeSessionCleanupRetryResult> {
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
+    const identity = session.identity();
+    const parts = JSON.parse(domain) as string[];
+    return parts[0] === binding.companyId && parts[1] === binding.issueId &&
+      identity.companyId === binding.companyId && identity.issueId === binding.issueId &&
+      identity.runId === binding.runId && identity.sessionId === binding.sessionId &&
+      identity.agentId === binding.agentId &&
+      sessionOriginRunnerInstances.get(session) === binding.runnerInstanceId;
+  });
+  if (matches.length === 0) return "not_found";
+  if (matches.length !== 1) return "busy";
+  const [cleanup] = matches;
+  if (!cleanup.operatorRecoveryRequired) return "not_operator_required";
+  if (cleanup.attempt || cleanup.recovery || cleanup.timer) return "busy";
+
+  cleanup.operatorRecoveryRequired = false;
+  cleanup.automaticAttempts += 1;
+  const closeInput = { reason: "operator requested exact native session cleanup retry" };
+  const attempt = Promise.resolve().then(() => cleanup.session.retryCleanup
+    ? cleanup.session.retryCleanup(closeInput)
+    : cleanup.session.close(closeInput));
+  cleanup.attempt = attempt;
+  failedSessionCleanupOwners.set(attempt, cleanup.domain);
+  try {
+    await attempt;
+    quarantinedSessionCleanups.delete(cleanup);
+    return "settled";
+  } catch {
+    cleanup.operatorRecoveryRequired = true;
+    return "still_incomplete";
+  } finally {
+    failedSessionCleanupOwners.delete(attempt);
+    if (cleanup.attempt === attempt) cleanup.attempt = null;
+  }
+}
+
 /** Control-plane-only cleanup boundary after the environment provider confirmed
  * termination of the exact remote resource for this run. This retires process
  * ownership, not checkpoints, action outcomes, or authorization to run again.
@@ -146,9 +201,9 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   if (!binding.remoteCleanupScope) return false;
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    // Domains are created internally from company, backend kind/name, and the
-    // optional remote resource. Local domains have no fourth element.
-    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    // Domains contain company, Issue, backend kind/name, and optional remote
+    // resource. Local domains have four elements.
+    const [, , , , remoteCleanupScope] = JSON.parse(domain) as string[];
     return identity.companyId === binding.companyId && identity.runId === binding.runId &&
       remoteCleanupScope === binding.remoteCleanupScope;
   });
@@ -173,7 +228,8 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
     const parts = JSON.parse(domain) as string[];
-    return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
+    return parts.length === 4 && parts[1] === identity.issueId &&
+      identity.companyId === binding.companyId && identity.runId === binding.runId;
   });
   if (matches.some(entry => entry.attempt || entry.recovery ||
       sessionOriginRunnerInstances.get(entry.session) !== binding.runnerInstanceId)) return false;
@@ -1931,6 +1987,9 @@ export async function executeNativeSession(
   const descriptor = await options.backend.descriptor();
   const cleanupDomain = JSON.stringify([
     input.binding.companyId,
+    // A close failure belongs to this Issue's session. A provider-wide gate
+    // lets one stuck agent prevent every other Issue from accepting work.
+    input.binding.issueId,
     descriptor.kind,
     descriptor.name,
     ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),

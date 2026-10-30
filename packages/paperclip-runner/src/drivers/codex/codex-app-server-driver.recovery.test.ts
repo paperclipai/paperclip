@@ -62,6 +62,26 @@ function cursorProviderIdentity(mode: unknown) {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it("refuses cleanup retries that could restore a provider", async () => {
+    const transport = new FakeCodexTransport("thread-cleanup", "provider-cleanup");
+    const driver = makeDriver([transport]);
+    await expect(driver.retryCleanup!({ driverKind: "codex_app_server", driverSessionId: "thread-cleanup",
+      providerSessionId: "provider-cleanup", runId: "run-cleanup", normalizedSessionId: "session-cleanup",
+      activeTurnId: null, pendingRuntimeRequests: [], terminalTurns: [{ turnId: "turn-done", fingerprint: "{}" }] }))
+      .rejects.toThrow("retained native session reconciliation");
+    expect(transport.calls).toHaveLength(0);
+  });
+
+  it("does not inspect or restore a provider when refusing cleanup retries", async () => {
+    const transport = new FakeCodexTransport("thread-cleanup", "provider-cleanup");
+    const driver = makeDriver([transport]);
+    await expect(driver.retryCleanup!({ driverKind: "codex_app_server", driverSessionId: "thread-cleanup",
+      providerSessionId: "provider-cleanup", runId: "run-cleanup", normalizedSessionId: "session-cleanup",
+      activeTurnId: "turn-active", pendingRuntimeRequests: [], terminalTurns: [] }))
+      .rejects.toThrow("retained native session reconciliation");
+    expect(transport.calls).toHaveLength(0);
+  });
+
   it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {
     const identity = cursorProviderIdentity(mode);
     const first = new FakeCodexTransport("thread-1", "provider-session-1", identity);

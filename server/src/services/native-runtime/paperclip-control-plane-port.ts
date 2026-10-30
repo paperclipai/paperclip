@@ -223,6 +223,22 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    return this.#appendEvent(value, options);
+  }
+
+  /** Persist the runner's committed semantic input in its own source stream.
+   * Provider notifications and runnerd events have independent sourceSeq counters
+   * even though they share the runner instance identity. Keeping this evidence in
+   * a dedicated storage namespace prevents a legitimate sequence collision while
+   * retaining the original PRP event and hash for cleanup proof. */
+  async appendSemanticToolInputEvidence(value: PrpEvent, options?: { signal: AbortSignal }) {
+    if (value.eventType !== "semantic_tool.input" || value.sourceKind !== "runner") {
+      throw new Error("native_semantic_tool_input_evidence_invalid");
+    }
+    return this.#appendEvent(value, options, "semantic_tool_input");
+  }
+
+  async #appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }, storageNamespace?: string) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -281,8 +297,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         level: event.eventType.includes("failed") ? "error" : "info",
         payload: { prpEvent: event as unknown as Record<string, unknown> },
         nativeSource: {
-          sourceInstanceId: event.sourceInstanceId,
-          sourceEventId: event.sourceEventId,
+          sourceInstanceId: storageNamespace
+            ? `${event.sourceInstanceId}:${storageNamespace}`
+            : event.sourceInstanceId,
+          sourceEventId: storageNamespace
+            ? `${storageNamespace}:${event.sourceEventId}`
+            : event.sourceEventId,
           sourceSeq: event.sourceSeq,
           protocolSchemaVersion: event.schemaVersion,
           canonicalPayload: event as unknown as Record<string, unknown>,

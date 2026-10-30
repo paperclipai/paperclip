@@ -1978,6 +1978,7 @@ export {
   resolveIssueRecoveryActionSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  retryNativeSessionCleanupSchema,
   recoverWorkspaceSchema,
   taskRetrySchema,
   reconstructWorkspaceSchema,

@@ -1240,6 +1240,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
+  /** Record a semantic input before the tool dispatcher can run. */
+  onSemanticToolInputCommitted?: (event: PrpEvent) => Promise<void>;
   recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -2068,6 +2070,98 @@ export interface RetainedRunnerdCleanupProof {
   readonly settledFingerprint: string;
 }
 
+const retainedNotDispatchedArchiveProofs = new WeakSet<object>();
+
+/** Prove that a retained runner state is safe to retire by archival alone.
+ * This is deliberately limited to a stopped Codex turn whose sole pending
+ * semantic result is the durable `semantic_tool_not_dispatched` receipt.
+ * It never starts a runner/provider or changes the retained journal. */
+export function proveRetainedRunnerdNotDispatchedArchive(input: {
+  binding: NativeRunIdentity;
+  identity: DurableRecoveryIdentity;
+  backend: { kind: string; name: string };
+  stateDirectory: string;
+  sourceFingerprint: string;
+  providerSessionId: string;
+  originalRunnerPid: number;
+  originalProviderPid: number;
+  callId: string;
+  operationId: string;
+  sourceEventId: string;
+}): RetainedRunnerdCleanupProof {
+  const state = readMaintenanceState(resolve(input.stateDirectory));
+  assertMaintenanceBinding(state, input.identity, input.providerSessionId, false, true);
+  if (
+    state.fingerprint !== input.sourceFingerprint ||
+    input.binding.runId !== input.identity.runId ||
+    !input.callId || !input.operationId || !input.sourceEventId ||
+    state.runner.lifecycle !== "ready" ||
+    !Array.isArray(state.runner.outbox) || state.runner.outbox.length !== 0 ||
+    state.runner.pendingTerminalDelivery != null ||
+    state.runner.pendingProviderCleanup != null ||
+    state.provider.lifecycle !== "prepared" ||
+    state.provider.activeProviderTurnId != null ||
+    state.provider.turnClosed !== true ||
+    !Array.isArray(state.provider.pendingEvents) || state.provider.pendingEvents.length !== 0 ||
+    !Array.isArray(state.provider.queuedEvents) || state.provider.queuedEvents.length !== 0 ||
+    record(state.provider.toolBridge).turnClosed !== true
+  ) throw maintenanceDenied();
+
+  const pending = record(record(state.provider.toolBridge).pending);
+  if (
+    pending.callId !== input.callId ||
+    pending.operationId !== input.operationId ||
+    Object.keys(pending).length === 0
+  ) throw maintenanceDenied();
+
+  const commands = state.control.commands as Array<Record<string, unknown>>;
+  const committed = state.control.committedEvents as Array<Record<string, unknown>>;
+  if (!Array.isArray(commands) || !Array.isArray(committed)) throw maintenanceDenied();
+  const pendingCommands = commands.filter(command => command.status === "pending");
+  const toolResults = pendingCommands.filter(command => command.type === "semantic_tool.result");
+  if (
+    toolResults.length !== 1 ||
+    pendingCommands.some(command => !["semantic_tool.result", "runner.suspend"].includes(String(command.type)))
+  ) throw maintenanceDenied();
+  const toolPayload = record(toolResults[0]!.payload);
+  const notDispatched = record(record(toolPayload.result).error);
+  if (
+    toolPayload.callId !== input.callId || toolPayload.operationId !== input.operationId ||
+    toolPayload.isError !== true || notDispatched.code !== "semantic_tool_not_dispatched" ||
+    notDispatched.retryable !== false
+  ) throw maintenanceDenied();
+
+  const events = committed.map(entry => record(record(record(entry).envelope).payload));
+  const inputs = events.filter(event => event.eventType === "semantic_tool.input");
+  const completions = events.filter(event => event.eventType === "semantic_tool.result");
+  const inputEvent = inputs[0];
+  const semantic = record(record(inputEvent?.payload).semantic_tool);
+  const providerIdentities = events.filter(event => ["session.started", "session.resumed"].includes(String(event.eventType)));
+  const providerIdentity = record(providerIdentities[0]?.payload);
+  if (
+    inputs.length !== 1 || completions.length !== 0 || providerIdentities.length !== 1 ||
+    inputEvent?.sourceEventId !== input.sourceEventId ||
+    semantic.callId !== input.callId || semantic.operationId !== input.operationId ||
+    providerIdentity.providerSessionId !== input.providerSessionId ||
+    providerIdentity.processId !== input.originalProviderPid ||
+    !commands.some(command => command.type === "turn.stop" && command.status === "completed") ||
+    ![input.originalRunnerPid, input.originalProviderPid].every(maintenanceProcessAbsent)
+  ) throw maintenanceDenied();
+
+  const proof: RetainedRunnerdCleanupProof = Object.freeze({
+    binding: Object.freeze({ ...input.binding }),
+    identity: Object.freeze({ ...input.identity }),
+    backend: Object.freeze({ ...input.backend }),
+    providerSessionId: input.providerSessionId,
+    activationDirectory: resolve(input.stateDirectory),
+    sourceFingerprint: input.sourceFingerprint,
+    settledFingerprint: input.sourceFingerprint,
+  });
+  retainedRunnerdCleanupProofs.set(proof, [input.originalRunnerPid, input.originalProviderPid]);
+  retainedNotDispatchedArchiveProofs.add(proof);
+  return proof;
+}
+
 /** Content-free evidence for this controller's exact child handle. A launch
  * intent without a matching retirement is deliberately not absence proof. */
 export type RetainedRunnerdMaintenanceEpochReceipt = {
@@ -2303,6 +2397,7 @@ function assertMaintenanceBinding(
   identity: DurableRecoveryIdentity,
   providerSessionId: string,
   allowRestoringOpen = false,
+  allowPendingTool = false,
 ) {
   if (
     !recoveryIdentityMatches(record(state.control.identity), identity) ||
@@ -2316,8 +2411,7 @@ function assertMaintenanceBinding(
     !Array.isArray(state.provider.queuedEvents) ||
     !Array.isArray(state.control.commands) ||
     !Array.isArray(state.control.committedEvents) ||
-    Object.keys(record(record(state.provider.toolBridge).pending)).length !==
-      0 ||
+    (!allowPendingTool && Object.keys(record(record(state.provider.toolBridge).pending)).length !== 0) ||
     state.provider.ambiguousTurnStartPending === true ||
     !(
       allowRestoringOpen
@@ -2337,7 +2431,15 @@ export function retainedRunnerdCleanupProofIsCurrent(
   if (!pids || !pids.every(maintenanceProcessAbsent)) return false;
   try {
     const state = readMaintenanceState(proof.activationDirectory);
-    assertMaintenanceBinding(state, proof.identity, proof.providerSessionId);
+    const archiveOnly = retainedNotDispatchedArchiveProofs.has(proof);
+    assertMaintenanceBinding(state, proof.identity, proof.providerSessionId, false, archiveOnly);
+    if (archiveOnly) {
+      return state.fingerprint === proof.sourceFingerprint &&
+        proof.settledFingerprint === proof.sourceFingerprint &&
+        state.runner.lifecycle === "ready" &&
+        state.provider.lifecycle === "prepared" &&
+        state.provider.turnClosed === true;
+    }
     return (
       state.fingerprint === proof.settledFingerprint &&
       state.runner.lifecycle === "suspended" &&
@@ -5239,6 +5341,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
       recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
+        if (event.eventType === "semantic_tool.input") {
+          await this.options.onSemanticToolInputCommitted?.(event);
+        }
         if (event.eventType === "auth.credentials.updated") {
           await this.options.onCredentialsUpdated?.(event);
         }

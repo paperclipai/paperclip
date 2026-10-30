@@ -595,6 +595,10 @@ export const retryWorkspaceExportSchema = z.object({
   repairNote: z.string().trim().min(20).max(12000),
 }).strict();
 
+export const retryNativeSessionCleanupSchema = z.object({
+  runId: z.string().guid(),
+}).strict();
+
 export const taskRetrySchema = z.object({
   idempotencyKey: z.string().guid(),
   observedRunId: z.string().guid().nullable(),

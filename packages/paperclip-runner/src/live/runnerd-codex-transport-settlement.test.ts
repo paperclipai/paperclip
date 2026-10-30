@@ -44,10 +44,155 @@ import {
   runnerdRecoveryInternals,
   resolveRunnerdSessionIdentity,
   settleRetainedRunnerdSession,
+  proveRetainedRunnerdNotDispatchedArchive,
   retainedRunnerdCleanupProofIsCurrent,
   retainedRunnerdMaintenanceIsIdle,
   waitForRetainedRunnerdMaintenanceIdle,
 } from "./runnerd-codex-transport.js";
+
+it("issues an archive-only cleanup proof for one durably not-dispatched call", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-not-dispatched-"));
+  const identity = {
+    runId: "run-not-dispatched",
+    runnerInstanceId: "runner-not-dispatched",
+    environmentLeaseId: "lease-not-dispatched",
+    normalizedSessionId: "session-not-dispatched",
+    turnId: "turn-not-dispatched",
+    itemId: "item-not-dispatched",
+  };
+  const callId = "call-not-dispatched";
+  const operationId = "set_task_title";
+  const sourceEventId = "runner-not-dispatched:run-not-dispatched:2";
+  const providerSessionId = "thread-not-dispatched";
+  const eventBase = {
+    schema: "paperclip.prp.event.v1",
+    schemaVersion: 1,
+    sourceKind: "runner",
+    sourceSeq: 1,
+    sourceInstanceId: identity.runnerInstanceId,
+    runId: identity.runId,
+    normalizedSessionId: identity.normalizedSessionId,
+    turnId: identity.turnId,
+    itemId: identity.itemId,
+    priority: 1,
+    emittedAt: new Date().toISOString(),
+  };
+  const events = [
+    {
+      ...eventBase,
+      sourceEventId: "runner-not-dispatched:run-not-dispatched:1",
+      eventType: "session.started",
+      payload: { providerSessionId, processId: 2_000_000_001 },
+    },
+    {
+      ...eventBase,
+      sourceSeq: 2,
+      sourceEventId,
+      eventType: "semantic_tool.input",
+      payload: {
+        semantic_tool: {
+          callId,
+          operationId,
+          correlation: {
+            runId: identity.runId,
+            normalizedSessionId: identity.normalizedSessionId,
+            turnId: identity.turnId,
+            itemId: identity.itemId,
+          },
+        },
+      },
+    },
+  ];
+  const files = [
+    "control-plane/control-plane-state.json",
+    "runner/runner-state.json",
+    "runner/codex-provider-state.json",
+  ];
+  const state = [
+    {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      identity,
+      committedEvents: events.map(payload => ({ envelope: { payload } })),
+      commands: [
+        { type: "turn.start", status: "completed" },
+        { type: "turn.stop", status: "completed" },
+        {
+          type: "semantic_tool.result",
+          status: "pending",
+          payload: {
+            callId,
+            operationId,
+            sourceEventId,
+            sourceEventType: "semantic_tool.input",
+            isError: true,
+            result: { error: { code: "semantic_tool_not_dispatched", retryable: false } },
+          },
+        },
+        { type: "runner.suspend", status: "pending" },
+      ],
+    },
+    {
+      schema: "paperclip.runner.durable.state.v1",
+      ...identity,
+      lifecycle: "ready",
+      outbox: [],
+      pendingTerminalDelivery: null,
+      pendingProviderCleanup: null,
+    },
+    {
+      schema: "paperclip.runner.codex-provider-state.v1",
+      lifecycle: "prepared",
+      threadId: providerSessionId,
+      activeProviderTurnId: null,
+      turnClosed: true,
+      config: { provider: "codex" },
+      pendingEvents: [],
+      queuedEvents: [],
+      toolBridge: { turnClosed: true, pending: { callId, operationId } },
+    },
+  ];
+  const processKill = vi.spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("process absent"), { code: "ESRCH" });
+  });
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    await Promise.all(files.map(async (file, index) => {
+      const path = join(directory, file);
+      await mkdir(join(path, ".."), { recursive: true });
+      await writeFile(path, JSON.stringify(state[index]));
+    }));
+    const bytes = await Promise.all(files.map(file => readFile(join(directory, file))));
+    const sourceFingerprint = createHash("sha256").update(JSON.stringify(bytes.map(value => createHash("sha256").update(value).digest("hex")))).digest("hex");
+    const proof = proveRetainedRunnerdNotDispatchedArchive({
+      binding: {
+        companyId: "company",
+        issueId: "issue",
+        agentId: "agent",
+        runId: identity.runId,
+        sessionId: identity.normalizedSessionId,
+      },
+      identity,
+      backend: { kind: "runner", name: "codex_app_server" },
+      stateDirectory: directory,
+      sourceFingerprint,
+      providerSessionId,
+      originalRunnerPid: 2_000_000_000,
+      originalProviderPid: 2_000_000_001,
+      callId,
+      operationId,
+      sourceEventId,
+    });
+    expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(true);
+    expect(retainedRunnerdCleanupProofIsCurrent({ ...proof })).toBe(false);
+    await writeFile(join(directory, files[1]!), JSON.stringify({ ...state[1], lifecycle: "suspended" }));
+    expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(false);
+  } finally {
+    Object.defineProperty(process, "platform", platformDescriptor);
+    processKill.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 // Explicit private-artifact test lane; production/default dist is never changed.
 const defaultCapabilityRunnerdBinary = () =>

@@ -350,10 +350,11 @@ describe("qualified ACPX runtime sidecar", () => {
       const response = fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } }) });
       if (mode === "forwarded") {
-        await vi.waitFor(() => expect(tools.has("3")).toBe(true));
-        expect(emitted).toEqual([{ callId: "3", operationId: "paperclip_finish", input: validated.result }]);
+        await vi.waitFor(() => expect(tools.size).toBe(1));
+        const callId = [...tools.keys()][0]!;
+        expect(emitted).toEqual([{ callId, operationId: "paperclip_finish", input: validated.result }]);
         // The receipt hashes the actual emitted input, not a second normalization.
-        await loadActualToolCommands(tools).resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
+        await loadActualToolCommands(tools).resolve({ callId, turnId: "test-turn", result: { accepted: true }, error: null });
       }
       const body = await (await response).json();
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
@@ -390,11 +391,12 @@ describe("qualified ACPX runtime sidecar", () => {
         run: { id: "test-run" }, activeTask: { executionRunId: "test-run" }, completionContinuation: eligible ? continuation : null,
       }, error: null });
       if (eligible) {
-        await vi.waitFor(() => expect(tools.has("3")).toBe(true));
+        await vi.waitFor(() => expect(tools.size).toBe(1));
+        const callId = [...tools.keys()][0]!;
         expect(emitted.map(event => event.operationId)).toEqual(["get_task_context", "paperclip_finish"]);
         expect(emitted[1].input).toMatchObject({ reportedWorkDisposition: "yielded", continuation });
         expect(validatePrpStructuredRunResult(emitted[1].input).ok).toBe(true);
-        await commands.resolve({ callId: "3", turnId: "test-turn", result: { accepted: true }, error: null });
+        await commands.resolve({ callId, turnId: "test-turn", result: { accepted: true }, error: null });
       }
       const body = await (await response).json();
       const receipt = readNativeSemanticReceipt({ contents: body.result.content });
@@ -502,11 +504,12 @@ describe("qualified ACPX runtime sidecar", () => {
       const handler = loadWaitForTool({ tools, emitted, validate: validatePrpStructuredRunResult, emit: wire.emit });
       const bridge = await startRunnerToolBridge({ handler, timeoutMs: 500, captureSemanticReceipt: () => receipt => receipts.push(receipt) });
       const headers = { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" };
-      const params = { callId: "3", turnId: "test-turn", result: { accepted: mode !== "accepted-false" }, error: null };
       try {
         const response = fetch(bridge.url, { method: "POST", headers,
           body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } }) });
-        await vi.waitFor(() => expect(tools.has("3")).toBe(true), { interval: 5, timeout: 400 });
+        await vi.waitFor(() => expect(tools.size).toBe(1), { interval: 5, timeout: 400 });
+        const callId = [...tools.keys()][0]!;
+        const params = { callId, turnId: "test-turn", result: { accepted: mode !== "accepted-false" }, error: null };
         expect(wire.writes).toHaveLength(1);
         expect(JSON.parse(wire.writes[0]!).payload.input).toEqual(validation.result);
         expect(receipts).toEqual([]);
@@ -517,7 +520,7 @@ describe("qualified ACPX runtime sidecar", () => {
         commands.setTurn("foreign");
         await expect(commands.resolve(params)).rejects.toThrow("stale or unknown");
         commands.setTurn("test-turn");
-        expect(tools.has("3")).toBe(true);
+        expect(tools.has(callId)).toBe(true);
         if (mode === "success" || mode === "accepted-false") {
           await expect(commands.resolve(params)).resolves.toEqual({ resolved: true });
         } else if (mode === "error") {

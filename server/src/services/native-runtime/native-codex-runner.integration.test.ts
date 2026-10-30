@@ -27,6 +27,7 @@ import {
   runnerPrpWebSocketInternals,
   setupRunnerPrpWebSocketServer,
 } from "../../realtime/runner-prp-ws.js";
+import { nativeSha256 } from "./canonical.js";
 import { executeNativeCodexRunner } from "./native-codex-runner.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 
@@ -274,6 +275,29 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       "run.result.proposed",
       "run.terminal",
     ]));
+    const semanticInputs = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const committedToolInput = semanticInputs.find(
+      (event) => event.eventType === "semantic_tool.input",
+    );
+    expect(committedToolInput).toBeDefined();
+    expect(committedToolInput?.sourceInstanceId).toBe(native.runnerInstanceId);
+    expect(committedToolInput?.sourceEventId).toEqual(expect.any(String));
+    expect(committedToolInput?.sourceSeq).toEqual(expect.any(Number));
+    const persistedPrpEvent = (
+      committedToolInput?.payload as { prpEvent?: unknown } | null
+    )?.prpEvent;
+    expect(persistedPrpEvent).toMatchObject({
+      eventType: "semantic_tool.input",
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: native.normalizedSessionId,
+    });
+    expect(committedToolInput?.sourcePayloadSha256).toBe(
+      nativeSha256(persistedPrpEvent),
+    );
 
     const resumedRunId = randomUUID();
     const [resumedRun] = await db.insert(heartbeatRuns).values({

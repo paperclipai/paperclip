@@ -79,6 +79,7 @@ export {
   drainRetainedRunnerdMaintenanceOperations,
   resolveSourceCodexHome,
   settleRetainedRunnerdSession,
+  proveRetainedRunnerdNotDispatchedArchive,
   retainedRunnerdCleanupProofIsCurrent,
   retainedRunnerdMaintenanceIsIdle,
   type RetainedRunnerdCleanupProof,

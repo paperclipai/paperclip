@@ -31,7 +31,7 @@ describe("historical ACPX profile decoding", () => {
     expect(isSupportedAcpxProfileVersion("grok", QUALIFIED_ACPX_PROFILE_DATA.grok.agentProfileVersion + 1)).toBe(false);
   });
   it("decodes retained Copilot revisions and the current profile without widening other providers", () => {
-    for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]) {
+    for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 84, 85, 86, 87, 88, 89]) {
       expect(isSupportedAcpxProfileVersion("copilot", version)).toBe(true);
     }
     expect(isSupportedAcpxProfileVersion("copilot", QUALIFIED_ACPX_PROFILE_DATA.copilot.agentProfileVersion + 1)).toBe(false);

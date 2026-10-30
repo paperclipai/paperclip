@@ -571,4 +571,6 @@ export interface HarnessDriver {
     snapshot: PersistedHarnessSession,
     options: HarnessSessionRecoveryOptions,
   ): Promise<HarnessSessionRecoveryResult>;
+  /** Reattach only to a proven-idle session and close it without constructing a task session or replaying a turn. */
+  retryCleanup?(snapshot: PersistedHarnessSession, options: HarnessSessionRecoveryOptions): Promise<void>;
 }

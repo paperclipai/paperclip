@@ -526,6 +526,23 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("documents exact native cleanup wait and retry evidence in the 409 contract", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const cleanup = res.body.paths["/api/issues/{id}/recovery-actions/retry-native-session-cleanup"].post;
+    const schemaRef = cleanup.responses["409"].content["application/json"].schema.$ref as string;
+    const schemaName = schemaRef.split("/").at(-1)!;
+    const details = res.body.components.schemas[schemaName].properties.details.properties;
+
+    expect(cleanup.summary).toContain("without retrying its task turn");
+    expect(details.status.enum).toEqual(["deferred", "not_eligible", "operator_required"]);
+    expect(details.waitFor.enum).toEqual([
+      "process_exit", "session_release", "environment_release", "maintenance_settlement", "lease_expiry",
+    ]);
+    expect(details.retryAt).toMatchObject({ type: "string", format: "date-time" });
+    expect(details.nextAction).toMatchObject({ type: "string", minLength: 1 });
+    expect(details.taskTurnReplayed.enum).toEqual([false]);
+    expect(details.taskRetried.enum).toEqual([false]);
+  });
   it("advertises the guarded prepared-task promotion contract to API clients", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const patch = res.body.paths["/api/issues/{id}"].patch;

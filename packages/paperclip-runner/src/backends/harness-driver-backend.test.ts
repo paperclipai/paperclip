@@ -97,6 +97,24 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it("exposes exact idle cleanup retry through the driver without turning it into session recovery", async () => {
+    const session = Object.assign(new FakeHarnessSession(), {
+      async snapshot() { return { ...await new FakeHarnessSession().snapshot(), activeTurnId: null, pendingRuntimeRequests: [] }; },
+    });
+    const retryCleanup = vi.fn(async () => {});
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session, retryCleanup });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    for await (const _event of opened.events()) { /* settle the retained terminal state */ }
+    await opened.retryCleanup!({ reason: "operator requested exact native session cleanup retry" });
+    expect(retryCleanup).toHaveBeenCalledOnce();
+    expect(retryCleanup.mock.calls[0]![0]).toMatchObject({
+      driverKind: "fake", driverSessionId: "driver-1", runId: "run-1", normalizedSessionId: "session-1",
+      activeTurnId: null, pendingRuntimeRequests: [],
+    });
+  });
+
   it.each(["default", "disabled"] as const)("rejects unsupported reasoning %s before starting provider work", async reasoningMode => {
     const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
     const session = Object.assign(new FakeHarnessSession(), { startTurn });

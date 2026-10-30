@@ -126,6 +126,7 @@ import {
   NativeSessionProtocolIntegrityError,
   completeRetainedNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
+  proveRetainedRunnerdNotDispatchedArchive,
   acpxRuntimeSessionDirectoryName,
   OPENCODE_ISOLATED_HOMES_DIRECTORY,
   opencodeRuntimeSessionDirectoryName,
@@ -166,6 +167,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
   documentRevisions,
@@ -2528,6 +2530,78 @@ export function retainedNativeCleanupJournalMatches(input: {
   );
 }
 
+/** Strict no-effect proof for the archive-only cleanup path. This is valid
+ * only when the durable control-plane journal itself records that the exact
+ * semantic call was not dispatched, and the runner event is persisted with
+ * its original hash and identity. */
+export function retainedNativeNotDispatchedJournalMatches(input: {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId">;
+  control: Record<string, unknown>;
+  providerSessionId: string;
+  providerPid: number;
+  persistedEvents: Array<Pick<typeof heartbeatRunEvents.$inferSelect, "eventType" | "payload" | "sourceInstanceId" | "sourceEventId" | "sourceSeq" | "sourcePayloadSha256">>;
+}): { callId: string; operationId: string; sourceEventId: string } | null {
+  const { run, control } = input;
+  if (!run.nativeSessionId || !run.runnerInstanceId || !Array.isArray(control.commands) || !Array.isArray(control.committedEvents)) return null;
+  const events = (control.committedEvents as unknown[]).map(entry => record(record(record(entry).envelope).payload));
+  const providerEvents = events.filter(event => ["session.started", "session.resumed"].includes(String(event.eventType)));
+  const toolInputs = events.filter(event => event.eventType === "semantic_tool.input");
+  if (providerEvents.length !== 1 || toolInputs.length !== 1 || events.some(event => event.eventType === "semantic_tool.result")) return null;
+  const providerEvent = providerEvents[0]!;
+  const provider = record(providerEvent.payload);
+  const semantic = record(record(toolInputs[0]!.payload).semantic_tool);
+  const correlation = record(semantic.correlation);
+  if (
+    providerEvent.sourceKind !== "runner" || providerEvent.runId !== run.id ||
+    providerEvent.normalizedSessionId !== run.nativeSessionId ||
+    providerEvent.sourceInstanceId !== run.runnerInstanceId ||
+    provider.providerSessionId !== input.providerSessionId || provider.processId !== input.providerPid ||
+    !validatePrpEvent(providerEvent).ok ||
+    toolInputs[0]!.sourceKind !== "runner" || toolInputs[0]!.runId !== run.id ||
+    toolInputs[0]!.normalizedSessionId !== run.nativeSessionId ||
+    toolInputs[0]!.sourceInstanceId !== run.runnerInstanceId ||
+    !validatePrpEvent(toolInputs[0]!).ok ||
+    correlation.runId !== run.id || correlation.normalizedSessionId !== run.nativeSessionId ||
+    typeof correlation.turnId !== "string" || typeof correlation.itemId !== "string" ||
+    typeof semantic.callId !== "string" || !semantic.callId ||
+    typeof semantic.operationId !== "string" || !semantic.operationId ||
+    typeof toolInputs[0]!.sourceEventId !== "string"
+  ) return null;
+  const persisted = input.persistedEvents.filter(row => {
+    const parsed = validatePrpEvent(record(row.payload).prpEvent);
+    return parsed.ok && parsed.event.runId === run.id &&
+      parsed.event.normalizedSessionId === run.nativeSessionId &&
+      (parsed.event.sourceInstanceId === row.sourceInstanceId &&
+        parsed.event.sourceEventId === row.sourceEventId ||
+        (parsed.event.eventType === "semantic_tool.input" &&
+          row.sourceInstanceId === `${parsed.event.sourceInstanceId}:semantic_tool_input` &&
+          row.sourceEventId === `semantic_tool_input:${parsed.event.sourceEventId}`)) &&
+      parsed.event.sourceSeq === row.sourceSeq &&
+      row.sourcePayloadSha256 === nativeSha256(parsed.event);
+  });
+  if (!persisted.some(row => {
+    if (row.eventType !== "semantic_tool.input") return false;
+    const parsed = validatePrpEvent(record(row.payload).prpEvent);
+    return parsed.ok && parsed.event.sourceInstanceId === run.runnerInstanceId &&
+      parsed.event.sourceEventId === toolInputs[0]!.sourceEventId;
+  })) return null;
+  const commands = control.commands as Array<Record<string, unknown>>;
+  const pending = commands.filter(command => command.status === "pending");
+  const resultCommands = pending.filter(command => command.type === "semantic_tool.result");
+  if (resultCommands.length !== 1 || pending.some(command => !["semantic_tool.result", "runner.suspend"].includes(String(command.type)))) return null;
+  const command = resultCommands[0]!;
+  const payload = record(command.payload);
+  const error = record(record(payload.result).error);
+  if (
+    payload.callId !== semantic.callId || payload.operationId !== semantic.operationId ||
+    payload.sourceEventId !== toolInputs[0]!.sourceEventId || payload.sourceEventType !== "semantic_tool.input" ||
+    payload.isError !== true || error.code !== "semantic_tool_not_dispatched" || error.retryable !== false ||
+    !commands.some(candidate => candidate.type === "turn.start" && candidate.status === "completed") ||
+    !commands.some(candidate => candidate.type === "turn.stop" && candidate.status === "completed")
+  ) return null;
+  return { callId: semantic.callId, operationId: semantic.operationId, sourceEventId: String(toolInputs[0]!.sourceEventId) };
+}
+
 /** Durable, content-free evidence for an authenticated maintenance event.
  * Never feed raw cleanup output into the normal driver/progress namespace. */
 export async function appendRetainedNativeCleanupEvent(
@@ -3080,6 +3154,59 @@ export async function reconcileRetainedNativeSessionCleanup(
   return outcome;
 }
 
+/** Persisted cleanup evidence uses an isolated source stream for semantic
+ * tool inputs because runner event sequence numbers can collide with provider
+ * events. Keep the exact namespace in the query so the evidence is not lost. */
+export function retainedNativeCleanupPersistedEventsPredicate(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & { runnerInstanceId: string },
+): SQL {
+  return and(
+    eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.companyId, run.companyId),
+    or(
+      and(
+        eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
+        inArray(heartbeatRunEvents.eventType, ["session.started", "session.resumed"]),
+      ),
+      and(
+        eq(heartbeatRunEvents.sourceInstanceId, `${run.runnerInstanceId}:semantic_tool_input`),
+        eq(heartbeatRunEvents.eventType, "semantic_tool.input"),
+      ),
+      sql`${heartbeatRunEvents.payload}->'prpEvent'->>'sourceKind' = 'control_plane'`,
+    ),
+  )!;
+}
+
+/** One exact, operator-requested cleanup-only reconciliation; it never retries the task turn. */
+export async function retryNativeSessionCleanupForRun(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string },
+): Promise<NativeCleanupOutcome> {
+  const [run] = await db.select({
+    id: heartbeatRuns.id,
+    companyId: heartbeatRuns.companyId,
+    issueId: heartbeatRuns.nativeIssueId,
+    agentId: heartbeatRuns.agentId,
+    sessionId: heartbeatRuns.nativeSessionId,
+    runnerInstanceId: heartbeatRuns.runnerInstanceId,
+    runtimeMode: heartbeatRuns.runtimeMode,
+    status: heartbeatRuns.status,
+    finishedAt: heartbeatRuns.finishedAt,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.nativeIssueId, input.issueId),
+  )).limit(1);
+  if (!run || run.runtimeMode !== "native" || run.status !== "failed" ||
+      !run.finishedAt || !run.sessionId || !run.runnerInstanceId) {
+    return { status: "not_eligible", runId: input.runId };
+  }
+  return reconcileRetainedNativeSessionCleanup(db, {
+    companyId: run.companyId,
+    runId: run.id,
+  });
+}
+
 async function inspectRetainedNativeSessionCleanup(
   db: Db,
   input: { companyId: string; runId: string },
@@ -3115,6 +3242,7 @@ async function inspectRetainedNativeSessionCleanup(
     } | null;
     providerPid: number;
     providerSessionId: string;
+    notDispatchedCall: { callId: string; operationId: string; sourceEventId: string } | null;
     identity: {
       runnerInstanceId: string;
       environmentLeaseId: string;
@@ -3234,7 +3362,7 @@ async function inspectRetainedNativeSessionCleanup(
         .for("share", { noWait: true })
         .limit(1)
         .then((rows) => rows[0]);
-      if (!result || result.schemaStatus !== "accepted") return null;
+      const acceptedResult = result?.schemaStatus === "accepted" ? result : null;
       const environment = await tx
         .select({ id: environmentLeases.id })
         .from(environmentLeases)
@@ -3251,6 +3379,7 @@ async function inspectRetainedNativeSessionCleanup(
       const maintenanceHistory = coordinator.recoveryHistory.filter(
         (event) => event.kind === "native_cleanup_maintenance",
       );
+      let archiveOnlySettlementAlreadyRecorded = false;
       const archiveHistory = coordinator.recoveryHistory.filter(
         (event) => event.kind === "native_cleanup_source_archive",
       );
@@ -3271,8 +3400,13 @@ async function inspectRetainedNativeSessionCleanup(
       if (archiveHistory.length) {
         const prepared = archiveHistory[0]!;
         const archived = archiveHistory[1];
+        archiveOnlySettlementAlreadyRecorded =
+          maintenanceHistory.length === 1 &&
+          maintenanceHistory[0]!.phase === "settled" &&
+          maintenanceHistory[0]!.sourceArchiveRequestId === prepared.requestId &&
+          maintenanceHistory[0]!.sourceFingerprint === prepared.sourceFingerprint;
         if (
-          maintenanceHistory.length ||
+          (maintenanceHistory.length && !archiveOnlySettlementAlreadyRecorded) ||
           archiveHistory.length > 2 ||
           prepared.version !== 1 ||
           prepared.phase !== "prepared" ||
@@ -3287,9 +3421,7 @@ async function inspectRetainedNativeSessionCleanup(
           typeof prepared.archiveName !== "string" ||
           prepared.archiveName.length > 192 ||
           basename(prepared.archiveName) !== prepared.archiveName ||
-          !prepared.archiveName.startsWith(
-            `${basename(root)}.identity_indeterminate.cleanup.`,
-          ) ||
+          !prepared.archiveName.startsWith(`${basename(root)}.identity_indeterminate.`) ||
           typeof prepared.sourceFingerprint !== "string" ||
           !/^[0-9a-f]{64}$/.test(prepared.sourceFingerprint) ||
           typeof prepared.providerHomeFingerprint !== "string" ||
@@ -3338,7 +3470,7 @@ async function inspectRetainedNativeSessionCleanup(
         quarantine = resolve(parent, candidates[0]!);
         sourceDirectory = quarantine;
       }
-      const archiveRootIdentity = sourceArchive
+      let archiveRootIdentity = sourceArchive
         ? cleanupArchiveRootIdentity(sourceDirectory)
         : null;
       if (sourceArchive) {
@@ -3370,7 +3502,7 @@ async function inspectRetainedNativeSessionCleanup(
             source.runner[key] === identity[key],
         ) ||
         source.runner.lifecycle !== "ready" ||
-        source.provider.lifecycle !== "turn_active" ||
+        !["turn_active", "prepared"].includes(String(source.provider.lifecycle)) ||
         record(source.provider.config).provider !== "codex" ||
         record(source.provider.config).command !== "codex" ||
         record(source.provider.config).cwd !== execution.workspace.cwd ||
@@ -3405,29 +3537,31 @@ async function inspectRetainedNativeSessionCleanup(
       const persisted = await tx
         .select()
         .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, run.id),
-            eq(heartbeatRunEvents.companyId, run.companyId),
-            or(
-              and(
-                eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
-                inArray(heartbeatRunEvents.eventType, [
-                  "session.started",
-                  "session.resumed",
-                ]),
-              ),
-              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'sourceKind' = 'control_plane'`,
-            ),
-          ),
-        )
+        .where(retainedNativeCleanupPersistedEventsPredicate({
+          id: run.id,
+          companyId: run.companyId,
+          runnerInstanceId: run.runnerInstanceId!,
+        }))
         .limit(20);
-      if (
-        persisted.length >= 20 ||
-        !retainedNativeCleanupJournalMatches({
+      const notDispatchedCall = persisted.length < 20
+        ? retainedNativeNotDispatchedJournalMatches({
+            run,
+            control: source.control,
+            providerSessionId: provider.providerSessionId,
+            providerPid: Number(provider.processId),
+            persistedEvents: persisted,
+          })
+        : null;
+      if (notDispatchedCall && !sourceArchive && !rootExists && candidates.length === 1) {
+        const scopeEntries = readdirSync(runnerdStateBase());
+        if (scopeEntries.length > 4096 || scopeEntries.some(name => name.startsWith(`${basename(root)}.cleanup-`))) return null;
+        sourceArchive = { intent: {}, fromCanonical: false, completed: false };
+        archiveRootIdentity = cleanupArchiveRootIdentity(sourceDirectory);
+      }
+      const acceptedJournalMatches = !!acceptedResult && retainedNativeCleanupJournalMatches({
           run,
           execution,
-          accepted: result,
+          accepted: acceptedResult,
           control: source.control,
           providerSessionId: provider.providerSessionId,
           providerAccountSessionId:
@@ -3435,7 +3569,12 @@ async function inspectRetainedNativeSessionCleanup(
               ? provider.providerAccountSessionId
               : null,
           persistedEvents: persisted,
-        })
+        });
+      if (
+        persisted.length >= 20 ||
+        (!acceptedJournalMatches && !notDispatchedCall) ||
+        (notDispatchedCall && (source.provider.lifecycle !== "prepared" || !sourceArchive || (maintenanceHistory.length > 0 && !archiveOnlySettlementAlreadyRecorded))) ||
+        (acceptedJournalMatches && source.provider.lifecycle !== "turn_active")
       )
         return null;
       let copySource: {
@@ -3582,6 +3721,7 @@ async function inspectRetainedNativeSessionCleanup(
         copySource,
         providerPid: provider.processId,
         providerSessionId: provider.providerSessionId,
+        notDispatchedCall,
         identity: identity as {
           runnerInstanceId: string;
           environmentLeaseId: string;
@@ -3750,6 +3890,67 @@ async function inspectRetainedNativeSessionCleanup(
           phase: "archived",
         });
         archive.completed = true;
+      }
+      if (owned.notDispatchedCall) {
+        await authorize();
+        const proof = proveRetainedRunnerdNotDispatchedArchive({
+          binding: {
+            companyId: owned.run.companyId,
+            issueId: owned.run.nativeIssueId!,
+            agentId: owned.run.agentId,
+            runId: owned.run.id,
+            sessionId: owned.run.nativeSessionId!,
+          },
+          identity: owned.identity,
+          backend: { kind: "runner", name: "codex_app_server" },
+          stateDirectory: owned.quarantine,
+          sourceFingerprint: owned.source.fingerprint,
+          providerSessionId: owned.providerSessionId,
+          originalRunnerPid: owned.run.processPid!,
+          originalProviderPid: owned.providerPid,
+          ...owned.notDispatchedCall,
+        });
+        await db.transaction(async tx => {
+          const current = await tx.select().from(nativeRunFinalizations).where(and(
+            eq(nativeRunFinalizations.runId, owned.run.id),
+            eq(nativeRunFinalizations.companyId, owned.run.companyId),
+            eq(nativeRunFinalizations.phase, "committed"),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          )).for("update").limit(1).then(rows => rows[0]);
+          if (!current || current.leaseOwner !== leaseOwner) throw denied();
+          await authorize();
+          await notifyNativeFinalizationWork(tx, { companyId: owned.run.companyId, runId: owned.run.id });
+          const settledRecord = {
+            kind: "native_cleanup_maintenance",
+            version: 1,
+            phase: "settled",
+            requestId: leaseOwner,
+            sourceArchiveRequestId: owned.sourceArchive!.intent.requestId,
+            sourceFingerprint: owned.source.fingerprint,
+            settledFingerprint: owned.source.fingerprint,
+            nativeSessionId: owned.run.nativeSessionId,
+            runnerInstanceId: owned.run.runnerInstanceId,
+            providerSessionId: owned.providerSessionId,
+            settledAt: new Date().toISOString(),
+          };
+          const archiveSettlementRecorded = current.recoveryHistory.some(event =>
+            event.kind === "native_cleanup_maintenance" &&
+            event.phase === "settled" &&
+            event.sourceArchiveRequestId === owned.sourceArchive!.intent.requestId &&
+            event.sourceFingerprint === owned.source.fingerprint,
+          );
+          await tx.update(nativeRunFinalizations).set({
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryHistory: archiveSettlementRecorded
+              ? current.recoveryHistory
+              : [...current.recoveryHistory, settledRecord],
+            updatedAt: new Date(),
+          }).where(eq(nativeRunFinalizations.runId, owned.run.id));
+        });
+        completeRetainedNativeSessionCleanup(proof);
+        return { status: "settled", runId: input.runId };
       }
       await authorize();
       await appendMaintenanceHistory({
@@ -9188,6 +9389,9 @@ async function executePaperclipNativeSessionWithinScope(
             // projects remoteCwd into the provider execution boundary.
             execution: input.execution,
             runnerInstanceId: effectiveRunnerInstanceId,
+            appendSemanticToolInputEvidence: async event => {
+              await controlPlane.appendSemanticToolInputEvidence(event);
+            },
             pluginTaskDescription,
             retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : undefined,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
@@ -9218,6 +9422,9 @@ async function executePaperclipNativeSessionWithinScope(
           nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote"), await recovered.session.snapshot());
         persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest!, "remote");
         runnerdBackend = await createRunnerdBackend({ ...input, runnerInstanceId: effectiveRunnerInstanceId,
+          appendSemanticToolInputEvidence: async event => {
+            await controlPlane.appendSemanticToolInputEvidence(event);
+          },
           controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? { bootId: controller.bootId } : undefined,
           durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
       }
@@ -11873,6 +12080,7 @@ export async function createRunnerdBackend(input: {
   managedAiAccountIdentity?: string;
   managedAiCredentialWriteback?: PluginTaskCredentialWritebackBinding;
   onTaskDispatched?: () => Promise<void> | void;
+  appendSemanticToolInputEvidence?: (event: PrpEvent) => Promise<void>;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -12293,6 +12501,10 @@ async function createRunnerdBackendWithinSessionClaim(
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         ...owner.driver, runnerArtifact: input.controllerPersistence?.runnerArtifact ?? description.runner,
+        onSemanticToolInputCommitted: async event => {
+          if (!input.appendSemanticToolInputEvidence) throw new Error("native_semantic_input_evidence_persistence_unavailable");
+          await input.appendSemanticToolInputEvidence(event);
+        },
         controlPlaneRegistration: input.controllerPersistence ? async (authority, identity, signal) => {
           await nativeRunnerCheckpointRegistration({
             ...nativeRunnerCheckpointPersistence(input.db, input.controllerPersistence!.bootId,
@@ -13786,6 +13998,10 @@ async function createRunnerdBackendWithinSessionClaim(
           runnerInstanceId: effectiveRunnerInstanceId,
           event,
         }),
+        onSemanticToolInputCommitted: async event => {
+          if (!input.appendSemanticToolInputEvidence) throw new Error("native_semantic_input_evidence_persistence_unavailable");
+          await input.appendSemanticToolInputEvidence(event);
+        },
         provider:
           input.execution.provider.kind === "codex"
             ? "codex"

@@ -47,6 +47,7 @@ import { issueService } from "../services/issues.js";
 import { caseHandoffService } from "../services/case-handoffs.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
+import * as nativeSessionExecutor from "../services/native-runtime/native-session-executor.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_ACTION_TEST_DATABASE_URL");
@@ -274,6 +275,79 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     app.use(errorHandler);
     return app;
   }
+
+  it("returns the exact cleanup wait condition and lease retry time", async () => {
+    const fixture = await seedCompany();
+    const runId = randomUUID();
+    const retryAt = new Date("2026-10-30T12:34:56.000Z");
+    const retry = vi.spyOn(nativeSessionExecutor, "retryNativeSessionCleanupForRun").mockResolvedValue({
+      runId,
+      status: "deferred",
+      waitFor: "lease_expiry",
+      retryAt,
+    });
+    try {
+      const response = await request(createApp())
+        .post(`/api/issues/${fixture.sourceIssueId}/recovery-actions/retry-native-session-cleanup`)
+        .send({ runId })
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        error: expect.stringContaining("wait for lease_expiry until 2026-10-30T12:34:56.000Z"),
+        details: {
+          runId,
+          status: "deferred",
+          waitFor: "lease_expiry",
+          retryAt: "2026-10-30T12:34:56.000Z",
+          nextAction: "Wait for lease_expiry until 2026-10-30T12:34:56.000Z, then retry cleanup for this exact run.",
+          taskTurnReplayed: false,
+          taskRetried: false,
+        },
+      });
+      expect(retry).toHaveBeenCalledWith(db, {
+        companyId: fixture.companyId,
+        issueId: fixture.sourceIssueId,
+        runId,
+      });
+    } finally {
+      retry.mockRestore();
+    }
+  });
+
+  it.each(["not_eligible", "operator_required"] as const)(
+    "returns a specific evidence-preserving next action when cleanup is %s",
+    async (status) => {
+      const fixture = await seedCompany();
+      const runId = randomUUID();
+      const retry = vi.spyOn(nativeSessionExecutor, "retryNativeSessionCleanupForRun").mockResolvedValue({
+        runId,
+        status,
+      });
+      try {
+        const response = await request(createApp())
+          .post(`/api/issues/${fixture.sourceIssueId}/recovery-actions/retry-native-session-cleanup`)
+          .send({ runId })
+          .expect(409);
+
+        expect(response.body.details).toMatchObject({
+          runId,
+          status,
+          nextAction: expect.stringMatching(/Preserve|Keep this Issue blocked/),
+          taskTurnReplayed: false,
+          taskRetried: false,
+        });
+        if (status === "not_eligible") {
+          expect(response.body.details.nextAction).toContain("Inspect its exact run, session, runner, and process ownership evidence");
+          expect(response.body.details.nextAction).toContain("do not clear state, restart the service, or retry the task");
+        } else {
+          expect(response.body.details.nextAction).toContain("prove the provider turn and process are settled");
+        }
+        expect(retry).toHaveBeenCalledWith(db, { companyId: fixture.companyId, issueId: fixture.sourceIssueId, runId });
+      } finally {
+        retry.mockRestore();
+      }
+    },
+  );
 
   async function seedNativeFinalizationRecovery(status: string) {
     const fixture = await seedCompany();

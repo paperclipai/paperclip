@@ -107,6 +107,7 @@ import {
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   retryWorkspaceExportSchema,
+  retryNativeSessionCleanupSchema,
   recoverWorkspaceSchema,
   taskRetrySchema,
   resumeWorkspaceFinalizationSchema,
@@ -9767,6 +9768,70 @@ export function issueRoutes(
       actionId: req.body.actionId, runId: req.body.runId, repairNote: req.body.repairNote,
       actorId: getActorInfo(req).actorId, environmentRuntime });
     res.status(202).json(receipt);
+  });
+
+  router.post("/issues/:id/recovery-actions/retry-native-session-cleanup", validate(retryNativeSessionCleanupSchema), async (req, res) => {
+    assertBoard(req);
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const { retryNativeSessionCleanupForRun } = await import("../services/native-runtime/native-session-executor.js");
+    const outcome = await retryNativeSessionCleanupForRun(db, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      runId: req.body.runId,
+    });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.native_session_cleanup_retry",
+      entityType: "heartbeat_run",
+      entityId: req.body.runId,
+      issueId: issue.id,
+      details: {
+        cleanupStatus: outcome.status,
+        ...(outcome.status === "deferred" ? {
+          cleanupWaitFor: outcome.waitFor,
+          ...(outcome.waitFor === "lease_expiry" ? { retryAt: outcome.retryAt.toISOString() } : {}),
+        } : {}),
+        taskTurnReplayed: false,
+        taskRetried: false,
+      },
+    });
+    if (outcome.status !== "settled") {
+      const wait = outcome.status === "deferred"
+        ? `; wait for ${outcome.waitFor}${outcome.waitFor === "lease_expiry" ? ` until ${outcome.retryAt.toISOString()}` : ""}`
+        : "";
+      const nextAction = outcome.status === "deferred"
+        ? `Wait for ${outcome.waitFor}${outcome.waitFor === "lease_expiry" ? ` until ${outcome.retryAt.toISOString()}` : ""}, then retry cleanup for this exact run.`
+        : outcome.status === "not_eligible"
+          ? "Preserve this run's session and checkpoint. Inspect its exact run, session, runner, and process ownership evidence; do not clear state, restart the service, or retry the task."
+          : "Keep this Issue blocked and preserve all retained evidence. Have an operator inspect this exact run and prove the provider turn and process are settled before any cleanup or task retry.";
+      throw conflict(
+        `Native session cleanup remains ${outcome.status}${wait}. The task turn was not retried. ${nextAction}`,
+        {
+          runId: outcome.runId,
+          status: outcome.status,
+          ...(outcome.status === "deferred" ? {
+            waitFor: outcome.waitFor,
+            ...(outcome.waitFor === "lease_expiry" ? { retryAt: outcome.retryAt.toISOString() } : {}),
+          } : {}),
+          nextAction,
+          taskTurnReplayed: false,
+          taskRetried: false,
+        },
+      );
+    }
+    logger.info({ companyId: issue.companyId, issueId: issue.id, runId: req.body.runId, actorId: actor.actorId },
+      "Operator settled exact quarantined native session cleanup");
+    res.json({ status: "settled", runId: req.body.runId, turnReplayed: false, taskRetried: false,
+      nextAction: "The cleanup hold is retired. Review the saved run, then use the Issue Retry action separately if its effects are reconciled." });
   });
 
   router.post("/issues/:id/recovery-actions/reconstruct-workspace", validate(reconstructWorkspaceSchema), async (req, res) => {

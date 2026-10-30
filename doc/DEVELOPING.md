@@ -2599,6 +2599,13 @@ execute. A copied older owner record, an active or missing owner, and a differen
 environment cannot use this in-memory proof. Database terminal status alone is
 not proof that an unsuspended remote runner can be adopted.
 
+An unrecoverable native close blocks new sessions for its owning Issue and
+backend. It does not block unrelated Issues that use the same backend. The
+failed Issue remains gated until its own cleanup has exact process and checkpoint
+proof. Semantic tool call IDs also include the lifetime of the runner bridge;
+replacement provider processes can reuse JSON-RPC IDs without reusing a durable
+call identity.
+
 The shared lease-release boundary rechecks the durable run status for recovery
 and ordinary teardown. Successful workspace copy-back alone must not keep a
 failed turn's sandbox running.

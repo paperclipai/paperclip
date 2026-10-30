@@ -136,6 +136,10 @@ export async function startRunnerToolBridge(
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
+    // JSON-RPC ids restart with each provider process. Durable semantic call
+    // identities must include this bridge's lifetime to keep recovery turns
+    // from aliasing commands persisted by the previous process.
+    callNamespace: randomBytes(8).toString("hex"),
     secret,
     preserveToolNames: options.preserveToolNames === true,
     visibleTools,
@@ -207,6 +211,7 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   context: {
+    callNamespace: string;
     secret: string;
     preserveToolNames: boolean;
     visibleTools: RunnerToolDefinition[];
@@ -308,7 +313,11 @@ async function handleRequest(
     );
     return;
   }
-  const callId = String(id);
+  const callId = [
+    context.callNamespace,
+    typeof id,
+    createHash("sha256").update(String(id)).digest("hex"),
+  ].join(":");
   const callKey = rpcIdKey(id);
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);

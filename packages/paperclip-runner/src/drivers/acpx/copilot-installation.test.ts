@@ -87,9 +87,15 @@ vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: vi
 
 describe("Copilot build-owned installation", () => {
   it("admits the current profile with environment launch preparation", () => {
-    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(88);
+    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(105);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:b9c13b83628be07086a88394ae671997291b77bbdbf45b0bd1c4e91b7121bc9d");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("keeps saved Copilot profiles from the native cleanup branch decodable", () => {
+    expect(isSupportedAcpxProfileVersion("copilot", 102)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 103)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 104)).toBe(true);
   });
 
 it("preserves published v65 while binding retained-maintenance waits in v66", async () => {

@@ -1161,6 +1161,59 @@ it("uses the same API result envelope for live dispatch and recovered receipts",
   }
 }, 20_000);
 
+it("commits the semantic input before dispatching the provider tool call", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-semantic-input-commit-"));
+  const order: string[] = [];
+  const committedInputs: PrpEvent[] = [];
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--emit-tool-call"),
+    stateDirectory,
+    prpIdentity: {
+      runnerInstanceId: "runner-semantic-input-commit",
+      environmentLeaseId: "lease-semantic-input-commit",
+      runId: "run-semantic-input-commit",
+      normalizedSessionId: "session-semantic-input-commit",
+      turnId: "turn-semantic-input-commit",
+      itemId: "item-semantic-input-commit",
+    },
+    onSemanticToolInputCommitted: async (event) => {
+      committedInputs.push(event);
+      order.push("persisted");
+    },
+  });
+  bundle.transport.setServerRequestHandler(async () => {
+    order.push("dispatched");
+    return { success: true, contentItems: [{ type: "inputText", text: "{}" }] };
+  });
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: codexSemanticToolSpecs(),
+    });
+    await bundle.transport.request("turn/start", {
+      input: [{ type: "text", text: "Read the active task." }],
+    });
+    for await (const event of bundle.transport.notifications()) {
+      if (event.method === "turn/completed") break;
+    }
+
+    expect(committedInputs).toHaveLength(1);
+    expect(committedInputs[0]).toMatchObject({
+      eventType: "semantic_tool.input",
+      sourceKind: "runner",
+      runId: "run-semantic-input-commit",
+      normalizedSessionId: "session-semantic-input-commit",
+    });
+    expect(order).toEqual(["persisted", "dispatched"]);
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {

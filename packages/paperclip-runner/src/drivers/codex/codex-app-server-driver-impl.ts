@@ -3,6 +3,7 @@ import { writeManagedCodexObservability, redactObservabilityDiagnostic } from ".
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
+import { rejectUnsafeCodexCleanupRetry } from "./codex-cleanup-recovery.js";
 
 import type {
   HarnessDriver,
@@ -677,6 +678,8 @@ export class CodexAppServerDriver implements HarnessDriver {
       cancellation.detach();
     }
   }
+
+  async retryCleanup(): Promise<void> { return rejectUnsafeCodexCleanupRetry(); }
 
   #resumeThreadParams(threadId: string, workingDirectory: string): Record<string, unknown> {
     return {

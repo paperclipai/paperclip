@@ -83,7 +83,7 @@ test("the task launcher bypasses cache reads and writes when execution is forced
     mkdirSync(path.join(directory, "scripts/ci"), { recursive: true });
     mkdirSync(path.join(directory, "bin"));
     mkdirSync(path.join(directory, "packages/fixture"), { recursive: true });
-    for (const name of ["run-task.mjs", "execution-plan.mjs"]) {
+    for (const name of ["run-task.mjs", "execution-plan.mjs", "turbo-args.mjs"]) {
       copyFileSync(new URL(`scripts/ci/${name}`, repositoryRoot), path.join(directory, "scripts/ci", name));
     }
     write(".gitignore", ".turbo/\ncalls.txt\nresult.txt\nbin/\n");

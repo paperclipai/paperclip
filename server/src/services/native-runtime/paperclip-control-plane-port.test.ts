@@ -39,6 +39,7 @@ import {
   type PrpStructuredRunResult,
   type PrpTerminalState,
 } from "../../vendor/paperclip-runner/index.js";
+import { createPrpSemanticToolInputEnvelope } from "@paperclipai/paperclip-runner";
 import {
   CONTROL_PLANE_CONFORMANCE_RESULT,
   CONTROL_PLANE_CONFORMANCE_TERMINAL,
@@ -64,6 +65,7 @@ import { buildExecutionContinuation } from "../execution-continuation.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
+import { nativeSha256 } from "./canonical.js";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeCompanyLiveEvents,
@@ -444,6 +446,48 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
     expect(await readTaskPanelActivations(db, identity.companyId, CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId)).toEqual([]);
     expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
+  });
+
+  it("persists a committed semantic tool input in an isolated source namespace with its original identity and digest", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const input = { title: "Updated from provider" };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "turn-semantic-input", itemId: "item-semantic-input",
+      eventType: "semantic_tool.input", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+      payload: { semantic_tool: createPrpSemanticToolInputEnvelope({
+        callId: "call-semantic-input", operationId: "set_task_title",
+        correlation: { runId: identity.runId, normalizedSessionId: identity.sessionId,
+          turnId: "turn-semantic-input", itemId: "item-semantic-input" },
+        content: input,
+      }) },
+    };
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `semantic-input-${identity.runId}` };
+    const port = new PaperclipControlPlanePort(db, binding);
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await expect(port.appendSemanticToolInputEvidence(event)).resolves.toMatchObject({ disposition: "committed", cursor: 1 });
+    const [persisted] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(persisted).toMatchObject({
+      eventType: "semantic_tool.input", sourceInstanceId: `${runnerId}:semantic_tool_input`,
+      sourceEventId: `semantic_tool_input:${event.sourceEventId}`, sourceSeq: 1,
+      payload: { prpEvent: event },
+    });
+    expect(persisted?.sourcePayloadSha256).toBe(nativeSha256(event));
+    await expect(port.appendSemanticToolInputEvidence(event)).resolves.toMatchObject({ disposition: "duplicate", cursor: 1 });
+    // A provider event may use the same source sequence without colliding.
+    const providerEvent = { ...event, eventType: "harness.diagnostic" as const,
+      sourceEventId: `${runnerId}:1`, payload: { message: "separate stream" } };
+    await expect(port.appendEvent(providerEvent)).resolves.toMatchObject({ disposition: "committed" });
   });
 
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
