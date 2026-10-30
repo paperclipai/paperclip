@@ -67,7 +67,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { collectAttemptFeedback, emptyFeedbackSummary } from "./feedback.js";
-import { finishBudgetedEvalSetup } from "./budgeted-setup.js";
+import { createKimiLifecycleTiming, finishBudgetedEvalSetup, waitForEvalAgentReady } from "./budgeted-setup.js";
 import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
 import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
@@ -570,10 +570,12 @@ for (const execution of executions) {
     test.skip(execution.suite.id === "first-task" && execution.profile.id === "runner-acpx-claude"
       && (process.platform !== "darwin" || process.arch !== "arm64"),
     "Ordinary native Claude onboarding is qualified on Apple Silicon only in this delivery.");
+    const kimiLifecycleTiming = execution.task.flow === "kimi_native_lifecycle"
+      ? createKimiLifecycleTiming({ startedAt: Date.now(), deadlineMs }) : undefined;
     test.setTimeout(
-      execution.task.flow === "warm_three_turn"
+      kimiLifecycleTiming?.playwrightTimeoutMs ?? (execution.task.flow === "warm_three_turn"
         ? deadlineMs
-        : deadlineMs + 90_000,
+        : deadlineMs + 90_000),
     );
     // Remote allocation uncertainty survives a worker crash before publication.
     if (mayAllocateRemoteResources(execution.environment.id)) {
@@ -947,6 +949,15 @@ for (const execution of executions) {
       await finishBudgetedEvalSetup({ executionId: execution.id, environmentId: execution.environment.id, agentId: fixtures.agent.id,
         companyId: fixtures.company.id, deadlineAt: startedAtMs + deadlineMs, api,
         observe: observations => writeSanitizedJson(snapshotsDir, "budgeted-setup.json", { observations }, secrets) });
+      const kimiWorkDeadlineAt = kimiLifecycleTiming ? await (async () => {
+        await waitForEvalAgentReady({ environmentId: execution.environment.id, agentId: fixtures.agent.id, companyId: fixtures.company.id,
+          deadlineAt: kimiLifecycleTiming.setupDeadlineAt, api,
+          observe: observations => writeSanitizedJson(snapshotsDir, "kimi-lifecycle-setup.json", { observations }, secrets) });
+        const readyAt = Date.now(), workDeadlineAt = kimiLifecycleTiming.beginWork(readyAt);
+        await writeSanitizedJson(snapshotsDir, "kimi-lifecycle-timing.json", { setupDeadlineAt: kimiLifecycleTiming.setupDeadlineAt,
+          readyAt, workDeadlineAt, setupBudgetMs: deadlineMs, workBudgetMs: deadlineMs, playwrightTimeoutMs: kimiLifecycleTiming.playwrightTimeoutMs }, secrets);
+        return workDeadlineAt;
+      })() : undefined;
       await workerTiming.enter("execution");
       trace?.phase("execution");
 
@@ -969,7 +980,7 @@ for (const execution of executions) {
           image: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE ?? "",
           nodeSha256: process.env.PAPERCLIP_E2E_DAYTONA_NODE_SHA256 ?? "",
           runnerdSha256: process.env.PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256 ?? "",
-          deadlineAt: startedAtMs + deadlineMs,
+          deadlineAt: kimiWorkDeadlineAt ?? startedAtMs + deadlineMs,
           requireCopilotTaskContext: execution.profile.qualificationCandidate === "copilot",
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         }) : undefined;
@@ -1157,7 +1168,7 @@ for (const execution of executions) {
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piControls.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "kimi_native_lifecycle") {
         const story = await runKimiLifecycleFlow({
-          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: kimiWorkDeadlineAt!,
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
           remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,

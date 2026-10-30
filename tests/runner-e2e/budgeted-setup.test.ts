@@ -4,7 +4,11 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import type { RunnerApi } from "./api.js";
 import { createEvalAttemptPhase, readEvalAttemptPhase } from "./attempt-phase.js";
-import { finishBudgetedEvalSetup, type EvalSetupObservation } from "./budgeted-setup.js";
+import { createKimiLifecycleTiming, finishBudgetedEvalSetup, type EvalSetupObservation } from "./budgeted-setup.js";
+
+import { runKimiLifecycleFlow } from "./kimi-lifecycle.js";
+import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
+import type { LiveFixtureValues } from "./live-fixtures.js";
 
 const identity = { executionId: "fixture-execution", attemptId: "fixture-attempt" };
 const ready = { id: "agent", companyId: "company", status: "idle", lifecycleState: "ready", lifecycleError: null };
@@ -94,4 +98,59 @@ it.each(["local", "daytona"] as const)("uses the bounded attempt window for remo
       expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("setup");
     }
   } finally { now.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+it("waits for the same agent to be ready before changing Kimi lifecycle policy without a gateway", async () => {
+  const execution = selectRunnerExecutions(parseRunnerSelectors(["--id", "kimi-qualification.runner-acpx-kimi.daytona.native-write-provider-loss"]))[0]!;
+  const order: string[] = [], observations: EvalSetupObservation[][] = [];
+  const configured = { ...ready, adapterConfig: { model: "kimi-for-coding" } };
+  const get = vi.fn(async (url: string) => {
+    if (url === "/api/health") return { deploymentMode: "local_trusted" };
+    if (url === "/api/auth/get-session") return { session: { userId: "local-board", id: "paperclip:local_implicit:local-board" } };
+    if (url === "/api/agents/agent") {
+      order.push(order.length === 0 ? "verifying" : order.length === 1 ? "ready" : "policy-read");
+      return order.length === 1 ? { ...configured, lifecycleState: "verifying" } : configured;
+    }
+    throw new Error(`Unexpected GET ${url}`);
+  });
+  const patch = vi.fn(async () => { order.push("policy-patch"); throw new Error("stop-after-policy-patch"); });
+  await expect(runKimiLifecycleFlow({ page: {} as any, api: { get, patch } as unknown as RunnerApi,
+    fixtures: { company: { id: "company" }, agent: { id: "agent" }, environment: { id: "environment" } } as LiveFixtureValues,
+    execution, nonce: "unit", workspacePath: "/unused", deadlineAt: Date.now() + 5_000, remoteBootstrap: {} as any,
+    registerCleanupAssertion: () => {}, registerBeforeEnvironmentTeardownAssertion: () => {}, observe: () => {}, capture: async () => {},
+    evidence: async (name, value) => { if (name === "kimi-lifecycle-agent-ready.json") observations.push(structuredClone((value as { observations: EvalSetupObservation[] }).observations)); },
+  })).rejects.toThrow("stop-after-policy-patch");
+  expect(order).toEqual(["verifying", "ready", "policy-read", "policy-patch"]);
+  expect(observations.at(-1)?.map(row => row.lifecycleState)).toEqual(["verifying", "ready"]);
+  expect(observations.flat()).not.toContainEqual(expect.objectContaining({ adapterConfig: expect.anything() }));
+  expect(patch).toHaveBeenCalledOnce();
+});
+
+it("does not change Kimi lifecycle policy after readiness fails", async () => {
+  const execution = selectRunnerExecutions(parseRunnerSelectors(["--id", "kimi-qualification.runner-acpx-kimi.daytona.native-write-provider-loss"]))[0]!;
+  const get = vi.fn(async (url: string) => url === "/api/health" ? { deploymentMode: "local_trusted" }
+    : url === "/api/auth/get-session" ? { session: { userId: "local-board", id: "paperclip:local_implicit:local-board" } }
+      : { ...ready, lifecycleError: "harness_command_unavailable" });
+  const patch = vi.fn();
+  await expect(runKimiLifecycleFlow({ page: {} as any, api: { get, patch } as unknown as RunnerApi,
+    fixtures: { company: { id: "company" }, agent: { id: "agent" }, environment: { id: "environment" } } as LiveFixtureValues,
+    execution, nonce: "unit", workspacePath: "/unused", deadlineAt: Date.now() + 5_000, remoteBootstrap: {} as any,
+    registerCleanupAssertion: () => {}, registerBeforeEnvironmentTeardownAssertion: () => {}, observe: () => {}, capture: async () => {}, evidence: async () => {},
+  })).rejects.toThrow("setup failed");
+  expect(patch).not.toHaveBeenCalled();
+});
+
+it("keeps a finite setup cap and one full graded Kimi window after the recorded 242s readiness delay", () => {
+  const startedAt = 1_000_000, deadlineMs = 300_000;
+  const timing = createKimiLifecycleTiming({ startedAt, deadlineMs });
+  expect(timing.setupDeadlineAt).toBe(startedAt + 300_000);
+  expect(timing.playwrightTimeoutMs).toBe(690_000);
+  const readyAt = startedAt + 242_000;
+  const workDeadlineAt = timing.beginWork(readyAt);
+  expect(workDeadlineAt - readyAt).toBe(300_000);
+  expect(workDeadlineAt + 90_000 - startedAt).toBeLessThanOrEqual(timing.playwrightTimeoutMs);
+  expect(() => timing.beginWork(readyAt + 1_000)).toThrow("already started");
+  for (const elapsed of [300_000, 301_000]) {
+    expect(() => createKimiLifecycleTiming({ startedAt, deadlineMs }).beginWork(startedAt + elapsed)).toThrow("setup deadline expired");
+  }
 });

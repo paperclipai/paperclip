@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
+import { waitForEvalAgentReady } from "./budgeted-setup.js";
 import { collectRunEvents } from "./run-observations.js";
 import { createTaskThroughUi } from "./user-actions.js";
 import { createDeniedTargetFixture, exists, observeRunProcesses } from "./native-local-fixtures.js";
@@ -111,6 +112,8 @@ export async function runKimiLifecycleFlow(input: {
   const prompt = () => `${execution.task.buildPrompt(nonce)}\nThe exact absolute native Write path is ${remote ? join(fixture!.remoteCwd, target) : local!.targetPath}.`;
   try {
     const caller = readActiveStopCaller(await api.get("/api/health"), await api.get("/api/auth/get-session"));
+    await waitForEvalAgentReady({ environmentId: execution.environment.id, agentId: fixtures.agent.id, companyId: fixtures.company.id,
+      deadlineAt: input.deadlineAt, api, observe: observations => input.evidence("kimi-lifecycle-agent-ready.json", { observations }) });
     const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
     const configured = await api.patch<Row>(`/api/agents/${fixtures.agent.id}`, { adapterConfig: { ...agent.adapterConfig, acpxPermissionMode: "approve-reads", lifecycleMode: "per_turn", timeoutSec: 120 } });
     check("per-turn-native-policy", configured.adapterConfig?.acpxPermissionMode === "approve-reads" && configured.adapterConfig?.lifecycleMode === "per_turn", "Restrictive native permission policy and per-turn ownership selected before dispatch");

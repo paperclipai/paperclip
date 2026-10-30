@@ -37,7 +37,7 @@ function relative(value: string): string {
 }
 // Only closed diagnostic enums cross the remote boundary; SDK errors and output
 // are never retained. These diagnostics explain failed evidence, not qualification.
-const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "release-attached", "read", "inject-loss", "provider-death", "pi-provider-death", "kimi-provider-death"] as const;
+const RPC_PHASES = ["lease-readmission", "runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "release-attached", "read", "inject-loss", "provider-death", "pi-provider-death", "kimi-provider-death"] as const;
 const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline", "terminal_evidence_incomplete", "pi_provider_identity_or_signal_failed", "kimi_provider_identity_or_signal_failed"] as const;
 const KIMI_FAULT_STAGES = ["observer_admission", "observer_sample", "worker_start", "worker_response", "input", "inspect", "inspect_before", "pidfd_open", "inspect_held", "pidfd_identity", "signal", "receipt", "inspected", "terminate", "complete"] as const;
 const KIMI_FAULT_CODES = ["ancestry","ancestry_birth","ancestry_changed","argv_bound","boot_changed","bootstrap_template","closure_bound","closure_inventory","closure_metadata","closure_path","closure_pin","closure_shape","config_keys","cwd","dead_or_invalid_process","digest_shape","executable","file_bound","file_changed","file_realpath","file_shape","file_writable","guard_template","identity_changed_after_pidfd","input_bound","invalid_response","native_bootstrap_bytes","native_executable","native_guard_bytes","native_title","not_worker","observer_authority","observer_sample","parent_bootstrap","parent_descriptor_changed","parent_descriptor_shape","parent_directory_descriptor","parent_memfd_required","parent_memfd_seals","parent_node","parent_node_descriptor","parent_node_path","parent_source_pipe","pidfd_open","pidfd_required","pidfd_retired","pidfd_send_signal","process_bound","required_entries","root_binding","root_changed","root_flag","root_session","runner_changed","runner_executable","runner_shape","snapshot_digest","snapshot_path","snapshot_seal","stat_pid","unique_native_child","unknown_guard","worker_failure"] as const;
@@ -458,14 +458,14 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
     binding = current.binding; sentinel = current.sentinel; identityKey = key;
     return sandbox;
   }
-  async function bounded<T>(operation: () => Promise<T>, budgetMs: number): Promise<T> {
+  async function bounded<T>(operation: () => Promise<T>, budgetMs: number, phase: RpcPhase): Promise<T> {
     fail(budgetMs >= 1, "receipt_deadline");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         operation(),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error("remote_native_fixture:remote_command_failed_or_deadline")), budgetMs);
+          timer = setTimeout(() => reject(new RemoteFixtureError("remote_native_fixture:remote_command_failed_or_deadline", { phase, code: "rpc_deadline", ...(phase === "kimi-provider-death" ? { fault: unknownKimiFaultDiagnostic() } : {}) })), budgetMs);
           timer.unref();
         }),
       ]);
@@ -509,9 +509,9 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       if (request.op === "kimi-provider-death" && parsed.ok !== true) throw new RemoteFixtureError("remote_native_fixture:observer_incomplete", { phase: "kimi-provider-death", code: "kimi_provider_identity_or_signal_failed", fault: readKimiFaultDiagnostic(parsed.diagnostic) ?? unknownKimiFaultDiagnostic() });
       fail(parsed.ok === true, "observer_incomplete");
       return parsed.result;
-    }, budgetMs);
+    }, budgetMs, request.op as RpcPhase);
   }
-  const sandbox = await bounded(admittedSandbox, Math.min(LEASE_READMISSION_BUDGET_MS, receiptDeadlineAt - Date.now()));
+  const sandbox = await bounded(admittedSandbox, Math.min(LEASE_READMISSION_BUDGET_MS, receiptDeadlineAt - Date.now()), "lease-readmission");
   const names = [...targets, ...(options.crossRoot ? ["@cross-root"] : [])];
   const config = { root, nonce, binding, sentinel, targets, actionFile, crossRoot: options.crossRoot, runtimeRelative: RUNTIME_RELATIVE, runnerdSha256: options.runnerdSha256 };
   // Lease activation precedes runner artifact staging. Observe the exact pinned

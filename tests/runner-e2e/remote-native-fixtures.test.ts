@@ -389,6 +389,61 @@ describe("remote native lease admission", () => {
   });
 });
 
+describe("closed bootstrap timeout diagnostics", () => {
+  it("reports the unchanged 10s initial lease-readmission deadline without remote work", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(); h.apiGet.mockImplementation(() => new Promise<never>(() => {}));
+      let settled = false;
+      const outcome = bindRemoteNativeFixture(h.options).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(9999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "lease-readmission", code: "rpc_deadline" }]);
+      expect(h.get).not.toHaveBeenCalled(); expect(h.executeCommand).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("reports the unchanged 12s runtime-ready deadline without installing or publishing", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(); h.override(request => request.op === "runtime-ready" ? new Promise<never>(() => {}) : undefined);
+      let settled = false;
+      const outcome = bindRemoteNativeFixture(h.options).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(11999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "runtime-ready", code: "rpc_deadline" }]);
+      expect(h.calls.map(call => call.request.op)).toEqual(["runtime-ready"]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps a timed-out Kimi fault signal-unknown and consumes its one-shot capability", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+      await fixture.publishAction("action.txt", "action");
+      h.override(request => request.op === "kimi-provider-death" ? new Promise<never>(() => {}) : undefined);
+      let settled = false;
+      const outcome = fixture.terminateKimiProvider!("workspace-id").catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(11999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "kimi-provider-death", code: "rpc_deadline",
+        fault: { stage: "worker_response", code: "invalid_response", signalDispatched: null } }]);
+      await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow("kimi_fault_admission");
+      expect(h.calls.filter(call => call.request.op === "kimi-provider-death")).toHaveLength(1);
+      await fixture.close(); h.rejectTerminal(new Error("late synthetic rejection")); await Promise.resolve();
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps an SDK rejection distinct from a deadline without retaining its private text", async () => {
+    const h = harness(); h.executeCommand.mockRejectedValueOnce(new Error("PRIVATE SDK rejection"));
+    const error = await bindRemoteNativeFixture(h.options).catch(error => error);
+    expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "runtime-ready", code: "transport_failure" }]);
+    expect(JSON.stringify(remoteNativeFixtureDiagnostics(error))).not.toContain("PRIVATE");
+    expect(h.executeCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("cell deadline and cleanup bounds", () => {
   it("expires finish with 15s reserved, bounds SDK/socket/observer clocks, and handles late SDK failure", async () => {
     vi.useFakeTimers(); vi.setSystemTime(1_000_000);
