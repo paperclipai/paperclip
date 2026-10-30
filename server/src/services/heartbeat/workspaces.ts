@@ -3653,7 +3653,31 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     const cwd = configuredCwd ? path.resolve(configuredCwd)
       : issueId ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId })
       : resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
+    try {
+      await fs.mkdir(cwd, { recursive: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // A copy-based environment stages this controller directory to the
+      // target, so a configured cwd must be a controller path. A path from the
+      // target host (for example /Users/<remote-user>) fails here with EACCES,
+      // which otherwise reaches the operator as an unexplained permission
+      // error. Every successful path stays unchanged.
+      if (configuredCwd && (code === "EACCES" || code === "EPERM")) {
+        throw new WorkspaceValidationFailure(
+          `Configured workspace "${cwd}" cannot be created on the controller (${code}). ` +
+            "adapterConfig.cwd must name a directory the controller can create, because a copy-based " +
+            "environment stages that directory to the target. Use an isolated task directory or a local path, then retry.",
+          {
+            workspaceValidation: {
+              reason: "configured_workspace_unavailable",
+              resolvedCwd: cwd,
+              environmentDriver: opts?.executionEnvironmentDriver ?? null,
+            },
+          },
+        );
+      }
+      throw error;
+    }
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
       warnings.push(
