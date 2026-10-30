@@ -17,6 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
+import { markCauseRedacted } from "../format-cli-error.js";
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];
@@ -486,7 +487,9 @@ export async function testDriveCommand(
       },
     });
   } catch (error) {
-    throw new Error(redactTestDriveText(errorMessage(error), possibleCredentials), { cause: error });
+    throw markCauseRedacted(
+      new Error(redactTestDriveText(errorMessage(error), possibleCredentials), { cause: error }),
+    );
   }
 }
 

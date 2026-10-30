@@ -403,8 +403,33 @@ async function listJournalMigrationFiles(): Promise<string[]> {
   return entries.map((entry) => entry.fileName);
 }
 
+/**
+ * Journal hashes are SHA-256 of the published (LF) file content. A Windows
+ * checkout with core.autocrlf=true rewrites migrations to CRLF, which would
+ * change every hash and make applied migrations look pending, so hash and
+ * execute the LF form.
+ */
+export function normalizeMigrationContent(content: string): string {
+  return content.replace(/\r\n/g, "\n");
+}
+
+function sha256Hex(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+/**
+ * Hashes a migration may already be journaled under: the LF hash written now,
+ * plus the CRLF hash that databases migrated from a CRLF checkout recorded
+ * before normalisation. Reads accept both; new entries record the LF hash.
+ */
+export function migrationContentHashes(content: string): string[] {
+  const normalized = normalizeMigrationContent(content);
+  return [...new Set([sha256Hex(normalized), sha256Hex(normalized.replace(/\n/g, "\r\n"))])];
+}
+
 async function readMigrationFileContent(migrationFile: string): Promise<string> {
-  return readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  const content = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  return normalizeMigrationContent(content);
 }
 
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
@@ -479,10 +504,12 @@ async function migrationHistoryEntryExists(
   qualifiedTable: string,
   columnNames: Set<string>,
   migrationFile: string,
-  hash: string,
+  hashes: string[],
 ): Promise<boolean> {
   const predicates: string[] = [];
-  if (columnNames.has("hash")) predicates.push(`hash = ${quoteLiteral(hash)}`);
+  if (columnNames.has("hash") && hashes.length > 0) {
+    predicates.push(`hash IN (${hashes.map(quoteLiteral).join(", ")})`);
+  }
   if (columnNames.has("name")) predicates.push(`name = ${quoteLiteral(migrationFile)}`);
   if (predicates.length === 0) return false;
 
@@ -600,13 +627,13 @@ async function applyPendingMigrationsManually(
 
       for (const migrationFile of orderedPendingMigrations) {
         const migrationContent = await readMigrationFileContent(migrationFile);
-        const hash = createHash("sha256").update(migrationContent).digest("hex");
+        const hash = sha256Hex(migrationContent);
         const existingEntry = await migrationHistoryEntryExists(
           sql,
           qualifiedTable,
           columnNames,
           migrationFile,
-          hash,
+          migrationContentHashes(migrationContent),
         );
         if (existingEntry) continue;
 
@@ -672,8 +699,7 @@ async function mapHashesToMigrationFiles(migrationFiles: string[]): Promise<Map<
   await Promise.all(
     migrationFiles.map(async (migrationFile) => {
       const content = await readMigrationFileContent(migrationFile);
-      const hash = createHash("sha256").update(content).digest("hex");
-      mapped.set(hash, migrationFile);
+      for (const hash of migrationContentHashes(content)) mapped.set(hash, migrationFile);
       if (migrationFile === "0355_agent_tool_definition_hooks.sql") {
         mapped.set("7ac76adac0220da522c78e51da20490aeb0f90512b4370a05af9f8dd0f75eda6", migrationFile);
       }
@@ -1029,11 +1055,12 @@ export async function reconcilePendingMigrationHistory(
       const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
       if (!alreadyApplied) break;
 
-      const hash = createHash("sha256").update(migrationContent).digest("hex");
+      const hash = sha256Hex(migrationContent);
+      const knownHashes = migrationContentHashes(migrationContent).map(quoteLiteral).join(", ");
       const folderMillis = folderMillisByFile.get(migrationFile) ?? Date.now();
       const existingByHash = columnNames.has("hash")
         ? await sql.unsafe<{ created_at: string | number | null }[]>(
-            `SELECT created_at FROM ${qualifiedTable} WHERE hash = ${quoteLiteral(hash)} ORDER BY created_at DESC LIMIT 1`,
+            `SELECT created_at FROM ${qualifiedTable} WHERE hash IN (${knownHashes}) ORDER BY created_at DESC LIMIT 1`,
           )
         : [];
       const existingByName = columnNames.has("name")
@@ -1046,7 +1073,7 @@ export async function reconcilePendingMigrationHistory(
           const existingHashCreatedAt = Number(existingByHash[0]?.created_at ?? -1);
           if (existingByHash.length > 0 && Number.isFinite(existingHashCreatedAt) && existingHashCreatedAt < folderMillis) {
             await sql.unsafe(
-              `UPDATE ${qualifiedTable} SET created_at = ${quoteLiteral(String(folderMillis))} WHERE hash = ${quoteLiteral(hash)} AND created_at < ${quoteLiteral(String(folderMillis))}`,
+              `UPDATE ${qualifiedTable} SET created_at = ${quoteLiteral(String(folderMillis))} WHERE hash IN (${knownHashes}) AND created_at < ${quoteLiteral(String(folderMillis))}`,
             );
           }
 
