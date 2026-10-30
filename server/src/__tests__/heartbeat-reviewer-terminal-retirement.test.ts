@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -77,6 +78,47 @@ suite("terminal task reviewer receipt retirement", () => {
     for (const row of [...rows.slice(1), other.receipt]) expect(await readReceipt(row.id)).toEqual(row);
     expect((await readReceipt(rows[0].id)).status).toBe("cancelled");
     expect((await readReceipt(receipt.id)).status).toBe("cancelled");
+  });
+
+  it.each(["done", "cancelled"])("settles %s notifications and retirement at the outer transaction boundary", async status => {
+    const { companyId, issueId, receipt } = await seed();
+    const topics = [DELIVERY_QUEUES.chatInboundWakeNotices, DELIVERY_QUEUES.nativeStatusReassessment];
+    const events = new Map<string, string[]>(topics.map(topic => [topic, []]));
+    const scopes = new Map(topics.map(topic => [topic, new Set<string>()]));
+    const unsubscribe = topics.map(topic => subscribeDatabaseWork(db, topic, (event, hints) => {
+      events.get(topic)!.push(event);
+      for (const hint of hints ?? []) scopes.get(topic)!.add(hint);
+    }));
+    try {
+      const update = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+        await issueService(tx).update(issueId, { status });
+        for (const topic of topics) {
+          expect(events.get(topic)).toContain("intent");
+          expect(events.get(topic)).not.toContain("settled");
+        }
+        expect((await readReceipt(receipt.id)).status).toBe("deferred_issue_execution");
+        expect((await issueService(db).getById(issueId))!.status).toBe("in_review");
+      };
+      await expect(db.transaction(async tx => {
+        await update(tx);
+        throw new Error("abort notified retirement");
+      })).rejects.toThrow("abort notified retirement");
+      expect(await readReceipt(receipt.id)).toEqual(receipt);
+      expect((await issueService(db).getById(issueId))!.status).toBe("in_review");
+      for (const topic of topics) {
+        expect(events.get(topic)!.filter(event => event === "settled")).toEqual(["settled"]);
+        events.get(topic)!.length = 0;
+      }
+      await db.transaction(update);
+      expect((await readReceipt(receipt.id)).status).toBe("cancelled");
+      expect((await issueService(db).getById(issueId))!.status).toBe(status);
+      for (const topic of topics) {
+        expect(events.get(topic)!.filter(event => event === "settled")).toEqual(["settled"]);
+        const hints = [...scopes.get(topic)!].map(hint => JSON.parse(hint));
+        expect(hints).toContainEqual({ companyId, issueId });
+        for (const hint of hints) expect(hint.companyId).toBe(companyId);
+      }
+    } finally { for (const stop of unsubscribe) stop(); }
   });
 
   it("rolls retirement back with the enclosing transaction", async () => {
