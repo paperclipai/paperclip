@@ -7,7 +7,7 @@ import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "../non-executio
 import { JourneyError, type JourneyContext, type OnboardingArtifactEvidence, type TargetSession } from "./types.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
 import { preAcceptanceTaskStatus, preAcceptanceViolations, type OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
-import { isProviderUnstartedWorkspaceDeferral } from "./workspace-deferral.js";
+import { isPendingNativeRecovery, isProviderUnstartedWorkspaceDeferral } from "./workspace-deferral.js";
 
 export interface OnboardingFirstTaskInput {
   context: JourneyContext;
@@ -41,7 +41,6 @@ function fail(code: string): never { throw new JourneyError("failed", code); }
 const runIssueId = (run: Row) => run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
 const isProposal = (row: Row) => ["request_confirmation", "request_checkbox_confirmation"].includes(row.kind);
 const isPlanningDocument = (row: Row) => /^(?:plan|proposal)$/.test(row.key);
-const isPendingRun = (run: Row) => activeRuns([run]).length > 0 || run.status === "scheduled_retry";
 
 function sameWorkspaceRetry(source: Row, successor: Row): boolean {
   const issueIds = (run: Row) => [run.nativeIssueId, run.issueId, run.contextSnapshot?.issueId].filter(value => value != null);
@@ -65,6 +64,8 @@ function unstartedScheduledWorkspaceRetry(run: Row): boolean {
 /** Exercise the ordinary onboarding conversation; APIs observe, never submit its actions. */
 export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Promise<OnboardingFirstTaskResult> {
   const { context: { api, page, company }, agent, campaignId, proof } = input;
+  const isPendingRun = (run: Row) => activeRuns([run]).length > 0 || run.status === "scheduled_retry" ||
+    isPendingNativeRecovery(run, input.deadlineAt);
   if (!Number.isSafeInteger(input.maxRuns) || input.maxRuns < 1) fail("invalid_onboarding_run_limit");
   const title = `Artifact ${campaignId}`;
   const seen = new Map<string, Row>();
@@ -136,6 +137,7 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
         workspacePending = true;
         continue;
       }
+      if (isPendingNativeRecovery(run, input.deadlineAt)) { workspacePending = true; continue; }
       if (activeRuns([run]).length || run.status === "succeeded" || isBlockedUnstartedWake(run) || isTerminalUnstartedWake(run, snapshot.tasks)) continue;
       fail("onboarding_first_task_failed");
     }

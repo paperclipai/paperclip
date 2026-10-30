@@ -15,6 +15,21 @@ function hasProviderUsage(value: unknown): boolean {
   });
 }
 
+export function isPendingNativeRecovery(run: RecordValue, deadlineAt: number): boolean {
+  const execution = object(run.execution);
+  const finishedAt = typeof run.finishedAt === "string" ? Date.parse(run.finishedAt) : NaN;
+  const retryAt = typeof execution.retryAt === "string" ? Date.parse(execution.retryAt) : NaN;
+  return run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure" &&
+    run.errorCode === "native_session_interrupted" && execution.cause === "native_session_interrupted" &&
+    typeof run.nativeIssueId === "string" && run.nativeIssueId === object(run.contextSnapshot).issueId &&
+    (run.issueId == null || run.issueId === run.nativeIssueId) &&
+    (execution.phase === "retry_scheduled" || execution.phase === "reconnecting") && execution.recoveryOwner === "agent" &&
+    Number.isInteger(execution.attempt) && Number(execution.attempt) >= 1 &&
+    execution.maxAttempts === 3 && Number(execution.attempt) < execution.maxAttempts && execution.successorRunId === null &&
+    Number.isFinite(finishedAt) && Number.isFinite(retryAt) && Number.isFinite(deadlineAt) &&
+    retryAt > finishedAt && retryAt <= deadlineAt;
+}
+
 /** Admission may set startedAt before selecting a runtime. Only this explicit
  * control-plane receipt, without contradictory provider evidence, proves no turn
  * ran. A legacy default alone is never proof of either execution or nonexecution. */

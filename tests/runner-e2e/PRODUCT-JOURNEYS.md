@@ -105,6 +105,15 @@ server proves that no provider work started. A scheduled replacement remains
 pending and consumes the run limit. It cannot satisfy completion; the child must
 still finish through native execution and pass the independent artifact checks.
 
+A native run with a saved automatic same-run recovery remains pending within the
+original campaign deadline. The authenticated run projection must identify an
+agent-owned retryable native interruption, a bounded attempt and retry schedule,
+and no successor. An overdue retry can still be reconnecting; it does not extend
+the deadline or authorize a new story attempt. Ordinary failures, terminal or
+board-owned recovery, and exhausted attempts still fail. The producing turn must
+settle before proposal acceptance, and the recovered child must actually succeed
+before the existing document, artifact, download, and parent-link checks can pass.
+
 The attached `ask-question` recipe requires a prepared native general agent and
 an explicit execution environment. Legacy execution is unsupported until its
 saved model/provider identity can be verified. A registered
