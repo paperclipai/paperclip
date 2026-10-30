@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { readBoundTaskFinalReply } from "./native-task-reply.js";
 
 const markdown = "I **couldn't retrieve** the pages. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
@@ -6,6 +8,17 @@ const rendered = "I <strong>couldn't retrieve</strong> the pages. See <a data-me
 const run = { id: "final-run", companyId: "company", agentId: "agent", status: "succeeded", runtimeMode: "native",
   resultJson: { presentationDecision: { commentId: "selected" } } };
 const comment = { id: "selected", authorAgentId: "agent", createdByRunId: run.id, body: markdown };
+
+test("the QA tsx loader produces a self-contained browser callback", async ({ page }) => {
+  const moduleUrl = new URL("./native-task-reply.ts", import.meta.url).href;
+  const loader = fileURLToPath(new URL("../../cli/node_modules/tsx/dist/loader.mjs", import.meta.url));
+  const serialized = JSON.parse(execFileSync(process.execPath, ["--import", loader, "--input-type=module", "-e",
+    `import { observeTaskReplyElements } from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify(observeTaskReplyElements.toString()));`], { encoding: "utf8" }));
+  await page.setContent(`<div data-testid='reply'>${rendered}</div>`);
+  const observations: any = await page.evaluate(`(${serialized})(Array.from(document.querySelectorAll('[data-testid="reply"]')))`);
+  expect(observations[0].body).toBe("I couldn't retrieve the pages. See QA-123.");
+  expect(observations[0].content.some((part: any) => part.label === "QA-123" && part.decorated)).toBe(true);
+});
 
 for (const [name, content, passes] of [
   ["decorated document link and bold text", rendered, true],
@@ -16,9 +29,9 @@ for (const [name, content, passes] of [
   ["extra visible text", rendered + " Extra.", false],
   ["hidden source text", rendered.replace("couldn't retrieve", "<span hidden>couldn't retrieve</span>"), false],
 ] as const) test(`reloaded task reply: ${name}`, async ({ page }) => {
-  await page.route("https://fixture.test/task", route => route.fulfill({ contentType: "text/html", body:
+  await page.route("https://fixture.test/QA/issues/QA-123", route => route.fulfill({ contentType: "text/html", body:
     `<div data-testid='task-chat-thread'><div data-thread-anchor='selected'><div data-testid='task-chat-agent-bubble'>${content}</div></div></div>` }));
-  await page.goto("https://fixture.test/task");
+  await page.goto("https://fixture.test/QA/issues/QA-123");
   const result = readBoundTaskFinalReply({ page, runId: run.id, agentId: "agent", deadlineAt: Date.now() + (passes ? 3000 : 300),
     load: async () => ({ run, comments: [comment], events: [] }) });
   if (passes) {
@@ -35,6 +48,8 @@ for (const [sourceHref, renderedHref, passes] of [
   ["#document-outcome", "/QA/issues/QA-123#document-outcome", true],
   ["/issues/QA-123#document-outcome", "/OTHER/issues/QA-123#document-outcome", false],
   ["#document-outcome", "/QA/issues/QA-999#document-outcome", false],
+  ["/projects/example", "/projects/example", true],
+  ["/projects/example", "/QA/projects/example", false],
 ] as const) test(`reloaded link ${sourceHref} to ${renderedHref}`, async ({ page }) => {
   const url = "https://fixture.test/QA/issues/QA-123";
   await page.route(url, route => route.fulfill({ contentType: "text/html", body:

@@ -78,7 +78,7 @@ it("binds complete Markdown content and the exact link destination despite a dec
   const body = "I **couldn't retrieve** the pages. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
   const comment = { id: "selected", authorAgentId: "owned-agent", createdByRunId: "final-run", body };
   const published = { ...run, resultJson: { presentationDecision: { commentId: "selected" } } };
-  const bubble: TaskReplyObservation = { ...observed, anchor: "selected", origin: "https://fixture.test",
+  const bubble: TaskReplyObservation = { ...observed, anchor: "selected", origin: "https://fixture.test", pageUrl: "https://fixture.test/QA/issues/QA-123",
     body: "I couldn't retrieve the pages. See QA-123.",
     content: [{ text: "I couldn't retrieve the pages. See " }, { href: "https://fixture.test/QA/issues/QA-123#document-outcome", label: "QA-123", decorated: true }, { text: "." }] };
   expect(taskReplyBelongsToRun(bubble, published, "owned-agent", [comment])).toBe(true);

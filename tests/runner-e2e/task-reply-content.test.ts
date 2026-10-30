@@ -18,6 +18,8 @@ it("uses the production company prefix and current task URL without accepting a 
     content: [{ text: "Read " }, { href: "/QA/issues/QA-123#document-outcome", label: "Outcome" }] };
   for (const href of ["/issues/QA-123#document-outcome", "#document-outcome"])
     expect(taskReplyContentMatches(observation, `Read [Outcome](${href})`)).toBe(true);
-  for (const href of ["/OTHER/issues/QA-123#document-outcome", "/QA/issues/QA-999#document-outcome", "#document-other"])
+  for (const href of ["/QA/issues/QA-999#document-outcome", "#document-other"])
     expect(taskReplyContentMatches(observation, `Read [Outcome](${href})`)).toBe(false);
+  expect(taskReplyContentMatches({ ...observation, content: [{ text: "Read " },
+    { href: "/OTHER/issues/QA-123#document-outcome", label: "Outcome" }] }, "Read [Outcome](/issues/QA-123#document-outcome)")).toBe(false);
 });

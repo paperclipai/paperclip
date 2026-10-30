@@ -1,5 +1,6 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "../../ui/src/lib/company-routes.js";
+import { parseIssueReferenceFromHref } from "../../ui/src/lib/issue-reference.js";
 
 export type ReplyContentPart = { text: string } | { href: string; label?: string; decorated?: boolean };
 type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
@@ -9,7 +10,8 @@ function normalized(parts: ReplyContentPart[], pageUrl: string, source = false) 
   for (const part of parts) {
     if ("href" in part) {
       try {
-        const href = source ? applyCompanyPrefix(part.href, extractCompanyPrefixFromPath(new URL(pageUrl).pathname)) : part.href;
+        const issueRef = source ? parseIssueReferenceFromHref(part.href) : null;
+        const href = issueRef ? applyCompanyPrefix(issueRef.href, extractCompanyPrefixFromPath(new URL(pageUrl).pathname)) : part.href;
         result.push({ href: new URL(href, pageUrl).href, label: part.label?.replace(/\s+/g, " ").trim(), decorated: part.decorated });
       } catch { return null; }
     } else {

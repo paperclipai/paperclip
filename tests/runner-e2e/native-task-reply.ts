@@ -55,21 +55,22 @@ export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agen
 export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElement>): TaskReplyObservation[] {
   return elements.map(element => {
     const content: Array<{ text: string } | { href: string; label: string; decorated: boolean }> = [];
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) { content.push({ text: node.textContent ?? "" }); return; }
+    const nodes: Array<Node | string> = [element];
+    while (nodes.length) {
+      const node = nodes.pop()!;
+      if (typeof node === "string") { content.push({ text: node }); continue; }
+      if (node.nodeType === Node.TEXT_NODE) { content.push({ text: node.textContent ?? "" }); continue; }
       if (!(node instanceof HTMLElement) || node.getAttribute("aria-hidden") === "true"
-        || getComputedStyle(node).display === "none" || getComputedStyle(node).visibility === "hidden") return;
+        || getComputedStyle(node).display === "none" || getComputedStyle(node).visibility === "hidden") continue;
       if (node instanceof HTMLAnchorElement) {
         if (node.getClientRects().length && node.innerText.trim()) content.push({ href: node.href, label: node.innerText,
           decorated: node.matches('[data-mention-kind="issue"], [data-sidebar-document-link]') });
-        return;
+        continue;
       }
       const block = ["P", "DIV", "BR", "LI", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6"].includes(node.tagName);
-      if (block) content.push({ text: " " });
-      node.childNodes.forEach(walk);
-      if (block) content.push({ text: " " });
-    };
-    walk(element);
+      if (block) { content.push({ text: " " }); nodes.push(" "); }
+      for (let index = node.childNodes.length - 1; index >= 0; index--) nodes.push(node.childNodes[index]!);
+    }
     return {
       body: (element as HTMLElement).innerText.trim(),
       content, origin: location.origin, pageUrl: location.href,
