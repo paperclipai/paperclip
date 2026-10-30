@@ -1,7 +1,7 @@
 import { lstat, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { publicContext, testopsClient, inspectChatMetadata, ensureChatPlan, validateChatSelection, bootstrapJobMetadata, launchChatPlan, failureProjection } from './chat-feature-testops-api.mjs';
+import { publicContext, testopsClient, inspectChatMetadata, ensureChatPlan, validateChatSelection, bootstrapJobMetadata, launchChatPlan, admitLaunchPlan, failureProjection } from './chat-feature-testops-api.mjs';
 import { exportChatAllure, ExportFailure } from './chat-feature-testops-results.mjs';
 
 export async function run(env = process.env, fetchImpl = fetch) {
@@ -33,6 +33,8 @@ export async function run(env = process.env, fetchImpl = fetch) {
       result = await exportChatAllure({ root: env.CHAT_TESTOPS_EXPORT_ROOT, output: env.ALLURE_RESULTS, expected, selected });
       await writeFile(path.join(stateRoot, 'export.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
     } else {
+      let launchAdmission;
+      if (operation === 'launch-plan') { stage = 'launch_admission'; launchAdmission = await admitLaunchPlan(env, fetchImpl); }
       stage = 'authentication';
       const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
       if (operation === 'launch-plan') {
@@ -41,7 +43,7 @@ export async function run(env = process.env, fetchImpl = fetch) {
           const handle = await open(path.join(stateRoot, 'once.json'), 'wx', 0o600);
           await handle.writeFile(JSON.stringify({ ...identity, status: 'STARTED_NO_AUTOMATIC_RESEND' }));
           await handle.close(); stage = 'plan_launch';
-        });
+        }, launchAdmission);
         await writeFile(path.join(stateRoot, 'launch.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
       } else if (operation === 'validate-selection') {
         stage = 'selection_validation';

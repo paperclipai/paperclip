@@ -49,10 +49,24 @@ review passed and the nine-file profile slice is committed as `0a996033`.
 No local app, database, native SDK,
 provider, model, install or build qualification was run.
 
-The separate protected credential bootstrap is limited to sealing the existing reporting token to the source-pinned public
-reporting environment. Its sealer-only source peer passed; no real token has
-been transferred. The public adapter now has 53 focused authority/export/workflow controls and
-30 API/CLI/result controls passing, plus owning typechecking and workflow lint.
-Its final source peer is pending. The actual registration IDs, selected API
-shape, provider execution and TestOps result remain unqualified. The public PR, dedicated plan, AWS run and final TestOps result
-links remain pending. Source checks alone do not satisfy the finish line.
+The separate protected credential bootstrap seals the existing reporting token
+for the source-pinned public reporting environment. Delivery is complete without
+exporting plaintext. The public adapter has 53 focused authority/export/workflow
+controls and 39 API/CLI/result controls passing, plus owning typechecking and
+workflow lint. Unchanged controls are reused after narrow source corrections.
+The independent composition source peer passed.
+The public infrastructure [PR 18322](https://github.com/paperclipai/paperclip/pull/18322)
+is open. Its first normal CI run rejected the new workflow in the existing paid
+workflow allowlist and reported a separate heartbeat scheduling assertion; both
+failures remain recorded. The policy correction preserves the older workflow
+guards and rejects unsafe new-route variants. The reporting token is configured
+through the reviewed encrypted bootstrap.
+
+Review also added a one-time initial administrator launch fence. A protected
+expected GitHub run number and actual own-run metadata must match before any
+TestOps mutation. REST catalog reconciliation preserves exact case aliases;
+job wiring uses only the reviewed existing project GitHub integration. These
+provider-free helper controls pass. Actual registration IDs, tenant API behavior,
+provider execution and the TestOps result remain unqualified. Dedicated plan,
+AWS evaluation and final result links remain pending. Source checks alone do not
+satisfy the finish line.

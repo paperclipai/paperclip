@@ -6,8 +6,8 @@ class SetupFailure extends Error {
   constructor(code, status = null) { super(code); this.code = code; this.status = status; }
 }
 const fail = code => {
-  const match = /^testops_(api|auth)_http_([1-5][0-9]{2})$/.exec(code);
-  throw new SetupFailure(match ? `testops_${match[1]}_http` : code, match ? Number(match[2]) : null);
+  const match = /^(testops_(?:api|auth)|chat_testops_github)_http_([1-5][0-9]{2})$/.exec(code);
+  throw new SetupFailure(match ? `${match[1]}_http` : code, match ? Number(match[2]) : null);
 };
 const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_token_missing', 'testops_auth_http',
   'testops_api_http', 'testops_auth_invalid', 'testops_route_invalid', 'testops_response_too_large',
@@ -17,9 +17,9 @@ const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_toke
   'testops_created_case_identity_invalid', 'testops_created_plan_identity_invalid', 'testops_plan_scope_mismatch',
   'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
   'chat_testops_case_mismatch', 'chat_testops_plan_mismatch', 'chat_testops_plan_job_mismatch', 'chat_testops_job_mismatch',
-  'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict']);
+  'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch']);
 export function failureProjection(error, stage) {
-  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'receipt'];
+  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_admission', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'receipt'];
   return { stage: stages.includes(stage) ? stage : 'unknown',
     code: error instanceof SetupFailure && diagnosticCodes.has(error.code) ? error.code : 'unknown_failure',
     httpStatus: error instanceof SetupFailure && Number.isInteger(error.status) && error.status >= 100 && error.status < 600 ? error.status : null };
@@ -53,21 +53,40 @@ const rows = value => {
   return value.content;
 };
 export async function inspectChatMetadata(api) {
-  const cases = new Map();
-  for (const name of aliases) {
-    const query = new URLSearchParams({ projectId: '1', rql: `fullName = ${JSON.stringify(name)}`, page: '0', size: '100' });
-    for (const value of rows(await api(`/api/testcase/__search?${query}`))) {
-      if (!id(value.id) || value.projectId !== 1 || !aliases.includes(value.fullName) || value.deleted === true) fail('testops_case_identity_invalid');
-      cases.set(value.id, { id: value.id, fullName: value.fullName, automated: value.automated === true });
+  const cases = new Map(), catalogIds = new Set();
+  let totalPages, totalElements;
+  for (let page = 0; page < 10; page++) {
+    const catalog = await api(`/api/testcase?${new URLSearchParams({ projectId: '1', page: String(page), size: '100', sort: 'id,asc' })}`);
+    if (!Array.isArray(catalog?.content) || catalog.content.length > 100 || catalog.number !== page
+      || !Number.isSafeInteger(catalog.totalPages) || catalog.totalPages < 0 || catalog.totalPages > 10
+      || !Number.isSafeInteger(catalog.totalElements) || catalog.totalElements < 0 || catalog.totalElements > 1000
+      || totalPages !== undefined && (totalPages !== catalog.totalPages || totalElements !== catalog.totalElements)) fail('chat_testops_catalog_incomplete');
+    totalPages = catalog.totalPages; totalElements = catalog.totalElements;
+    const ids = catalog.content.map(row => {
+      if (!id(row.id) || catalogIds.has(row.id)) fail('chat_testops_catalog_incomplete');
+      catalogIds.add(row.id); return row.id;
+    });
+    for (let offset = 0; offset < ids.length; offset += 4) {
+      const batch = ids.slice(offset, offset + 4);
+      const details = await Promise.all(batch.map(value => api(`/api/testcase/${value}`)));
+      for (const [index, value] of details.entries()) {
+        if (value?.id !== batch[index] || value.projectId !== 1 || value.fullName != null && typeof value.fullName !== 'string') fail('testops_case_identity_invalid');
+        if (!aliases.includes(value.fullName)) continue;
+        if (value.deleted === true || typeof value.automated !== 'boolean') fail('testops_case_identity_invalid');
+        cases.set(value.id, { id: value.id, fullName: value.fullName, automated: value.automated });
+      }
     }
+    if (page + 1 >= totalPages) break;
+    if (page === 9) fail('chat_testops_catalog_incomplete');
   }
+  if (catalogIds.size !== totalElements) fail('chat_testops_catalog_incomplete');
   const plans = rows(await api(`/api/testplan?${new URLSearchParams({ projectId: '1', name: planName, page: '0', size: '100' })}`))
     .filter(value => value.name === planName);
   if (plans.length > 1) fail('testops_plan_name_conflict');
   if (plans.some(value => !id(value.id) || value.projectId !== 1)) fail('testops_plan_identity_invalid');
   const integrations = rows(await api('/api/integration/project/1?page=0&size=100'))
     .filter(value => value.info?.type === 'github')
-    .map(value => ({ id: value.id, type: 'github', disabled: value.disabled === true }));
+    .map(value => ({ id: value.id, type: 'github', disabled: typeof value.disabled === 'boolean' ? value.disabled : null }));
   if (integrations.some(value => !id(value.id))) fail('testops_integration_identity_invalid');
   return { projectId: 1, caseConflict: cases.size > 1, cases: [...cases.values()], plans: plans.map(value => ({ id: value.id, name: planName, count: value.testCasesCount })), integrations };
 }
@@ -142,9 +161,9 @@ export async function validateChatSelection(api, env) {
 }
 
 function configuredIds(env) {
-  const names = ['CHAT_TESTOPS_CASE_ID', 'CHAT_TESTOPS_PLAN_ID', 'CHAT_TESTOPS_JOB_ID', 'CHAT_TESTOPS_OPERATION_PARAMETER_ID'];
+  const names = ['CHAT_TESTOPS_CASE_ID', 'CHAT_TESTOPS_PLAN_ID', 'CHAT_TESTOPS_JOB_ID', 'CHAT_TESTOPS_OPERATION_PARAMETER_ID', 'CHAT_TESTOPS_INTEGRATION_ID'];
   if (names.some(name => !positive(env[name]))) fail('chat_testops_identity_missing');
-  return Object.fromEntries(names.map((name, index) => [['caseId', 'planId', 'jobId', 'parameterId'][index], Number(env[name])]));
+  return Object.fromEntries(names.map((name, index) => [['caseId', 'planId', 'jobId', 'parameterId', 'integrationId'][index], Number(env[name])]));
 }
 function publicJobUrl(url, env) {
   return url === 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml'
@@ -160,6 +179,8 @@ async function registeredPlan(api, env) {
     || (plan.treeSelection?.groupsInclude?.length ?? 0) > 0 || (plan.treeSelection?.leafsExclude?.length ?? 0) > 0) fail('chat_testops_plan_mismatch');
   const job = await api(`/api/job/${ids.jobId}`);
   if (job.id !== ids.jobId || job.type !== 'github' || !publicJobUrl(job.url, env)) fail('chat_testops_job_mismatch');
+  const integration = await api(`/api/integration/${ids.integrationId}/project/1`);
+  if (integration.id !== ids.integrationId || integration.projectId !== 1 || integration.info?.type !== 'github' || integration.disabled !== false) fail('chat_testops_integration_mismatch');
   const definition = await api(`/api/environment/${ids.parameterId}`);
   if (definition.id !== ids.parameterId || definition.name !== 'operation' || !Array.isArray(job.parameters) || job.parameters.length !== 1
     || job.parameters[0].id !== ids.parameterId || !['bootstrap', 'evaluate'].includes(job.parameters[0].value)) fail('chat_testops_parameter_mismatch');
@@ -185,8 +206,43 @@ export async function bootstrapJobMetadata(api, env) {
     launchId: id(run.launchId) ? run.launchId : null, parameters, actualResult: null };
 }
 
-export async function launchChatPlan(api, env, markOnce) {
+const launchAdmissions = new WeakSet();
+export async function admitLaunchPlan(env, fetchImpl = fetch) {
   const source = publicContext(env);
+  const expected = env.CHAT_TESTOPS_LAUNCH_RUN_NUMBER, actual = env.GITHUB_RUN_NUMBER;
+  if (!positive(expected) || !positive(actual) || actual !== expected || !positive(env.CHAT_TESTOPS_GITHUB_WORKFLOW_ID)
+    || !positive(env.GITHUB_ACTOR_ID) || !positive(env.TESTOPS_TRIGGERING_ACTOR_ID) || !env.GH_TOKEN) fail('chat_testops_launch_admission');
+  let allowed;
+  try { allowed = JSON.parse(env.TESTOPS_ALLOWED_ACTOR_IDS ?? 'null'); } catch { fail('chat_testops_launch_admission'); }
+  if (!Array.isArray(allowed) || !allowed.length || allowed.some(value => !id(value)) || !allowed.includes(Number(env.GITHUB_ACTOR_ID)) || !allowed.includes(Number(env.TESTOPS_TRIGGERING_ACTOR_ID))) fail('chat_testops_launch_admission');
+  const read = async route => {
+    const response = await fetchImpl(`https://api.github.com/repos/paperclipai/paperclip${route ? `/${route}` : ''}`, {
+      method: 'GET', redirect: 'error', headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${env.GH_TOKEN}` },
+      signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) fail(`chat_testops_github_http_${response.status}`);
+    const text = await response.text();
+    if (Buffer.byteLength(text) > 512_000) fail('chat_testops_launch_admission');
+    try { return JSON.parse(text); } catch { fail('chat_testops_launch_admission'); }
+  };
+  const repository = await read('');
+  const workflow = await read('actions/workflows/chat-feature-testops.yml');
+  const run = await read(`actions/runs/${source.runId}`);
+  if (repository.full_name !== 'paperclipai/paperclip' || repository.private !== false || repository.default_branch !== 'master'
+    || workflow.id !== Number(env.CHAT_TESTOPS_GITHUB_WORKFLOW_ID) || workflow.path !== '.github/workflows/chat-feature-testops.yml' || workflow.state !== 'active'
+    || run.id !== Number(source.runId) || run.workflow_id !== workflow.id || run.run_attempt !== 1 || run.run_number !== Number(expected)
+    || run.head_sha !== source.workflowSha || run.head_branch !== 'master' || run.event !== 'workflow_dispatch'
+    || run.repository?.full_name !== 'paperclipai/paperclip' || run.repository?.private !== false
+    || run.actor?.id !== Number(env.GITHUB_ACTOR_ID) || run.triggering_actor?.id !== Number(env.TESTOPS_TRIGGERING_ACTOR_ID) || !allowed.includes(run.triggering_actor.id)) fail('chat_testops_launch_admission');
+  const receipt = Object.freeze({ schema: 'paperclip.chat-feature-testops-launch-admission/v1', ...source,
+    workflowId: workflow.id, runNumber: run.run_number, expectedRunNumber: Number(expected), actorId: run.actor.id, triggeringActorId: run.triggering_actor.id });
+  launchAdmissions.add(receipt); return receipt;
+}
+
+export async function launchChatPlan(api, env, markOnce, admission) {
+  const source = publicContext(env);
+  if (!admission || !launchAdmissions.has(admission) || admission.runId !== source.runId || admission.workflowSha !== source.workflowSha
+    || admission.targetSha !== source.targetSha || String(admission.expectedRunNumber) !== env.CHAT_TESTOPS_LAUNCH_RUN_NUMBER
+    || String(admission.runNumber) !== env.GITHUB_RUN_NUMBER) fail('chat_testops_launch_admission');
   const nonce = env.CHAT_TESTOPS_LAUNCH_NONCE;
   if (!/^[a-f0-9]{32}$/.test(nonce ?? '')) fail('chat_testops_nonce_invalid');
   const known = await registeredPlan(api, env);
@@ -199,9 +255,9 @@ export async function launchChatPlan(api, env, markOnce) {
     return { schema: 'paperclip.chat-feature-testops-launch/v1', ...source, nonce, planId: known.planId,
       jobId: known.jobId, caseId: known.caseId, launchId: existing[0].id, status: 'EXISTING_NO_RESEND', actualResult: null };
   }
-  await markOnce({ ...source, nonce, planId: known.planId, jobId: known.jobId, caseId: known.caseId });
+  await markOnce({ ...source, launchAdmission: admission, nonce, planId: known.planId, jobId: known.jobId, caseId: known.caseId });
   const parameters = [{ id: known.parameterId, value: 'evaluate' }];
-  await api(`/api/job/${known.jobId}`, 'PATCH', { canRun: true, parameters });
+  await api(`/api/job/${known.jobId}`, 'PATCH', { integrationId: known.integrationId, canRun: true, parameters });
   const patched = await api(`/api/job/${known.jobId}`);
   if (patched.id !== known.jobId || patched.type !== 'github' || !publicJobUrl(patched.url, env) || !same(patched.parameters, parameters)) fail('chat_testops_parameter_mismatch');
   if (!assignments.length) await api(`/api/testplan/${known.planId}/assign`, 'POST', { jobId: known.jobId,
@@ -214,5 +270,5 @@ export async function launchChatPlan(api, env, markOnce) {
   if (!id(launched?.id) || launched.projectId !== 1 || launched.name !== launchName) fail('chat_testops_launch_mismatch');
   return { schema: 'paperclip.chat-feature-testops-launch/v1', ...source, nonce, projectId: 1,
     planId: known.planId, jobId: known.jobId, caseId: known.caseId, launchId: launched.id,
-    status: 'REQUESTED', executionId, canonicalScenario: scenario, actualRunId: null, actualResult: null };
+    status: 'REQUESTED', integrationId: known.integrationId, integrationBindingRequested: true, integrationAssociationReadback: 'not_exposed_by_job_dto', executionId, canonicalScenario: scenario, actualRunId: null, actualResult: null };
 }

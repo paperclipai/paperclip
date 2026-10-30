@@ -65,10 +65,14 @@ test('actual launch-plan facade performs metadata-only plan launch once and exit
   const fetchImpl = async (url, options) => {
     const route = new URL(url).pathname, method = options.method; calls.push({ route, method });
     const response = value => ({ ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) });
+    if (route === '/repos/paperclipai/paperclip') return response({ full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' });
+    if (route === '/repos/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml') return response({ id: 99, path: '.github/workflows/chat-feature-testops.yml', state: 'active' });
+    if (route === '/repos/paperclipai/paperclip/actions/runs/123') return response({ id: 123, workflow_id: 99, run_attempt: 1, run_number: 2, head_sha: context.GITHUB_SHA, head_branch: 'master', event: 'workflow_dispatch', repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' }, actor: { id: 34892728 }, triggering_actor: { id: 34892728 } });
     if (route === '/api/uaa/oauth/token') return response({ access_token: 'SYNTHETIC_TOKEN' });
     if (route === '/api/testcase/91') return response({ id: 91, projectId: 1, fullName, automated: true });
     if (route === '/api/testplan/8') return response({ id: 8, projectId: 1, name: 'Chat feature evals', testCasesCount: 1, treeSelection: { leafsInclude: [91] } });
     if (route === '/api/job/7') return response({ id: 7, type: 'github', url: 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml', parameters: [{ id: 17, value: 'evaluate' }] });
+    if (route === '/api/integration/2/project/1') return response({ id: 2, projectId: 1, info: { type: 'github' }, disabled: false });
     if (route === '/api/environment/17') return response({ id: 17, name: 'operation' });
     if (route === '/api/testplan/8/job') return response([{ job: { id: 7, parameters: [{ id: 17, value: 'evaluate' }] }, testCasesCount: 1 }]);
     if (route === '/api/launch') return response({ content: [], totalPages: 0 });
@@ -78,9 +82,35 @@ test('actual launch-plan facade performs metadata-only plan launch once and exit
   };
   assert.equal(await reporter('launch-plan', undefined, { ...f.env, RUNNER_TEMP: temporary, GITHUB_EVENT_PATH: eventPath,
     ALLURE_JOB_RUN_ID: '', ALLURE_TOKEN: 'SYNTHETIC_ONLY', CHAT_TESTOPS_CASE_ID: '91', CHAT_TESTOPS_PLAN_ID: '8', CHAT_TESTOPS_JOB_ID: '7',
-    CHAT_TESTOPS_OPERATION_PARAMETER_ID: '17', CHAT_TESTOPS_LAUNCH_NONCE: nonce }, fetchImpl), 0);
+    CHAT_TESTOPS_OPERATION_PARAMETER_ID: '17', CHAT_TESTOPS_INTEGRATION_ID: '2', CHAT_TESTOPS_LAUNCH_NONCE: nonce, CHAT_TESTOPS_LAUNCH_RUN_NUMBER: '2', GITHUB_RUN_NUMBER: '2',
+    CHAT_TESTOPS_GITHUB_WORKFLOW_ID: '99', GITHUB_ACTOR_ID: '34892728', TESTOPS_TRIGGERING_ACTOR_ID: '34892728', TESTOPS_ALLOWED_ACTOR_IDS: '[34892728]', GH_TOKEN: 'SYNTHETIC_GH_TOKEN' }, fetchImpl), 0);
   const state = path.join(temporary, 'chat-testops-launch-plan-state');
   assert.equal(JSON.parse(await readFile(path.join(state, 'launch.json'))).status, 'REQUESTED');
   assert.equal(calls.filter(row => row.route === '/api/testplan/8/run').length, 1);
   assert.equal(calls.at(-1).route, '/api/testplan/8/run');
+});
+
+test('actual launch caller rejects five own-run contradictions before TestOps auth or mutation', async t => {
+  const original = process.stderr.write; process.stderr.write = () => true;
+  try {
+    for (const changes of [{ run_number: 3 }, { actor: { id: 1 } }, { head_sha: 'b'.repeat(40) }, { workflow_id: 100 }, { run_attempt: 2 }]) {
+      const f = await fixture(t), workspace = f.env.GITHUB_WORKSPACE;
+      const temporary = path.join(workspace, 'temp'); await mkdir(temporary);
+      const eventPath = path.join(workspace, 'event.json'); await writeFile(eventPath, JSON.stringify({ inputs: { operation: 'launch-plan' } }));
+      let testopsCalls = 0;
+      const fetchImpl = async url => {
+        if (new URL(url).hostname !== 'api.github.com') { testopsCalls++; throw new Error('must not reach TestOps'); }
+        const value = url.endsWith('/repos/paperclipai/paperclip') ? { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' } : url.includes('/actions/workflows/') ? { id: 99, path: '.github/workflows/chat-feature-testops.yml', state: 'active' }
+          : { id: 123, workflow_id: 99, run_attempt: 1, run_number: 2, head_sha: context.GITHUB_SHA, head_branch: 'master', event: 'workflow_dispatch',
+            repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' }, actor: { id: 34892728 }, triggering_actor: { id: 34892728 }, ...changes };
+        return { ok: true, text: async () => JSON.stringify(value) };
+      };
+      assert.equal(await reporter('launch-plan', undefined, { ...f.env, RUNNER_TEMP: temporary, GITHUB_EVENT_PATH: eventPath,
+        ALLURE_JOB_RUN_ID: '', ALLURE_TOKEN: 'SYNTHETIC_ONLY', CHAT_TESTOPS_LAUNCH_RUN_NUMBER: '2', GITHUB_RUN_NUMBER: '2',
+        CHAT_TESTOPS_GITHUB_WORKFLOW_ID: '99', GITHUB_ACTOR_ID: '34892728', TESTOPS_TRIGGERING_ACTOR_ID: '34892728', TESTOPS_ALLOWED_ACTOR_IDS: '[34892728]', GH_TOKEN: 'SYNTHETIC_GH_TOKEN' }, fetchImpl), 1);
+      assert.equal(testopsCalls, 0);
+      const error = JSON.parse(await readFile(path.join(temporary, 'chat-testops-launch-plan-state', 'failure.json')));
+      assert.equal(error.stage, 'launch_admission'); assert.equal(error.code, 'chat_testops_launch_admission');
+    }
+  } finally { process.stderr.write = original; }
 });

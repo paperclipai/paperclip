@@ -19,8 +19,8 @@ test('actual metadata bootstrap caller creates no result or agent and reuses exa
     requests.push({ url, method: options.method });
     if (url.endsWith('/api/uaa/oauth/token')) return response({ access_token: 'SYNTHETIC_BEARER' });
     const route = new URL(url).pathname;
-    if (route === '/api/testcase/__search') return response({ totalPages: 1, content: new URL(url).searchParams.get('rql').includes(JSON.stringify(fullName))
-      ? [{ id: 91, projectId: 1, fullName, automated: true }] : [] });
+    if (route === '/api/testcase') return response({ number: 0, totalPages: 1, totalElements: 1, content: [{ id: 91, name: 'Not projected', automated: true }] });
+    if (route === '/api/testcase/91') return response({ id: 91, projectId: 1, fullName, automated: true });
     if (route === '/api/testplan') return response({ totalPages: 1, content: [{ id: 8, projectId: 1, name: planName, testCasesCount: 1 }] });
     if (route === '/api/integration/project/1') return response({ totalPages: 1, content: [] });
     if (route === '/api/jobrun/9') return response({ id: 9, job: { id: 7 }, launchId: 10, url: 'https://github.com/paperclipai/paperclip/actions/runs/123' });

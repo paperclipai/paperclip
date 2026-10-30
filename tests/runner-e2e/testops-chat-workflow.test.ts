@@ -96,7 +96,12 @@ it("keeps the one plan launch outside Allure watch and every AWS/model job", () 
   expect(launch.if).toBe("needs.authorize.outputs.operation == 'launch-plan'");
   expect(launch.run).not.toContain("watch");
   expect(launch.env.CHAT_TESTOPS_OPERATION_PARAMETER_ID).toBe("${{ vars.CHAT_TESTOPS_OPERATION_PARAMETER_ID }}");
+  expect(launch.env.CHAT_TESTOPS_INTEGRATION_ID).toBe("${{ vars.CHAT_TESTOPS_INTEGRATION_ID }}");
   expect(launch.env.CHAT_TESTOPS_LAUNCH_NONCE).toBe("${{ vars.CHAT_TESTOPS_LAUNCH_NONCE }}");
+  expect(launch.env.CHAT_TESTOPS_LAUNCH_RUN_NUMBER).toBe("${{ vars.CHAT_TESTOPS_LAUNCH_RUN_NUMBER }}");
+  expect(launch.env.TESTOPS_TRIGGERING_ACTOR_ID).toBe("${{ needs.authorize.outputs.triggering_actor_id }}");
+  expect(launch.env.TESTOPS_ALLOWED_ACTOR_IDS).toBe("${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}");
+  expect(launch.env.GH_TOKEN).toBe("${{ github.token }}");
   expect(launch.run).not.toContain("sleep");
   expect(steps.find((s: any) => s.uses?.startsWith("allure-framework/setup-allurectl@")).if).toBe("needs.authorize.outputs.operation != 'launch-plan'");
   for (const name of ["build", "chat"]) expect(workflow.jobs[name].if).toBe("needs.authorize.outputs.operation == 'evaluate'");

@@ -116,7 +116,12 @@ jobs:
           CHAT_TESTOPS_JOB_ID: ${{ vars.CHAT_TESTOPS_JOB_ID }}
           CHAT_TESTOPS_GITHUB_WORKFLOW_ID: ${{ vars.CHAT_TESTOPS_GITHUB_WORKFLOW_ID }}
           CHAT_TESTOPS_OPERATION_PARAMETER_ID: ${{ vars.CHAT_TESTOPS_OPERATION_PARAMETER_ID }}
+          CHAT_TESTOPS_INTEGRATION_ID: ${{ vars.CHAT_TESTOPS_INTEGRATION_ID }}
           CHAT_TESTOPS_LAUNCH_NONCE: ${{ vars.CHAT_TESTOPS_LAUNCH_NONCE }}
+          CHAT_TESTOPS_LAUNCH_RUN_NUMBER: ${{ vars.CHAT_TESTOPS_LAUNCH_RUN_NUMBER }}
+          TESTOPS_TRIGGERING_ACTOR_ID: ${{ needs.authorize.outputs.triggering_actor_id }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          GH_TOKEN: ${{ github.token }}
         run: node tests/runner-e2e/testops-chat-reporter.mjs launch-plan
       - name: Retain only closed metadata from zero-result setup
         if: always() && needs.authorize.outputs.operation == 'bootstrap'

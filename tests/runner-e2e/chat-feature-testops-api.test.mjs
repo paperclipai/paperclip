@@ -9,9 +9,10 @@ const caseRow = { id: 91, projectId: 1, fullName, automated: true };
 const plan = { id: 8, projectId: 1, name: planName, testCasesCount: 1, treeSelection: { inverted: false, leafsInclude: [91] } };
 const page = content => ({ content, totalPages: 1 });
 const inspectApi = (cases = [caseRow], plans = [plan]) => async route => {
-  if (route.startsWith('/api/testcase/__search')) return page(cases.filter(row => new URLSearchParams(route.split('?')[1]).get('rql').includes(JSON.stringify(row.fullName))));
+  if (route.startsWith('/api/testcase?')) return { content: cases.map(row => ({ id: row.id, name: 'Not exported', automated: row.automated })), totalElements: cases.length, totalPages: cases.length ? 1 : 0, number: 0 };
+  if (/^\/api\/testcase\/[0-9]+$/.test(route)) return cases.find(row => row.id === Number(route.split('/').at(-1)));
   if (route.startsWith('/api/testplan?')) return page(plans);
-  if (route.startsWith('/api/integration/project/1')) return page([{ id: 2, info: { type: 'github' }, settings: { secret: 'DO_NOT_EXPORT' } }]);
+  if (route.startsWith('/api/integration/project/1')) return page([{ id: 2, info: { type: 'github' }, disabled: false, settings: { secret: 'DO_NOT_EXPORT' } }]);
   assert.fail(route);
 };
 
@@ -27,7 +28,7 @@ test('multiple alias identities, foreign project and incomplete metadata stop be
   assert.equal(conflicts.caseConflict, true); assert.deepEqual(conflicts.cases.map(row => row.id), [91, 92]);
   await assert.rejects(ensureChatPlan(() => assert.fail('no ambiguous write'), conflicts, () => assert.fail('no ambiguous marker'))); 
   await assert.rejects(inspectChatMetadata(inspectApi([{ ...caseRow, projectId: 2 }])), /identity_invalid/);
-  await assert.rejects(inspectChatMetadata(async () => ({ content: [], totalPages: 2 })), /page_incomplete/);
+  await assert.rejects(inspectChatMetadata(async () => ({ content: [], totalPages: 11, totalElements: 1100, number: 0 })), /catalog_incomplete/);
 });
 
 test('existing exact plan reuses case and plan without a write', async () => {
@@ -157,16 +158,25 @@ test('selection rejects every non-master, foreign and second-attempt execution b
   }
 });
 
-import { launchChatPlan, bootstrapJobMetadata } from './chat-feature-testops-api.mjs';
-const launchEnv = { ...publicEnv, ALLURE_JOB_RUN_ID: '', CHAT_TESTOPS_OPERATION_PARAMETER_ID: '17', CHAT_TESTOPS_LAUNCH_NONCE: '1'.repeat(32) };
-function launchServer({ wrongParameter = false, wrongAssignment = false, uncertainRun = false } = {}) {
+import { launchChatPlan, bootstrapJobMetadata, admitLaunchPlan } from './chat-feature-testops-api.mjs';
+const launchEnv = { ...publicEnv, ALLURE_JOB_RUN_ID: '', CHAT_TESTOPS_OPERATION_PARAMETER_ID: '17', CHAT_TESTOPS_INTEGRATION_ID: '2', CHAT_TESTOPS_LAUNCH_NONCE: '1'.repeat(32), CHAT_TESTOPS_LAUNCH_RUN_NUMBER: '2', GITHUB_RUN_NUMBER: '2',
+  CHAT_TESTOPS_GITHUB_WORKFLOW_ID: '99', GITHUB_ACTOR_ID: '34892728', TESTOPS_TRIGGERING_ACTOR_ID: '34892728', TESTOPS_ALLOWED_ACTOR_IDS: '[34892728]', GH_TOKEN: 'SYNTHETIC_GH_TOKEN' };
+const ownRun = { id: 123, workflow_id: 99, run_attempt: 1, run_number: 2, head_sha: 'a'.repeat(40), head_branch: 'master', event: 'workflow_dispatch',
+  repository: { full_name: 'paperclipai/paperclip', private: false }, actor: { id: 34892728 }, triggering_actor: { id: 34892728 } };
+async function fence(env = launchEnv, changes = {}, workflowChanges = {}, repoChanges = {}) {
+  return admitLaunchPlan(env, async url => ({ ok: true, text: async () => JSON.stringify(url.endsWith('/repos/paperclipai/paperclip') ? { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master', ...repoChanges }
+    : url.includes('/actions/runs/') ? { ...ownRun, ...changes }
+    : { id: 99, path: '.github/workflows/chat-feature-testops.yml', state: 'active', ...workflowChanges }) }));
+}
+function launchServer({ wrongParameter = false, wrongAssignment = false, uncertainRun = false, integrationChange = {} } = {}) {
   const calls = [], parameters = [{ id: 17, value: 'bootstrap' }]; let assigned = false, launched = false, requests = 0;
   const api = async (route, method, body) => {
     calls.push({ route, method, body });
     if (route.startsWith('/api/launch?')) return { totalPages: 1, content: launched ? [{ id: 10, name: `Chat feature evals · ${'1'.repeat(32)}` }] : [] };
+    if (route === '/api/integration/2/project/1') return { id: 2, projectId: 1, info: { type: 'github' }, disabled: false, ...integrationChange };
     if (route === '/api/environment/17') return { id: 17, name: wrongParameter ? 'OTHER_PRIVATE_PARAMETER' : 'operation' };
     if (route === '/api/job/7') {
-      if (method === 'PATCH') { assert.deepEqual(body, { canRun: true, parameters: [{ id: 17, value: 'evaluate' }] }); parameters[0].value = 'evaluate'; }
+      if (method === 'PATCH') { assert.deepEqual(body, { integrationId: 2, canRun: true, parameters: [{ id: 17, value: 'evaluate' }] }); parameters[0].value = 'evaluate'; }
       return { id: 7, type: 'github', url: 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml', parameters };
     }
     if (route === '/api/testplan/8/job') return wrongAssignment ? [{ job: { id: 70 }, testCasesCount: 1 }]
@@ -181,29 +191,29 @@ function launchServer({ wrongParameter = false, wrongAssignment = false, uncerta
 
 test('launch configures only the exact registered public job/plan then issues one run request and exits', async () => {
   const server = launchServer(); let markers = 0;
-  const result = await launchChatPlan(server.api, launchEnv, async () => { markers++; assert.equal(server.calls.some(row => row.method), false); });
+  const result = await launchChatPlan(server.api, launchEnv, async () => { markers++; assert.equal(server.calls.some(row => row.method), false); }, await fence());
   assert.equal(markers, 1); assert.equal(server.requests(), 1); assert.equal(result.status, 'REQUESTED');
   assert.equal(result.launchId, 10); assert.equal(result.actualRunId, null); assert.equal(result.actualResult, null);
   assert.ok(!server.calls.some(row => /jobrun.*rerun|dispatches/.test(row.route)));
 });
 
 test('observed launch nonce prevents a second run request across separate local entry attempts', async () => {
-  const server = launchServer(); await launchChatPlan(server.api, launchEnv, async () => {});
-  const result = await launchChatPlan(server.api, launchEnv, () => assert.fail('existing launch must not mark or write'));
+  const server = launchServer(); await launchChatPlan(server.api, launchEnv, async () => {}, await fence());
+  const result = await launchChatPlan(server.api, launchEnv, () => assert.fail('existing launch must not mark or write'), await fence());
   assert.equal(result.status, 'EXISTING_NO_RESEND'); assert.equal(server.requests(), 1);
 });
 
 test('foreign assignment and unobserved operation parameter stop before any write', async () => {
   for (const options of [{ wrongAssignment: true }, { wrongParameter: true }]) {
     const server = launchServer(options);
-    await assert.rejects(launchChatPlan(server.api, launchEnv, () => assert.fail('no marker')));
+    await assert.rejects(launchChatPlan(server.api, launchEnv, () => assert.fail('no marker'), await fence()));
     assert.equal(server.calls.some(row => row.method), false); assert.equal(server.requests(), 0);
   }
 });
 
 test('uncertain plan-run transport is sent once and never followed by another mutation', async () => {
   const server = launchServer({ uncertainRun: true });
-  await assert.rejects(launchChatPlan(server.api, launchEnv, async () => {}), /uncertain/);
+  await assert.rejects(launchChatPlan(server.api, launchEnv, async () => {}, await fence()), /uncertain/);
   assert.equal(server.requests(), 1);
   assert.equal(server.calls.at(-1).route, '/api/testplan/8/run');
 });
@@ -218,4 +228,87 @@ test('official bootstrap job metadata projects only fixed parameter names and op
   assert.equal(job.publicWorkflowMatches, true); assert.equal(job.parameters[0].value, 'bootstrap');
   assert.deepEqual(job.parameters[1], { id: 18, name: 'UNKNOWN', value: 'NOT_PROJECTED' });
   assert.ok(!JSON.stringify(job).includes('SYNTHETIC_PRIVATE_VALUE'));
+});
+
+test('documented stable-ID list pagination is complete before locally matching exact alias detail metadata', async () => {
+  const calls = [];
+  const api = async route => {
+    calls.push(route);
+    if (route.startsWith('/api/testcase?')) {
+      const query = new URLSearchParams(route.split('?')[1]);
+      assert.equal(query.get('projectId'), '1'); assert.equal(query.get('sort'), 'id,asc');
+      const number = Number(query.get('page'));
+      return { number, totalPages: 2, totalElements: 2, content: [{ id: number ? 92 : 91 }] };
+    }
+    if (route === '/api/testcase/91') return { ...caseRow, description: 'SYNTHETIC_PRIVATE_DESCRIPTION' };
+    if (route === '/api/testcase/92') return { id: 92, projectId: 1, fullName: 'paperclip.Product E2E.unrelated.case', automated: true, expectedResult: 'DO_NOT_EXPORT' };
+    return inspectApi([], [])(route);
+  };
+  const result = await inspectChatMetadata(api);
+  assert.deepEqual(result.cases, [{ id: 91, fullName, automated: true }]);
+  assert.ok(calls.some(route => route.includes('page=1')));
+  assert.ok(!calls.some(route => route.includes('__search')));
+  assert.ok(!JSON.stringify(result).includes('SYNTHETIC_PRIVATE_DESCRIPTION'));
+  assert.ok(!JSON.stringify(result).includes('DO_NOT_EXPORT'));
+});
+
+test('changing catalog totals or repeated page IDs cannot become a not-found result', async () => {
+  for (const duplicate of [false, true]) {
+    await assert.rejects(inspectChatMetadata(async route => {
+      if (route.startsWith('/api/testcase?')) {
+        const number = Number(new URLSearchParams(route.split('?')[1]).get('page'));
+        return { number, totalPages: 2, totalElements: number && !duplicate ? 3 : 2, content: [{ id: number && !duplicate ? 92 : 91 }] };
+      }
+      return caseRow;
+    }), /catalog_incomplete/);
+  }
+});
+
+test('catalog detail reads have a finite four-request concurrency bound', async () => {
+  let active = 0, maximum = 0;
+  const api = async route => {
+    if (route.startsWith('/api/testcase?')) return { number: 0, totalPages: 1, totalElements: 7, content: Array.from({ length: 7 }, (_, index) => ({ id: index + 1 })) };
+    if (/^\/api\/testcase\/[0-9]+$/.test(route)) {
+      active++; maximum = Math.max(maximum, active); await new Promise(resolve => queueMicrotask(resolve)); active--;
+      return { id: Number(route.split('/').at(-1)), projectId: 1, fullName: null, automated: false };
+    }
+    return inspectApi([], [])(route);
+  };
+  assert.deepEqual((await inspectChatMetadata(api)).cases, []);
+  assert.equal(maximum, 4);
+});
+
+test('fresh dispatch or replay cannot acquire the fixed initial launch counter even with stale TestOps search', async () => {
+  for (const env of [{ ...launchEnv, GITHUB_RUN_NUMBER: '3' }, { ...launchEnv, GITHUB_RUN_ATTEMPT: '2' },
+    { ...launchEnv, CHAT_TESTOPS_LAUNCH_RUN_NUMBER: '' }]) {
+    await assert.rejects(admitLaunchPlan(env, () => assert.fail('counter/refusal precedes all remote reads')));
+  }
+});
+
+test('real own-run metadata rejects counter, source, workflow, actor and default-ref contradictions', async () => {
+  for (const changes of [{ run_number: 3 }, { head_sha: 'b'.repeat(40) }, { workflow_id: 100 },
+    { actor: { id: 1 } }, { triggering_actor: { id: 1 } }, { run_attempt: 2 }, { head_branch: 'feature' }]) {
+    await assert.rejects(fence(launchEnv, changes), /launch_admission/);
+  }
+  await assert.rejects(fence(launchEnv, {}, {}, { default_branch: 'other' }), /launch_admission/);
+  await assert.rejects(fence(launchEnv, {}, { state: 'disabled_manually' }), /launch_admission/);
+});
+
+test('no caller-supplied JSON can replace the source-owned GitHub launch admission receipt', async () => {
+  const actual = await fence();
+  await assert.rejects(launchChatPlan(() => assert.fail('no API mutation'), launchEnv, () => assert.fail('no marker'), JSON.parse(JSON.stringify(actual))), /launch_admission/);
+});
+
+test('GitHub metadata denial retains only its fixed code and HTTP status', async () => {
+  await assert.rejects(admitLaunchPlan(launchEnv, async () => ({ ok: false, status: 403, text: () => assert.fail('must not read denial body') })), error => {
+    assert.deepEqual(failureProjection(error, 'launch_admission'), { stage: 'launch_admission', code: 'chat_testops_github_http', httpStatus: 403 }); return true;
+  });
+});
+
+test('new job receives only the reviewed enabled GitHub integration; disabled/foreign identities stop before writes', async () => {
+  for (const integrationChange of [{ id: 3 }, { projectId: 2 }, { disabled: true }, { disabled: null }, { info: { type: 'gitlab' } }]) {
+    const server = launchServer({ integrationChange });
+    await assert.rejects(launchChatPlan(server.api, launchEnv, () => assert.fail('no marker'), await fence()), /integration_mismatch/);
+    assert.equal(server.calls.some(row => row.method), false);
+  }
 });

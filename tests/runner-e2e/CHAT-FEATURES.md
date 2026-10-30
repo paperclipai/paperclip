@@ -196,3 +196,20 @@ bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
 `CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
 `CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
 No arbitrary source, model, case, retry or budget input is accepted.
+
+The initial `launch-plan` administrator operation also requires a protected
+`CHAT_TESTOPS_LAUNCH_RUN_NUMBER`. After registration, the trusted operator creates
+this variable once with the reviewed next workflow run number and reads it back.
+The launcher compares GitHub's actual run number, attempt, workflow, source and
+actors before any TestOps mutation. A later dispatch or replay cannot reuse that
+approved number. Missing or uncertain metadata stops; an uncertain request needs
+reconciliation rather than a new send. The nonce and launch search provide
+additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
+this one-time administrator fence. The operation parameter identifier and launch
+nonce are also protected configuration, not dispatch inputs.
+
+`CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
+integration. The launcher verifies its project, type and enabled state, then binds
+only the newly registered public job to it. It never changes integration settings
+or credentials. Since the job response does not expose that association, only the
+real TestOps-to-GitHub dispatch can qualify it.
