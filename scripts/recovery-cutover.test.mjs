@@ -145,7 +145,8 @@ test("fault boundary reports stat, directory read and close failures without err
     });
     const report = await inventoryRecoveryFiles({ instanceRoot: root }, io);
     assert.equal(report.status, "unknown");
-    assert.ok(report.directories[0].readFailures > 0);
+    if (operation === "lstat") assert.equal(report.instanceStatus, "unreadable");
+    else assert.ok(report.directories[0].readFailures > 0);
     assert.doesNotMatch(JSON.stringify(report), /secret-token|EACCES/);
   }
 });
