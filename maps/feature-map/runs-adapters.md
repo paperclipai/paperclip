@@ -170,6 +170,15 @@ controls do not establish live provider acceptance.
 
 ### `adapter-setup`
 
+Cloud-managed instances load adapters from the release image. Saved external
+registrations cannot replace built-ins or supply UI parser code. Install,
+reinstall, reload, remove, and override operations remain platform-managed.
+The [fixture loader controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+exercise real packages, import side effects, both managed-instance signals and
+self-hosted compatibility. The [route authorization controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+check managed denials before package or registration access. These are local
+controls, not live Cloud provider qualification.
+
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
 Cursor Cloud keeps Legacy as its automatic default. Choose Paperclip Runner

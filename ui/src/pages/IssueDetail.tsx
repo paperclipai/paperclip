@@ -4731,8 +4731,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   const stopResponse = useMutation({
     mutationFn: async (runId: string) => {
-      await heartbeatsApi.cancel(runId);
-      await waitForStoppedRuns([runId]);
+      const stoppedRun = await heartbeatsApi.cancel(runId);
+      await waitForStoppedRuns([runId], { initialRuns: [stoppedRun] });
     },
     onSettled: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),

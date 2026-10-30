@@ -5535,6 +5535,35 @@ describe("IssueDetail", () => {
     },
   );
 
+  it("confirms the composer Stop from the authoritative cancellation response during a status outage", async () => {
+    mockIssuesApi.update.mockClear();
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockHeartbeatsApi.cancel.mockReset().mockResolvedValue({
+      id: "run-active-1", companyId: "company-1", runtimeMode: "native", status: "cancelled",
+      resultJson: { nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: "run-active-1", companyId: "company-1",
+        scope: "run", dispatchState: "acknowledged",
+      } },
+    });
+    mockHeartbeatsApi.get.mockReset().mockRejectedValue(new Error("Status request unavailable"));
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
+      id: "run-active-1", agentId: "agent-1", status: "running", runtimeMode: "native",
+      issueId: "issue-1", adapterType: "paperclip_runner",
+    }]);
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onCancelRun).toBeTypeOf("function"));
+    await act(async () => {
+      await expect(mockIssueChatThreadRender.mock.calls.at(-1)![0].onCancelRun()).resolves.toBeUndefined();
+    });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledExactlyOnceWith("run-active-1");
+    expect(mockHeartbeatsApi.get).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+  });
+
   it("routes live-run finalization actions through run cancellation before issue status update", async () => {
     mockHeartbeatsApi.cancel.mockClear();
     mockIssuesApi.get.mockResolvedValue(

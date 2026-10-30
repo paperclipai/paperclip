@@ -184,7 +184,9 @@ import {
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
+  resolveManagedBundledPluginKeys,
 } from "./services/bundled-plugins.js";
+import { createBundledPluginPackageResolver } from "./services/bundled-plugin-package.js";
 import { readDistributionPluginCatalog, distributionPluginActivationGuard } from "./services/distribution-plugin-catalog.js";
 import {
   createPluginWorkerManager,
@@ -625,7 +627,7 @@ export async function createApp(
     res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
     res.redirect(303, await chatChannels.githubWizard.identityCallback(String(req.query.state ?? ""), String(req.query.code ?? ""), req.actor));
   });
-  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const managedAutoInstallKeys = resolveManagedBundledPluginKeys(opts.managedPluginAutoInstall);
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
   const distributionPlugins = readDistributionPluginCatalog(bundledCatalogRoot, BUNDLED_PLUGIN_CATALOG);
@@ -638,6 +640,7 @@ export async function createApp(
       distributionPlugins,
     },
   );
+  const bundledPackageResolver = managedAutoInstallKeys === null ? undefined : createBundledPluginPackageResolver(bundledPluginInstalls);
   const managedBundledPluginKeys =
     managedAutoInstallKeys !== null
       ? bundledPluginInstalls.map((install) => install.pluginKey)
@@ -908,7 +911,11 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
-      assertPackageActivation: distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      assertPackageActivation: bundledPackageResolver?.assertActivation ?? distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      resolvePackageRoot: bundledPackageResolver?.resolve,
+      prebuiltOnly: managedAutoInstallKeys !== null,
+      enableLocalFilesystem: managedAutoInstallKeys === null,
+      enableNpmDiscovery: managedAutoInstallKeys === null,
     },
     {
       workerManager,
@@ -967,6 +974,7 @@ export async function createApp(
   );
   api.use(
     adapterRoutes({
+      db,
       resolveRunnerTarget: (companyId, environmentId) => resolveAgentRunnerTargetForCompany(db, companyId, environmentId),
       getNativeRunnerEnabled: async () =>
         (await instanceSettingsService(db).getExperimental())
@@ -1016,6 +1024,7 @@ export async function createApp(
   app.use(
     pluginUiStaticRoutes(db, {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+      resolvePackageRoot: bundledPackageResolver?.resolve,
     }),
   );
 
@@ -1255,7 +1264,7 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = createPluginDevWatcher(
+  const devWatcher = managedAutoInstallKeys !== null ? null : createPluginDevWatcher(
     lifecycle,
     async (pluginId) =>
       (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
@@ -1301,7 +1310,7 @@ export async function createApp(
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
     // Disabled plugins never start automatically. Added distribution permissions
     // still enter upgrade_pending so enabling them requires an operator decision.
-    { reinstallUninstalled: managedAutoInstallKeys !== null },
+    { reinstallUninstalled: managedAutoInstallKeys !== null, preservePackagePath: managedAutoInstallKeys !== null },
   )
     .then(() => loader.loadAll())
     .then((result) => {
