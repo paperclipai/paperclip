@@ -1253,3 +1253,96 @@ describe("Durable lifecycle inbox RPC", () => {
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });
+
+describe("agent session send callbacks", () => {
+  function sessionFixture() {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    let sessions!: Parameters<Parameters<typeof definePlugin>[0]["setup"]>[0]["agents"]["sessions"];
+    const plugin = definePlugin({ async setup(ctx) { sessions = ctx.agents.sessions; } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: JsonRpcResponse) => void>();
+    const hostRequests: Array<{ id: string | number; method: string; params: unknown }> = [];
+    reader.on("line", line => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      } else if (isJsonRpcRequest(message)) {
+        hostRequests.push({ id: message.id, method: message.method, params: message.params });
+      }
+    });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => {
+      const id = String(++sequence);
+      pending.set(id, resolve);
+      input.write(serializeMessage(createRequest(method, params, id)));
+    });
+    const event = (runId: string, eventType: "chunk" | "done" | "error", message: string, sessionId = "session-1") =>
+      input.write(JSON.stringify({ jsonrpc: "2.0", method: "agents.sessions.event", params: { sessionId, runId, seq: 0, eventType, stream: "stdout", message, payload: null } }) + "\n");
+    const respond = (id: string | number, result: unknown) => input.write(serializeMessage(createSuccessResponse(id, result)));
+    const nextHostRequest = async (method: string, index: number) => {
+      await expect.poll(() => hostRequests.filter((request) => request.method === method).length).toBeGreaterThan(index);
+      return hostRequests.filter((request) => request.method === method)[index]!;
+    };
+    const initialize = () => call("initialize", { manifest: { id: "fixture.sessions", apiVersion: 1, version: "1.0.0", displayName: "Sessions", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["agent.sessions.send", "agent.sessions.close"], entrypoints: {} }, config: {}, databaseNamespace: null });
+    return {
+      initialize, event, respond, nextHostRequest,
+      get sessions() { return sessions; },
+      close: () => { worker.stop(); reader.close(); input.destroy(); output.destroy(); },
+    };
+  }
+
+  it("delivers each send's events, including ones before the send returns, only to that send's callback", async () => {
+    const f = sessionFixture();
+    try {
+      await f.initialize();
+      const seenA: string[] = [];
+      const seenB: string[] = [];
+      const sendA = f.sessions.sendMessage("session-1", "company-1", { prompt: "first", onEvent: (e) => seenA.push(`${e.runId}:${e.message}`) });
+      const requestA = await f.nextHostRequest("agents.sessions.sendMessage", 0);
+      const sendB = f.sessions.sendMessage("session-1", "company-1", { prompt: "second", onEvent: (e) => seenB.push(`${e.runId}:${e.message}`) });
+      const requestB = await f.nextHostRequest("agents.sessions.sendMessage", 1);
+
+      // The host forwards run events as soon as the run exists, so they can
+      // reach the worker before the send's response does.
+      f.event("run-a", "chunk", "early a");
+      f.event("run-b", "chunk", "early b");
+      f.respond(requestB.id, { runId: "run-b" });
+      f.respond(requestA.id, { runId: "run-a" });
+      await expect(sendA).resolves.toEqual({ runId: "run-a" });
+      await expect(sendB).resolves.toEqual({ runId: "run-b" });
+
+      f.event("run-a", "done", "answer a");
+      f.event("run-b", "done", "answer b");
+      // After its terminal event a run's callback is released.
+      f.event("run-a", "chunk", "after done");
+
+      await expect.poll(() => seenA.length).toBe(2);
+      await expect.poll(() => seenB.length).toBe(2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(seenA).toEqual(["run-a:early a", "run-a:answer a"]);
+      expect(seenB).toEqual(["run-b:early b", "run-b:answer b"]);
+    } finally { f.close(); }
+  });
+
+  it("stops delivering a session's events after the session is closed", async () => {
+    const f = sessionFixture();
+    try {
+      await f.initialize();
+      const seen: string[] = [];
+      const send = f.sessions.sendMessage("session-1", "company-1", { prompt: "hello", onEvent: (e) => seen.push(e.message ?? "") });
+      f.respond((await f.nextHostRequest("agents.sessions.sendMessage", 0)).id, { runId: "run-a" });
+      await send;
+      f.event("run-a", "chunk", "before close");
+      await expect.poll(() => seen).toEqual(["before close"]);
+
+      const closing = f.sessions.close("session-1", "company-1");
+      f.respond((await f.nextHostRequest("agents.sessions.close", 0)).id, null);
+      await closing;
+      f.event("run-a", "chunk", "after close");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(seen).toEqual(["before close"]);
+    } finally { f.close(); }
+  });
+});
