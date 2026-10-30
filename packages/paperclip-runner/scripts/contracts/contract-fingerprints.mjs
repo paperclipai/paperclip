@@ -59,8 +59,11 @@ export function fingerprintContracts(readFile, listDir) {
       // Env keys are often passed through `const NAME: &str = "KEY"` defined in
       // another file, so resolve constant arguments crate-wide.
       const constants = suffix === ".rs" ? rustStringConstants(sources, readFile) : {};
+      // Serde type names never reach JSON; references to them are normalized.
+      const typeNames = suffix === ".rs" ? rustSerdeTypeNames(sources, readFile) : [];
+      const crateWide = { "rust-env-keys": { constants }, "rust-serde": { typeNames } };
       for (const path of sources) {
-        const value = probes.map(p => probe(p.kind === "rust-env-keys" ? { ...p, path, constants } : { ...p, path }, readFile));
+        const value = probes.map(p => probe({ ...p, path, ...crateWide[p.kind] }, readFile));
         if (isEmpty(value)) continue;
         const id = idPrefix + path.slice(dirs.find(d => path.startsWith(`${d}/`)).length + 1).replace(/\.[a-z]+$/, "");
         out[id] = { fingerprint: digest(value), value };
@@ -119,7 +122,7 @@ function probeUncached(spec, source) {
   switch (spec.kind) {
     case "json": return canonicalJson(JSON.parse(source), spec);
     case "rust-consts": return rustConsts(source);
-    case "rust-serde": return rustSerde(source);
+    case "rust-serde": return rustSerde(source, new Set(spec.typeNames ?? []));
     case "rust-json-keys": return rustJsonKeys(source);
     case "rust-match-literals": return rustMatchLiterals(source);
     case "rust-env-keys": return rustEnvKeys(source, spec.constants ?? {});
@@ -242,14 +245,20 @@ function rustConsts(source) {
   }
   return out;
 }
-/** Serde-visible shapes: derive(Serialize|Deserialize) items with their serde attributes and bodies. */
-function rustSerde(source) {
+const SERDE_ITEM = /((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+(\w+)(<[^>{]*>)?/g;
+const isSerdeItem = attrs => /derive\([^)]*\b(Serialize|Deserialize)\b/.test(attrs);
+
+/** Serialized shapes of a file's derive(Serialize|Deserialize) items: serde
+ * attributes and field/variant bodies. Rust type names never reach JSON, so
+ * item names are dropped and references to crate serde types are normalized;
+ * renaming a type is not a contract change, while field and variant names,
+ * field types and serde attributes are. */
+function rustSerde(source, typeNames) {
   const text = withoutTestModules(stripRustComments(source));
-  const out = {};
-  const item = /((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+(\w+)(<[^>{]*>)?/g;
-  for (const m of text.matchAll(item)) {
+  const shapes = [];
+  for (const m of text.matchAll(SERDE_ITEM)) {
     const attrs = m[1];
-    if (!/derive\([^)]*\b(Serialize|Deserialize)\b/.test(attrs)) continue;
+    if (!isSerdeItem(attrs)) continue;
     let i = m.index + m[0].length;
     while (i < text.length && text[i] !== "{" && text[i] !== ";" && text[i] !== "(") i++;
     let body = "";
@@ -259,14 +268,46 @@ function rustSerde(source) {
       for (; j < text.length; j++) { if (text[j] === open) depth++; else if (text[j] === close && --depth === 0) break; }
       body = text.slice(i, j + 1);
     }
-    out[`${m[2]} ${m[3]}`] = {
+    // `#[serde(skip)]` fields never reach the wire or the persisted file.
+    const normalized = body.replace(/#\[serde\(skip\)\]\s*(?:pub(?:\([^)]*\))?\s+)?\w+\s*:[^,{}]*(?:<[^>]*>)?[^,{}]*,?/g, "")
+      .replace(/\bpub(\([^)]*\))?\s+/g, "").replace(/\s+/g, " ").replace(/\s*([{}(),:<>;\[\]=])\s*/g, "$1").replace(/,([})\]])/g, "$1");
+    shapes.push(stableStringify({
+      kind: m[2],
       serde: (attrs.match(/#\[serde\([^\]]*\)\]/g) ?? []).map(a => a.replace(/\s+/g, "")).sort(),
-      // `#[serde(skip)]` fields never reach the wire or the persisted file.
-      body: body.replace(/#\[serde\(skip\)\]\s*(?:pub(?:\([^)]*\))?\s+)?\w+\s*:[^,{}]*(?:<[^>]*>)?[^,{}]*,?/g, "")
-        .replace(/\bpub(\([^)]*\))?\s+/g, "").replace(/\s+/g, " ").replace(/\s*([{}(),:<>;\[\]=])\s*/g, "$1").replace(/,([})\]])/g, "$1"),
-    };
+      body: withNormalizedTypeReferences(normalized, typeNames),
+    }));
   }
-  return out;
+  return shapes.sort();
+}
+/** Replaces crate serde type names in type positions (after `:`, or inside
+ * `(..)` and `<..>`). Names directly inside `{..}` after `{`, `,` or an
+ * attribute are field or variant names, which serialize, and stay. */
+function withNormalizedTypeReferences(body, typeNames) {
+  const stack = [];
+  let previous = "";
+  // Quoted strings (serde renames) are wire names and pass through unchanged.
+  return body.replace(/"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*|[^A-Za-z0-9_]/g, token => {
+    if (token.startsWith("\"")) { previous = "string"; return token; }
+    if (/^[A-Za-z_]/.test(token)) {
+      const namePosition = stack.at(-1) === "{" && ["{", ",", "]"].includes(previous);
+      previous = "ident";
+      return !namePosition && typeNames.has(token) ? "$type" : token;
+    }
+    if ("{(<[".includes(token)) stack.push(token);
+    else if ("})>]".includes(token)) stack.pop();
+    previous = token;
+    return token;
+  });
+}
+/** Names of derive(Serialize|Deserialize) items across the crate's sources. */
+function rustSerdeTypeNames(paths, readFile) {
+  const names = new Set();
+  for (const path of paths) {
+    const source = readFile(path);
+    if (source === null) continue;
+    for (const m of withoutTestModules(stripRustComments(source)).matchAll(SERDE_ITEM)) if (isSerdeItem(m[1])) names.add(m[3]);
+  }
+  return [...names].sort();
 }
 
 /** Payload keys built or read in code: `json!({"key": ...})`, `["key"]`, `.get("key")`. */

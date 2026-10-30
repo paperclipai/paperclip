@@ -39,6 +39,8 @@ test("incidental edits leave the digest unchanged", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    #[serde(skip)]\n    pub cache: Option<String>,")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => `${s}\n#[cfg(test)]\nmod extra {\n    #[derive(Serialize)]\n    struct T { a: u8 }\n}\n`],
+    // Rust type names never reach JSON; renaming a serde type keeps its shape.
+    [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replaceAll("AcpxSuspensionCheckpoint", "AcpxSavedSuspension")],
     // Renaming the Rust constant that carries an env key keeps the key itself.
     [`${RUST}/process_supervisor.rs`, s => s.replaceAll("VERIFIED_RUNTIME_EXECUTABLE_ENV", "RUNTIME_EXECUTABLE_HANDOFF_ENV")],
     // A file compiled only through `#[cfg(test)] #[path = ..] mod ..;`.
@@ -62,10 +64,20 @@ test("contract edits change the digest", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    pub extra: Option<String>,")],
     [`${RUST}/acpx_sidecar_transport.rs`, s => s.replace(/keys\.push\("/, "keys.push(\"PAPERCLIP_NEW_SIDECAR_KEY\");\n        keys.push(\"")],
+    // Field names serialize (here through rename_all = "camelCase").
+    [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {\n    schema: String,\n    run_id: String,",
+      "pub struct AcpxSuspensionCheckpoint {\n    schema: String,\n    turn_run_id: String,")],
     // An env key passed through a constant: the verified executable handoff.
     [`${RUST}/process_supervisor.rs`, s => s.replace("\"PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE\"", "\"PAPERCLIP_RUNTIME_EXECUTABLE_PATH\"")],
   ];
   for (const [path, edit] of changed) assert.notEqual(digestWith(path, edit), baseline, `${path} edit changes a contract`);
+});
+
+test("variant names stay part of the shape even when they match a type name", () => {
+  const path = `${RUST}/acpx_provider_checkpoint.rs`;
+  const withEnum = original => `${original}\n#[derive(Serialize)]\nenum ProbeShape {\n    AcpxSuspensionCheckpoint(AcpxSuspensionCheckpoint),\n}\n`;
+  const renamedVariant = original => `${original}\n#[derive(Serialize)]\nenum ProbeShape {\n    Checkpoint(AcpxSuspensionCheckpoint),\n}\n`;
+  assert.notEqual(digestWith(path, withEnum), digestWith(path, renamedVariant));
 });
 
 test("a build context without a registered source fails instead of producing another digest", () => {
