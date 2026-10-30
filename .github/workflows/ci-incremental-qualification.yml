@@ -50,18 +50,20 @@ jobs:
           import { execFileSync } from 'node:child_process';
           import { planTasks } from './.github/scripts/ci-plan.mjs';
           import { createTestSelection } from './scripts/ci/select-tests.mjs';
-          const plan = planTasks({
-            config: JSON.parse(readFileSync('turbo.json', 'utf8')),
-            lanes: JSON.parse(readFileSync('.github/ci-task-matrix.json', 'utf8')),
-            paths: ['ui/src/pages/Inbox.tsx'],
-          });
+          const config = JSON.parse(readFileSync('turbo.json', 'utf8'));
+          const lanes = JSON.parse(readFileSync('.github/ci-task-matrix.json', 'utf8'));
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-          const selected = await createTestSelection(plan, head);
-          const ui = selected.graphs.find(graph => graph.project === '@paperclipai/ui');
-          assert.ok(ui.related.includes('ui/src/pages/Inbox.test.tsx'));
-          assert.ok(ui.alwaysRun.length > 0, 'Filesystem contracts must remain covered');
-          assert.ok(ui.selected.length < ui.inventory.length, 'The real workspace must support narrowing');
-          console.log(JSON.stringify(selected.plan.testSelection.stats, null, 2));
+          for (const [file, project, related] of [
+            ['ui/src/pages/Inbox.tsx', '@paperclipai/ui', 'ui/src/pages/Inbox.test.tsx'],
+            ['server/src/middleware/auth.ts', '@paperclipai/server', 'server/src/__tests__/agent-auth-middleware.test.ts'],
+          ]) {
+            const selected = await createTestSelection(planTasks({ config, lanes, paths: [file] }), head);
+            const graph = selected.graphs.find(graph => graph.project === project);
+            assert.ok(graph.related.includes(related));
+            assert.ok(graph.alwaysRun.length > 0, 'Filesystem contracts must remain covered');
+            assert.ok(graph.selected.length < graph.inventory.length, 'The real workspace must support narrowing');
+            console.log(file, JSON.stringify(selected.plan.testSelection.stats, null, 2));
+          }
           NODE
 
   qualify:

@@ -73,6 +73,18 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
     "generated inputs have no trustworthy source-to-output graph and retain their consumers");
   write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("./leaf.ts", import.meta.url));');
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
+  mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
+  for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {
+    write(file, readFileSync(path.join(root, file), "utf8"));
+  }
+  write("ui/setup.ts", 'import "../server/src/__tests__/setup-supertest.ts";');
+  const reviewed = await select(["ui/src/leaf.ts"]);
+  assert.ok(!reviewed.selected.includes("ui/src/independent.test.ts"), "reviewed isolated setup permits file selection");
+  const helper = "server/src/__tests__/helpers/isolated-test-home.ts";
+  const changedSetup = await select([helper]);
+  assert.deepEqual(changedSetup.selected, changedSetup.inventory, "reviewed helpers still invalidate all tests when changed");
+  write(helper, `${readFileSync(path.join(directory, helper), "utf8")}\n// setup edited since review\n`);
+  await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup/, "a stale review cannot authorize new setup effects");
 });
 
 test("partitioning reduces runners and preserves an exact, non-overlapping file cover", () => {

@@ -212,6 +212,10 @@ Vitest's unmodified related-file graph. Non-isolated projects run in full.
 Literal Vite globs use Vite's expanded dependency edges, including newly added
 members. Consumers of generated or untracked modules remain in the conservative
 set because the import graph does not describe their build inputs.
+The server's temporary-home and Supertest setup has a reviewed, content-hashed
+exception. It still follows local helper imports. Any change to the reviewed
+contents disables the exception until reviewed again; setup dependency changes
+invalidate the whole project. Unreviewed setup I/O uses the full task plan.
 
 Selected files are repartitioned within their existing owners using the current
 per-runner budgets and server timing weights. Small selections allocate fewer

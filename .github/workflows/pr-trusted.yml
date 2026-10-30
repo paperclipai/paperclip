@@ -71,6 +71,7 @@ jobs:
         timeout-minutes: 5
         run: node scripts/ci/select-tests.mjs
       - name: Upload validated selection and audit
+        id: upload_selection
         if: steps.select.outputs.selected == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -86,7 +87,19 @@ jobs:
       - name: Publish the executable plan
         id: publish
         if: steps.eligible.outputs.enabled == 'true'
-        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, "plan=" + require("node:fs").readFileSync(".ci-test-selection/plan.json", "utf8") + "\n")'
+        env:
+          ARTIFACT_ID: ${{ steps.upload_selection.outputs.artifact-id }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const plan = JSON.parse(readFileSync('.ci-test-selection/plan.json', 'utf8'));
+          if (plan.testSelection) {
+            assert.match(process.env.ARTIFACT_ID ?? '', /^[0-9]+$/);
+            plan.testSelection.artifactId = process.env.ARTIFACT_ID;
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `plan=${JSON.stringify(plan)}\n`);
+          NODE
 
   policy:
     needs: [gate]
@@ -446,7 +459,7 @@ jobs:
         if: matrix.selection
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: vitest-selection-${{ github.run_attempt }}
+          artifact-ids: ${{ fromJSON(needs.test_selection.outputs.plan).testSelection.artifactId }}
           path: .ci-test-selection
 
       - name: Initialize CI profile
@@ -1119,7 +1132,7 @@ jobs:
         if: matrix.selection
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: vitest-selection-${{ github.run_attempt }}
+          artifact-ids: ${{ fromJSON(needs.test_selection.outputs.plan).testSelection.artifactId }}
           path: .ci-test-selection
 
       - name: Initialize CI profile

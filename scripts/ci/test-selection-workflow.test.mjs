@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import vm from "node:vm";
 import test from "node:test";
 import { planTasks } from "../../.github/scripts/ci-plan.mjs";
@@ -67,4 +69,32 @@ test("publication follows successful upload and manifests are downloaded without
     assert.match(block(job), /Download selected test files\n        if: matrix.selection\n        uses: actions\/download-artifact@/);
     assert.doesNotMatch(block(job), /continue-on-error: true\n.*download-artifact/);
   }
+});
+
+test("failed-job retries use the original selector artifact, not the retry attempt", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "ci-retry-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(path.join(directory, ".ci-test-selection"));
+  const output = path.join(directory, "output");
+  const publication = block("test_selection").split("      - name: Publish the executable plan")[1];
+  assert.match(publication, /ARTIFACT_ID: \$\{\{ steps.upload_selection.outputs.artifact-id \}\}/);
+  const code = publication.split("          node --input-type=module <<'NODE'\n")[1].split("\n          NODE")[0]
+    .split("\n").map((line) => line.slice(10)).join("\n");
+  const selected = { ...plan, testSelection: { version: 1, hash: "test" } };
+  const run = (value, artifactId) => {
+    writeFileSync(path.join(directory, ".ci-test-selection/plan.json"), JSON.stringify(value));
+    writeFileSync(output, "");
+    return spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+      cwd: directory, encoding: "utf8", env: { ...process.env, ARTIFACT_ID: artifactId, GITHUB_OUTPUT: output },
+    });
+  };
+  assert.equal(run(selected, "12345").status, 0);
+  const savedPlan = readFileSync(output, "utf8").trim().slice("plan=".length);
+  for (const job of ["general_tests", "verify_serialized_server"]) {
+    const expression = block(job).match(/artifact-ids: \$\{\{ (.*) \}\}/)[1];
+    assert.equal(vm.runInNewContext(expression, { fromJSON: JSON.parse, github: { run_attempt: 2 },
+      needs: { test_selection: { outputs: { plan: savedPlan } } } }), "12345");
+  }
+  assert.notEqual(run(selected, "").status, 0, "a selection cannot be published without its uploaded artifact");
+  assert.equal(run(plan, "").status, 0, "fallback plans need no selection artifact");
 });

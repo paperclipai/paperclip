@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { isBuiltin } from "node:module";
 import { parseSync } from "oxc-parser";
@@ -18,6 +19,20 @@ const purePackages = new Set([
 ]);
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
   "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto"]);
+// Reviewed setup performs only temporary-home IO and Supertest socket setup,
+// not reads of arbitrary repository inputs. Pin contents, not just paths: any
+// edit disables this exception until its effects are reviewed again. Continue
+// following local imports even for these files; helper changes affect all tests.
+const reviewedSetup = new Map([
+  ["server/src/__tests__/setup-supertest.ts", {
+    hash: "99d7193927468e98b41255ea9a5e37b1a681f02b259c304f3af1a52304eed2bb",
+    external: ["supertest/lib/test.js"],
+  }],
+  ["server/src/__tests__/helpers/isolated-test-home.ts", {
+    hash: "bd5645dc590087f26b473beab06d5c3ddd7956a79949f0b3e9713f11897a0c1b",
+    external: [],
+  }],
+]);
 const packageName = (specifier) => specifier.startsWith("@")
   ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
 const inside = (root, file) => file.startsWith(`${root}${path.sep}`) && !file.includes(`${path.sep}node_modules${path.sep}`);
@@ -118,8 +133,6 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     const tracked = new Set(execFileSync("git", ["ls-files", "--cached", "-z"], {
       cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
     }).split("\0").filter(Boolean));
-    const raw = await ctx.getRelevantTestSpecifications();
-    const modules = environment.moduleGraph.idToModuleMap;
     const audit = new Map();
     const parsed = new Map();
     const parse = (file) => {
@@ -140,12 +153,15 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (setup.has(file)) return;
       setup.add(file);
       const source = parse(file);
-      if (source.reasons.length) throw new Error(`Opaque setup dependency: ${file}`);
+      const review = reviewedSetup.get(path.relative(root, file).split(path.sep).join("/"));
+      const reviewed = review?.hash === createHash("sha256").update(readFileSync(file)).digest("hex");
+      if (!reviewed && source.reasons.length) throw new Error(`Opaque setup dependency: ${file}`);
       for (const specifier of source.imports) {
         if (isBuiltin(specifier)) {
-          if (!pureBuiltins.has(specifier.replace(/^node:/, ""))) throw new Error(`Opaque setup builtin: ${specifier}`);
+          if (!reviewed && !pureBuiltins.has(specifier.replace(/^node:/, ""))) throw new Error(`Opaque setup builtin: ${specifier}`);
           continue;
         }
+        if (reviewed && review.external.includes(specifier)) continue;
         const dependency = await resolve(specifier, file);
         if (dependency && inside(root, dependency)) await setupClosure(dependency);
         else if (!dependency) throw new Error(`Unresolved setup dependency: ${specifier}`);
@@ -160,6 +176,8 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     }
     for (const file of owner.vite.config.configFileDependencies ?? []) setup.add(realpathSync(file));
     const setupChanged = absoluteChanges.some((file) => setup.has(file));
+    const raw = await ctx.getRelevantTestSpecifications();
+    const modules = environment.moduleGraph.idToModuleMap;
     const resolvedDependencies = new Map();
     const localImports = new Map();
     const dependencyPath = (dep) => {
