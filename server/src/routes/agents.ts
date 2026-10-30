@@ -4202,7 +4202,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     res.json(redactAgentConfiguration(agent));
   });
 
@@ -4213,7 +4213,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     const revisions = await svc.listConfigRevisions(id);
     res.json(revisions.map((revision) => redactConfigRevision(revision)));
   });
@@ -4226,7 +4226,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanReadConfigurations(req, agent.companyId);
+    await assertCanReadAgent(req, agent);
     const revision = await svc.getConfigRevision(id, revisionId);
     if (!revision) {
       res.status(404).json({ error: "Revision not found" });
