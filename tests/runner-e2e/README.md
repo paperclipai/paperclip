@@ -596,6 +596,15 @@ inputs, or a tracked env file.
 
 ## Local commands
 
+When the host cannot start embedded Postgres, set
+`PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL` to an explicitly supplied loopback
+test Postgres administrator. The launcher creates a new `runner_e2e_<random>`
+database per attempt; the serving app applies its migrations. This does not
+reuse the administrator URL's database. The administrator variable is not
+forwarded to the server or browser. The launcher checks the private ownership
+receipt and deletes only its database after confirmed process/resource cleanup.
+Unknown remote cleanup preserves that database and the private fixture for recovery.
+
 Install dependencies and Chromium once. Native local cells also need the local
 runner binaries:
 
