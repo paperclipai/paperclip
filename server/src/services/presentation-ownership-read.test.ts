@@ -1,12 +1,15 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, completionContracts, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { eq, type SQL } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { NativeRunCoordinatorStore } from "./native-runtime/native-run-coordinator-store.js";
 import { getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { isExternalChatPresentationContext } from "./heartbeat-run-summary.js";
 import { finalizeNativeRun, recoverCommittedNativeChatResponse, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
+import { nativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
 
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 
@@ -208,6 +211,53 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
       else expect(Buffer.byteLength(JSON.stringify(captured.rows))).toBeLessThan(4096);
     }
     expect(outcomes[1]).toEqual(outcomes[0]);
+  });
+
+  it.each(["direct", "worker", "discovery and worker"])("traces %s reply recovery independently and leaves reply content out of spans", async lane => {
+    const f = await unpublishedAcceptedReply();
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    trace.setGlobalTracerProvider(provider);
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    try {
+      if (lane !== "direct") {
+        const worker = nativeResponsePresentationWork(db);
+        if (lane === "discovery and worker") {
+          expect(await worker.load({ companyId: f.companyId, issueId: f.issueId, runId: f.run.id }))
+            .toEqual([expect.objectContaining({ id: f.run.id })]);
+        }
+        expect(await worker.check({ id: f.run.id, companyId: f.companyId,
+          issueId: f.issueId, agentId: f.agentId, dueAt: 0 })).toBeNull();
+      } else {
+        expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.run.id })).toBe(true);
+      }
+      const spans = exporter.getFinishedSpans();
+      const roots = spans.filter(span => span.name === "task.response_presentation");
+      expect(roots).toHaveLength(lane === "discovery and worker" ? 2 : 1);
+      for (const root of roots) {
+        expect(root.parentSpanContext).toBeUndefined();
+        expect(root.attributes).toEqual({ "paperclip.task.run.run_id": createHash("sha256").update(f.run.id).digest("hex").slice(0, 12) });
+      }
+      const root = roots.at(-1)!;
+      for (const name of ["response.transaction", "response.transaction.entry"]) {
+        const child = spans.find(span => span.name === name)!;
+        expect(child).toBeDefined();
+        expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
+      }
+      if (lane !== "direct") expect(spans.filter(span => span.name === "response.resolve"))
+        .toHaveLength(lane === "discovery and worker" ? 3 : 2);
+      expect(JSON.stringify(spans.map(span => span.attributes))).not.toContain(f.reply);
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.run.id));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(f.reply);
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+      expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.run.id })).toBe(false);
+      expect(exporter.getFinishedSpans()).toHaveLength(spans.length);
+    } finally {
+      vi.unstubAllEnvs();
+      await provider.shutdown();
+      trace.disable();
+    }
   });
 
   it.each([null, [], "scalar", 42, { source: 42, skipIssueComment: "true", paperclipWake: [] },

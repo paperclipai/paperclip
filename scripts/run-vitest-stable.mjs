@@ -92,6 +92,7 @@ const nativeRunnerSuites = [
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
+  "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
