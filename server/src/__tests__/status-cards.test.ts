@@ -192,6 +192,7 @@ describeEmbeddedPostgres("status card routes", () => {
       .send({ title: "Launch health", titlePinned: true });
     expect(patched.status).toBe(200);
     expect(patched.body).toMatchObject({ title: "Launch health", titlePinned: true });
+    expect(patched.body).not.toHaveProperty("nextEvalReason");
 
     const scheduled = await request(app)
       .patch(`/api/status-cards/${created.body.id}`)
@@ -1152,6 +1153,7 @@ describeEmbeddedPostgres("status card routes", () => {
     });
     expect(summaryWrite.status).toBe(200);
     expect(summaryWrite.body.card).toMatchObject({ state: "active", queryVersion: 1, generatingIssueId: null });
+    expect(summaryWrite.body.card).not.toHaveProperty("nextEvalReason");
     expect(summaryWrite.body.document.latestBody).toContain("**Decide:**");
     expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ status: "ok", finishedAt: expect.any(Date), inputTokens: 5200, outputTokens: 980 });
 

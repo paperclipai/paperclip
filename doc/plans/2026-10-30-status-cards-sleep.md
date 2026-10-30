@@ -100,3 +100,26 @@ An expired saved deadline cannot schedule an immediate skipped-attempt loop.
 Existing startup, status-card, company-search, execution and monitor suites cover
 the production wiring and unchanged consumers. Exact commands and results belong
 in the PR verification record; this document does not claim deployed savings.
+
+### Review corrections: pool capacity and restart deadline ownership
+
+Scheduled evaluation holds its advisory transaction on `withDedicatedDbConnection`,
+not on the ordinary write pool. The helper ends that physical connection in
+`finally`, including contention and failed evaluation. Its lock still spans the
+actual refresh settlement. Summary writeback runs watched-query reads on its
+existing transaction, so a one-connection main pool completes the full flow.
+
+Migration0419 adds nullable internal `next_eval_reason` to the existing card row.
+Membership deadlines may be reconstructed at startup after a committed source
+hint was lost. Policy eligibility and the atomically recorded five-minute retry
+lease retain their saved deadline. Explicit refresh deadlines remain due work.
+The HTTP card response removes this internal provenance; the public schema stays
+unchanged.
+
+For legacy rows, a pending change hash preserves policy eligibility. An untagged
+active deadline farther than five minutes away cannot be an outstanding
+five-minute claim, so startup rechecks it. An ambiguous untagged deadline within
+five minutes keeps its remaining time without extension. This bounds migration
+compatibility delay while preserving prior crash/failure recovery. After the
+first successful evaluation all newly saved deadlines have explicit ownership.
+No recurring compatibility scan is added.
