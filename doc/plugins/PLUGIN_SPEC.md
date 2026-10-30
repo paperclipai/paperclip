@@ -495,6 +495,24 @@ The plugin worker is responsible for:
 - invoking host services through the SDK
 - reporting health information
 
+### 12.3.1 Invocation Scope And Work That Outlives A Handler
+
+A host→worker request or notification may carry an invocation. While its
+handler runs, the SDK stamps that invocation's id on every worker→host call,
+and the host resolves the call's company from the invocation.
+
+Node propagates the ambient context into a timer callback, so a `setTimeout`
+or `setInterval` armed inside a handler still sees the invocation after the
+handler has returned. The SDK drops the stamp at that point: a call made from
+work that outlives its handler goes out **unstamped**, because the host cannot
+resolve an invocation it has already finished and refuses the call rather than
+reading the company the call itself names.
+
+An unstamped call is a proactive call. It still requires its own capability and
+still passes the host's governed-access gate, and it resolves only against the
+companies the plugin is authorized to act on proactively — so a plugin that
+needs company-scoped work from a timer must be authorized for that company.
+
 ## 12.4 Failure Policy
 
 If a worker fails:

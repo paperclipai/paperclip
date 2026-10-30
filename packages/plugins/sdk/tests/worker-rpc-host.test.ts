@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { definePlugin } from "../src/define-plugin.js";
 import {
+  createNotification,
   createRequest,
   createErrorResponse,
   createSuccessResponse,
@@ -1251,5 +1252,239 @@ describe("Durable lifecycle inbox RPC", () => {
         { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
       ]);
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
+  });
+});
+
+describe("worker invocation stamp lifetime", () => {
+  type StampedCall = { label: string; invocationId?: string };
+
+  const MANIFEST = {
+    id: "paperclip.invocation-stamp-test",
+    apiVersion: 1,
+    version: "1.0.0",
+    displayName: "Invocation stamp test",
+    description: "Invocation stamp test",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["events.subscribe"],
+    entrypoints: { worker: "dist/worker.js" },
+  };
+
+  function startProbe(plugin: Parameters<typeof startWorkerRpcHost>[0]["plugin"]) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const stateCalls: StampedCall[] = [];
+    const logNotifications: StampedCall[] = [];
+    let nextRequestId = 1;
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      const invocationId = (message as { paperclipInvocationId?: string }).paperclipInvocationId;
+      if (isJsonRpcRequest(message)) {
+        if (message.method === "state.get") {
+          stateCalls.push({
+            label: String((message.params as { stateKey?: string }).stateKey),
+            invocationId,
+          });
+        }
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, null)));
+        return;
+      }
+      if ((message as { method?: string }).method === "execute.log") {
+        logNotifications.push({
+          label: String((message as { params?: { chunk?: string } }).params?.chunk),
+          invocationId,
+        });
+      }
+    });
+
+    const callWorker = (method: string, params: unknown, inv?: PluginInvocationContext) => {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage({
+        ...createRequest(method, params, id),
+        ...(inv ? { paperclipInvocation: inv } : {}),
+      }));
+      return result;
+    };
+
+    const notifyWorker = (method: string, params: unknown, inv?: PluginInvocationContext) => {
+      hostToWorker.write(serializeMessage({
+        ...createNotification(method, params),
+        ...(inv ? { paperclipInvocation: inv } : {}),
+      }));
+    };
+
+    const initialize = () => callWorker("initialize", {
+      manifest: MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+      apiVersion: 1,
+    });
+
+    const stop = () => {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    };
+
+    return { callWorker, notifyWorker, initialize, stateCalls, logNotifications, stop };
+  }
+
+  function timerArmingPlugin() {
+    let settleTimer: () => void = () => {};
+    const timerFired = new Promise<void>((resolve) => { settleTimer = resolve; });
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        const readState = (stateKey: string) => ctx.state.get({
+          scopeKind: "company",
+          scopeId: "company-a",
+          namespace: "probe",
+          stateKey,
+        });
+        const handler = async () => {
+          await readState("in-handler");
+          setTimeout(() => {
+            void readState("after-handler")
+              .catch(() => undefined)
+              .then(() => {
+                ctx.execution.log("stdout", "after-handler");
+                settleTimer();
+              });
+          }, 0);
+        };
+        ctx.data.register("probe", async () => {
+          await handler();
+          return { ok: true };
+        });
+        ctx.events.on("plugin.probe", handler);
+      },
+    });
+
+    return { plugin, timerFired };
+  }
+
+  const PROBE_EVENT = {
+    eventId: "11111111-2222-4333-8444-555555555555",
+    eventType: "plugin.probe" as const,
+    occurredAt: "2026-10-25T00:00:00.000Z",
+    companyId: "company-a",
+    payload: {},
+  };
+
+  it("stamps a host call made inside the handler and leaves the timer's call unstamped", async () => {
+    const { plugin, timerFired } = timerArmingPlugin();
+    const probe = startProbe(plugin);
+    try {
+      await probe.initialize();
+      await probe.callWorker(
+        "getData",
+        { key: "probe", companyId: "company-a", params: {} },
+        { id: "invocation-a", scope: { companyId: "company-a" } },
+      );
+      await timerFired;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(probe.stateCalls).toEqual([
+        { label: "in-handler", invocationId: "invocation-a" },
+        { label: "after-handler", invocationId: undefined },
+      ]);
+      expect(probe.logNotifications).toEqual([
+        { label: "after-handler", invocationId: undefined },
+      ]);
+    } finally {
+      probe.stop();
+    }
+  });
+
+  it("leaves the timer's call unstamped when the handler was reached by an event notification", async () => {
+    const { plugin, timerFired } = timerArmingPlugin();
+    const probe = startProbe(plugin);
+    try {
+      await probe.initialize();
+      probe.notifyWorker(
+        "onEvent",
+        { event: PROBE_EVENT },
+        { id: "invocation-b", scope: { companyId: "company-a" } },
+      );
+      await timerFired;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(probe.stateCalls).toEqual([
+        { label: "in-handler", invocationId: "invocation-b" },
+        { label: "after-handler", invocationId: undefined },
+      ]);
+    } finally {
+      probe.stop();
+    }
+  });
+
+  it("keeps the stamp on a still-running invocation after another with the same id finishes", async () => {
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        const readState = (stateKey: string) => ctx.state.get({
+          scopeKind: "company",
+          scopeId: "company-a",
+          namespace: "probe",
+          stateKey,
+        });
+        ctx.data.register("fast", async () => {
+          await readState("fast");
+          return { ok: true };
+        });
+        ctx.data.register("slow", async () => {
+          await slowGate;
+          await readState("slow-after-fast");
+          return { ok: true };
+        });
+      },
+    });
+
+    const probe = startProbe(plugin);
+    try {
+      await probe.initialize();
+      const sameId = () => ({ id: "invocation-shared", scope: { companyId: "company-a" } });
+      const slow = probe.callWorker(
+        "getData",
+        { key: "slow", companyId: "company-a", params: {} },
+        sameId(),
+      );
+      await probe.callWorker(
+        "getData",
+        { key: "fast", companyId: "company-a", params: {} },
+        sameId(),
+      );
+      releaseSlow();
+      await slow;
+
+      expect(probe.stateCalls).toEqual([
+        { label: "fast", invocationId: "invocation-shared" },
+        { label: "slow-after-fast", invocationId: "invocation-shared" },
+      ]);
+    } finally {
+      probe.stop();
+    }
   });
 });
