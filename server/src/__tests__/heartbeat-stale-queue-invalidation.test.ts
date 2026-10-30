@@ -1052,6 +1052,170 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
+  it("skips generic timer wakes while the only actionable issue already has a fresh live run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live owned work",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    const [liveRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        issueId,
+        scopeKind: "issue",
+        status: "running",
+        runtimeMode: "native",
+        invocationSource: "automation",
+        startedAt: new Date(),
+        lastOutputAt: new Date(),
+        contextSnapshot: { issueId },
+      })
+      .returning();
+    await db
+      .update(issues)
+      .set({ executionRunId: liveRun.id })
+      .where(eq(issues.id, issueId));
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const wakeups = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(wakeups).toEqual([
+      {
+        status: "skipped",
+        reason: "heartbeat.timer.no_actionable_work",
+      },
+    ]);
+  });
+
+  it("keeps generic timer wakes actionable when the issue's live run is stale", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      maxConcurrentRuns: 2,
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale owned work",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    const staleAt = new Date(Date.now() - 16 * 60 * 1000);
+    const [liveRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        issueId,
+        scopeKind: "issue",
+        status: "running",
+        runtimeMode: "native",
+        invocationSource: "automation",
+        startedAt: staleAt,
+        lastOutputAt: staleAt,
+        contextSnapshot: { issueId },
+      })
+      .returning();
+    await db
+      .update(issues)
+      .set({ executionRunId: liveRun.id })
+      .where(eq(issues.id, issueId));
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("keeps generic timer wakes actionable when another assigned issue has no live run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      maxConcurrentRuns: 2,
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const liveIssueId = randomUUID();
+    const freeIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: liveIssueId,
+        companyId,
+        title: "Live owned work",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: freeIssueId,
+        companyId,
+        title: "Unstarted work",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    const [liveRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        issueId: liveIssueId,
+        scopeKind: "issue",
+        status: "running",
+        runtimeMode: "native",
+        invocationSource: "automation",
+        startedAt: new Date(),
+        lastOutputAt: new Date(),
+        contextSnapshot: { issueId: liveIssueId },
+      })
+      .returning();
+    await db
+      .update(issues)
+      .set({ executionRunId: liveRun.id })
+      .where(eq(issues.id, liveIssueId));
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+  });
+
   it("allows legacy generic timer wakes by default when no skip policy is set", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {

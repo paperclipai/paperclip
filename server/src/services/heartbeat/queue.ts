@@ -242,6 +242,7 @@ export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
 ] as const;
 
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+const TIMER_LIVE_RUN_STALENESS_MS = 15 * 60 * 1000;
 
 export class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
@@ -591,6 +592,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
+    const staleCutoff = new Date(Date.now() - TIMER_LIVE_RUN_STALENESS_MS);
     const row = await db
       .select({ id: issues.id })
       .from(issues)
@@ -603,6 +605,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
           isNull(issues.conversationAgentId),
           nonIdleSlackIssueCondition(),
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns}
+            where ${heartbeatRuns.id} = ${issues.executionRunId}
+              and ${heartbeatRuns.status} = 'running'
+              and coalesce(${heartbeatRuns.lastUsefulActionAt}, ${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}) >= ${staleCutoff.toISOString()}::timestamptz
+          )`,
         ),
       )
       .limit(1)
