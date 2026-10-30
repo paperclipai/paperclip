@@ -195,6 +195,12 @@ addressed user's exact endpoint identity before expecting task continuation.
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
+For a newly configured bot, verify `submit_review` describes body-only summary
+and rationale fields. Submit a summary with repeated current-bot or legacy
+score headings, including an old score; verify publication keeps one heading
+with the structured score, preserves findings and rationale, and retains the
+original assessment. The PostgreSQL-backed publication fixture covers this with
+simulated GitHub responses; live model compliance remains separate evidence.
 
 For GitHub publication recovery, interrupt a response after GitHub accepts a
 write and verify one summary, finding, and App-scoped check. Retry the same tool

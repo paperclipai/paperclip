@@ -269,6 +269,61 @@ describe("Cloud canonical onboarding first task", () => {
     await expect(onboardingFirstTask(f.input)).rejects.toMatchObject({ code: "onboarding_first_task_deadline" });
     expect(f.events).not.toContain("visible:download");
   });
+  it("fails at a committed board-owned child blocker instead of the campaign deadline", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.mocked(connectionDelay).mockImplementation(async ms => { now += ms; });
+    const f = fixture({ mutate(phase, state) {
+      if (phase === "accepted") withBoardBlockedChild(state);
+    } });
+    f.input.deadlineAt = now + 2000;
+    await expect(onboardingFirstTask(f.input)).rejects.toMatchObject({ outcome: "failed", code: "onboarding_child_task_blocked" });
+    expect(connectionDelay).not.toHaveBeenCalled();
+    expect(f.events).not.toContain("visible:download");
+  });
+  it("continues waiting for a parent dependency while the child has completed", async () => {
+    let waiting = true;
+    vi.mocked(connectionDelay).mockImplementation(async () => { waiting = false; });
+    const f = fixture({ mutate(phase, state) {
+      if (phase !== "accepted" || !waiting) return;
+      Object.assign(state.tasks[0]!, { status: "blocked", unblockDescriptor: { owner: "board", action: "Wait for the child." } });
+      state.runs.at(-1)!.resultJson = { finalizationReasonCode: "durable_dependency_blocker_bound", issueStatusAfter: "blocked" };
+    } });
+    await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
+    expect(connectionDelay).toHaveBeenCalledOnce();
+  });
+  it.each(["active", "native-recovery", "workspace-replacement"])("waits past an old child blocker while %s remains pending", async mode => {
+    let waiting = true;
+    const now = Date.now();
+    vi.mocked(connectionDelay).mockImplementation(async () => { waiting = false; });
+    const f = fixture({ mutate(phase, state) {
+      if (phase !== "accepted") return;
+      if (mode === "workspace-replacement") {
+        state.runs.push(workspaceDeferral());
+        if (!waiting) linkWorkspaceRetry(state.runs.find(run => run.id === "child-run")!);
+      }
+      if (!waiting) return;
+      withBoardBlockedChild(state);
+      if (mode === "active") Object.assign(state.runs[1]!, { status: "running", finishedAt: null });
+      if (mode === "native-recovery") withPendingNativeRecovery(state.runs[1]!, now - 1000, now + 30_000);
+    } });
+    await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
+    expect(connectionDelay).toHaveBeenCalledOnce();
+  });
+  it.each(["stale-version", "newer-producer", "agent-owner"])("does not fail from a nonauthoritative child blocker: %s", async mode => {
+    let waiting = true;
+    vi.mocked(connectionDelay).mockImplementation(async () => { waiting = false; });
+    const f = fixture({ mutate(phase, state) {
+      if (phase !== "accepted" || !waiting) return;
+      const run = withBoardBlockedChild(state);
+      if (mode === "stale-version") state.tasks[1]!.statusVersion++;
+      if (mode === "newer-producer") state.runs.push({ ...run, id: "newer-child-run", createdAt: "2026-01-01T00:00:02Z",
+        finishedAt: "2026-01-01T00:00:03Z", resultJson: { finalizationPhase: "committed", prpReportedWorkDisposition: "completed" } });
+      if (mode === "agent-owner") state.tasks[1]!.unblockDescriptor.owner = { agentId: "other-agent" };
+    } });
+    await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
+    expect(connectionDelay).toHaveBeenCalledOnce();
+  });
   it("retains an ordinary blocked unstarted wake without mistaking it for paid failure", async () => {
     const f = fixture({ mutate(phase, state) {
       if (phase === "accepted") state.runs.push({ ...state.runs[0]!, id: "obsolete-wake", status: "cancelled", errorCode: "issue_dependencies_blocked", startedAt: null });
@@ -565,4 +620,17 @@ function withPendingNativeRecovery(run: Row, failedAt: number, retryAt: number, 
       phase: "retry_scheduled", cause, retryAt: new Date(retryAt).toISOString(),
       attempt: 1, maxAttempts: 3, recoveryOwner: "agent", successorRunId: null,
     } });
+}
+
+function withBoardBlockedChild(state: Parameters<NonNullable<Options["mutate"]>>[1]): Row {
+  Object.assign(state.tasks[0]!, { status: "blocked" });
+  Object.assign(state.tasks[1]!, { status: "blocked", statusVersion: 2,
+    unblockDescriptor: { owner: "board", action: "Provide an accessible delivery artifact." } });
+  const run = state.runs.find(run => run.id === "child-run")!;
+  Object.assign(run, { createdAt: "2026-01-01T00:00:00Z", nativePhase: "committed", resultJson: {
+    finalizationPhase: "committed", prpReportedWorkDisposition: "blocked",
+    finalizationReasonCode: "current_track_blocker_waiting", authoritativeDecision: "blocked",
+    issueStatusAfter: "blocked", statusVersionAfter: 2,
+  } });
+  return run;
 }

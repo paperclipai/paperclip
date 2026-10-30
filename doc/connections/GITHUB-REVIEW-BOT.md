@@ -200,6 +200,17 @@ and submits the reviewed commit, findings, rationale, and coverage. Paperclip
 validates the result and computes the **Paperclip Review** check. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
 
+`submit_review.summary` contains the review body: the change, findings, and
+verdict. `rationale` adds evidence for the score and remaining risk without
+repeating the summary. Paperclip renders the bot-name/score heading and the
+reviewed-commit, coverage, and task/run footer from the structured fields. Agents
+must not copy these generated sections from an earlier published comment into
+either text field. This contract is included in new bots' tool schemas and in
+the review instructions generated for existing bots. Publication also removes
+leading copied score headings for the current bot, with a plain or Markdown-escaped
+name, or the legacy **Paperclip Review** name. Other review sections and the saved
+assessment remain intact.
+
 | Score | Assessment rubric |
 | --- | --- |
 | 0 | No usable assessment; explain what prevented evaluation. |

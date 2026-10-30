@@ -574,6 +574,44 @@ it.each((["task", "legacy"] as const).flatMap(surface => [
   expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
+it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner", "process"].map(adapterType => ({ previousAgentId, adapterType }))))("keeps the selected responder mounted across reassignment, acknowledgement and $adapterType startup (previous=$previousAgentId)", async ({ previousAgentId, adapterType }) => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const props = {
+    issueId: "issue", issueStatus: "in_review", currentUserId: "board", comments: [], onAdd, enableReassign: true,
+    suggestedAssigneeValue: "agent:next-agent",
+    reassignOptions: [{ id: "agent:next-agent", label: "Next worker" }, { id: "agent:previous-agent", label: "Previous worker" }],
+    agentMap: new Map([
+      ["previous-agent", { id: "previous-agent", name: "Previous worker", adapterType: "paperclip_runner" } as Agent],
+      ["next-agent", { id: "next-agent", name: "Next worker", adapterType } as Agent],
+    ]),
+  };
+  render(<TaskChatThread {...props} issueAssigneeAgentId={previousAgentId} currentAssigneeValue={previousAgentId ? `agent:${previousAgentId}` : "user:board"} />);
+  if (previousAgentId) {
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+    await act(async () => document.querySelector('[data-assignee-identity="agent:next-agent"]')!.closest("button")!.click());
+  }
+  await act(async () => editorCallbacks.change("Please check this."));
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+  expect(onAdd.mock.calls[0]?.[2]).toEqual({ assigneeAgentId: "next-agent", assigneeUserId: null });
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Next worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body: "Please check this.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<TaskChatThread {...props} comments={[saved]} issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" />);
+  await act(async () => acknowledge());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  expect(container.textContent).toContain("Queued");
+  // Choosing a recipient for the next draft does not change the sent request.
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+  await act(async () => document.querySelector('[data-assignee-identity="agent:previous-agent"]')!.closest("button")!.click());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  const live = { ...nativeRunningRun(), runtimeMode: adapterType === "paperclip_runner" ? "native" as const : "legacy" as const, adapterType, agentId: "next-agent", agentName: "Next worker" };
+  render(<TaskChatThread {...props} comments={[saved]} issueStatus="in_progress" issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" activeRun={live} liveRuns={[live]} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+});
+
 it("prepares comment-link history and its composer before reveal", async () => {
   const props = {
     issueId: "linked-issue",

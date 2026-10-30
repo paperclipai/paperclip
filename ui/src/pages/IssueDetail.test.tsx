@@ -1690,6 +1690,26 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
   });
 
+  it("keeps a cold Coordinator task compact when Classic settings arrive before the workspace preference", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    coordinatorPreference.loaded = false;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false, enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
+    await flushReact();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+
+    Object.assign(coordinatorPreference, { enabled: true, loaded: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({ compactHistory: true }));
+    expect(mockIssuesApi.recentComments).toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(false);
+  });
+
   it("does not post after the account changes while comment queries cancel", async () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "account-a" } });
     mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Account A retained text" }));

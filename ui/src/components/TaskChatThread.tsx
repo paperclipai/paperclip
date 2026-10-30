@@ -39,7 +39,7 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
-import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import {
   TaskChatTurnStatusIsland,
   taskChatTurnStatusModel,
@@ -2459,12 +2459,31 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // pill's own second-tick keeps the elapsed readout moving. `running` follows
   // tailStreaming: true while live, false through the settle gap — so the tail
   // renders identically either side of the run finishing.
+  const {
+    pending: runnerSubmissionPending,
+    agentId: submissionAgentId,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const tailAgentName =
     liveRun?.agentName ?? linkedRunMetaById.get(tailRunId ?? "")?.agentName;
   const tailAgentId =
     liveRun?.agentId ??
     linkedRunMetaById.get(tailRunId ?? "")?.agentId ??
-    issueAssigneeAgentId;
+    submissionAgentId ?? issueAssigneeAgentId;
   const tailAgent = tailAgentId ? agentMap?.get(tailAgentId) : undefined;
   const visibleTailAgentName = tailAgentName ?? tailAgent?.name ?? null;
   const visibleTailAgentIcon = tailAgent?.icon ?? null;
@@ -2705,29 +2724,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [handleRuntimeRequestDecision, onSkipInteraction],
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
-  const hasAgentAssignee = Boolean(issueAssigneeAgentId);
-  const {
-    pending: runnerSubmissionPending,
-    takingLonger: submissionTakingLonger,
-    begin: beginSubmission,
-    reject: rejectSubmission,
-    blocked: startupBlocked,
-  } = useRunnerSubmission({
-    issueId: issueId ?? null,
-    agentId: issueAssigneeAgentId,
-    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
-    blocked: Boolean(composerPause),
-    comments,
-    issueStatus,
-    runId: liveRun?.id ?? null,
-    linkedRuns,
-    interruption: props.interruption,
-    onRefresh: props.onRefreshLatestComments,
-  });
+  const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
       args[4] ??= crypto.randomUUID();
-      const attempt = beginSubmission(args[4]);
+      const attempt = beginSubmission(args[4], args[2] ? {
+        agentId: args[2].assigneeAgentId,
+        agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
+      } : undefined);
       try {
         await onAdd(...args);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
@@ -2740,7 +2744,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         throw error;
       }
     },
-    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput],
+    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput, agentMap],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
@@ -3228,9 +3232,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <>
                               {tailRunId || optimisticRunnerStartup ? (
                                 <div data-testid="task-chat-live-transcript">
+                                  <TaskChatShimmerScope items={tailItems}>
+                                  <TaskChatRunnerHeader
+                                    runId={tailRunId}
+                                    agentName={visibleTailAgentName}
+                                    agentIcon={visibleTailAgentIcon}
+                                    agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                    status={optimisticRunnerStartup ? "queued" : tailStatus}
+                                    execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                    preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                    startedAtMs={tailStartedAtMs}
+                                    finishedAtMs={tailFinishedAtMs}
+                                    continuedAfterSteering={paperclipRunnerTail && tailTimelineAnchors.length > 0}
+                                    statusContent={tailRunSource?.adapterType !== "paperclip_runner" && !optimisticRunnerStartup ? (
+                                      <TaskChatLiveRunPill status={tailStatus} execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                        startedAtMs={tailStartedAtMs} finishedAtMs={tailFinishedAtMs} toolSummary={tailToolSummary} />
+                                    ) : undefined}
+                                  />
                                   {tailRunSource?.adapterType === "paperclip_runner" ||
                                   optimisticRunnerStartup ? (
                                     <TaskChatRunnerTurn
+                                      showHeader={false}
                                       runId={tailRunId}
                                       execution={
                                         liveRun?.id === tailRunId
@@ -3266,17 +3288,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     />
                                   ) : (
                                     <TaskChatShimmerScope items={tailItems}>
-                                      <TaskChatLiveRunPill
-                                        status={tailStatus}
-                                        execution={
-                                          liveRun?.id === tailRunId
-                                            ? liveRun.execution
-                                            : null
-                                        }
-                                        startedAtMs={tailStartedAtMs}
-                                        finishedAtMs={tailFinishedAtMs}
-                                        toolSummary={tailToolSummary}
-                                      />
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
@@ -3294,6 +3305,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       />
                                     </TaskChatShimmerScope>
                                   )}
+                                  </TaskChatShimmerScope>
                                 </div>
                               ) : null}
                               {tailTaskCreationItems.map(item => (

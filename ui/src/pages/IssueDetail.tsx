@@ -3347,7 +3347,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
     issueId,
-    Boolean(conversation || classicTaskInterfaceEnabled),
+    // Classic settings can resolve before the personal workspace preference.
+    // Do not persist full-history expansion for a surface we have not chosen.
+    Boolean(conversation || (taskInterfaceSettingsLoaded && classicTaskInterfaceEnabled)),
     coreIssueQuery.data,
   );
   const issueQuery = useQuery({
