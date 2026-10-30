@@ -13,6 +13,7 @@
  * CSS motion tokens in ui/src/index.css.
  */
 import type {
+  Issue,
   TaskBrowser,
   IssueAttachment,
   IssueCommentMetadata,
@@ -555,6 +556,14 @@ export interface TaskChatTurnItem {
   };
 }
 
+export interface TaskChatTaskCreatedItem {
+  id: string;
+  kind: "task_created";
+  task: Pick<Issue, "id" | "identifier" | "title" | "status">;
+  isSubtask: boolean;
+  timestamp: string;
+}
+
 export interface TaskChatProjectCreatedItem {
   id: string;
   kind: "project_created";
@@ -589,6 +598,7 @@ export type TaskChatItem =
   | { id: string; kind: "decision_receipt"; receipt: DecisionHistoryItem }
   | { id: string; kind: "task_handoff"; handoff: ConversationTaskHandoff; animateEntry?: boolean }
   | TaskChatBrowserItem
+  | TaskChatTaskCreatedItem
   | TaskChatProjectCreatedItem
   | TaskChatSkillCreatedItem
   | TaskChatMessageItem

@@ -1,6 +1,7 @@
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
+import { TaskChatTaskCreatedCard } from "./TaskChatTaskCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -110,6 +111,7 @@ function renderItem(
     case "browser": return <TaskBrowserActivity browser={item.browser} label={item.label} onOpen={onOpenBrowser} />;
     case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "skill_created": return <TaskChatSkillCreatedCard item={item} onOpen={onOpenSkill} />;
+    case "task_created": return <TaskChatTaskCreatedCard item={item} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to

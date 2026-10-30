@@ -9,9 +9,10 @@ import {
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
 import { credentialAccessNotice } from "@/lib/credential-access-notice";
-import type { ActivityEvent, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
+import { taskCreatedItems } from "@/components/task-chat/task-created-items";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { CoordinatorChatHandoffStatus, CoordinatorChatTaskHandoff, standaloneChatHandoffs, useCoordinatorChatTaskHandoffs, useLiveChatHandoffIds } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
 import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
@@ -428,6 +429,7 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
   conversationMode?: boolean;
   creationActivity?: ActivityEvent[];
+  createdTasks?: Issue[];
   compactHistory?: boolean;
   historyControl?: ReactNode;
   onExpandHistory?: () => void;
@@ -622,6 +624,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const liveHandoffIds = useLiveChatHandoffIds(`${currentUserId}:${issueId}`, taskHandoffs.handoffs, taskHandoffs.isSuccess);
   const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const createdSkillItems = useMemo(() => skillCreatedItems(props.creationActivity ?? []), [props.creationActivity]);
+  const createdTaskItems = useMemo(() => {
+    const representedTaskIds = new Set(taskHandoffs.handoffs.map((handoff) => handoff.issueId));
+    for (const interaction of interactions ?? []) {
+      if (interaction.kind !== "suggest_tasks" || interaction.status !== "accepted" || isSuppressedThreadInteraction(interaction)) continue;
+      for (const task of interaction.result?.createdTasks ?? []) representedTaskIds.add(task.issueId);
+    }
+    return taskCreatedItems(props.createdTasks ?? [], issueId, companyId, representedTaskIds);
+  }, [props.createdTasks, issueId, companyId, taskHandoffs.handoffs, interactions]);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1406,6 +1416,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const item of createdSkillItems) {
       entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
     }
+    for (const item of createdTaskItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 3 });
+    }
     // Older sessions arrive with their surrounding messages when history is
     // paged in; otherwise they would collect above the loaded conversation.
     const historyStart = hasOlderComments
@@ -1433,6 +1446,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [
     createdProjectItems,
     createdSkillItems,
+    createdTaskItems,
     browsers,
     hasOlderComments,
     comments,
