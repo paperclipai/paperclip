@@ -927,6 +927,35 @@ impl AcpxCommandExecutor {
             .canonical_digest()
     }
 
+    fn restore_launch_profile_digest(
+        &self,
+        state: &AcpxDurableState,
+    ) -> Result<String, DurableRunnerError> {
+        let Some(profile) = self.launch_profile.as_ref() else {
+            return self.launch_profile_digest();
+        };
+        let Some(current) = profile.candidate_admission.as_ref().filter(|grant| {
+            grant.agent == "kimi" && state.descriptor.run_id != self.context.run_id
+        }) else {
+            return profile.canonical_digest();
+        };
+        let mut prior = profile.clone();
+        prior.candidate_admission.as_mut().unwrap().run_id = state.descriptor.run_id.clone();
+        prior
+            .candidate_admission
+            .as_ref()
+            .unwrap()
+            .validate_next_run(
+                current,
+                &state.descriptor.agent,
+                &state.descriptor.model,
+                &self.context.run_id,
+                &self.context.normalized_session_id,
+            )
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        prior.canonical_digest()
+    }
+
     fn restore(&mut self) -> Result<(), DurableRunnerError> {
         self.ensure_persistence_healthy()?;
         if self.restore_checked {
@@ -986,7 +1015,7 @@ impl AcpxCommandExecutor {
         let state: AcpxDurableState = serde_json::from_slice(&bytes).map_err(|error| {
             DurableRunnerError::invalid(format!("ACPX provider state is malformed: {error}"))
         })?;
-        let launch_profile_digest = self.launch_profile_digest()?;
+        let launch_profile_digest = self.restore_launch_profile_digest(&state)?;
         state.validate(&self.context, &launch_profile_digest)?;
         self.state = Some(state);
         self.restore_session_if_needed()
@@ -1264,34 +1293,59 @@ impl AcpxCommandExecutor {
             attachment_context.run_id = run_id.to_owned();
         }
         descriptor.validate(&attachment_context)?;
+        let cold_candidate_attachment = self
+            .candidate_admission()
+            .is_some_and(|grant| grant.agent == "kimi")
+            && payload.get("paperclipNextAuthority").is_none()
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.descriptor.run_id != self.context.run_id);
         let next_candidate = if let Some(admission) = self
             .candidate_admission()
             .filter(|admission| admission.agent == "kimi")
         {
-            let proposed: crate::acpx_candidate_admission::AcpxCandidateAdmission =
-                serde_json::from_value(
-                    payload
-                        .pointer("/paperclipNextAuthority/candidateAdmission")
-                        .cloned()
-                        .ok_or_else(|| {
-                            DurableRunnerError::invalid(
-                                "Kimi run.attach requires exact trusted candidate admission",
-                            )
-                        })?,
-                )
-                .map_err(|_| {
-                    DurableRunnerError::invalid("Kimi run.attach candidate admission is invalid")
-                })?;
-            admission
-                .validate_next_run(
-                    &proposed,
-                    &descriptor.agent,
-                    &descriptor.model,
-                    &descriptor.run_id,
-                    &descriptor.normalized_session_id,
-                )
-                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-            Some(proposed)
+            if cold_candidate_attachment {
+                let state = self.state.as_ref().unwrap();
+                let digest = self.restore_launch_profile_digest(state)?;
+                state.validate(&self.context, &digest)?;
+                admission
+                    .validate_binding(
+                        &descriptor.agent,
+                        &descriptor.model,
+                        &self.context.run_id,
+                        &self.context.normalized_session_id,
+                    )
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                Some(admission.clone())
+            } else {
+                let proposed: crate::acpx_candidate_admission::AcpxCandidateAdmission =
+                    serde_json::from_value(
+                        payload
+                            .pointer("/paperclipNextAuthority/candidateAdmission")
+                            .cloned()
+                            .ok_or_else(|| {
+                                DurableRunnerError::invalid(
+                                    "Kimi run.attach requires exact trusted candidate admission",
+                                )
+                            })?,
+                    )
+                    .map_err(|_| {
+                        DurableRunnerError::invalid(
+                            "Kimi run.attach candidate admission is invalid",
+                        )
+                    })?;
+                admission
+                    .validate_next_run(
+                        &proposed,
+                        &descriptor.agent,
+                        &descriptor.model,
+                        &descriptor.run_id,
+                        &descriptor.normalized_session_id,
+                    )
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                Some(proposed)
+            }
         } else {
             None
         };
@@ -1371,17 +1425,23 @@ impl AcpxCommandExecutor {
                 .candidate_admission = Some(admission);
         }
         let launch_profile_digest = self.launch_profile_digest()?;
-        let state = self
+        let mut state = self
             .state
-            .as_mut()
-            .expect("ACPX state remains available while attaching a run");
+            .as_ref()
+            .expect("ACPX state remains available while attaching a run")
+            .clone();
         state.launch_profile_digest = launch_profile_digest;
         state.descriptor = descriptor;
         state.tool_set = tool_set;
         state.semantic_result = None;
         state.pending_events.clear();
         state.lifecycle = "suspended".to_owned();
-        self.save_state()
+        if cold_candidate_attachment {
+            self.commit_staged_state(state)
+        } else {
+            self.state = Some(state);
+            self.save_state()
+        }
     }
 
     fn open_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
@@ -5047,6 +5107,377 @@ mod tests {
         assert_eq!(saved.descriptor.run_id, "run-2");
         assert_eq!(saved.launch_profile_digest, updated.launch_profile_digest);
         assert!(executor.session.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn kimi_cold_restore_fixture(
+        label: &str,
+    ) -> (PathBuf, DurableRunnerConfig, Value, Vec<u8>, PathBuf) {
+        let directory = temporary_directory(label);
+        let mut grant = crate::acpx_candidate_admission::test_admission("run-1", "session-1");
+        grant.agent = "kimi".to_owned();
+        grant.model = "explicit-test-model".to_owned();
+        grant.profile_digest = acpx_release_profile("kimi")
+            .unwrap()
+            .command_digest
+            .to_owned();
+        grant.platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        }
+        .to_owned();
+        grant.architecture = if cfg!(target_os = "macos") {
+            "arm64"
+        } else {
+            "x64"
+        }
+        .to_owned();
+        grant.native_closure_digest = format!(
+            "sha256:{}",
+            crate::generated_acpx_profiles::kimi_native_closure(
+                &grant.platform,
+                &grant.architecture
+            )
+            .unwrap()
+        );
+        let command = directory.join("owned-sidecar");
+        let sentinel = directory.join("provider-opened");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", sentinel.display()).as_bytes(),
+            true,
+        );
+        let profile = AcpxLaunchProfile {
+            candidate_admission: Some(grant.clone()),
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: vec![],
+            artifacts: vec![artifact(&command)],
+        };
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut value = descriptor("kimi");
+        value["runtimeDirectory"] = json!(runtime);
+        value["cwd"] = json!(workspace);
+        value["sidecarCommand"] = json!(command);
+        value["sidecarArgs"] = json!([]);
+        let desc: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: desc.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: desc.model.clone(),
+            effective_model: desc.model.clone(),
+            permission_mode: Some(desc.permission_mode),
+            mode: None,
+            pi_thinking_level: None,
+            claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let operations = Vec::new();
+        let tools = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let previous_digest = profile.canonical_digest().unwrap();
+        let mut state = AcpxDurableState::new(desc, tools, previous_digest.clone());
+        state.lifecycle = "suspended".to_owned();
+        state.identity = Some(identity);
+        let config = test_config(&directory, Some(profile));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        executor.state = Some(state);
+        executor.save_state().unwrap();
+        let before = fs::read(executor.state_path()).unwrap();
+        let mut next_config = config.clone();
+        next_config.run_id = "run-2".to_owned();
+        next_config.turn_id = "turn-2".to_owned();
+        next_config.item_id = "item-2".to_owned();
+        let next_grant = next_config
+            .acpx_launch_profile
+            .as_mut()
+            .unwrap()
+            .candidate_admission
+            .as_mut()
+            .unwrap();
+        next_grant.run_id = "run-2".to_owned();
+        next_config.validate().unwrap();
+        let mut next_provider = value;
+        next_provider["runId"] = json!("run-2");
+        (
+            directory,
+            next_config,
+            json!({"provider": next_provider}),
+            before,
+            sentinel,
+        )
+    }
+
+    fn cold_attach_command(payload: Value) -> Command {
+        Command {
+            schema: "paperclip.prp.command.v1".into(),
+            command_id: "cold-attach".into(),
+            controller_seq: 1,
+            command_type: "run.attach".into(),
+            issued_at: "2026-10-30T00:00:00.000Z".into(),
+            deadline_at: None,
+            precondition: None,
+            payload,
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn kimi_candidate_governed_wait_cold_restore_uses_authenticated_next_startup() {
+        let (directory, next_config, payload, before, sentinel) =
+            kimi_cold_restore_fixture("kimi-candidate-cold-governed-wait");
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &next_config);
+        recovered.restore().expect("authorized cold Kimi restore must retain the settled prior session until authenticated attachment");
+        assert!(recovered.session.is_none());
+        assert!(recovered.poll_events().unwrap().is_empty());
+        assert!(!sentinel.exists());
+        recovered.attach_run(&payload)
+            .expect("cold replacement uses its already authenticated startup authority, not a second warm next-authority grant");
+        let saved: AcpxDurableState =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(saved.descriptor.run_id, "run-2");
+        assert_eq!(
+            saved.launch_profile_digest,
+            next_config
+                .acpx_launch_profile
+                .as_ref()
+                .unwrap()
+                .canonical_digest()
+                .unwrap()
+        );
+        assert!(recovered.session.is_none());
+        assert!(!sentinel.exists());
+        assert_ne!(fs::read(recovered.state_path()).unwrap(), before);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn kimi_candidate_cold_restore_rejects_changed_startup_authority_before_provider_open() {
+        for field in [
+            "company",
+            "model",
+            "expiry",
+            "expired",
+            "profile",
+            "closure",
+            "platform",
+            "architecture",
+            "session",
+            "grant_run",
+            "context_run",
+            "authority",
+            "command",
+            "args",
+            "artifact",
+            "missing_grant",
+            "saved_digest",
+        ] {
+            let (directory, mut config, payload, before, sentinel) =
+                kimi_cold_restore_fixture("kimi-candidate-cold-reject");
+            match field {
+                "context_run" => config.run_id = "foreign-run".into(),
+                "missing_grant" => {
+                    config
+                        .acpx_launch_profile
+                        .as_mut()
+                        .unwrap()
+                        .candidate_admission = None
+                }
+                "saved_digest" => {
+                    let mut state: AcpxDurableState = serde_json::from_slice(&before).unwrap();
+                    state.launch_profile_digest = format!("sha256:{}", "0".repeat(64));
+                    fs::write(
+                        directory.join("acpx-provider-state.json"),
+                        serde_json::to_vec(&state).unwrap(),
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    let profile = config.acpx_launch_profile.as_mut().unwrap();
+                    let grant = profile.candidate_admission.as_mut().unwrap();
+                    match field {
+                        "company" => grant.company_id = "foreign-company".into(),
+                        "model" => grant.model = "foreign-model".into(),
+                        "expiry" => grant.expires_at += 1,
+                        "expired" => grant.expires_at = 1,
+                        "profile" => grant.profile_digest = format!("sha256:{}", "0".repeat(64)),
+                        "closure" => {
+                            grant.native_closure_digest = format!("sha256:{}", "0".repeat(64))
+                        }
+                        "platform" => grant.platform = "foreign-platform".into(),
+                        "architecture" => grant.architecture = "foreign-architecture".into(),
+                        "session" => grant.normalized_session_id = "foreign-session".into(),
+                        "grant_run" => grant.run_id = "foreign-run".into(),
+                        "authority" => {
+                            profile.authority_digest = format!("sha256:{}", "0".repeat(64))
+                        }
+                        "command" => profile.command = directory.join("foreign-command"),
+                        "args" => profile.args.push("foreign-argument".into()),
+                        "artifact" => {
+                            profile.artifacts[0].sha256 = format!("sha256:{}", "0".repeat(64))
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let retained = fs::read(recovered.state_path()).unwrap();
+            assert!(
+                recovered.execute(&cold_attach_command(payload)).is_err(),
+                "{field}"
+            );
+            assert!(recovered.session.is_none(), "{field}");
+            assert!(!sentinel.exists(), "{field}");
+            assert_eq!(
+                fs::read(recovered.state_path()).unwrap(),
+                retained,
+                "{field}"
+            );
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn kimi_candidate_cold_attach_rejects_unsettled_or_changed_session_before_provider_open() {
+        for field in [
+            "run",
+            "session",
+            "model",
+            "workspace",
+            "active_turn",
+            "pending_event",
+            "exit_unconfirmed",
+            "identity",
+            "closed",
+        ] {
+            let (directory, config, mut payload, before, sentinel) =
+                kimi_cold_restore_fixture("kimi-candidate-cold-binding");
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            match field {
+                "run" => payload["provider"]["runId"] = json!("foreign-run"),
+                "session" => payload["provider"]["normalizedSessionId"] = json!("foreign-session"),
+                "model" => payload["provider"]["model"] = json!("foreign-model"),
+                "workspace" => {
+                    payload["provider"]["cwd"] = json!(directory.join("foreign-workspace"))
+                }
+                _ => {
+                    let mut state: AcpxDurableState = serde_json::from_slice(&before).unwrap();
+                    match field {
+                        "active_turn" => state.active_turn_id = Some("active-turn".into()),
+                        "pending_event" => {
+                            state
+                                .push(NormalizedProviderEvent {
+                                    event_type: "runtime_request.created".into(),
+                                    priority: EventPriority::P0,
+                                    payload: json!({"request":pending_input_request("input-1")}),
+                                })
+                                .unwrap();
+                        }
+                        "exit_unconfirmed" => state.provider_exit_unconfirmed = true,
+                        "identity" => state.identity = None,
+                        "closed" => state.lifecycle = "closed".into(),
+                        _ => unreachable!(),
+                    }
+                    fs::write(recovered.state_path(), serde_json::to_vec(&state).unwrap()).unwrap();
+                }
+            }
+            let retained = fs::read(recovered.state_path()).unwrap();
+            assert!(
+                recovered.execute(&cold_attach_command(payload)).is_err(),
+                "{field}"
+            );
+            assert!(recovered.session.is_none(), "{field}");
+            assert!(!sentinel.exists(), "{field}");
+            assert_eq!(
+                fs::read(recovered.state_path()).unwrap(),
+                retained,
+                "{field}"
+            );
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn kimi_candidate_cold_attach_post_rename_failure_quarantines_public_execution() {
+        let (directory, config, payload, before, sentinel) =
+            kimi_cold_restore_fixture("kimi-candidate-cold-write-failure");
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered.restore().unwrap();
+        let previous_state = recovered.state.clone();
+        recovered.fail_after_state_rename = true;
+        let command = cold_attach_command(payload);
+        let error = recovered.execute(&command).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected post-rename sync failure"));
+        assert_eq!(recovered.state, previous_state);
+        assert!(recovered.session.is_none());
+        assert!(!sentinel.exists());
+        let disk = fs::read(recovered.state_path()).unwrap();
+        assert_ne!(disk, before);
+        let saved: AcpxDurableState = serde_json::from_slice(&disk).unwrap();
+        assert_eq!(saved.descriptor.run_id, "run-2");
+        assert_eq!(
+            saved.launch_profile_digest,
+            config
+                .acpx_launch_profile
+                .as_ref()
+                .unwrap()
+                .canonical_digest()
+                .unwrap()
+        );
+        recovered.fail_after_state_rename = false;
+        for result in [
+            recovered.retained_events().map(|_| ()),
+            recovered.poll_events().map(|_| ()),
+            recovered.acknowledge_events(0),
+            recovered.restore(),
+            recovered.save_state(),
+            recovered.shutdown(),
+        ] {
+            assert_eq!(result.unwrap_err().to_string(), error.to_string());
+        }
+        assert_eq!(
+            recovered.execute(&command).unwrap_err().to_string(),
+            error.to_string()
+        );
+        assert_eq!(fs::read(recovered.state_path()).unwrap(), disk);
+        assert!(!sentinel.exists());
         fs::remove_dir_all(directory).unwrap();
     }
 }

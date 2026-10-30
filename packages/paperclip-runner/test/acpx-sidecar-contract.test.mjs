@@ -85,6 +85,47 @@ test("Pi session admission requires an explicit supported thinking level includi
   }
 });
 
+test("session.open accepts only the schema's closed parameter set", () => {
+  const open = (params) => ({ protocolVersion, id: 1, command: "session.open", params });
+  const names = Object.keys(schema.$defs.sessionOpenParams.properties);
+  assert.ok(names.includes("grokEffort") && names.includes("runtimeContext"));
+  for (const name of names.filter(name => !["agent", "piThinkingLevel", "claudeEffort", "candidateAdmission", "expectedIdentity", "providerPolicy"].includes(name))) {
+    assert.equal(validate(open({ agent: "codex", [name]: "value" })), true, name);
+  }
+  assert.equal(validate(open({ agent: "codex", unsupportedField: true })), false);
+  for (const providerPolicy of [null, { readOnly: true }, { readOnly: false }]) {
+    assert.equal(validate(open({ agent: "codex", providerPolicy })), true, JSON.stringify(providerPolicy));
+  }
+  for (const providerPolicy of [{}, { readOnly: "yes" }, { readOnly: true, extra: true }]) {
+    assert.equal(validate(open({ agent: "codex", providerPolicy })), false, JSON.stringify(providerPolicy));
+  }
+});
+
+test("the runtime context schema closes every nested object", async () => {
+  const runtimeSchema = JSON.parse(await readFile(new URL("../protocol/provider-schemas/runtime-context.schema.json", import.meta.url), "utf8"));
+  const validateContext = new Ajv2020({ allErrors: true, strict: true }).compile(runtimeSchema);
+  const hex = "a".repeat(64);
+  const asset = { schema: "paperclip.runtime-asset.v1", digest: hex, manifestDigest: hex, rootPath: "/bundle", fileCount: 1, totalBytes: 2 };
+  const context = {
+    prompt: { revision: "paperclip-execution.v8", text: "prompt", digest: hex },
+    instructions: { entryPath: "AGENTS.md", bundle: asset, workingCopy: { rootPath: "/work", entryPath: "AGENTS.md", kind: "agent_files" } },
+    skills: [{ key: "skill", runtimeName: "skill", versionId: null, bundle: asset }],
+    mcp: { assignmentSetId: "set", digest: hex, bindingId: null },
+    connectionInstructions: { text: "connect", digest: hex },
+    aggregateDigest: hex,
+  };
+  assert.equal(validateContext(context), true, JSON.stringify(validateContext.errors));
+  const nested = [[], ["prompt"], ["instructions"], ["instructions", "bundle"], ["instructions", "workingCopy"], ["mcp"], ["connectionInstructions"]];
+  for (const path of nested) {
+    const altered = structuredClone(context);
+    path.reduce((value, key) => value[key], altered).unexpected = true;
+    assert.equal(validateContext(altered), false, path.join("."));
+  }
+  const alteredSkill = structuredClone(context);
+  alteredSkill.skills[0].unexpected = true;
+  assert.equal(validateContext(alteredSkill), false);
+});
+
 test("public Pi descriptors preserve effective thinking levels without invalidating historical replay", async () => {
   const descriptorSchema = JSON.parse(await readFile(new URL("../protocol/schemas/provider-descriptor.schema.json", import.meta.url), "utf8"));
   const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);

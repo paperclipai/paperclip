@@ -2457,7 +2457,12 @@ directory staging; invalid sidecars fail
 closed. Keep transport files outside the pack so they cannot include themselves.
 Compatible protected image packs remain preferred and never transfer archives.
 The Runner's `src/live/provider-pack-contract.json` declares interface revisions;
-bump only the affected interface when its runner/pack contract breaks. Qualify
+bump only the affected interface when its runner/pack contract breaks. Image
+packs must also match the bundled pack's computed `contractDigest`
+(`scripts/contracts/contract-fingerprints.mjs`, over the `protocol/` and
+`generated/` JSON contracts and Rust shapes), so an unbumped contract change
+still retires older image packs. Declare new runner/pack contracts in a schema
+and generate their TypeScript, so the digest covers them. Qualify
 and seal packs at image publication. The fast path requires root-owned,
 non-writable ancestors and manifest, and rejects writable aliases. The selected
 pack's own artifact identities feed launch and the recovery receipt. Reattachment
