@@ -3346,7 +3346,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-settings-form [data-config-section] {
   @apply my-0;
 }
-.agent-settings-form [data-config-section] > .rounded-lg {
+.agent-settings-form [data-config-section] > .rounded-lg:not([data-agent-tile]) {
   @apply bg-card p-5;
 }
 .agent-settings-form [data-config-section] h3 {
@@ -3364,8 +3364,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   > :nth-child(n + 3) {
   @apply sm:col-span-2;
 }
-.agent-settings-overview section,
-.agent-settings-permissions .rounded-lg,
+.agent-settings-overview section:not([data-agent-tile]),
+.agent-settings-permissions .rounded-lg:not([data-agent-tile]),
 .agent-settings-api-keys .rounded-lg,
 .agent-settings-revisions .rounded-md {
   @apply bg-card;
@@ -5152,6 +5152,8 @@ html:not(.dark) .coordinator-sidebar {
   }
   .agent-config-panels > [data-config-section="adapter"] {
     grid-column: 1;
+  }
+  .agent-config-panels:has(> [data-config-section="environment"]) > [data-config-section="adapter"] {
     grid-row: span 2;
   }
   .agent-config-panels > [data-config-section="configuration"],

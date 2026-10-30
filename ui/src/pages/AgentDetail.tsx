@@ -1969,8 +1969,8 @@ export function AgentOverview({
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="shrink-0 text-muted-foreground">Direct reports</span>
+            <div className="flex items-start gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="shrink-0 py-0.5 text-muted-foreground">Direct reports</span>
               {directReports.length === 0 ? (
                 <span className="text-foreground">None</span>
               ) : (
@@ -2026,15 +2026,6 @@ export function AgentOverview({
 }
 
 /* ---- Agent Configure Page ---- */
-
-/**
- * Agent detail URLs use a name-derived key, so updates that change the agent's
- * name (a rename or a config-revision rollback) can invalidate the reference
- * currently in the URL. When that happens, refetching the old reference would
- * 404 with "Agent not found". Instead, drop the stale cached queries and
- * replace the URL with the new canonical reference. Returns true when a
- * redirect happened.
- */
 
 export function AgentRevisionsTab({
   agent,

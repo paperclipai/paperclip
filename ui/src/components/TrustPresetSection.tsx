@@ -252,6 +252,7 @@ export function TrustPresetSection({
                   type="button"
                   role="radio"
                   aria-checked={selected}
+                  data-agent-tile=""
                   disabled={disabled}
                   onClick={() => (selected ? undefined : handlePresetChange(value))}
                   className={cn(
