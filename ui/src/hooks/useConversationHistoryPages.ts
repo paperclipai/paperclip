@@ -29,7 +29,8 @@ export function useConversationHistoryPages(issueRef: string | undefined, active
       if (!comments.length && pageParam) {
         const previous = client.getQueryData<InfiniteData<ConversationHistoryPage, string | null>>(key);
         const saved = previous?.pages.find(page => page.nextCursor === pageParam)?.fallbackCursors;
-        const candidates = saved ?? recentComments.map(comment => comment.id);
+        const boundary = recentComments.findIndex(comment => comment.id === pageParam);
+        const candidates = saved ?? (boundary < 0 ? [] : recentComments.slice(boundary + 1).map(comment => comment.id));
         const anchors = [...new Set([candidates.find(id => id !== pageParam), candidates.at(-1), null])];
         for (const anchor of anchors) {
           if (anchor === undefined || anchor === pageParam) continue;

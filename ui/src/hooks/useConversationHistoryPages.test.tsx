@@ -12,7 +12,7 @@ it("recovers deleted cursors in both the initial window and a fetched page", asy
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const root = createRoot(document.createElement("div"));
   const comment = (n: number) => ({ id: `comment-${n}`, createdAt: new Date(n * 1000) } as IssueComment);
-  const recent = [100, 101, 102].map(comment);
+  const recent = [1, 100, 101, 102].map(comment);
   api.listComments.mockImplementation(async (_ref, options) => {
     const cursor = Number(options.after?.split("-")[1] ?? 103);
     if ([100, 50].includes(cursor)) return [];
