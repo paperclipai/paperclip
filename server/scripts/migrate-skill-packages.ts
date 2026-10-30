@@ -1,5 +1,8 @@
 /** Run from the server package with its configured storage and DATABASE_URL. */
 import { createDb } from "@paperclipai/db";
+import { loadStorageConfig } from "../src/storage/config.js";
+import { createStorageProviderFromConfig } from "../src/storage/provider-registry.js";
+import { createStorageService } from "../src/storage/service.js";
 import { skillPackageMaintenance } from "../src/services/skill-package-maintenance.js";
 import { skillInstallationMaintenance } from "../src/services/skill-installation-maintenance.js";
 import { isCloudManagedInstance } from "../src/services/cloud-instance.js";
@@ -19,8 +22,11 @@ try {
     if (!current) throw new Error("Initialize Cloud runtime configuration before running skill package maintenance");
     setCloudRuntimeConfigSnapshot(current);
   }
-  const service = skillPackageMaintenance(db);
-  const installations = skillInstallationMaintenance(db);
+  // Maintenance must inspect the old provider before Cloud cutover. Server
+  // startup prerequisites still apply to the normal global storage service.
+  const storage = createStorageService(createStorageProviderFromConfig(loadStorageConfig()));
+  const service = skillPackageMaintenance(db, storage);
+  const installations = skillInstallationMaintenance(db, storage);
   const actions = { snapshots: service.migrateSnapshots, versions: service.migrateVersions,
     orphans: service.collectOrphans, deletions: service.deleteObjects,
     installations: installations.installations, eligibility: installations.eligibility, verification: installations.verifyVersions };
