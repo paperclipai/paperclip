@@ -76,8 +76,8 @@ describe("chat feature saved-state oracle", () => {
 });
 
 describe("chat feature selection", () => {
-  it("registers only the two authored queries as explicit local subscription cells", () => {
-    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features");
+  it("preserves the two authored subscription cells", () => {
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id === "runner-codex-subscription");
     expect(cells).toHaveLength(2);
     for (const cell of cells) {
       expect(cell.environment.id).toBe("local");
@@ -87,6 +87,30 @@ describe("chat feature selection", () => {
       expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);
       expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.id === cell.id)).toBe(false);
     }
+  });
+  it("selects one bounded OpenCode backlog cell with the requested model and secret reference", () => {
+    const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id === "runner-opencode");
+    expect(cells.map(cell => cell.id)).toEqual(["chat-features.runner-opencode.local.create-backlog"]);
+    const cell = cells[0]!;
+    expect(cell.profile).toMatchObject({ provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", expectedRuntimeMode: "native" });
+    expect(cell.profile.modelQualification.source).toBe("candidate_runner_profile");
+    expect(cell.requiredCredentials).toEqual(["OPENROUTER_API_KEY"]);
+    expect(cell.task).toMatchObject({ expectedRunCount: 1, turnTimeoutMs: 120_000,
+      attemptTimeoutMs: { local: 420_000 }, automaticRetryPolicy: "single_attempt" });
+    expect(cell.task.buildPrompt("nonce")).toBe(chatFeatureScenarios[0]!.query);
+    const secret = { type: "secret_ref", secretId: "fixture-openrouter", version: "latest" } as const;
+    const input = { environmentId: "env", environmentFixtureId: "local", workspacePath: "/tmp/fixture", executionId: "backlog" } as const;
+    const agent = cell.profile.buildAgent({ ...input, secretRefs: { OPENROUTER_API_KEY: secret } });
+    expect(agent).toMatchObject({ role: "ceo", adapterType: "paperclip_runner", budgetMonthlyCents: 500,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", timeoutSec: 120,
+        env: { OPENROUTER_API_KEY: secret } },
+      runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 3, maxDailyCostCents: 500 } } });
+    expect(agent).not.toHaveProperty("instructionsBundle");
+    expect(agent.adapterConfig).not.toHaveProperty("modelReasoningEffort");
+    expect(agent.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    expect(() => cell.profile.buildAgent({ ...input, secretRefs: {} })).toThrow("Missing fixture secret reference OPENROUTER_API_KEY");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(row => row.id)).toEqual([cell.id]);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.id === cell.id)).toBe(false);
   });
   it("refuses missing, malformed or duplicate catalog entries", () => {
     for (const yaml of ["{", "schema_version: 2", "schema_version: 1\nfeature: tasks\nstatus: planned\nscenarios: []"])

@@ -42,7 +42,10 @@ The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) pro
 two natural-language task scenarios into local native Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
-state/provenance checks. The broader YAML catalog remains planning inventory.
+state/provenance checks. A separately selected native OpenCode/DeepSeek1017
+backlog cell measures TestOps integration acceptance with the same oracle and
+original bounds. Its source registration is not an AWS or TestOps pass. The
+broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 125-second controller outage,

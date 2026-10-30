@@ -21,7 +21,7 @@ task, or sends a hidden follow-up.
 ## Run the first slice
 
 Follow the installation steps in [README.md](README.md#local-commands). The current
-profile is local native Codex using the catalog's recorded default model and an
+subscription profile is local native Codex using the catalog's recorded default model and an
 explicit `CODEX_AUTH_JSON` login. Load that login privately into the launcher
 environment; do not print it or save it in tracked configuration. The existing
 subscription fixture stages only `auth.json` in the disposable company login slot
@@ -35,12 +35,40 @@ pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.creat
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.delegate-announcement --max-automatic-retries 0
 ```
 
-Run creation first and inspect its packaged report before delegation. For initial
+Run creation first and inspect its packaged report before delegation. For the original Codex
 acceptance, run each cell three times against fresh fixtures on the same definition
 revision. Keep every attempt, including failures; a retry does not erase one. A
 fixture or product correction starts a new three-sample measurement. Both cells
 are explicit-only and excluded from `--all`; this does not implement or qualify
 the rest of the YAML inventory.
+
+## OpenCode TestOps integration acceptance
+
+The additional explicit cell
+`chat-features.runner-opencode.local.create-backlog` runs the same backlog
+query, public fixture and saved-state oracle on native OpenCode with
+`openrouter/deepseek/deepseek-v4.1-flash-1017`. It requires only the selected
+`OPENROUTER_API_KEY` profile credential. The launcher stores an encrypted secret
+reference for the disposable agents; no key belongs in catalog data or chat.
+This selected model is a qualification candidate. Other OpenCode suites keep
+their existing model, and delegation is not registered for this profile.
+
+```sh
+pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.create-backlog --max-automatic-retries 0
+```
+
+Use a separately named TestOps integration-acceptance plan and launch for this
+single cell. It retains one human request, one accounted controller work run,
+120-second turns, a seven-minute attempt, the five-minute stable-state bound
+and zero automatic retries. Morgan is created as fixture context but must not
+execute the saved backlog task. Existing setup probes and unknown usage remain
+reported separately. The original 244-scenario campaign, failed attempts and
+Codex measurements are not reset or regraded by this measurement.
+
+The existing normalized result, JUnit and packaged report carry the outcome to
+the execution integration. Catalog selection and provider-free oracle checks
+do not establish an AWS model pass or a successful TestOps upload. Accept this
+integration only after the real AWS execution and its TestOps result agree.
 
 ## Bounds and grading
 
