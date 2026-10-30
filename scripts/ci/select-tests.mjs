@@ -13,8 +13,11 @@ export function selectionEligibility(plan) {
   const changed = productInputs(plan.changed);
   if (!changed.length) return "Documentation-only diff";
   for (const file of changed) {
+    // Business modules can contain "config"/"setup" in their names. The graph
+    // separately tracks actual setup and configuration dependencies.
     if (!/^(?:ui\/src|server\/src|cli\/src|packages\/.+\/src)\/.+\.[cm]?[jt]sx?$/.test(file)
-      || /(?:config|setup)|\.d\.[cm]?ts$/i.test(file) || file.split("/").includes("..")) return `Broad input: ${file}`;
+      || /(?:^|\/)(?:vite|vitest)\.(?:config|setup)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/i.test(file)
+      || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
       if (!lstatSync(file).isFile()) return `Non-regular source: ${file}`;
     } catch { return `Deleted or missing source: ${file}`; }

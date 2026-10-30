@@ -160,11 +160,11 @@ export function resolveNativeRuntimeMode(input: {
   if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
     throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
   }
-  const allowedWorkModes = ["standard", "planning", "ask"];
+  const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
   if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
-      "Paperclip Runner requires a standard, planning, or ask task.",
+      "Paperclip Runner requires a standard, planning, ask, or skill test task.",
     );
   }
   const rollout = resolveNativeMigrationStatus({

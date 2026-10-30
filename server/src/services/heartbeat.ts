@@ -2609,7 +2609,7 @@ export function heartbeatService(
         usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ ledgerScope: runLedgerScope })}::jsonb`,
       }).where(eq(heartbeatRuns.id, run.id));
       const {
-        continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext,
+        continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext, pinnedSkillTest,
       } = await timePreparation("task_context", () => prepareHeartbeatTaskContext(db, {
         run, agent,
         task: { issueRef, issueContext, wakeCommentContext, context, taskSession },
@@ -2664,7 +2664,7 @@ export function heartbeatService(
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
-        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext },
+        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest },
         config: { sourceWorkspaceConfig, aiBinding },
         policy: { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode },
         environment: { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput },

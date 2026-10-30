@@ -4946,7 +4946,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       } catch {
         // Keep the settlement failure authoritative if its observer fails.
       }
-      throw new NativeSessionCloseUnrecoverableError(settlement);
+      // Sample after ingress retirement and its drain. A result observed before
+      // that barrier cannot rule out one last admitted tool callback.
+      throw new NativeSessionCloseUnrecoverableError(
+        settlement, this.#core?.semanticToolResultsSettled() === true,
+      );
     }
     if (!preparationConfirmed) {
       throw new Error(`Native runner ${attachmentPending ? "attachment" : "startup"} cleanup is unconfirmed; recovery state retained.`);
