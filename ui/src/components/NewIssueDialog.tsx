@@ -198,6 +198,7 @@ interface IssueDraft {
   assigneeChrome: boolean;
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
+  workspaceBaseRef?: string;
   useIsolatedExecutionWorkspace?: boolean;
   workMode?: IssueWorkMode;
   composerSettings?: ComposerRunSettings | null;
@@ -487,6 +488,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [workspaceBaseRef, setWorkspaceBaseRef] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [isPrivate, setIsPrivate] = useState(false);
   const { isMobile } = useSidebar();
@@ -791,6 +793,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         assigneeChrome,
         executionWorkspaceMode,
         selectedExecutionWorkspaceId,
+        workspaceBaseRef,
         workMode,
         isPrivate,
         composerSettings,
@@ -813,6 +816,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       assigneeChrome,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
+      workspaceBaseRef,
       workMode,
       isPrivate,
       composerSettings,
@@ -849,6 +853,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    workspaceBaseRef,
     workMode,
     newIssueOpen,
     queueDraftSave,
@@ -908,6 +913,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setWorkMode(nextWorkMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      setWorkspaceBaseRef("");
       executionWorkspaceDefaultProjectId.current =
         hasExplicitProjectWorkspaceId || defaultProject ? defaultProjectId || null : null;
     } else if (newIssueDefaults.title || newIssueDefaults.description) {
@@ -933,6 +939,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
       setWorkMode(nextWorkMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      setWorkspaceBaseRef("");
       executionWorkspaceDefaultProjectId.current =
         hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
           ? defaultProjectId || null
@@ -986,6 +993,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           ? (newIssueDefaults.executionWorkspaceId ?? "")
           : (draft.selectedExecutionWorkspaceId ?? ""),
       );
+      setWorkspaceBaseRef(
+        !newIssueDefaults.projectId || newIssueDefaults.projectId === draft.projectId
+          ? (draft.workspaceBaseRef ?? "")
+          : "",
+      );
       executionWorkspaceDefaultProjectId.current =
         hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
           ? restoredProjectId || null
@@ -1012,6 +1024,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      setWorkspaceBaseRef("");
       executionWorkspaceDefaultProjectId.current =
         hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
           ? defaultProjectId || null
@@ -1048,6 +1061,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setWorkspaceBaseRef("");
     setWorkMode("standard");
 
     setComposerSettings(null);
@@ -1084,8 +1098,14 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       executionWorkspaceMode === "reuse_existing"
         ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
         : executionWorkspaceMode;
+    const trimmedWorkspaceBaseRef = workspaceBaseRef.trim();
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
-      ? { mode: requestedExecutionWorkspaceMode }
+      ? {
+          mode: requestedExecutionWorkspaceMode,
+          ...(executionWorkspaceMode === "isolated_workspace" && trimmedWorkspaceBaseRef
+            ? { workspaceStrategy: { type: "git_worktree" as const, baseRef: trimmedWorkspaceBaseRef } }
+            : {}),
+        }
       : null;
     const requestedProjectWorkspaceId = !workspaceIsolationControlsVisible
       ? (newIssueDefaults.projectId === projectId ? newIssueDefaults.projectWorkspaceId : undefined)
@@ -1341,6 +1361,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
       setSelectedExecutionWorkspaceId("");
+      setWorkspaceBaseRef("");
     },
     [orderedProjects, effectiveCompanyId],
   );
@@ -1795,6 +1816,21 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                         disabled={createIssue.isPending}
                         mobile={isMobile}
                         contentStyle={entityPickerViewportStyle}
+                      />
+                    ) : null}
+                    {canChooseWorktrees && executionWorkspaceMode === "isolated_workspace" ? (
+                      <input
+                        type="text"
+                        aria-label="Base branch for the new worktree"
+                        data-testid="new-issue-workspace-base-ref"
+                        value={workspaceBaseRef}
+                        onChange={(event) => setWorkspaceBaseRef(event.target.value)}
+                        placeholder="Base branch (default)"
+                        title="Branch or ref the new worktree starts from, for example origin/main. Leave empty to use the project default."
+                        spellCheck={false}
+                        autoComplete="off"
+                        disabled={createIssue.isPending}
+                        className="h-8 min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 font-mono text-xs outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/40 sm:max-w-56 sm:flex-none"
                       />
                     ) : null}
                   </>
