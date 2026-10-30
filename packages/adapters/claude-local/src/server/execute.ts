@@ -839,10 +839,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
 
-  const buildClaudeArgs = (
-    resumeSessionId: string | null,
-    attemptInstructionsFilePath: string | undefined,
-  ) => {
+  const buildClaudeArgs = (resumeSessionId: string | null) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
     if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
@@ -860,11 +857,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    // On resumed sessions the instructions are already in the session cache;
-    // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
-    // per heartbeat and the Claude CLI may reject the combination outright.
-    if (attemptInstructionsFilePath && !resumeSessionId) {
-      args.push("--append-system-prompt-file", attemptInstructionsFilePath);
+    if (effectiveInstructionsFilePath) {
+      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     if (runtimeMcpServers.length > 0) {
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
@@ -922,8 +916,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       taskContextChars: taskContextNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
-    const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = buildClaudeArgs(resumeSessionId);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
@@ -933,7 +926,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "Using full Claude permission bypass for remote execution, including connected tools.",
       );
     }
-    if (attemptInstructionsFilePath && !resumeSessionId) {
+    if (effectiveInstructionsFilePath) {
       commandNotes.push(
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with current file location in the run prompt)`,
       );
