@@ -30,6 +30,7 @@ vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxClaudeInstallation: vi.fn(async () => undefined),
   probeAcpxGrokInstallation: vi.fn(async () => undefined),
   probeAcpxPiInstallation: vi.fn(async () => undefined),
+  probeAcpxDshInstallation: vi.fn(async () => undefined),
   probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 

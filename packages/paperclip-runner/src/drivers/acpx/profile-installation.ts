@@ -9,8 +9,8 @@ import { verifyPiInstallation } from "./pi-installation.js";
 import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
-export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile, candidateAdmission?: AcpxCandidateStartupAdmission): Promise<VerifiedAcpxInstallation> {
-  assertAcpxExecutionAdmission(profile, candidateAdmission);
+export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile, candidateAdmission?: AcpxCandidateStartupAdmission, options?: { signal?: AbortSignal }): Promise<VerifiedAcpxInstallation> {
+  if (profile.agent !== "dsh") assertAcpxExecutionAdmission(profile, candidateAdmission);
   if (profile.agent === "antigravity") return verifyAntigravityInstallation(profile, candidateAdmission);
   if (profile.agent === "pi") return verifyPiInstallation(profile);
   if (profile.agent === "copilot") return verifyCopilotInstallation(profile);
@@ -21,10 +21,10 @@ export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfil
       throw error;
     }
   }
-  if (profile.agent !== "claude" && profile.agent !== "codex" && profile.agent !== "grok") {
+  if (profile.agent !== "claude" && profile.agent !== "codex" && profile.agent !== "grok" && profile.agent !== "dsh") {
     throw new Error(`ACPX ${profile.agent} verified candidate distribution is not installed in this build`);
   }
-  return verifyQualifiedAcpxInstallation(profile);
+  return verifyQualifiedAcpxInstallation(profile, undefined, options);
 }
 
 /** Provider policy admission is repeated immediately before each process launch. */
@@ -37,6 +37,9 @@ export function assertAcpxProfileEnvironment(agent: QualifiedAcpxAgent, environm
   if (agent === "copilot") assertCopilotCredentials(environment);
   if (agent === "antigravity" && !environment.GEMINI_API_KEY?.trim() && !environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET?.trim()) {
     throw Object.assign(new Error("Google Antigravity requires an explicitly bound Google runtime connection. Connect a Google account or Gemini API key before starting a task."), { code: "ANTIGRAVITY_CREDENTIALS_MISSING", retryable: false });
+  }
+  if (agent === "dsh" && !environment.DEEPSEEK_API_KEY?.trim()) {
+    throw Object.assign(new Error("DeepSeek Harness credentials are missing. Bind DEEPSEEK_API_KEY in the agent environment."), { code: "DSH_CREDENTIALS_MISSING", retryable: false });
   }
   if (agent === "cursor" && !environment.CURSOR_API_KEY?.trim() && !environment.CURSOR_AUTH_TOKEN?.trim()) {
     throw Object.assign(new Error("Cursor credentials are missing. Bind a company secret to CURSOR_API_KEY or CURSOR_AUTH_TOKEN in the agent environment."), { code: "CURSOR_CREDENTIALS_MISSING", retryable: false });
@@ -75,5 +78,10 @@ export async function probeAcpxCursorInstallation(model: string): Promise<void> 
 
 export async function probeAcpxPiInstallation(model: string): Promise<void> {
   const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("pi", model));
+  await (await installation.openCommand()).close();
+}
+
+export async function probeAcpxDshInstallation(model: string): Promise<void> {
+  const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("dsh", model));
   await (await installation.openCommand()).close();
 }

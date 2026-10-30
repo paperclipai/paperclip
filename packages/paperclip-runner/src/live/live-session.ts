@@ -18,6 +18,7 @@ import { codexToolAcceptsResult, isCodexSemanticTool, isRetainableCodexPayload, 
 import { validateCodexResultProposal } from "../mock-core/codex-runner.js";
 import {
   resolveQualifiedAcpxProfile,
+  isAcpxCandidateAgent,
   type QualifiedAcpxAgent,
   type QualifiedAcpxProfile,
 } from "../drivers/acpx/qualified-profiles.js";
@@ -216,7 +217,7 @@ export interface CapabilityLiveUsageReceipt {
 export interface CapabilityLiveUnavailableUsage {
   turnId: string;
   attemptId: string;
-  agent: "pi" | "cursor" | "copilot";
+  agent: "pi" | "cursor" | "copilot" | "dsh";
   reason: "provider_did_not_report_usage";
   tokenUsage: null;
   costNanodollars: null;
@@ -656,7 +657,7 @@ export function assertCapabilityLiveSessionSnapshot(
   resolvePiThinkingLevel(provider === "acpx" ? String(config.acpxAgent) : "", config.piThinkingLevel);
   if (provider === "acpx") {
     const agent = config.acpxAgent;
-    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot") {
+    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot" && agent !== "dsh") {
       throw new Error("capability_live_checkpoint_corrupt: invalid config.acpxAgent");
     }
     const expected = resolveQualifiedAcpxProfile(agent, text(config.requestedModel));
@@ -804,7 +805,7 @@ export function assertCapabilityLiveSessionSnapshot(
     const unavailable = record(value);
     const turnId = text(unavailable.turnId);
     if (config.provider !== "acpx" || unavailable.agent !== config.acpxAgent
-      || !["pi", "cursor", "copilot"].includes(text(unavailable.agent))
+      || !isAcpxCandidateAgent(text(unavailable.agent))
       || !turnId || turnId.length > 512 || unavailableTurnIds.has(turnId)
       || !text(unavailable.attemptId) || text(unavailable.attemptId).length > 512
       || !text(unavailable.observedAt)
@@ -1841,7 +1842,7 @@ export class CapabilityLiveSession {
       + (selectedWithReportedCost?.outputTokens ?? 0) === 0;
     const candidate = this.#config.acpxAgent;
     if (missingTokens && this.#config.provider === "acpx"
-      && (candidate === "pi" || candidate === "cursor" || candidate === "copilot")
+      && isAcpxCandidateAgent(candidate)
       && (candidate === "cursor" || this.#transportOptions.acpxCandidateProfile === candidate)) {
       // Native candidate wrappers can complete a turn without a usage receipt,
       // including entitlement-denied turns. Retain the actual result for the

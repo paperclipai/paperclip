@@ -22,14 +22,14 @@ async function fixture(name = "@paperclipai/server") {
 describe("installed provider authority", () => {
   it("derives the owning server only from the normal installed verifier layout", async () => {
     const f = await fixture();
-    expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toEqual({ root: f.root, manifest: f.manifest });
-    expect(resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "src/drivers/acpx/installation-integrity.ts")).href)).toBeUndefined();
-    expect(resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "dist/drivers/acpx/installation-integrity.js")).href)).toBeUndefined();
+    expect(await resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toEqual({ root: f.root, manifest: f.manifest });
+    expect(await resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "src/drivers/acpx/installation-integrity.ts")).href)).toBeUndefined();
+    expect(await resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "dist/drivers/acpx/installation-integrity.js")).href)).toBeUndefined();
   });
 
   it("rejects a substituted package owner", async () => {
     const f = await fixture("unrelated-package");
-    expect(() => resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toThrow("owning server package");
+    await expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).rejects.toThrow("owning server package");
   });
 
   it("rejects a symlinked manifest before adopting its declarations", async () => {
@@ -38,7 +38,7 @@ describe("installed provider authority", () => {
     await writeFile(other, JSON.stringify({ name: "@paperclipai/server" }));
     await rm(f.manifest);
     await symlink(other, f.manifest);
-    expect(() => resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toThrow();
+    await expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).rejects.toThrow();
   });
 
   it("rejects a redirected verifier directory", async () => {
@@ -49,12 +49,19 @@ describe("installed provider authority", () => {
     await writeFile(join(other, "installation-integrity.js"), "export {};\n");
     await rm(old, { recursive: true });
     await symlink(other, old);
-    expect(() => resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toThrow("package layout");
+    await expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).rejects.toThrow("package layout");
+  });
+
+  it("cancels authority admission before reading owner metadata", async () => {
+    const f = await fixture();
+    const controller = new AbortController();
+    controller.abort(new Error("authority timeout"));
+    await expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href, controller.signal)).rejects.toThrow("authority timeout");
   });
 
   it.each(["", " ".repeat(256 * 1024 + 1)])("rejects unbounded or empty owner metadata", async contents => {
     const f = await fixture();
     await writeFile(f.manifest, contents);
-    expect(() => resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toThrow("bounded regular file");
+    await expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).rejects.toThrow("bounded regular file");
   });
 });

@@ -90,7 +90,7 @@ pub struct AcpxSidecarTransport {
 // A fresh Pi process verifies and copies its native closure before ACP admission.
 // Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
 fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
-    if agent == "pi" {
+    if matches!(agent, "pi" | "dsh") {
         Duration::from_secs(60)
     } else {
         ordinary
@@ -220,6 +220,7 @@ impl AcpxSidecarTransport {
                 "GEMINI_API_KEY",
                 "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
             ],
+            "dsh" => &["DEEPSEEK_API_KEY"],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a known agent profile",
@@ -254,10 +255,19 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot" | "antigravity") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "antigravity" | "dsh") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
+        }
+        if agent == "dsh" {
+            keys.extend_from_slice(&[
+                "DSH_HOME",
+                "DSH_PERMISSION_MODE",
+                "NARB_DISABLE_NATIVE_CACHE",
+                "DSH_TELEMETRY_MODE",
+                "DSH_TELEMETRY_DISABLED",
+            ]);
         }
         if agent == "claude" {
             keys.extend_from_slice(&[
@@ -1056,12 +1066,14 @@ mod tests {
     }
 
     #[test]
-    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+    fn pi_and_dsh_cold_open_get_the_longer_admission_budget() {
         let ordinary = Duration::from_secs(30);
-        assert_eq!(
-            session_open_timeout("pi", ordinary),
-            Duration::from_secs(60)
-        );
+        for agent in ["pi", "dsh"] {
+            assert_eq!(
+                session_open_timeout(agent, ordinary),
+                Duration::from_secs(60)
+            );
+        }
         for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
             assert_eq!(session_open_timeout(agent, ordinary), ordinary);
         }

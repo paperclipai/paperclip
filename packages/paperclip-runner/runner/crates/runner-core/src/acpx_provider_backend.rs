@@ -3215,7 +3215,7 @@ mod tests {
 
     #[test]
     fn model_admission_is_independent_of_qualification_examples() {
-        for agent in ["claude", "grok", "cursor", "copilot", "codex", "pi"] {
+        for agent in ["claude", "grok", "cursor", "copilot", "codex", "pi", "dsh"] {
             let original: AcpxProviderDescriptor =
                 serde_json::from_value(descriptor(agent)).unwrap();
             original.validate_session(&context()).unwrap();
@@ -3249,7 +3249,7 @@ mod tests {
 
     #[test]
     fn admits_candidate_descriptors_only_with_explicit_policy_and_exact_distribution() {
-        for agent in ["cursor", "copilot", "pi"] {
+        for agent in ["cursor", "copilot", "pi", "dsh"] {
             let mut value = descriptor(agent);
             let mut missing = value.clone();
             missing.as_object_mut().unwrap().remove("providerPolicy");
@@ -3286,6 +3286,7 @@ mod tests {
                 "copilot" =>
                     "sha256:b11721382293b39c1d6dd363eae547b5eae0ccca2cd5dcafc9127cc060ee9526",
                 "pi" => "sha256:edf058835ee84de3869c4a8e8bdb71a934ffdb9f34daa37ae6faeb92371d1cdf",
+                "dsh" => "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 _ => unreachable!(),
             });
             let previous_identity: AcpxProviderDescriptor =
@@ -3298,6 +3299,7 @@ mod tests {
                 "copilot" =>
                     "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
                 "pi" => "sha256:843d30e419914529755c9827d9151a306da1b50b643be7eab1abe797641a37ce",
+                "dsh" => "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 _ => unreachable!(),
             });
             let previous_contract: AcpxProviderDescriptor =
@@ -3351,7 +3353,7 @@ mod tests {
     #[test]
     fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
         let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v35-identity.json"
+            "../../../../test-fixtures/pi-acp/profile-v36-identity.json"
         ))
         .unwrap();
         let mut value = descriptor("codex");

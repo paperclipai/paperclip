@@ -45,6 +45,8 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
     expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi" } })).toBe("pi_local");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "dsh" } })).toBe("acpx:dsh");
+    expect(getAdapterLabel("acpx:dsh")).toBe("DeepSeek Harness");
 
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",
@@ -58,6 +60,7 @@ describe("adapter display registry", () => {
       hermes_gateway: "Hermes Gateway",
       opencode_local: "OpenCode",
       pi_local: "Pi",
+      "acpx:dsh": "DeepSeek Harness",
     });
   });
 

@@ -246,6 +246,8 @@ export function normalizeLegacyRunnerProvider(
   return { ...rest, provider: "codex", codexPermissionMode: "never" };
 }
 
+export const DEFAULT_DSH_RUNNER_MODEL = "deepseek-v4-flash" as const;
+
 /** Qualification is a release property, never an operator-configurable bypass. */
 export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
@@ -254,6 +256,7 @@ export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
   { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
   { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
+  { value: "dsh", label: "DeepSeek Harness", qualified: false, credentialEnvironment: ["DEEPSEEK_API_KEY"] },
 ] as const);
 
 /** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */

@@ -474,6 +474,20 @@ describe("agent routes adapter validation", () => {
     } finally { list.mockRestore(); refresh.mockRestore(); }
   });
 
+  it("returns the DSH setup catalog through the real adapter-models route", async () => {
+    const adapters = await import("../adapters/index.js");
+    const list = vi.spyOn(adapters, "listAdapterModels");
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels");
+    try {
+      const app = await createApp();
+      const response = await requestApp(app, base => request(base).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=dsh"));
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toEqual([{ id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]);
+      expect(list).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
   it("refuses another provider binding before Antigravity model discovery", async () => {
     const app = await createApp();
     const binding = encodeURIComponent(JSON.stringify({ provider: "openai", method: "subscription", mode: "responsible_user" }));

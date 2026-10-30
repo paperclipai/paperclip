@@ -15,6 +15,16 @@ pub(crate) struct AcpxReleaseProfile {
 
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
     Some(match agent {
+        "dsh" => AcpxReleaseProfile {
+            agent_server_package: "builtin:dsh-acp",
+            agent_server_version: "1",
+            agent_runtime_package: Some("@deepseek-ai/dsh"),
+            agent_runtime_version: Some("0.2.1-rc.5"),
+            command_digest:
+                "sha256:09f0bf673d8bd3893958eb1f23b9a0b6f9cde31f0d33ac120cb3b65b3b1b4b3b",
+            requires_provider_policy: true,
+            qualification_pending: true,
+        },
         "antigravity" => AcpxReleaseProfile {
             agent_server_package: "native:antigravity-acp",
             agent_server_version: "1.4.3",
@@ -31,7 +41,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: Some("native:grok"),
             agent_runtime_version: Some("1.0.13"),
             command_digest:
-                "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
+                "sha256:00eb72922d92caa6a7e1e6efee0041e0aa06fe8e41d4636d965df0bd4a9464b8",
             requires_provider_policy: false,
             qualification_pending: false,
         },
@@ -41,7 +51,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: Some("@earendil-works/pi-coding-agent"),
             agent_runtime_version: Some("1.0.0"),
             command_digest:
-                "sha256:9473de6ef4baf2bd82fe8b6757239bdc160960b0a78ae6f47fa9e0996544226c",
+                "sha256:c9c2f791dec807288849349263d747d245a5ddf557278d12efb952080f3c9487",
             requires_provider_policy: true,
             qualification_pending: false,
         },
@@ -61,7 +71,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:b9c13b83628be07086a88394ae671997291b77bbdbf45b0bd1c4e91b7121bc9d",
+                "sha256:a30f7b750fdcddf3ce12bd5272f284e3347c1b2737f57c61e8cfdc761906cba6",
             requires_provider_policy: true,
             qualification_pending: false,
         },

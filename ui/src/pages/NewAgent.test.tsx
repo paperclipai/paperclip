@@ -1363,6 +1363,22 @@ describe("New agent setup", () => {
     expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).toBeNull();
   });
 
+  it("routes DSH discovery and credentials through the registered ACPX profile", async () => {
+    state.params = new URLSearchParams({ name: "DSH", adapterType: "paperclip_runner", runnerProvider: "dsh" });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "paperclip_runner"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    api.adapterModels.mockResolvedValue([{ id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }]);
+    await renderCurrentParams();
+    await settle();
+    await vi.waitFor(() => expect(api.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent: "dsh" })));
+    expect(container.querySelector('[aria-label="DEEPSEEK_API_KEY"]')).toBeTruthy();
+    await fill("Model", "deepseek-v4-flash");
+    await fill("DEEPSEEK_API_KEY", "setup-test-key");
+    await click("Run test");
+    expect(container.textContent).toContain("DeepSeek Harness is not enabled for production");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
   it.each(["auto", "legacy"] as const)("keeps OpenCode %s selection consistent between testing and hiring", async runner => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     state.adapters = state.adapters.map((adapter: any) => adapter.type === "opencode_local"

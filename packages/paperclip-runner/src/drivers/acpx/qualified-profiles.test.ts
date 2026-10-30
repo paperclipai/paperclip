@@ -7,7 +7,7 @@ import {
 
 describe("qualified ACPX profiles", () => {
   it("binds each agent to an immutable runtime without prescribing a model", () => {
-    for (const agent of ["pi", "claude", "codex", "grok", "cursor", "copilot"] as const) {
+    for (const agent of ["pi", "claude", "codex", "grok", "cursor", "copilot", "dsh"] as const) {
       const profile = QUALIFIED_ACPX_PROFILES[agent];
       expect(profile.agent).toBe(agent);
       expect(profile.commandDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -17,16 +17,26 @@ describe("qualified ACPX profiles", () => {
     }
   });
 
-  it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("lets %s verify an explicit model absent from the catalog", (agent) => {
+  it.each(["claude", "codex", "pi", "grok", "cursor", "copilot", "dsh"] as const)("lets %s verify an explicit model absent from the catalog", (agent) => {
     const model = "custom/model[context=272k,reasoning=medium]";
     expect(resolveQualifiedAcpxProfile(agent, model)).toMatchObject({
-      qualificationModel: model, reportedModelId: model,
+      qualificationModel: model,
+      reportedModelId: agent === "dsh" ? JSON.stringify(["deepseek-official", model]) : model,
       commandDigest: QUALIFIED_ACPX_PROFILES[agent].commandDigest,
     });
   });
 
-  it.each(["claude", "codex", "grok", "cursor", "copilot", "pi"] as const)("never selects a qualification model by default for %s", (agent) => {
+  it.each(["claude", "codex", "grok", "cursor", "copilot", "pi", "dsh"] as const)("never selects a qualification model by default for %s", (agent) => {
     expect(() => resolveQualifiedAcpxProfile(agent, " ")).toThrow("must not be empty");
+  });
+
+  it("translates a bare DSH model into its opaque provider/model selector", () => {
+    expect(resolveQualifiedAcpxProfile("dsh", "deepseek-v4-flash")).toMatchObject({
+      qualificationModel: "deepseek-v4-flash",
+      reportedModelId: '["deepseek-official","deepseek-v4-flash"]',
+    });
+    expect(resolveQualifiedAcpxProfile("dsh", "custom-model").reportedModelId).not.toBe("custom-model");
+    expect(() => resolveQualifiedAcpxProfile("dsh", " surrounding-space ")).toThrow("surrounding whitespace");
   });
 
   it("binds Codex ACP to the CLI runtime it launches", () => {

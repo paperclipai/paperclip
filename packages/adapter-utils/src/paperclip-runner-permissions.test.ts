@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
   PAPERCLIP_RUNNER_ACPX_PROFILES,
+  DEFAULT_DSH_RUNNER_MODEL,
   paperclipRunnerTransitionConfig,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerModel,
@@ -18,6 +19,12 @@ describe("Paperclip Runner permission defaults", () => {
     expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "copilot"))
       .toMatchObject({ qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] });
   });
+  it("registers DeepSeek Harness as pending with its credential binding", () => {
+    expect(PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "dsh"))
+      .toMatchObject({ label: "DeepSeek Harness", qualified: false, credentialEnvironment: ["DEEPSEEK_API_KEY"] });
+    expect(DEFAULT_DSH_RUNNER_MODEL).toBe("deepseek-v4-flash");
+  });
+
   it("defaults Codex to the only qualified non-interactive mode", () => {
     expect(resolvePaperclipRunnerPermissionMode("codex", undefined)).toBe(
       "never",

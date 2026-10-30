@@ -468,7 +468,16 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
             checks: [{ code: "copilot_metadata_verified", level: "info" as const,
               message: "The verified Copilot runtime authenticated this account and accepted the selected model. No model prompt was sent." }] };
         }
-        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor" && profile.acpxAgent !== "pi") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent === "dsh") {
+          const configured = context.config.env;
+          const apiKey = configured && typeof configured === "object" && !Array.isArray(configured)
+            ? (configured as Record<string, unknown>).DEEPSEEK_API_KEY : undefined;
+          if (typeof apiKey !== "string" || !apiKey.trim()) {
+            return { adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+              checks: [{ code: "DSH_AUTH_REQUIRED", level: "error", message: "Bind DEEPSEEK_API_KEY in the agent environment." }] };
+          }
+        }
+        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor" && profile.acpxAgent !== "pi" && profile.acpxAgent !== "dsh") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
@@ -486,8 +495,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
           });
         }
-        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
-        await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
+        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation, probeAcpxDshInstallation } = await import("../vendor/paperclip-runner/live/index.js");
+        await (profile.acpxAgent === "dsh" ? probeAcpxDshInstallation : profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
         return verifyNativeClaudeApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
@@ -595,7 +604,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.160.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi/DeepSeek Harness through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. DeepSeek Harness is qualification-pending, defaults to deepseek-v4-flash, and uses the company-bound DEEPSEEK_API_KEY. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -614,7 +623,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       },
       {
         key: "acpxAgent", label: "ACP agent", type: "select" as const, default: "claude",
-        options: [{ value: "claude", label: "Claude" }, { value: "grok", label: "Grok Build" }, { value: "copilot", label: "GitHub Copilot" }],
+        options: [{ value: "claude", label: "Claude" }, { value: "grok", label: "Grok Build" }, { value: "copilot", label: "GitHub Copilot" }, { value: "dsh", label: "DeepSeek Harness" }],
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       },
       {

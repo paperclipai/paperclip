@@ -82,6 +82,11 @@ const blocking = (result: AdapterEnvironmentTestResult) =>
   result.status === "fail" ||
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 
+const ACP_RUNNER_PROVIDERS = new Set(["claude", "grok", "copilot", "pi", "antigravity", "dsh"]);
+function isAcpRunnerProvider(provider: string): boolean {
+  return ACP_RUNNER_PROVIDERS.has(provider);
+}
+
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
@@ -145,7 +150,7 @@ function Setup({
       ? "claude_local"
       : runnerProvider === "opencode"
         ? "opencode_local"
-        : runnerProvider === "pi" ? "pi_local" : runnerProvider === "codex" ? "codex_local" : runnerProvider
+        : runnerProvider === "pi" ? "pi_local" : runnerProvider === "dsh" ? "acpx:dsh" : runnerProvider === "codex" ? "codex_local" : runnerProvider
     : adapterType;
   const connectionAdapter =
     brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local" || brandType === "antigravity_runtime"
@@ -158,7 +163,7 @@ function Setup({
   const providerKeys = setupProviderKeys(brandType);
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
-    chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
+    chooseProvider || brandType === "acpx:dsh" || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
   const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
   const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
@@ -338,8 +343,9 @@ function Setup({
   const accountModelScope = JSON.stringify([companyId, environmentId, aiBinding]);
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, environmentId, accountBoundCatalog ? JSON.stringify(aiBinding ?? null) : aiBinding?.provider),
-    queryFn: () => agentsApi.adapterModels(companyId, accountBoundCatalog ? "paperclip_runner" : brandType, accountBoundCatalog
+    queryFn: () => agentsApi.adapterModels(companyId, accountBoundCatalog || brandType === "acpx:dsh" ? "paperclip_runner" : brandType, accountBoundCatalog
       ? { provider: "acpx", acpxAgent: runnerProvider, aiConnection: aiBinding, environmentId }
+      : brandType === "acpx:dsh" ? { provider: "acpx", acpxAgent: "dsh", environmentId }
       : { provider: aiBinding?.provider, environmentId }),
     ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(brandType) && showModel && !connectionModels && (!accountBoundCatalog || requestAccountModels),
@@ -378,8 +384,9 @@ function Setup({
   const canLogin =
     environment?.driver === "sandbox" &&
     caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
-  const envKey =
-    SETUP_CREDENTIAL_KEYS[adapterType] ?? providerKeys[provider] ?? "API_KEY";
+  const envKey = brandType === "acpx:dsh"
+    ? "DEEPSEEK_API_KEY"
+    : SETUP_CREDENTIAL_KEYS[adapterType] ?? providerKeys[provider] ?? "API_KEY";
   const savedKey = userSecrets.data?.find(
     (entry) => entry.definition.key === envKey && entry.secret,
   );
@@ -473,9 +480,9 @@ function Setup({
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: ["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? "acpx" : runnerProvider,
+              provider: isAcpRunnerProvider(runnerProvider) ? "acpx" : runnerProvider,
               ...(isDot ? { allowUnmeteredProvider } : {}),
-              ...(["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+              ...(isAcpRunnerProvider(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
@@ -493,8 +500,8 @@ function Setup({
     }
     if (isRunner)
       Object.assign(config, {
-        provider: ["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? "acpx" : runnerProvider,
-        ...(["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+        provider: isAcpRunnerProvider(runnerProvider) ? "acpx" : runnerProvider,
+        ...(isAcpRunnerProvider(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
     if (multiProvider && created) {
@@ -601,8 +608,8 @@ function Setup({
       role: existing.length ? "general" : "ceo", ...(leader ? { reportsTo: leader.id } : {}),
       adapterType: requestAdapterType, runner,
       adapterConfig: requestAdapterType === "paperclip_runner" ? {
-        provider: ["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? "acpx" : runnerProvider,
-        ...(["claude", "grok", "copilot", "pi", "antigravity"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
+        provider: isAcpRunnerProvider(runnerProvider) ? "acpx" : runnerProvider,
+        ...(isAcpRunnerProvider(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
         ...(antigravityCandidate ? { model: antigravityCandidate.model } : {}),
       } : {}, defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
       runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),

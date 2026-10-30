@@ -31,12 +31,14 @@ import {
   createAcpxPackageJsonResolver,
   guardSnapshotModuleLookup,
   guardSnapshotModuleResolution,
+  mergeAcpxDependencyAncestors,
   reapCurrentProviderProcessGroup,
   sanitizedNodeEnvironment,
   snapshotDescriptorAncestorIndex,
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
+  withDshCommandAdmissionDeadline,
   probeAcpxClaudeInstallation,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
@@ -68,6 +70,69 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it("enforces one deduplicated limit across server, runtime, and supplemental roots", async () => {
+    const ancestor = (path: string) => ({ path, identity: { device: "1", inode: path } });
+    const base = {
+      commandDirectory: "/cmd",
+      server: [ancestor("/server")],
+      serverFormats: ["commonjs" as const],
+      runtime: { directory: "/runtime", format: "commonjs" as const },
+      limit: 2048,
+      inspect: async (path: string) => ancestor(path),
+    };
+    const packages = (count: number) => Array.from({ length: count }, (_, index) => ({ directory: `/pkg-${index}`, format: "commonjs" as const }));
+    const merged = await mergeAcpxDependencyAncestors({ ...base, supplemental: packages(2046) });
+    expect(merged.ancestors).toHaveLength(2048);
+    expect(merged.formats).toHaveLength(2048);
+    await expect(mergeAcpxDependencyAncestors({ ...base, supplemental: packages(2047) })).rejects.toThrow("exceeds its bound");
+    const deduplicated = await mergeAcpxDependencyAncestors({ ...base, supplemental: [
+      { directory: "/runtime", format: "commonjs" },
+      { directory: "/cmd", format: "commonjs" },
+    ] });
+    expect(deduplicated.ancestors.map(entry => entry.path)).toEqual(["/server", "/runtime"]);
+  });
+
+  it("times out DSH admission and closes a lease that completes late", async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (lease: never) => void;
+      const close = vi.fn(async () => undefined);
+      const pending = withDshCommandAdmissionDeadline(() => new Promise<never>(resolve => { finish = resolve; }));
+      const rejection = expect(pending).rejects.toThrow("60-second deadline");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejection;
+      finish({ close } as never);
+      await vi.runAllTimersAsync();
+      expect(close).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds full DSH installation verification when dependency resolution stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = verifyQualifiedAcpxInstallation(
+        resolveQualifiedAcpxProfile("dsh", "deepseek-v4-flash"),
+        () => new Promise<string>(() => undefined),
+      );
+      const rejection = expect(pending).rejects.toThrow("60-second deadline");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejection;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("propagates caller cancellation into DSH dependency resolution", async () => {
+    const controller = new AbortController();
+    const pending = verifyQualifiedAcpxInstallation(
+      resolveQualifiedAcpxProfile("dsh", "deepseek-v4-flash"),
+      (_name, _issuer, signal) => new Promise<string>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("dependency scan cancelled"));
+    await expect(pending).rejects.toThrow("dependency scan cancelled");
+  });
+
   it.each([["linux", "x64"], ["linux", "arm64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)(
     "retains Claude executable admission for a published bundle on %s %s", async (os, cpu) => {
       const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-claude-npm-admission-")));

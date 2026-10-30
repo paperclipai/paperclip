@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertAcpxProfileEnvironment, classifyAcpxProfileError, probeAcpxPiInstallation } from "./profile-installation.js";
 
+describe("DSH admission", () => {
+  it("requires an explicit DeepSeek API key", () => {
+    expect(() => assertAcpxProfileEnvironment("dsh", {})).toThrow("DEEPSEEK_API_KEY");
+    expect(() => assertAcpxProfileEnvironment("dsh", { DEEPSEEK_API_KEY: " " })).toThrow("DEEPSEEK_API_KEY");
+    expect(() => assertAcpxProfileEnvironment("dsh", { DEEPSEEK_API_KEY: "fixture" })).not.toThrow();
+  });
+});
+
 describe("Cursor actionable admission errors", () => {
   it("requires an explicit bound credential and supports both company-secret names", () => {
     expect(() => assertAcpxProfileEnvironment("cursor", {})).toThrow("Bind a company secret");

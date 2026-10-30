@@ -33,6 +33,14 @@ describe("ACPX driver profile", () => {
     },
   );
 
+  it("keeps DSH pending without resume, skills, or native context", () => {
+    expect(acpxDriverDescriptor("dsh")).toMatchObject({
+      displayName: "DeepSeek Harness via ACPX",
+      runtimeContextCapabilities: { instructions: "unsupported", skills: "unsupported", mcp: "unsupported" },
+      capabilities: { resume: false, toolRefreshOnResume: false, usage: false, steering: false, queuedFollowUp: false },
+    });
+  });
+
   it("describes only implemented ACPX capability boundaries", () => {
     expect(acpxDriverDescriptor("claude")).toMatchObject({
       kind: "acpx_runtime",
@@ -94,7 +102,7 @@ describe("ACPX driver profile", () => {
       ok: true,
       config: { agent: "pi", permissionMode: "approve-all" },
     });
-    for (const agent of ["copilot"]) {
+    for (const agent of ["copilot", "dsh"]) {
       expect(validateAcpxDriverConfig({ agent, model: "explicit-model" }))
         .toMatchObject({ ok: false, issues: [{ path: "agent", code: "qualification_pending" }] });
     }

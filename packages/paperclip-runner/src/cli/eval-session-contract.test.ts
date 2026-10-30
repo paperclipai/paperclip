@@ -120,7 +120,7 @@ describe("eval-session request contract", () => {
     expect(parseEvalSessionCliArgs([...args, "--candidate-profile", "pi", "--expected-acpx-profile", JSON.stringify(expected)]))
       .toMatchObject({ candidateProfile: "pi", expectedAcpxProfile: expected });
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "pi"])).toThrow("require --expected-acpx-profile");
-    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, or copilot");
+    expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile", "codex"])).toThrow("must be pi, cursor, copilot, or dsh");
     expect(() => parseEvalSessionCliArgs([...args, "--candidate-profile"])).toThrow("missing");
     expect(() => parseEvalSessionCliArgs([...args, "--request", "/tmp/other.json"])).toThrow("duplicate");
     expect(() => parseEvalSessionRequest(request(), { candidateProfile: "pi" })).toThrow("must match");
@@ -130,7 +130,7 @@ describe("eval-session request contract", () => {
     expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", " ".repeat(4097)])).toThrow("4096-byte bound");
   });
 
-  it.each(["pi", "cursor", "copilot"] as const)("rejects stale or incomplete %s identities before runtime construction", async (agent) => {
+  it.each(["pi", "cursor", "copilot", "dsh"] as const)("rejects stale or incomplete %s identities before runtime construction", async (agent) => {
     const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-profile-"));
     const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-provider-model";
     const expected = resolveQualifiedAcpxProfile(agent, model);
@@ -388,7 +388,7 @@ describe("eval-session usage", () => {
     })).toThrow("agent turn limit exceeded");
   });
 
-  it.each(["pi", "cursor", "copilot"] as const)("keeps %s oracle results when the current turn explicitly has unavailable usage", (agent) => {
+  it.each(["pi", "cursor", "copilot", "dsh"] as const)("keeps %s oracle results when the current turn explicitly has unavailable usage", (agent) => {
     const parsed = parseEvalSessionRequest(request({
       provider: "acpx", acpxAgent: agent, model: "exact-provider-model",
     }), { candidateProfile: agent });
@@ -512,7 +512,7 @@ describe("eval-session usage", () => {
     )).toThrow("omitted usage accounting");
   });
 
-  it.each(["pi", "cursor", "copilot"])("retains unpriced %s usage without inventing an invoice or substituting a model", (agent) => {
+  it.each(["pi", "cursor", "copilot", "dsh"])("retains unpriced %s usage without inventing an invoice or substituting a model", (agent) => {
     const snapshot = {
       config: { provider: "acpx", acpxAgent: agent },
       usageLedger: [{
@@ -528,7 +528,7 @@ describe("eval-session usage", () => {
       estimatedCostNanodollars: null, pricingVersion: null, ratesUsdPerMillionTokens: null,
       costCoverage: "unpriced",
     });
-    const parsed = parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, model: "exact-provider-model[context=272k]" }), { candidateProfile: agent as "pi" | "cursor" | "copilot" });
+    const parsed = parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, model: "exact-provider-model[context=272k]" }), { candidateProfile: agent as "pi" | "cursor" | "copilot" | "dsh" });
     expect(() => boundedEvalSessionUsage(parsed, {
       turnId: "candidate-turn", status: "completed", assistantText: "Completed provider response", snapshot,
     })).toThrow("budget cost coverage is unavailable");

@@ -465,6 +465,10 @@ test("plan approval hands the preserved revision to an assigned project task", a
     expect(task.parentId).toBeNull();
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
+    // Let the delegated task's completion report settle before checking the
+    // preserved revision or cancelling live runs during cleanup.
+    await idle(request, f.chatPath, 3);
+    await expect(page.getByText("Delegated work completed.", { exact: true })).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );

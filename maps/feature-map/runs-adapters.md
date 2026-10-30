@@ -230,6 +230,14 @@ ACPX Pi execution by completing a simple assigned task. Preserve saved native
 thinking/permission/lifecycle settings on resume and unrelated edits. Native
 thinking supports `off`, `low`, `high`, `max`; legacy aliases must give remediation,
 and returning to Legacy must reject settings it cannot honor.
+DeepSeek Harness (DSH) has an ACPX native profile pinned to `@deepseek-ai/dsh`
+and defaults to `deepseek-v4-flash`. It remains qualification-pending: configure an
+exact host-authorized candidate/model, bind `DEEPSEEK_API_KEY`, and verify the pinned
+ACP profile, isolated `DSH_HOME`, global instructions, permission mapping, stop,
+and `session/resume` through a real task before enabling production use. DSH's
+opaque provider/model selector and catalog-rejected custom IDs must remain visible;
+do not substitute another model or the Codex catalog. Native plans, elicitation,
+assigned-skill materialization and remote environments are outside this first slice.
 On a fresh forced-Kubernetes instance without an environment row, inspect discovery
 and create with automatic selection. Both must retain Legacy without provisioning;
 an explicit Paperclip request must give target-qualification guidance. Begin the

@@ -425,6 +425,19 @@ export async function prepareAcpxRuntimeSandbox(input: {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
+  if (input.agent === "dsh") {
+    await writePrivateFile(join(agentHomeDirectory, "AGENTS.md"), `${policy.systemInstructions}\n`);
+    const profilesDirectory = await ensurePrivateDirectory(join(agentHomeDirectory, "profiles"), agentHomeDirectory);
+    const acpProfileDirectory = await ensurePrivateDirectory(join(profilesDirectory, "acp"), profilesDirectory);
+    await writePrivateFile(join(acpProfileDirectory, "cordis.patch.yml"), [
+      "- id: session-log-deepseek",
+      "  config:",
+      "    enabled: false",
+      "- id: session-telemetry-otel",
+      "  disabled: true",
+      "",
+    ].join("\n"));
+  }
   const initializeOwnedConfiguration = input.agent === "claude" ? async () => {
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting
@@ -535,6 +548,15 @@ export async function prepareAcpxRuntimeSandbox(input: {
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
     ...(input.agent === "antigravity" ? { GEMINI_HOME: agentHomeDirectory, AGY_ACP_FORCE_FILE_STORAGE: "1" } : {}),
     ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
+    ...(input.agent === "dsh"
+      ? {
+          DSH_HOME: agentHomeDirectory,
+          DSH_PERMISSION_MODE: policy.readOnly ? "read-only" : "workspace-write",
+          NARB_DISABLE_NATIVE_CACHE: "1",
+          DSH_TELEMETRY_MODE: "DISABLED",
+          DSH_TELEMETRY_DISABLED: "1",
+        }
+      : {}),
     ...(input.agent === "pi"
       ? {
           PI_CODING_AGENT_DIR: agentHomeDirectory,

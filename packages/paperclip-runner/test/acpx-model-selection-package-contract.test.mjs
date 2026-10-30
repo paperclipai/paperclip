@@ -37,7 +37,7 @@ async function fixture(t, agent, behavior = {}) {
           options:[{value:'advertised-model',name:'Advertised'},{value:'custom/model[variant=x]',name:'Variant'}]}];
         readline.createInterface({input:process.stdin}).on('line',line=>{
           const m=JSON.parse(line);
-          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentCapabilities:${JSON.stringify({loadSession:true,...(behavior.resume ? {sessionCapabilities:{resume:{}}} : {})})},authMethods:[]}});
+          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentCapabilities:${JSON.stringify(agent === "dsh" ? {sessionCapabilities:{resume:{}}} : {loadSession:true,...(behavior.resume ? {sessionCapabilities:{resume:{}}} : {})})},authMethods:[]}});
           else if(m.method==='session/new'||m.method==='session/load'||m.method==='session/resume') send({id:m.id,result:{sessionId:'session-1',
             ...(${JSON.stringify(response === "missing")} ? {} : {configOptions:config(${JSON.stringify(behavior.currentModel ?? "default")}),
             models:{currentModelId:${JSON.stringify(behavior.currentModel ?? "default")},availableModels:[{modelId:'advertised-model',name:'Advertised'},{modelId:'custom/model[variant=x]',name:'Variant'}]}})}});
@@ -87,7 +87,7 @@ async function fixture(t, agent, behavior = {}) {
   };
 }
 
-for (const agent of ["claude", "codex", "grok", "cursor", "copilot", "pi"]) {
+for (const agent of ["claude", "codex", "grok", "cursor", "copilot", "pi", "dsh"]) {
   test(`${agent}: unlisted model reaches the provider unchanged on startup and reconnect`, { timeout: 10_000 }, async t => {
     const f = await fixture(t, agent);
     const first = await f.open();
@@ -97,7 +97,7 @@ for (const agent of ["claude", "codex", "grok", "cursor", "copilot", "pi"]) {
     const beforeReconnect = f.selected().length;
     const second = await f.open();
     assert.equal((await f.prompt(second)).status, "completed");
-    assert.ok(f.requests.some(r => r.method === "session/load"));
+    assert.ok(f.requests.some(r => r.method === (agent === "dsh" ? "session/resume" : "session/load")));
     assert.ok(f.selected().length > beforeReconnect, "fresh connection replays the selected model");
     assert.ok(f.selected().every(model => model === selectedModel), "never substitute an advertised variant");
   });

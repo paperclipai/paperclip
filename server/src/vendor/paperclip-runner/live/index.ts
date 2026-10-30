@@ -12,3 +12,4 @@ export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxCursorInstallation = runner.probeAcpxCursorInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const probeAcpxDshInstallation = runner.probeAcpxDshInstallation;

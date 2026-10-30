@@ -723,6 +723,31 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
+  it("opens DSH with its ACP profile and opaque model selector, not systemPrompt.append", async () => {
+    const runtime = fakeRuntime();
+    const command = fakeCommand();
+    const options = openOptions(command);
+    options.profile = resolveQualifiedAcpxProfile("dsh", "deepseek-v4-flash");
+    options.launchEnvironment = { DSH_HOME: "/runtime/dsh-home", DSH_PERMISSION_MODE: "workspace-write" };
+
+    await openCodexAcpxRuntime(options, {
+      createRegistry: ({ overrides }) => {
+        expect(overrides).toEqual({ dsh: ["paperclip-verified-acpx-command", "acp"] });
+        return registry();
+      },
+      createStore: () => store(),
+      createRuntime: () => runtime,
+    });
+
+    expect(runtime.ensureSession).toHaveBeenCalledWith({
+      sessionKey: "provider-key",
+      agent: "dsh",
+      mode: "persistent",
+      cwd: "/workspace",
+      sessionOptions: { model: '["deepseek-official","deepseek-v4-flash"]' },
+    });
+  });
+
   it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
     "opens the qualified %s session through the verified lease",
     async (agent, model, providerModel) => {

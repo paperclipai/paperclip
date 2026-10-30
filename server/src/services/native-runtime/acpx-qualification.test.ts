@@ -38,6 +38,37 @@ describe("host ACPX qualification admission", () => {
     }
   });
 
+  it("admits DSH only with exact host authorization and preserves its default model", () => {
+    const config = { provider: "acpx", acpxAgent: "dsh" };
+    const entries = [
+      { agent: "cursor", model: "cursor-model" },
+      { agent: "copilot", model: "copilot-model" },
+      { agent: "pi", model: "pi-model" },
+      { agent: "dsh", model: "deepseek-v4-flash" },
+    ];
+    vi.stubEnv(ACPX_QUALIFICATION_ENV, JSON.stringify(entries));
+    expect(resolveAcpxQualification({ kind: "acpx", agent: "dsh", model: "deepseek-v4-flash" }, authorize(entries))).toBe("dsh");
+    expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject({
+      provider: "acpx", backend: "acpx_runtime", acpxAgent: "dsh", model: "deepseek-v4-flash",
+    });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })).toMatchObject({
+      provider: "acpx", acpxAgent: "dsh", model: "deepseek-v4-flash", acpxPermissionMode: "approve-all",
+    });
+
+    vi.stubEnv(ACPX_QUALIFICATION_ENV, JSON.stringify([{ agent: "dsh", model: "deepseek-v4-pro" }]));
+    expect(() => resolvePaperclipRunnerProviderProfile(config))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_qualification_invalid" }));
+    vi.stubEnv(ACPX_QUALIFICATION_ENV, undefined);
+    expect(() => resolvePaperclipRunnerProviderProfile(config))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
+  });
+
+  it("does not leak the DSH default model into other providers", () => {
+    expect(resolvePaperclipRunnerProviderProfile({ provider: "codex", acpxAgent: "dsh" })).toMatchObject({ provider: "codex", model: null });
+    expect(() => resolvePaperclipRunnerProviderProfile({ provider: "opencode", acpxAgent: "dsh" }))
+      .toThrow(expect.objectContaining({ code: "paperclip_runner_opencode_model_invalid" }));
+  });
+
   it.each([[], {}, [{ agent: "cursor", model: "" }], [{ agent: "cursor", model: " exact-model" }],
     [{ agent: "cursor", model: "exact-model", allowAll: true }], [{ agent: "claude", model: "exact-model" }],
     [{ agent: "cursor", model: "exact-model" }, { agent: "cursor", model: "exact-model" }],

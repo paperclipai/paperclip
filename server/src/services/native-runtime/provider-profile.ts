@@ -5,6 +5,7 @@ import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   PAPERCLIP_RUNNER_ACPX_PROFILES,
+  DEFAULT_DSH_RUNNER_MODEL,
   resolvePaperclipRunnerPermissionMode,
   resolvePaperclipRunnerCursorMode,
   resolvePaperclipRunnerPiThinkingLevel,
@@ -34,6 +35,7 @@ export const DEFAULT_ACPX_RUNNER_MODELS = {
   cursor: null,
   copilot: null,
   pi: null,
+  dsh: DEFAULT_DSH_RUNNER_MODEL,
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
@@ -459,7 +461,8 @@ export function resolvePaperclipRunnerProviderProfile(
   try { resolvePaperclipRunnerPiThinkingLevel(candidate, config.acpxAgent, config.piThinkingLevel); } catch (error) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_pi_thinking_invalid", error instanceof Error ? error.message : "Invalid Pi thinking level");
   }
-  const model = optionalString(config.model);
+  const model = optionalString(config.model)
+    ?? (candidate === "acpx" && config.acpxAgent === "dsh" ? DEFAULT_ACPX_RUNNER_MODELS.dsh : null);
   if (candidate === "codex") {
     return {
       provider: "codex",
@@ -580,7 +583,7 @@ export function resolvePaperclipRunnerProviderProfile(
   if ((acpxAgent === "cursor" || acpxAgent === "pi") && !model) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "This ACPX agent requires an explicit model ID; there is no default model.");
   }
-  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "pi" && acpxAgent !== "dsh") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
       "Paperclip Runner ACPX requires a qualified agent profile.",

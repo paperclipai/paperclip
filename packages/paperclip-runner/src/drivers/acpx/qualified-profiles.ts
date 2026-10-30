@@ -5,6 +5,15 @@ import type { NativeAcpxAgent, NativeAcpxProfileSnapshot } from "../../contracts
 
 export type QualifiedAcpxAgent = NativeAcpxAgent;
 
+export type AcpxCandidateAgent = "pi" | "cursor" | "copilot" | "antigravity" | "dsh";
+export type AcpxProviderPolicyAgent = "pi" | "cursor" | "copilot" | "dsh";
+export function isAcpxCandidateAgent(agent: string | undefined): agent is AcpxCandidateAgent {
+  return agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "antigravity" || agent === "dsh";
+}
+export function isAcpxProviderPolicyAgent(agent: string | undefined): agent is AcpxProviderPolicyAgent {
+  return agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "dsh";
+}
+
 export interface AcpxReleaseProfile {
   readonly driverKind: typeof ACPX_DRIVER_KIND;
   readonly protocolVersion: typeof ACPX_DRIVER_PROTOCOL_VERSION;
@@ -52,7 +61,11 @@ export function resolveQualifiedAcpxProfile(
   const profile = QUALIFIED_ACPX_PROFILES[agent];
   if (!requestedModel.trim()) throw new Error("ACPX model must not be empty");
   if (agent === "copilot" && ["auto", "default"].includes(requestedModel.trim().toLowerCase())) throw new Error("Copilot requires an explicit model ID");
-  return { ...structuredClone(profile), qualificationModel: requestedModel, reportedModelId: requestedModel };
+  if (agent === "dsh" && requestedModel !== requestedModel.trim()) throw new Error("DSH model ID must not contain surrounding whitespace");
+  const reportedModelId = agent === "dsh"
+    ? JSON.stringify(["deepseek-official", requestedModel])
+    : requestedModel;
+  return { ...structuredClone(profile), qualificationModel: requestedModel, reportedModelId };
 }
 
 function deepFreeze<T>(value: T): T {

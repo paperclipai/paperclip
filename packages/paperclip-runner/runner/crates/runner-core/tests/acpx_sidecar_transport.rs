@@ -310,6 +310,10 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
                 "fixture-token-never-returned-in-test-output",
             )
             .env("UNRELATED_EVAL_SECRET", "must-not-cross-boundary")
+            .env("DSH_HOME", "/fixture/private-dsh-home")
+            .env("DSH_PERMISSION_MODE", "read-only")
+            .env("DSH_TELEMETRY_MODE", "DISABLED")
+            .env("DSH_TELEMETRY_DISABLED", "1")
             .env(
                 "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
                 r#"{"schema":"paperclip.acpx_credential_binding.v1","agent":"pi","sessionId":"session-1","names":["OPENROUTER_API_KEY","GEMINI_API_KEY","MY_PI_SERVICE_KEY","LD_API_KEY","DYLD_API_KEY","PAPERCLIP_PI_PROVIDERS"]}"#,
@@ -329,6 +333,7 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
                     "CURSOR_API_KEY",
                     "CURSOR_AUTH_TOKEN",
                     "COPILOT_GITHUB_TOKEN",
+                    "DEEPSEEK_API_KEY",
                     "GITHUB_TOKEN",
                     "GH_TOKEN",
                 ]
@@ -340,7 +345,7 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
         assert!(status.success(), "isolated gateway environment test failed");
         return;
     }
-    for agent in ["claude", "codex", "pi", "cursor", "copilot"] {
+    for agent in ["claude", "codex", "pi", "cursor", "copilot", "dsh"] {
         let mut sidecar = AcpxSidecarTransport::start_for_agent(
             &AcpxSidecarTransportConfig {
                 command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
@@ -375,12 +380,45 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
             ],
             "cursor" => vec!["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => vec!["COPILOT_GITHUB_TOKEN"],
+            "dsh" => vec!["DEEPSEEK_API_KEY"],
             _ => unreachable!(),
         };
         assert_eq!(response["credentialKeys"], json!(expected));
         assert_eq!(
+            response["dshHome"],
+            if agent == "dsh" {
+                json!("/fixture/private-dsh-home")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(
+            response["dshPermissionMode"],
+            if agent == "dsh" {
+                json!("read-only")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(
+            response["dshTelemetryMode"],
+            if agent == "dsh" {
+                json!("DISABLED")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(
+            response["dshTelemetryDisabled"],
+            if agent == "dsh" {
+                json!("1")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(
             response["credentialBinding"],
-            if matches!(agent, "pi" | "cursor" | "copilot") {
+            if matches!(agent, "pi" | "cursor" | "copilot" | "dsh") {
                 json!(
                     r#"{"schema":"paperclip.acpx_credential_binding.v1","agent":"pi","sessionId":"session-1","names":["OPENROUTER_API_KEY","GEMINI_API_KEY","MY_PI_SERVICE_KEY","LD_API_KEY","DYLD_API_KEY","PAPERCLIP_PI_PROVIDERS"]}"#
                 )

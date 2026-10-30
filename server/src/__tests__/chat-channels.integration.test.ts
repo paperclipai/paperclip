@@ -8631,7 +8631,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
 
     it("restarts a receiver after token loss only after the old listener has stopped", async () => {
-      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: 50 });
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      // Trigger lease renewal after setup, not while the receiver is being created.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const onError = vi.fn();
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
       let release!: () => void;
@@ -8642,6 +8644,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const old = f.runtime.get(f.endpoint.id)!;
         old.shutdown.mockImplementation(async () => { await stopped; });
         await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+        await vi.advanceTimersByTimeAsync(300_000);
         await vi.waitFor(() => expect(old.shutdown).toHaveBeenCalledOnce());
         await db.transaction(tx => notifyChatEndpointConfiguration(tx, f.endpoint));
         await new Promise(resolve => setTimeout(resolve, 1500));

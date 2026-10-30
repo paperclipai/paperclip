@@ -234,6 +234,7 @@ describe("ACPX runtime sandbox", () => {
     ["codex", "OPENAI_API_KEY", "codex-home"],
     ["cursor", "CURSOR_API_KEY", "cursor-home"],
     ["copilot", "COPILOT_GITHUB_TOKEN", "copilot-home"],
+    ["dsh", "DEEPSEEK_API_KEY", "dsh-home"],
   ] as const)(
     "creates a private %s filesystem and split environment",
     async (agent, credentialName, homeSuffix) => {
@@ -248,6 +249,7 @@ describe("ACPX runtime sandbox", () => {
           UNRELATED_SECRET: "must-not-enter",
           HOME: "/ambient/home", XDG_CONFIG_HOME: "/ambient/config", CURSOR_CONFIG_DIR: "/ambient/cursor",
           COPILOT_HOME: "/ambient/copilot", COPILOT_PKG_CACHE_HOME: "/ambient/extraction-cache", COPILOT_ALLOW_ALL: "true",
+          DSH_HOME: "/ambient/dsh", DSH_PERMISSION_MODE: "danger-full-access", DSH_TELEMETRY_MODE: "FEEDBACK_ONLY",
           PAPERCLIP_PI_READ_ONLY: "1", PAPERCLIP_PI_READ_ROOTS: '["/"]', PAPERCLIP_PI_ENTRYPOINT: "/ambient/pi.js",
           HTTPS_PROXY: "https://proxy-user:proxy-password@example.test",
           PAPERCLIP_NATIVE_MCP_URL:
@@ -337,6 +339,19 @@ describe("ACPX runtime sandbox", () => {
         await expect(
           readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"),
         ).resolves.toContain('"defaultProjectTrust":"never"');
+      }
+      if (agent === "dsh") {
+        expect(sandbox.launchEnvironment).toMatchObject({
+          DSH_HOME: sandbox.agentHomeDirectory,
+          DSH_PERMISSION_MODE: "workspace-write",
+          NARB_DISABLE_NATIVE_CACHE: "1",
+          DSH_TELEMETRY_MODE: "DISABLED",
+          DSH_TELEMETRY_DISABLED: "1",
+        });
+        expect(await readFile(join(sandbox.agentHomeDirectory, "AGENTS.md"), "utf8")).toBe("bound instructions\n");
+        expect(await readFile(join(sandbox.agentHomeDirectory, "profiles", "acp", "cordis.patch.yml"), "utf8")).toBe(
+          "- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-telemetry-otel\n  disabled: true\n",
+        );
       }
     },
   );
@@ -508,6 +523,24 @@ describe("ACPX runtime sandbox", () => {
     },
   );
 
+  it("refreshes DSH global instructions and restores its read-only policy", async () => {
+    const fixture = await sandboxFixture("dsh");
+    const first = await prepareAcpxRuntimeSandbox({
+      binding: fixture.binding,
+      agent: "dsh",
+      providerPolicy: { readOnly: false, systemInstructions: "First managed instructions" },
+    });
+    const second = await prepareAcpxRuntimeSandbox({
+      binding: fixture.binding,
+      agent: "dsh",
+      providerPolicy: { readOnly: true, systemInstructions: "Current managed instructions" },
+    });
+    expect(second.root).toBe(first.root);
+    expect(second.launchEnvironment.DSH_HOME).toBe(second.agentHomeDirectory);
+    expect(second.launchEnvironment.DSH_PERMISSION_MODE).toBe("read-only");
+    expect(await readFile(join(second.agentHomeDirectory, "AGENTS.md"), "utf8")).toBe("Current managed instructions\n");
+  });
+
   it.runIf(process.platform !== "win32")(
     "pins the recovered workspace until provider admission",
     async () => {
@@ -565,7 +598,7 @@ it("refreshes Copilot native instructions privately on every admission, includin
   expect(await readFile(path, "utf8")).toBe(composed(""));
 });
 
-async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity") {
+async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity" | "dsh") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
   const workspace = join(root, "workspace");
@@ -579,6 +612,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     cursor: "provider-model-cursor",
     copilot: "provider-model-copilot",
     antigravity: "provider-model-antigravity",
+    dsh: "deepseek-v4-flash",
   } as const;
   const binding = await createAcpxRecoveryBinding({
     runtimeDirectory,

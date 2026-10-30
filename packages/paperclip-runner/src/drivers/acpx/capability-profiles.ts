@@ -8,7 +8,7 @@ export interface AcpxCapabilityProfile {
   readonly questions: "form" | "cursor-extension" | "semantic-only" | "not-exposed";
   readonly plans: "native" | "cursor-decision" | "semantic-only";
   readonly tools: "authenticated-mcp" | "owned-extension" | "unverified";
-  readonly recovery: "session-load" | "unverified";
+  readonly recovery: "session-load" | "session-resume" | "unverified";
   readonly toolRefreshOnResume?: boolean;
   readonly usage: "reported" | "unverified";
   readonly steering: "unsupported" | "owned-extension-pending";
@@ -24,6 +24,13 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     displayName: "Google Antigravity", qualification: "pending", models: "unverified",
     permissions: "unverified", questions: "not-exposed", plans: "semantic-only", tools: "unverified",
     recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
+  },
+  dsh: {
+    toolRefreshOnResume: true,
+    displayName: "DeepSeek Harness", qualification: "pending", models: "explicit-provider-verified",
+    permissions: "interactive", questions: "not-exposed", plans: "semantic-only", tools: "authenticated-mcp",
+    recovery: "session-resume", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
     artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
   },
   claude: {

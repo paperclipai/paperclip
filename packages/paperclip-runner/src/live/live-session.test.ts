@@ -1356,7 +1356,7 @@ describe("Capability live runnerd and Codex session", () => {
     });
   });
 
-  it.each(["pi", "cursor", "copilot"] as const)("retains a completed %s result with explicit unavailable usage and no fabricated receipt", async (acpxAgent) => {
+  it.each(["pi", "cursor", "copilot", "dsh"] as const)("retains a completed %s result with explicit unavailable usage and no fabricated receipt", async (acpxAgent) => {
     const state = providerState();
     state.omitReadUsage = true;
     state.assistantReply = "Upgrade your plan to continue";

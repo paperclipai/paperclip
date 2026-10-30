@@ -490,6 +490,7 @@ describe("adapter routes", () => {
         { value: "claude", label: "Claude" },
         { value: "grok", label: "Grok Build" },
         { value: "copilot", label: "GitHub Copilot" },
+        { value: "dsh", label: "DeepSeek Harness" },
       ],
     });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");

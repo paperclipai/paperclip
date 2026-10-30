@@ -100,6 +100,13 @@ Google, or OpenRouter API-key models. Subscription methods and custom gateways
 remain excluded for Pi. Selection keeps the existing company, user, grant, and
 agent-install checks; runtime preparation clears alternate credentials and rejects
 custom Pi provider overrides. This adds no cross-company access or runtime installation API.
+DeepSeek Harness adds a qualification-pending ACPX profile, not a legacy adapter or
+managed-connection provider. Its exact host-authorized model and company-bound
+`DEEPSEEK_API_KEY` retain existing creation/configuration and secret-grant checks;
+missing bindings cannot promote ambient developer credentials. The profile uses an
+isolated `DSH_HOME`, standard ACP session/resume and the existing Runner authority,
+with no new cross-company API, database migration, remote-image qualification, or
+production-ready claim. DSH catalog rejection and unavailable usage remain explicit.
 An absent forced-Kubernetes environment is an unqualified sandbox target, never
 a local target. Discovery and automatic creation keep the Legacy path without
 provisioning it; explicit Paperclip selection returns qualification guidance.

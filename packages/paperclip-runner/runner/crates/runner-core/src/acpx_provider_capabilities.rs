@@ -11,7 +11,7 @@ pub(crate) enum RunAttachmentPolicy {
 
 pub(crate) fn run_attachment_policy(agent: &str) -> RunAttachmentPolicy {
     match agent {
-        "cursor" | "copilot" | "pi" => RunAttachmentPolicy::AuthenticatedRunGrants,
+        "cursor" | "copilot" | "pi" | "dsh" => RunAttachmentPolicy::AuthenticatedRunGrants,
         "claude" => RunAttachmentPolicy::AuthenticatedAssetPaths,
         _ => RunAttachmentPolicy::ImmutableInstructions,
     }
@@ -33,6 +33,10 @@ mod tests {
         );
         assert_eq!(
             run_attachment_policy("pi"),
+            RunAttachmentPolicy::AuthenticatedRunGrants
+        );
+        assert_eq!(
+            run_attachment_policy("dsh"),
             RunAttachmentPolicy::AuthenticatedRunGrants
         );
         assert_eq!(

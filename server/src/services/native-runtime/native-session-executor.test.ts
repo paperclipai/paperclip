@@ -3773,13 +3773,13 @@ describe("runtime question fallback", () => {
 });
 
 describe("native provider bootstrap environment", () => {
-  it.each(["pi", "cursor", "copilot", "antigravity"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
+  it.each(["pi", "cursor", "copilot", "antigravity", "dsh"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
     const provider = { kind: "acpx", agent } as NativeExecutionInput["provider"];
     const host = { PATH: "/host/bin", HOME: "/host/home", OPENROUTER_API_KEY: "ambient-pi",
       CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot",
       GEMINI_API_KEY: "ambient-google", GOOGLE_API_KEY: "ambient-other-google", GEMINI_HOME: "/ambient-google-home",
       GOOGLE_APPLICATION_CREDENTIALS: "/ambient-google-credential.json", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "ambient-google-subscription",
-      PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
+      DEEPSEEK_API_KEY: "ambient-deepseek", DSH_HOME: "/ambient/dsh", PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
     expect(resolveNativeProviderEnvironment(provider, undefined, host)).toEqual({ PATH: "/host/bin", HOME: "/host/home" });
     const explicit = { COPILOT_GITHUB_TOKEN: "explicit-company-binding" };
     expect(resolveNativeProviderEnvironment(provider, explicit, host)).toBe(explicit);
@@ -11280,6 +11280,51 @@ describe("native process ownership", () => {
     );
     expect(onSpawn).toHaveBeenCalledWith(processMetadata);
   });
+
+  it.each([undefined, "malformed", JSON.stringify([{ agent: "dsh", model: "different-model" }])])(
+    "rechecks DSH host authorization before recovering persisted execution (%s)", async authorization => {
+      const hostAuthorization = JSON.stringify([{ agent: "dsh", model: "deepseek-v4-flash" }]);
+      const persistedExecution: NativeExecutionInputV1 = {
+        ...execution,
+        provider: { kind: "acpx", agent: "dsh", model: "deepseek-v4-flash", permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.dsh },
+        session: { ...execution.session, driverKind: "acpx_runtime" },
+      };
+      const originalAuthorization = process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+      const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+      const controller = await currentNativeControllerIdentity();
+      const recovery = {
+        execution: persistedExecution, runnerInstanceId: "recovered-dsh", leaseOwner: "recovery",
+        db: leaseDb(persistedExecution, { leaseOwner: "recovery", controllerBootId: controller.bootId,
+          controllerPid: controller.pid, controllerGeneration: 2 }),
+        restartRecovery: { kind: "resume_dead_runner" as const, runId: persistedExecution.binding.runId, leaseOwner: "recovery",
+          controllerGeneration: 2, providerAttempt: 2, restartKind: "hard" as const, recoveryRequestId: null },
+      };
+      try {
+        vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", hostAuthorization);
+        state.execute.mockReset().mockResolvedValue({
+          result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+          turnId: "turn", normalizedSessionId: persistedExecution.session.normalizedSessionId,
+          providerSessionId: null, driverKind: "acpx_runtime", driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1,
+        });
+        await executePaperclipNativeSession({ db: leaseDb(persistedExecution), execution: persistedExecution, runnerInstanceId: "authorized-dsh" });
+        await executePaperclipNativeSession(recovery);
+        expect(state.execute).toHaveBeenCalledTimes(2);
+        state.execute.mockClear(); state.createBackend.mockClear();
+        vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", authorization);
+        for (const useRunnerd of [false, true]) {
+          await expect(executePaperclipNativeSession({
+            ...recovery, useRunnerd,
+            runnerEnvironment: { PAPERCLIP_RUNNER_ACPX_QUALIFICATION: hostAuthorization },
+          })).rejects.toThrow(/qualification/i);
+        }
+        expect(state.createBackend).not.toHaveBeenCalled();
+        expect(state.execute).not.toHaveBeenCalled();
+      } finally {
+        vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", originalAuthorization);
+      }
+    },
+  );
 
   it.each([
     [

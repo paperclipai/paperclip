@@ -609,7 +609,7 @@ describe("native backend factory", () => {
       "requires an instance runtime directory",
     );
   });
-  it.each(["pi", "cursor", "copilot"] as const)("constructs %s identity on the supplied runnerd transport without starting a provider", async agent => {
+  it.each(["pi", "cursor", "copilot", "dsh"] as const)("constructs %s identity on the supplied runnerd transport without starting a provider", async agent => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const model = "explicit-fixture-model";
@@ -643,7 +643,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
   });
 
-  it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+  it.each(["copilot", "dsh"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const model = "explicit-fixture-model";

@@ -207,7 +207,7 @@ export async function openQualifiedAcpxRuntime(
   const createStore = dependencies.createStore ?? createRuntimeStore;
   const createRuntime = dependencies.createRuntime ?? createAcpRuntime;
   const runtimeCloseTimeoutMs =
-    dependencies.runtimeCloseTimeoutMs ?? DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS;
+    dependencies.runtimeCloseTimeoutMs ?? (options.profile.agent === "dsh" ? 10_000 : DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS);
   const retainedCleanupOwners = new WeakSet<Promise<void>>();
   const retainCleanup = (cleanup: Promise<void>): void => {
     if (retainedCleanupOwners.has(cleanup)) {
@@ -349,7 +349,9 @@ export async function openQualifiedAcpxRuntime(
       // spawn callback below always launches the verified command lease.
       overrides: { [options.profile.agent]: options.profile.agent === "grok"
         ? ["/paperclip-verified/grok", "agent", "stdio"]
-        : [options.profile.agent === "claude" ? "/paperclip-verified/claude-agent-acp" : VERIFIED_COMMAND_SENTINEL] },
+        : options.profile.agent === "dsh"
+          ? [VERIFIED_COMMAND_SENTINEL, "acp"]
+          : [options.profile.agent === "claude" ? "/paperclip-verified/claude-agent-acp" : VERIFIED_COMMAND_SENTINEL] },
     }),
     // ACPX does not know the Paperclip-specific mode. Exact SDK rules allow
     // admitted actions; all remaining requests keep its closed read policy.
@@ -515,7 +517,7 @@ export async function openQualifiedAcpxRuntime(
               .filter(server => server.runnerOwned && server.name.startsWith("paperclip_runner_"))
               .map(server => `mcp__${server.name}__*`),
           } : {}),
-          ...(options.systemInstructions
+          ...(options.systemInstructions && options.profile.agent !== "dsh"
             ? { systemPrompt: { append: options.systemInstructions } }
             : {}),
         },

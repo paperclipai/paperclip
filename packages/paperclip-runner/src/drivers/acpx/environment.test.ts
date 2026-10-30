@@ -115,7 +115,7 @@ describe("ACPX launch environment", () => {
 
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"], ["dsh", "DEEPSEEK_API_KEY"],
   ] as const)("requires an explicit %s credential binding for %s", (agent, name) => {
     vi.stubEnv(name, "ambient-secret");
     expect(createSanitizedAcpxSpawnInput(undefined, agent).env[name]).toBeUndefined();
@@ -129,15 +129,18 @@ describe("ACPX launch environment", () => {
       COPILOT_MODEL: "ambient-model", CURSOR_CONFIG_DIR: "/ambient/cursor", PI_CODING_AGENT_DIR: "/ambient/pi",
       PAPERCLIP_PI_ENTRYPOINT: "/unverified/pi.js", NODE_OPTIONS: "--import=/unverified/hook.js",
       COPILOT_PKG_CACHE_HOME: "/unverified/cache", COPILOT_ALLOW_ALL: "true",
+      DEEPSEEK_API_KEY: "deepseek-key", DSH_HOME: "/ambient/dsh", DSH_PERMISSION_MODE: "danger-full-access",
+      DSH_TELEMETRY_MODE: "FEEDBACK_ONLY", DSH_TELEMETRY_DISABLED: "",
     };
     expect(createSanitizedAcpxSpawnInput(source, "cursor").env).toEqual({ CURSOR_API_KEY: "cursor-key", CURSOR_AUTH_TOKEN: "cursor-token" });
     expect(createSanitizedAcpxSpawnInput(source, "copilot").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
-    expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
+    expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key", DEEPSEEK_API_KEY: "deepseek-key" });
+    expect(createSanitizedAcpxSpawnInput(source, "dsh").env).toEqual({ DEEPSEEK_API_KEY: "deepseek-key" });
   });
 
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"], ["dsh", "DEEPSEEK_API_KEY"],
   ] as const)("admits only session-bound %s sidecar credentials for %s", (agent, name) => {
     const source = { [name]: "task-secret" };
     const binding = createAcpxCredentialBinding(source, agent, "session-1");

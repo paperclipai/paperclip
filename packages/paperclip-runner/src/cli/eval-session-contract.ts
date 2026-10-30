@@ -4,7 +4,7 @@ import type {
   CapabilityLiveSessionSnapshot,
   CreateCapabilityLiveSessionInput,
 } from "../live/live-session.js";
-import type { QualifiedAcpxAgent } from "../drivers/acpx/qualified-profiles.js";
+import { isAcpxCandidateAgent, type QualifiedAcpxAgent } from "../drivers/acpx/qualified-profiles.js";
 import {
   estimateModelCostNanodollars,
   type EstimatedModelCost,
@@ -60,7 +60,7 @@ export interface EvalSessionAgentCoreProfile {
   timeoutSeconds: number;
 }
 
-export type EvalCandidateProfile = "pi" | "cursor" | "copilot";
+export type EvalCandidateProfile = "pi" | "cursor" | "copilot" | "dsh";
 
 export interface EvalSessionRequest {
   schema: typeof EVAL_SESSION_REQUEST_SCHEMA;
@@ -255,7 +255,7 @@ export function parseEvalSessionRequest(
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
     acpxAgent !== "claude" && acpxAgent !== "grok" &&
-    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot"
+    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "dsh"
   ) {
     throw new Error("eval-session acpxAgent must be a registered ACPX profile");
   }
@@ -263,7 +263,7 @@ export function parseEvalSessionRequest(
     throw new Error("eval-session acpxAgent requires provider acpx");
   }
   const piThinkingLevel = resolvePiThinkingLevel(provider === "acpx" ? String(acpxAgent) : "", input.piThinkingLevel);
-  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot";
+  const candidate = isAcpxCandidateAgent(acpxAgent);
   if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
     throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
   }
@@ -401,7 +401,7 @@ export function evalSessionUsage(
     throw new Error("completed turn omitted usage accounting");
   }
   const candidate = snapshot.config?.provider === "acpx"
-    && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
+    && isAcpxCandidateAgent(snapshot.config.acpxAgent);
   const codex = snapshot.config?.provider === "codex";
   const providerCostUnavailable = candidate || codex;
   let estimate: EstimatedModelCost | null;

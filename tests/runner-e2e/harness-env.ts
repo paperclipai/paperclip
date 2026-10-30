@@ -33,7 +33,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH|DEEPSEEK|DSH)(?:_|$)/;
 
 export function applyEvalGatewayEnvironment(env: NodeJS.ProcessEnv, credential: string, gateway: {
   token: string; baseUrl: string; phasePath: string; observability?: { token: string; baseUrl: string };

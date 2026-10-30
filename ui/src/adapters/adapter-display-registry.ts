@@ -63,6 +63,7 @@ export interface AdapterDisplayInfo {
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   antigravity_runtime: { label: "Google Antigravity", description: "Antigravity through Paperclip Runner", icon: Gem, hideFromVisualSelection: true },
+  "acpx:dsh": { label: "DeepSeek Harness", description: "DeepSeek Harness through Paperclip Runner", icon: Bot, hideFromVisualSelection: true },
   copilot_runtime: { label: "GitHub Copilot", description: "Copilot through Paperclip Runner", icon: Code, hideFromVisualSelection: true },
   acpx_local: {
     label: "ACPX (retired)",
@@ -226,7 +227,7 @@ export function agentDisplayAdapterType(agent: { adapterType: string; adapterCon
     return agent.adapterConfig.provider;
   }
   const harness = agentHarnessType(agent.adapterType, agent.adapterConfig);
-  return ["codex_local", "claude_local", "opencode_local", "pi_local", "antigravity_runtime"].includes(harness) ? harness : agent.adapterType;
+  return ["codex_local", "claude_local", "opencode_local", "pi_local", "antigravity_runtime", "acpx:dsh"].includes(harness) ? harness : agent.adapterType;
 }
 
 export function isKnownAdapterType(type: string): boolean {

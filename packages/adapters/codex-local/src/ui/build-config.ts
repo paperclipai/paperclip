@@ -8,6 +8,7 @@ import {
   resolvePaperclipRunnerCursorMode,
   resolvePaperclipRunnerPiThinkingLevel,
   PAPERCLIP_RUNNER_ACPX_PROFILES,
+  DEFAULT_DSH_RUNNER_MODEL,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
@@ -279,7 +280,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
           ...(acpxAgent === "claude" && configuredEffort ? { modelReasoningEffort: configuredEffort } : {}),
           ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
           ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
-          model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
+          model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : acpxAgent === "dsh" ? DEFAULT_DSH_RUNNER_MODEL : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),
     ...(provider === "claude_managed"

@@ -49,10 +49,52 @@ async function readSnapshotBytes(handle: FileHandle, byteLength: number): Promis
   return bytes;
 }
 
+export interface AcpxPrivateSnapshotOptions {
+  maxFiles?: number;
+  maxModuleBytes?: number;
+  maxPackageBytes?: number;
+  streamingCopy?: boolean;
+  skipPath?: (source: string, packageRoot: string) => boolean;
+  packageLinks?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  signal?: AbortSignal;
+}
+
+async function copySnapshotStream(source: FileHandle, target: string, expectedBytes: number, signal?: AbortSignal): Promise<string> {
+  const targetHandle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o400);
+  const hash = createHash("sha256");
+  let copied = 0;
+  const stream = source.createReadStream({ autoClose: false });
+  const onAbort = () => stream.destroy();
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    for await (const chunk of stream) {
+      signal?.throwIfAborted();
+      if (copied + chunk.length > expectedBytes) throw new Error("ACPX module exceeded its admitted size during snapshot");
+      copied += chunk.length;
+      hash.update(chunk);
+      let offset = 0;
+      while (offset < chunk.length) {
+        signal?.throwIfAborted();
+        const { bytesWritten } = await targetHandle.write(chunk, offset);
+        if (bytesWritten <= 0) throw new Error("ACPX snapshot write made no progress");
+        offset += bytesWritten;
+      }
+    }
+    signal?.throwIfAborted();
+    if (copied !== expectedBytes) throw new Error("ACPX module ended during snapshot");
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    await targetHandle.close();
+  }
+  return hash.digest("hex");
+}
+
 /** macOS has no /proc directory descriptors. Freeze only the admitted package roots. */
 export async function createAcpxPrivateSnapshot(
   sourceRoots: readonly string[],
   executable: FileHandle | null,
+  options: AcpxPrivateSnapshotOptions = {},
 ): Promise<AcpxPrivateSnapshot> {
   sourceRoots = await Promise.all(sourceRoots.map((root) => realpath(root)));
   const executableIdentity = executable ? await executable.stat({ bigint: true }) : null;
@@ -96,7 +138,10 @@ export async function createAcpxPrivateSnapshot(
     target: string,
     root: string,
   ): Promise<void> => {
-    if (++filesCopied > 30_000)
+    options.signal?.throwIfAborted();
+    if (options.skipPath?.(source, root)) return;
+    options.signal?.throwIfAborted();
+    if (++filesCopied > (options.maxFiles ?? 30_000))
       throw new Error("ACPX package snapshot exceeds its file bound");
     const before = await lstat(source, { bigint: true });
     if (before.isSymbolicLink()) {
@@ -119,10 +164,11 @@ export async function createAcpxPrivateSnapshot(
     }
     // The separately pinned native binary is copied below with its own bound.
     if (before.isFile() && executableIdentity && before.dev === executableIdentity.dev && before.ino === executableIdentity.ino) return;
-    if (!before.isFile() || before.size > 16n * 1024n * 1024n)
+    if (!before.isFile()) throw new Error("ACPX module must be a bounded regular file");
+    if (before.size > BigInt(options.maxModuleBytes ?? 16 * 1024 * 1024))
       throw new Error("ACPX module must be a bounded regular file");
     bytesCopied += Number(before.size);
-    if (bytesCopied > MAX_PACKAGE_SNAPSHOT_BYTES)
+    if (bytesCopied > (options.maxPackageBytes ?? MAX_PACKAGE_SNAPSHOT_BYTES))
       throw new Error("ACPX package snapshot exceeds its byte bound");
     const handle = await open(
       source,
@@ -131,15 +177,22 @@ export async function createAcpxPrivateSnapshot(
     try {
       if (!same(before, await handle.stat({ bigint: true })))
         throw new Error("ACPX module changed before snapshot");
-      const bytes = await readSnapshotBytes(handle, Number(before.size));
-      if (
-        !same(before, await handle.stat({ bigint: true })) ||
-        !same(before, await lstat(source, { bigint: true }))
-      ) {
-        throw new Error("ACPX module changed during snapshot");
+      const assertUnchanged = async () => {
+        options.signal?.throwIfAborted();
+        if (!same(before, await handle.stat({ bigint: true })) || !same(before, await lstat(source, { bigint: true }))) {
+          throw new Error("ACPX module changed during snapshot");
+        }
+      };
+      if (options.streamingCopy) {
+        await assertUnchanged();
+        digests[target] = await copySnapshotStream(handle, target, Number(before.size), options.signal);
+        await assertUnchanged();
+      } else {
+        const bytes = await readSnapshotBytes(handle, Number(before.size));
+        await assertUnchanged();
+        await writeFile(target, bytes, { flag: "wx", mode: 0o400 });
+        digests[target] = digest(bytes);
       }
-      await writeFile(target, bytes, { flag: "wx", mode: 0o400 });
-      digests[target] = digest(bytes);
     } finally {
       await handle.close();
     }
@@ -173,18 +226,27 @@ export async function createAcpxPrivateSnapshot(
         await file.close();
       }
     }
-    for (const root of roots)
-      for (const pkg of packages) {
-        const target = join(root, "node_modules", pkg.name);
-        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-        // Include generated directories in cleanup and read-only sealing.
-        directories.push(join(root, "node_modules"), dirname(target));
-        await symlink(pkg.root, target).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code !== "EEXIST") throw error;
-          },
-        );
+    const linkPackage = async (root: string, name: string, sourceRoot: string) => {
+      options.signal?.throwIfAborted();
+      const target = join(root, "node_modules", name);
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      directories.push(join(root, "node_modules"), dirname(target));
+      await symlink(sourceRoot, target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+    };
+    if (options.packageLinks) {
+      for (let index = 0; index < roots.length; index++) {
+        for (const [name, sourceRoot] of options.packageLinks.get(sourceRoots[index]!) ?? []) {
+          const targetIndex = sourceRoots.indexOf(sourceRoot);
+          if (targetIndex < 0) throw new Error(`ACPX package link ${name} has no admitted target`);
+          await linkPackage(roots[index]!, name, roots[targetIndex]!);
+        }
       }
+    } else {
+      for (const root of roots)
+        for (const pkg of packages) await linkPackage(root, pkg.name, pkg.root);
+    }
     let executablePath: string | null = null;
     if (executable) {
       const before = await executable.stat({ bigint: true });
