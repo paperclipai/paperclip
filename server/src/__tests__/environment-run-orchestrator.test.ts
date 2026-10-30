@@ -506,23 +506,23 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
 
     await orchestrator.realizeForRun(makeRealizeInput({
-      environment: makeEnvironment("ssh"),
+      environment: makeEnvironment("plugin"),
     }));
 
-    // The `ssh` driver runs the command on the remote host that shares the
-    // workspace path, so the configured provision command still runs there.
+    // A driver other than `local`, `sandbox` and `ssh` can execute commands, so
+    // the configured provision command still runs there.
     expect(runtime.execute).toHaveBeenCalledOnce();
     expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
-      environment: expect.objectContaining({ driver: "ssh" }),
+      environment: expect.objectContaining({ driver: "plugin" }),
       lease: expect.objectContaining({ id: "lease-1" }),
       command: "bash",
       args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
-      cwd: "/remote/workspace",
+      cwd: "/workspace/project",
       env: {
         SHELL: "/bin/bash",
       },
     }));
-    // The sandbox skip log is specific to the sandbox driver; ssh stays quiet.
+    // The skip logs are specific to the sandbox and ssh drivers; others stay quiet.
     expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 
@@ -633,7 +633,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 
-  it("runs project-level provision commands for ssh environments", async () => {
+  it("skips the host provision command for an ssh environment because the ssh driver cannot execute", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "gemini_local",
@@ -705,11 +705,14 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       }),
     }));
 
-    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
-      command: "bash",
-      args: ["-lc", "npm install -g @google/gemini-cli"],
-    }));
+    expect(runtime.execute).not.toHaveBeenCalled();
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
+    // The skip is observable: exactly one log line records it with the driver.
+    expect(mockLoggerInfo).toHaveBeenCalledOnce();
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ driver: "ssh", environmentId: "env-1" }),
+      expect.stringContaining("Skip host provisionCommand"),
+    );
   });
 
   it("surfaces remote provision command failures before resolving the adapter target", async () => {
@@ -750,7 +753,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
 
     await expect(orchestrator.realizeForRun(makeRealizeInput({
-      environment: makeEnvironment("ssh"),
+      environment: makeEnvironment("plugin"),
     }))).rejects.toSatisfy(
       (err: unknown) =>
         err instanceof EnvironmentRunError &&

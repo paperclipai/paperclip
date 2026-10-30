@@ -515,10 +515,14 @@ export function environmentRunOrchestrator(
     // The adapter uploads the provisioned tree later, in its `stage.sync` step.
     // So the host command must not run inside the still-empty sandbox; it fails
     // there (exit 127). Skip the step for `sandbox`, and keep the existing skip
-    // for `local`. Keep the step for `ssh`, which runs the command on the
-    // remote host that shares the workspace path.
+    // for `local`. Also skip it for `ssh`: the ssh driver defines no `execute`,
+    // so running the command there throws "does not support command
+    // execution" and fails the run at setup.
     const driverSkipsHostProvision =
-      environment.driver === "local" || environment.driver === "sandbox" || pluginTaskWorkspace;
+      environment.driver === "local" ||
+      environment.driver === "sandbox" ||
+      environment.driver === "ssh" ||
+      pluginTaskWorkspace;
     if (provisionCommand && environment.driver === "sandbox") {
       logger.info(
         {
@@ -528,6 +532,17 @@ export function environmentRunOrchestrator(
           heartbeatRunId,
         },
         "Skip host provisionCommand for sandbox-driver environment; the adapter stage.sync step delivers the provisioned tree",
+      );
+    }
+    if (provisionCommand && environment.driver === "ssh") {
+      logger.info(
+        {
+          environmentId: environment.id,
+          driver: environment.driver,
+          issueId,
+          heartbeatRunId,
+        },
+        "Skip host provisionCommand for ssh-driver environment; the ssh driver cannot execute commands",
       );
     }
     if (provisionCommand && !executionWorkspace.providerBinding && !driverSkipsHostProvision) {
