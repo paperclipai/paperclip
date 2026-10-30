@@ -88,7 +88,7 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
     }
     return { state, replies };
   }, value => activeFollowupOutcome({ issueId: created.issueId, agentId: agent.id, before, after,
-    runs: value.state.taskRuns, expectedReply: story.expectedReply, replies: value.replies,
+    runs: value.state.taskRuns, expectedReply: story.expectedReply, marker: story.marker, replies: value.replies,
     storedFollowupCount: value.state.comments.filter(comment => comment.authorUserId === context.user.id
       && comment.body?.replaceAll("\\_", "_") === story.followup).length,
     queuedCommentCount: Array.isArray(value.state.queue.entries) ? value.state.queue.entries.length : -1,

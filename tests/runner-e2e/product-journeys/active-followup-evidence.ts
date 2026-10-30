@@ -57,16 +57,16 @@ export function sameActiveFollowupBoundary(before: ActiveFollowupBoundary, after
 /** Accept in-turn steering or one normal successor; reject duplicate delivery. */
 export function activeFollowupOutcome(input: {
   issueId: string; agentId: string; before: ActiveFollowupBoundary; after: ActiveFollowupBoundary | null;
-  runs: Row[]; expectedReply: string; replies: Array<{ runId: string; body: string }>;
+  runs: Row[]; expectedReply: string; marker: string; replies: Array<{ runId: string; body: string }>;
   storedFollowupCount: number; queuedCommentCount: number; finalIssueStatus: string;
 }) {
   const ids = input.runs.map(run => run.id);
-  const matching = input.replies.filter(reply => reply.body === input.expectedReply);
+  const matching = input.replies.filter(reply => Boolean(input.marker) && reply.body.includes(input.marker));
   return sameActiveFollowupBoundary(input.before, input.after)
     && input.storedFollowupCount === 1 && input.queuedCommentCount === 0 && input.finalIssueStatus === "done"
     && input.runs.length >= 1 && input.runs.length <= 2 && new Set(ids).size === ids.length && ids.includes(input.before.runId)
     && input.runs.every(run => run.agentId === input.agentId && run.status === "succeeded" && run.runtimeMode === "native"
       && (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) === input.issueId)
-    && matching.length === 1 && ids.includes(matching[0]!.runId)
+    && matching.length === 1 && matching[0]!.body === input.expectedReply && ids.includes(matching[0]!.runId)
     && (input.runs.length === 1 || matching[0]!.runId !== input.before.runId);
 }

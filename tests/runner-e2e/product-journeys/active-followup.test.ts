@@ -16,7 +16,7 @@ const command = { schema: "paperclip.tool.execution.v1", executionId: "wait", tr
 const events = () => [event(1, "turn.started"), event(2, "tool.execution.started", command)];
 const boundary = () => activeFollowupBoundary(run, events())!;
 const outcome = () => ({ issueId: "issue", agentId: "agent", before: boundary(), after: boundary(),
-  runs: [{ ...run, status: "succeeded" }], expectedReply: "Friday UPDATED", replies: [{ runId: "run", body: "Friday UPDATED" }],
+  runs: [{ ...run, status: "succeeded" }], expectedReply: "Friday UPDATED", marker: "UPDATED", replies: [{ runId: "run", body: "Friday UPDATED" }],
   storedFollowupCount: 1, queuedCommentCount: 0, finalIssueStatus: "done" });
 
 describe("deployment-independent active follow-up", () => {
@@ -60,6 +60,7 @@ describe("deployment-independent active follow-up", () => {
       (v: ReturnType<typeof outcome>) => { v.replies = []; },
       (v: ReturnType<typeof outcome>) => { v.replies.push(v.replies[0]!); },
       (v: ReturnType<typeof outcome>) => { v.replies[0]!.body = "Monday"; },
+      (v: ReturnType<typeof outcome>) => { v.replies.push({ runId: "run", body: "UPDATED again" }); },
       (v: ReturnType<typeof outcome>) => { v.replies[0]!.runId = "other"; },
       (v: ReturnType<typeof outcome>) => { v.runs[0]!.status = "failed"; },
       (v: ReturnType<typeof outcome>) => { v.runs[0]!.agentId = "other"; },
