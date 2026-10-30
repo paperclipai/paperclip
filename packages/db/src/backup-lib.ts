@@ -264,13 +264,19 @@ function formatPostgresArrayElement(value: unknown): string {
   if (Array.isArray(value)) return formatPostgresArrayLiteral(value);
   const raw = value instanceof Date
     ? value.toISOString()
-    : typeof value === "object"
-      ? JSON.stringify(value)
-      : String(value);
+    : Buffer.isBuffer(value)
+      ? formatByteaHex(value)
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
   if (raw.length === 0 || /^null$/i.test(raw) || /[{}\s,"\\]/.test(raw)) {
     return `"${raw.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
   }
   return raw;
+}
+
+function formatByteaHex(value: Buffer): string {
+  return `\\x${value.toString("hex")}`;
 }
 
 function formatPostgresArrayLiteral(value: unknown[]): string {
@@ -292,6 +298,7 @@ function formatSqlValue(
   if (typeof val === "number") return String(val);
   if (val instanceof Date) return formatSqlLiteral(val.toISOString());
   if (Array.isArray(val)) return formatSqlLiteral(formatPostgresArrayLiteral(val));
+  if (Buffer.isBuffer(val)) return formatSqlLiteral(formatByteaHex(val));
   if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
   return formatSqlLiteral(String(val));
 }
