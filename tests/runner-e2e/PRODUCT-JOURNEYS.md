@@ -24,6 +24,7 @@ never start a server or depend on a tenant filesystem.
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
+| `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
 | `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
@@ -48,6 +49,18 @@ measured versions to remain exact and independently readable. Shared coverage
 does not establish a live pass or admit the journey to a target's daily plan.
 The reopen step selects Backlog explicitly and searches the owned title. A
 user's saved task view cannot route that check to Done or a personal inbox.
+
+The project/task journey records durable project and task ownership before each
+creation and immediately saves the response IDs. Its project must retain its
+planned state. Independent project-filtered task reads must contain the exact
+new task. The final task view must show the same project after reload. Browser
+readback uses the main project heading and visible task content rather
+than a duplicate sidebar label. It binds navigation to the saved project URL key
+and task identifier. Closed failure codes identify project-list, project-open,
+task-open and property-readback failures without retaining Playwright page text. A Cloud
+provider must clean only these owned resources, settle owned tasks before
+archiving the project, and preserve their history. Catalog registration does not
+admit this candidate to a saved daily plan; a real deployment pass is required.
 
 The search/filter journey creates only campaign-owned, board-assigned tasks through
 the public API. The target and completed control share a unique search marker;
