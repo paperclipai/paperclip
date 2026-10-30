@@ -1,8 +1,9 @@
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { activityLog, approvals, applyPendingMigrations, budgetIncidents, budgetPolicies, companies, costEvents, createDb, externalObjects, issues, issueComments, plugins } from "@paperclipai/db";
+import { activityLog, approvals, applyPendingMigrations, databaseWorkPending, budgetIncidents, budgetPolicies, companies, costEvents, createDb, externalObjects, externalObjectMentions, issues, issueComments, plugins } from "@paperclipai/db";
 import { externalObjectService, type ExternalObjectResolveResult } from "../services/external-objects.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -12,6 +13,7 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { companyService } from "../services/companies.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { notifyExternalObjectRefresh } from "../services/external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -295,8 +297,12 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
         key: "notes", format: "markdown", body: `https://example.com/${a.companyId}` });
       id = result.document.id; await svc.syncDocument(id);
     }
-    await settle(async () => (await row(a.companyId))?.lastResolvedAt !== null && (await row(b.companyId))?.lastResolvedAt !== null);
-    await settle(() => coordinator!.nextWakeAt() !== null);
+    await settle(async () => {
+      const left = await row(a.companyId), right = await row(b.companyId);
+      return Boolean(left?.lastResolvedAt && right?.lastResolvedAt);
+    });
+    const expectedDeadline = Math.min((await row(a.companyId)).nextRefreshAt!.getTime(), (await row(b.companyId)).nextRefreshAt!.getTime());
+    await settle(() => coordinator!.nextWakeAt() === expectedDeadline && !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh));
     const reads: Array<{ query: string; params: unknown[] }> = [];
     const debug = db.$client.options.debug;
     db.$client.options.debug = (_connection, query, params) => {
@@ -344,7 +350,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     finish(terminal); await settle(async () => (await row(f.companyId)).isTerminal); await quiet();
   });
 
-  it("uses durable provider retry deadlines and waits for in-flight shutdown without overlap", async () => {
+  it("uses durable provider retry deadlines and cancels the observed result on shutdown without overlap", async () => {
     clock(); const svc = service(); await start(svc);
     provider.mockResolvedValueOnce({ ok: false, liveness: "rate_limited", errorCode: "slow_down", retryAfterSeconds: 5 });
     const f = await fixture(); await svc.syncIssue(f.issueId);
@@ -360,11 +366,72 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     await svc.syncIssue(f.issueId); await vi.advanceTimersByTimeAsync(0);
     expect(provider).toHaveBeenCalledTimes(2);
     let stopped = false; const stop = coordinator!.stop().then(() => { stopped = true; });
-    await delay(10); expect(stopped).toBe(false);
-    finish(terminal); await stop; coordinator = undefined;
+    await stop; expect(stopped).toBe(true); coordinator = undefined;
+    const cancelled = await row(f.companyId); expect(cancelled.refreshToken).toBeNull(); expect(cancelled.isTerminal).toBe(false);
+    finish(terminal); await delay(10);
+    expect((await row(f.companyId)).isTerminal).toBe(false);
     const selects = vi.spyOn(db, "select");
     await vi.advanceTimersByTimeAsync(600_000);
     expect(selects).not.toHaveBeenCalled(); expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels an actual stalled GitHub HTTP body, retains due debt and resumes after restart", async () => {
+    clock(); let stall = true, started = false, closed = false;
+    const server = createServer((request, response) => {
+      if (request.url?.includes("/pulls/")) {
+        if (stall) {
+          started = true; response.on("close", () => { closed = true; });
+          response.writeHead(200, { "content-type": "application/json" }); response.write('{"state":');
+        } else response.end(JSON.stringify({ state: "closed", merged: true, title: "Done" }));
+      } else response.end(JSON.stringify({ private: false }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing HTTP test port");
+    const svc = externalObjectService(db, { github: {
+      fetch: (url, init) => fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init),
+      credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }),
+    } });
+    try {
+      await start(svc); const f = await fixture();
+      await db.update(issues).set({ description: "https://github.com/acme/app/pull/42" }).where(eq(issues.id, f.issueId));
+      await svc.syncIssue(f.issueId); await settle(() => started);
+      await coordinator!.stop(); coordinator = undefined;
+      await settle(() => closed);
+      const cancelled = await row(f.companyId);
+      expect(cancelled.refreshToken).toBeNull(); expect(cancelled.lastResolvedAt).toBeNull();
+      expect(cancelled.nextRefreshAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      stall = false; await start(svc);
+      await settle(async () => Boolean((await row(f.companyId))?.isTerminal)); await quiet();
+    } finally { await coordinator?.stop(); coordinator = undefined; server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it("loads only the changed identity and objects after ingestion into ten thousand future objects", async () => {
+    clock(); const svc = service(); const f = await fixture();
+    const future = new Date(Date.now() + 86_400_000);
+    const ids = Array.from({ length: 10_000 }, () => randomUUID());
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const batch = ids.slice(offset, offset + 500);
+      await db.insert(externalObjects).values(batch.map(id => ({ id, companyId: f.companyId,
+        providerKey: "url", objectType: "link", externalId: id, nextRefreshAt: future })));
+      await db.insert(externalObjectMentions).values(batch.map(objectId => ({ companyId: f.companyId,
+        sourceIssueId: f.issueId, sourceKind: "description" as const, objectId })));
+    }
+    await start(svc); await settle(() => coordinator!.nextWakeAt() === future.getTime());
+    const [incoming] = await db.insert(issues).values({ companyId: f.companyId, title: "Incoming",
+      description: "https://example.com/new-object" }).returning();
+    const reads: Array<{ query: string; params: unknown[] }> = [];
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, params) => {
+      if (/^select/i.test(query) && query.includes('from "external_objects"') && query.includes('inner join "companies"'))
+        reads.push({ query, params: [...params] });
+    };
+    try {
+      await svc.syncIssue(incoming!.id);
+      await settle(() => provider.mock.calls.length === 1);
+      await settle(() => coordinator!.nextWakeAt() === future.getTime() && !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh));
+      expect(reads.length).toBeGreaterThan(0); expect(reads.length).toBeLessThanOrEqual(6);
+      for (const read of reads) expect(read.query).toMatch(/"external_objects"\."(?:id|external_id)" =/);
+    } finally { db.$client.options.debug = debug; }
   });
 
   it("reconstructs paginated multi-company work and never invokes inactive or never-refresh objects", async () => {

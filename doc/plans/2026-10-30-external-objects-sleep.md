@@ -24,7 +24,9 @@ probe before their terminal verdict is definitive. A null deadline retains its
 existing never-refresh meaning. Registration does not change stored timestamps.
 
 The worker reconstructs eligible deadlines in pages of at most 250 rows. A
-company notification reads that company only. A due callback reads only its
+company notification reads that company only. Ordinary ingestion uses object IDs
+or stable provider/object/external identity hints, including concurrent upserts,
+so one mention write does not reconstruct all company history. A due callback reads only its
 object. Pages select scheduling columns and retain compact deadlines in memory.
 Dispatch uses fair batches of at most 50 objects. The deadline is the later of
 `next_refresh_at` and the current refresh lease expiry. Lease renewals and atomic
@@ -46,7 +48,7 @@ and fences automatic result persistence. It does not modify that draft PR.
 
 | Mutation | Owner and activation |
 | --- | --- |
-| Issue title/description, comment and document references | Existing sync methods register company intent before mention replacement and object upsert. Routes, runtime tools, adapters and plugin paths reuse these methods. |
+| Issue title/description, comment and document references | Existing sync methods register object intent before mention replacement and stable identity intent before object upsert. Routes, runtime tools, adapters and plugin paths reuse these methods. |
 | Comment/document disappearance | Sync derives the retained mention owners and registers only those companies before deleting obsolete mentions. |
 | Last mention removal and reattachment | Mention replacement invalidates company deadlines. Retained objects stay available for reattachment. |
 | Issue deletion | Issue service registers its company before cascading mention deletion. |
@@ -90,3 +92,23 @@ The conservative external-object host-sleep blocker remains. An in-process
 deadline cannot wake stopped compute. This change proves worker quiet and
 reactivation in the tested process; it does not establish Cloud alarm coverage,
 host/database suspension or deployed savings.
+
+
+## Host cancellation and explicit legacy entry points
+
+The resolver contract accepts an optional host `AbortSignal`. The worker passes
+its coordinator signal through refresh to the resolver. This reuses the narrow
+provider-owned capability introduced with merge-confirmation work: GitHub combines
+host cancellation with a ten-second request budget for real fetch, response-body
+reads and visibility probes. Plugin RPC payloads remain unchanged. The host
+observes cancellation while retaining handlers for any eventual plugin/custom
+result; it releases only its own claim and cannot publish that late result.
+Startup does not await provider work. Shutdown closes the active GitHub HTTP
+request, and its saved due row can resume immediately after restart.
+
+The two explicit `refreshDueObjects*` helpers remain manual diagnostic/test entry
+points. They have no production scheduler caller. Their regression fixtures also
+preserve the prior selection/lease semantics. The scheduled check retains its
+post-refresh scoped read to revalidate current company, reference and resolver
+eligibility and recover an authoritative lease after a competing writer; all such
+reads target one object rather than rebuilding a company.

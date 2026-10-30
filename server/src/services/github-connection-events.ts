@@ -246,7 +246,8 @@ export function githubConnectionEventService(
     if (!snapshot) return;
     const appliedAt = now();
     await db.transaction(async tx => {
-      await notifyExternalObjectRefresh(tx, companyId);
+      await notifyExternalObjectRefresh(tx, companyId, { providerKey: "github", objectType: "pull_request",
+        externalId: snapshot.externalId, ignoreExternalIdCase: true });
       await tx.update(externalObjects).set({
         statusKey: snapshot.statusKey,
         statusLabel: snapshot.statusLabel,
