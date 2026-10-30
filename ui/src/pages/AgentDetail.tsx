@@ -148,6 +148,7 @@ import { agentRouteRef } from "../lib/utils";
 import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
 import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
 import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
+import { AgentAuditTab } from "./AgentAuditTab";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
@@ -1500,6 +1501,10 @@ export function AgentDetail() {
       ) : null}
 
       {/* View content */}
+      {isAgentAuditView(activeView) && resolvedCompanyId ? (
+        <AgentAuditTab agent={agent} companyId={resolvedCompanyId} section={activeView} />
+      ) : null}
+
       {activeView === "overview" && (
         <AgentOverview
           agent={agent}
