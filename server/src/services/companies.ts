@@ -1,5 +1,6 @@
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
@@ -334,6 +335,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyCompanyRetentionWork(tx, id);
@@ -490,6 +492,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyCompanyRetentionWork(tx, id);

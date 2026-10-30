@@ -1323,19 +1323,6 @@ async function startServerWithDatabaseTeardown(
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
   });
-  const scheduleExternalObjectRefreshSweep = (now = new Date()) => {
-    if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(externalObjects
-      .refreshDueObjectsForActiveCompanies(50, now)
-      .then((result) => {
-        if (result.checked > 0 || result.refreshed > 0) {
-          logger.info({ ...result }, "external-object scheduler tick refreshed due objects");
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "external-object scheduler tick failed");
-      }));
-  };
 
   // The retry backstop for orphan sandboxes. An acquire that rejects a
   // foreign-company insert tears the provisioned sandbox down. If that teardown
@@ -1362,6 +1349,8 @@ async function startServerWithDatabaseTeardown(
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  externalObjects.registerRefreshWork(deliveryWork,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   if (config.nativeHarnessBackupExpirationEnabled) {
     nativeHarnessBackupExpiration.registerCheckpointExpiration(deliveryWork);
   }
@@ -2007,7 +1996,6 @@ async function startServerWithDatabaseTeardown(
         }
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        scheduleExternalObjectRefreshSweep(new Date());
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         scheduleMergedPullRequestConfirmationSweep();
@@ -2133,7 +2121,6 @@ async function startServerWithDatabaseTeardown(
     // as the enabled path.
     await startEnvironmentCleanup();
     startHeartbeatSchedulerInterval(() => {
-      scheduleExternalObjectRefreshSweep(new Date());
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });

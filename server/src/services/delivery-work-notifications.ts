@@ -6,6 +6,7 @@ export const DELIVERY_QUEUES = {
   providerTraceRetention: "provider-trace-retention",
   nativeRunnerEvidenceRetention: "native-runner-evidence-retention",
   skillVersionRetention: "skill-version-retention",
+  externalObjectRefresh: "external-object-refresh",
   databaseBackups: "database-backups",
   importSpoolCleanup: "import-spool-cleanup",
   externalConversationSettlement: "external-conversation-settlement",

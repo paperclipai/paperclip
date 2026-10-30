@@ -11,6 +11,7 @@ import {
   issues,
   plugins,
 } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,7 +28,8 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXTERNAL_OBJECTS_TEST_DATABASE_URL");
+const describeEmbeddedPostgres = externalDatabaseUrl || embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -709,8 +711,8 @@ describeEmbeddedPostgres("externalObjectService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-external-objects-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-external-objects-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -725,6 +727,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
