@@ -16,6 +16,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -100,7 +101,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const [company] = await db.insert(companies).values({ name: "Completion", issuePrefix: "CMP" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Completing agent", adapterType: "process" }).returning();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "on_demand", status: "claimed" }).returning();
-    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, wakeupRequestId: wake.id, status: "running", runtimeMode: "legacy", ...patch }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, wakeupRequestId: wake.id, status: "running", runtimeMode: "legacy", runnerProfileJson: { adapterDispatch: { adapterType: "process" } }, ...patch }).returning();
     const deps = callbacks(db);
     const controller = new AbortController();
     const input: CompleteHeartbeatRunInput = {
@@ -147,7 +148,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
 
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
     const f = await fixture();
+    const reprobeSignal = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.upstreamRecoveryReprobe, reprobeSignal);
     await f.completion.completeRun(f.input);
+    unsubscribe();
     expect(await read(f.run.id)).toMatchObject({ status: "succeeded", sessionIdAfter: "provider-session", logBytes: 123, logSha256: "log-hash", logCompressed: true, stdoutExcerpt: "answer", costAccountingPending: false, costAccountedAt: expect.any(Date), usageJson: { inputTokens: 20, cachedInputTokens: 5, outputTokens: 8, usageSource: "per_run", configFreshness: { version: 1 } }, resultJson: { presentationDecision: { commentAction: "none" } } });
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id))).toHaveLength(1);
     expect((await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task"))?.sessionDisplayId).toBe("provider-session");
@@ -156,6 +160,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.setWakeupStatus).toHaveBeenCalledWith(f.wake.id, "completed", expect.any(Object));
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
+    expect(reprobeSignal).toHaveBeenCalledOnce();
+  });
+
+  it("does not lose the saved success signal when a later completion step fails", async () => {
+    const f = await fixture();
+    const reprobeSignal = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.upstreamRecoveryReprobe, reprobeSignal);
+    f.deps.setWakeupStatus.mockRejectedValueOnce(new Error("wakeup write failed"));
+    await expect(f.completion.completeRun(f.input)).rejects.toThrow("wakeup write failed");
+    unsubscribe();
+    expect((await read(f.run.id)).status).toBe("succeeded");
+    expect(reprobeSignal).toHaveBeenCalledOnce();
   });
 
   it.each([

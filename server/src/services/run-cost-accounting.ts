@@ -7,6 +7,7 @@ import { conflict } from "../errors.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { logger } from "../middleware/logger.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { promises as fs } from "node:fs";
 import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
 
@@ -14,6 +15,13 @@ const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "inte
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+
+async function signalAccountedUpstreamSuccess(tx: Db, run: typeof heartbeatRuns.$inferSelect) {
+  if (run.status !== "succeeded") return;
+  const adapterType = text(object(object(run.runnerProfileJson).adapterDispatch).adapterType);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.upstreamRecoveryReprobe,
+    adapterType ? JSON.stringify({ companyId: run.companyId, agentId: run.agentId, adapterType }) : undefined);
+}
 
 /** The run's persisted usage is a durable receipt. Ledger, runtime totals, and
  * acknowledgement commit together, including after a restart or failed run. */
@@ -38,6 +46,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
+      await signalAccountedUpstreamSuccess(tx, run);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
         text(object(object(run.usageJson).ledgerScope).projectId));
@@ -69,6 +78,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
+    await signalAccountedUpstreamSuccess(tx, run);
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));

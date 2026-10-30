@@ -1,9 +1,16 @@
-// Pure decision rules for two heartbeat run-dispatch gates:
+// Pure decision rules for three heartbeat run-dispatch gates:
 //   - the scheduled-retry promotion gate (decideScheduledRetryGate)
 //   - the queued-run staleness check (decideQueuedRunStaleness)
+//   - the early upstream re-probe (decideEarlyUpstreamReprobe)
 // The caller reads the database, the clock, and the agent's invokability,
 // then packs the result into a facts object. This file only branches on
 // that facts object; it never queries a database or reads the clock.
+
+import {
+  BOUNDED_TRANSIENT_RETRY_DELAYS_MS,
+  BOUNDED_TRANSIENT_RETRY_MAX_JITTER_MULTIPLIER,
+  TRANSIENT_FAILURE_RETRY_REASON,
+} from "./wake-context.js";
 
 /** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
@@ -166,6 +173,56 @@ export type QueuedRunFacts = {
 
   reviewParticipant: ReviewParticipantFacts;
 };
+
+/**
+ * A transient-upstream retry can inherit a far-future usage-limit reset hint
+ * (retryNotBefore — e.g. a weekly-quota reset hours away) as its
+ * scheduledRetryAt. Only pins beyond the bounded backoff ceiling qualify for an
+ * early re-probe, so a normally scheduled transient backoff is never disturbed.
+ * The ceiling is the longest base step stretched by the scheduler's jitter: a
+ * last step drawn at the top of that range is still a normal backoff.
+ */
+export const EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS = Math.round(
+  Math.max(...BOUNDED_TRANSIENT_RETRY_DELAYS_MS) * BOUNDED_TRANSIENT_RETRY_MAX_JITTER_MULTIPLIER,
+);
+/** How recent a successful run must be to still count as proof the upstream is serving. */
+export const EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS = 30 * 60 * 1000;
+
+/** A successful run the reader found in the candidate's upstream scope. */
+export type UpstreamRecoveryEvidence = {
+  runId: string;
+  finishedAt: Date;
+};
+
+/** A failed run in the same scope that the retry scheduler counts as an upstream failure. */
+export type UpstreamFailureEvidence = {
+  runId: string;
+  finishedAt: Date;
+};
+
+export type EarlyUpstreamReprobeFacts = {
+  runId: string;
+  retryReason: string | null;
+  scheduledRetryAt: Date | null;
+  /** When the transient retry row and its original pin were inserted. */
+  pinSetAt: Date | null;
+  /** The most recent successful run in the same upstream scope, if found. */
+  recoveryEvidence: UpstreamRecoveryEvidence | null;
+  /** The most recent upstream failure in that scope at or after the success, if any. */
+  latestUpstreamFailure: UpstreamFailureEvidence | null;
+};
+
+export type EarlyUpstreamReprobeHoldReason =
+  | "retry_reason_not_transient"
+  | "pin_not_far_future"
+  | "no_recovery_evidence"
+  | "recovery_evidence_stale"
+  | "recovery_predates_pin"
+  | "upstream_failed_after_recovery";
+
+export type EarlyUpstreamReprobeDecision =
+  | { reprobe: true; evidenceRunId: string }
+  | { reprobe: false; reason: EarlyUpstreamReprobeHoldReason };
 
 type OwnershipFacts = {
   runAgentId: string;
@@ -686,4 +743,56 @@ export function decideQueuedRunStaleness(
   }
 
   return { stale: false };
+}
+
+/**
+ * Decides whether a far-future-pinned transient retry may re-probe the upstream
+ * now instead of idling to its pin. The promoter otherwise waits for exactly
+ * the pinned timestamp, so a retry that inherited a quota-reset hint stays
+ * parked for hours after the outage that produced it already ended.
+ *
+ * Releasing such a pin needs positive proof, never a guess: a successful run in
+ * the same agent and adapter, recent enough to describe that upstream's state,
+ * later than the pin itself and not followed by another upstream failure there,
+ * shows the adapter is being served again. Without that proof the pin is
+ * preserved exactly, so a genuine quota wait is untouched.
+ */
+export function decideEarlyUpstreamReprobe(
+  facts: EarlyUpstreamReprobeFacts,
+  now: Date,
+): EarlyUpstreamReprobeDecision {
+  if (facts.retryReason !== TRANSIENT_FAILURE_RETRY_REASON) {
+    return { reprobe: false, reason: "retry_reason_not_transient" };
+  }
+
+  const pinnedAt = facts.scheduledRetryAt?.getTime() ?? null;
+  if (
+    pinnedAt === null ||
+    pinnedAt <= now.getTime() + EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS
+  ) {
+    return { reprobe: false, reason: "pin_not_far_future" };
+  }
+
+  const evidence = facts.recoveryEvidence;
+  if (!evidence) return { reprobe: false, reason: "no_recovery_evidence" };
+
+  const recoveredAt = evidence.finishedAt.getTime();
+  if (recoveredAt <= now.getTime() - EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS) {
+    return { reprobe: false, reason: "recovery_evidence_stale" };
+  }
+
+  // A success from before the pin was written describes the upstream the run
+  // already failed against, not its recovery.
+  if (facts.pinSetAt && recoveredAt <= facts.pinSetAt.getTime()) {
+    return { reprobe: false, reason: "recovery_predates_pin" };
+  }
+
+  // The latest word on the upstream wins: hitting the limit there again after
+  // the success means the outage is back and the pin still holds.
+  const failure = facts.latestUpstreamFailure;
+  if (failure && failure.finishedAt.getTime() >= recoveredAt) {
+    return { reprobe: false, reason: "upstream_failed_after_recovery" };
+  }
+
+  return { reprobe: true, evidenceRunId: evidence.runId };
 }

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { agents, companies, costEvents, createDb, heartbeatRuns, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("run cost accounting work", () => {
@@ -58,6 +59,22 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(events[0].costCents).toBe(1);
     expect(cancelWorkForScope).not.toHaveBeenCalled();
     expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+  });
+
+  it("signals a recovered native success only after its cost debt clears", async () => {
+    const { runId } = await seed({
+      runtimeMode: "native",
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      usageJson: { accountingReceiptReady: false },
+    });
+    const reprobeSignal = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.upstreamRecoveryReprobe, reprobeSignal);
+    expect(await accountRunCost(db, runId)).toBe(false);
+    expect(reprobeSignal).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ usageJson: { accountingReceiptReady: true, costUsd: 0.01 } }).where(eq(heartbeatRuns.id, runId));
+    expect(await accountRunCost(db, runId)).toBe(true);
+    unsubscribe();
+    expect(reprobeSignal).toHaveBeenCalledOnce();
   });
 
   it("repairs a stale pending marker without creating another charge", async () => {

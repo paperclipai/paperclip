@@ -52,6 +52,10 @@ import {
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  TRANSIENT_FAILURE_RETRY_REASON,
+  BOUNDED_TRANSIENT_RETRY_DELAYS_MS,
+  PROVIDER_QUOTA_ERROR_CODE,
+  TRANSIENT_UPSTREAM_ERROR_CODES,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   isNonAssigneeWorkspaceBusyRetry,
@@ -62,7 +66,7 @@ import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
-import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import type { createRunDispatch, PostCommitEffect, UpstreamReprobeScope } from "../../modules/run-dispatch/index.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
@@ -77,7 +81,7 @@ type PlanApprovalResumeFailure = {
 export interface HeartbeatRetryDependencies {
   hasCaseHandoffForRun: (run: Pick<HeartbeatRun, "id" | "companyId">) => Promise<boolean>;
   runDispatch: Pick<ReturnType<typeof createRunDispatch>,
-    "evaluateScheduledRetryGate" | "promoteDueScheduledRetries" | "promoteScheduledRetry">;
+    "evaluateScheduledRetryGate" | "promoteDueScheduledRetries" | "promoteEarlyUpstreamRecoveryRetries" | "promoteScheduledRetry">;
   getAgent: (agentId: string) => Promise<typeof agents.$inferSelect | null | undefined>;
   getRun: (
     runId: string,
@@ -113,11 +117,10 @@ export interface HeartbeatRetryDependencies {
   applyRunDispatchPostCommitEffects: (effects: PostCommitEffect[]) => void;
 }
 
-export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
-  30_000, 60_000,
-] as const;
-
-const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
+// The run-dispatch domain owns these steps: its early upstream re-probe
+// derives its far-future pin threshold from their jittered ceiling, and
+// retries.test.ts fails if a step scheduled here ever lands past it.
+export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = BOUNDED_TRANSIENT_RETRY_DELAYS_MS;
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
@@ -245,14 +248,12 @@ export function readHeartbeatRunErrorFamily(
   const persistedFamily = readNonEmptyString(resultJson.errorFamily);
   if (persistedFamily) return persistedFamily;
 
-  if (run.errorCode === "provider_quota") {
+  // The early upstream re-probe classifies failed runs in SQL from the same
+  // error-code constants, so the two classifications cannot drift apart.
+  if (run.errorCode === PROVIDER_QUOTA_ERROR_CODE) {
     return "provider_quota";
   }
-  if (
-    run.errorCode === "codex_transient_upstream" ||
-    run.errorCode === "claude_transient_upstream" ||
-    run.errorCode === "codex_harness_crash"
-  ) {
+  if (TRANSIENT_UPSTREAM_ERROR_CODES.some((code) => code === run.errorCode)) {
     return "transient_upstream";
   }
   return null;
@@ -424,7 +425,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const now = opts?.now ?? new Date();
     const retryReason =
-      opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+      opts?.retryReason ?? TRANSIENT_FAILURE_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(
@@ -459,7 +460,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
     const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      retryReason === TRANSIENT_FAILURE_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
@@ -1653,6 +1654,23 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     return { promoted: result.promoted, runIds: result.runIds };
   }
 
+  /** Only a saved success or startup recovery calls this; an idle tick never probes candidates. */
+  async function promoteEarlyUpstreamRecoveryRetries(
+    scope?: UpstreamReprobeScope,
+    now = new Date(),
+  ) {
+    const cutoff = await getWorktreeExecutionCutoff();
+    const runIds: string[] = [];
+    let after: Awaited<ReturnType<typeof runDispatch.promoteEarlyUpstreamRecoveryRetries>>["nextCursor"] = null;
+    do {
+      const result = await runDispatch.promoteEarlyUpstreamRecoveryRetries({ now, cutoff, after, scope });
+      applyRunDispatchPostCommitEffects(result.postCommitEffects);
+      runIds.push(...result.runIds);
+      after = result.nextCursor;
+    } while (after);
+    return { promoted: runIds.length, runIds };
+  }
+
   async function getIssueRetryRun(
     companyId: string,
     issueId: string,
@@ -1901,6 +1919,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
+    promoteEarlyUpstreamRecoveryRetries,
     retryScheduledRetryNow,
 
     scheduleBoundedRetry: async (

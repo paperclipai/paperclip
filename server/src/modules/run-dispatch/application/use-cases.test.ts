@@ -4,20 +4,83 @@ import {
   createDispatchResolvedInteractionIfCurrent,
   createEvaluateScheduledRetryGate,
   createPromoteDueScheduledRetries,
+  createPromoteEarlyUpstreamRecoveryRetries,
   createPromoteScheduledRetry,
 } from "./use-cases.js";
-import type { DueRetryRun, RunDispatchWriter, ScheduledRetryReader } from "./ports.js";
+import type {
+  DueRetryRun,
+  EarlyUpstreamReprobeCandidate,
+  RunDispatchWriter,
+  ScheduledRetryReader,
+} from "./ports.js";
+import type { UpstreamFailureEvidence, UpstreamRecoveryEvidence } from "../domain/policy.js";
 
-function fakeReader(dueRuns: DueRetryRun[] = []): ScheduledRetryReader & { evaluateCalls: unknown[] } {
+const REPROBE_NOW = new Date("2026-06-22T02:46:00.000Z");
+/** Pinned to a weekly-quota reset 15h out, written before this sweep's clock. */
+const FAR_FUTURE_PIN = new Date(REPROBE_NOW.getTime() + 15 * 60 * 60 * 1000);
+const PIN_SET_AT = new Date(REPROBE_NOW.getTime() - 6 * 60_000);
+const RECOVERY_EVIDENCE: UpstreamRecoveryEvidence = {
+  runId: "green-run",
+  finishedAt: new Date(REPROBE_NOW.getTime() - 60_000),
+};
+
+function reprobeCandidate(overrides: Partial<EarlyUpstreamReprobeCandidate> = {}) {
+  return {
+    runId: "pinned-run",
+    companyId: "company-1",
+    agentId: "agent-1",
+    adapterType: "codex_local",
+    retryReason: "transient_failure",
+    scheduledRetryAt: FAR_FUTURE_PIN,
+    pinSetAt: PIN_SET_AT,
+    createdAt: PIN_SET_AT,
+    ...overrides,
+  } satisfies EarlyUpstreamReprobeCandidate;
+}
+
+function fakeReader(
+  dueRuns: DueRetryRun[] = [],
+  reprobe: {
+    candidates?: EarlyUpstreamReprobeCandidate[];
+    evidence?: UpstreamRecoveryEvidence | null;
+    evidenceFor?: (input: { companyId: string; agentId: string; adapterType: string; now: Date }) => UpstreamRecoveryEvidence | null;
+    failure?: UpstreamFailureEvidence | null;
+  } = {},
+): ScheduledRetryReader & { evaluateCalls: unknown[]; evidenceCalls: unknown[]; failureCalls: unknown[] } {
   const evaluateCalls: unknown[] = [];
+  const evidenceCalls: unknown[] = [];
+  const failureCalls: unknown[] = [];
   return {
     evaluateCalls,
+    evidenceCalls,
+    failureCalls,
     async evaluateScheduledRetryGate(input) {
       evaluateCalls.push(input);
       return { allowed: true };
     },
     async listDueRetries() {
       return dueRuns;
+    },
+    async listEarlyUpstreamReprobeCandidates(input) {
+      const candidates = (reprobe.candidates ?? []).filter((candidate) =>
+        !input.scope || (
+          candidate.companyId === input.scope.companyId &&
+          candidate.agentId === input.scope.agentId &&
+          candidate.adapterType === input.scope.adapterType
+        ),
+      );
+      const afterIndex = input.after
+        ? candidates.findIndex((candidate) => candidate.runId === input.after?.runId) + 1
+        : 0;
+      return candidates.slice(afterIndex, afterIndex + input.limit);
+    },
+    async findUpstreamRecoveryEvidence(input) {
+      evidenceCalls.push(input);
+      return reprobe.evidenceFor ? reprobe.evidenceFor(input) : (reprobe.evidence ?? null);
+    },
+    async findLatestUpstreamFailure(input) {
+      failureCalls.push(input);
+      return reprobe.failure ?? null;
     },
   };
 }
@@ -26,17 +89,24 @@ function fakeWriter(overrides: Partial<RunDispatchWriter> = {}): RunDispatchWrit
   promoteCalls: unknown[];
   cancelCalls: unknown[];
   dispatchCalls: unknown[];
+  advanceCalls: unknown[];
 } {
   const promoteCalls: unknown[] = [];
   const cancelCalls: unknown[] = [];
   const dispatchCalls: unknown[] = [];
+  const advanceCalls: unknown[] = [];
   return {
     promoteCalls,
     cancelCalls,
     dispatchCalls,
+    advanceCalls,
     async promoteOrCancelDueRetry(input) {
       promoteCalls.push(input);
       return { outcome: "promoted", postCommitEffects: [] };
+    },
+    async advanceScheduledRetryPin(input) {
+      advanceCalls.push(input);
+      return { advanced: true };
     },
     async cancelStaleQueuedRun(input) {
       cancelCalls.push(input);
@@ -48,6 +118,17 @@ function fakeWriter(overrides: Partial<RunDispatchWriter> = {}): RunDispatchWrit
     },
     ...overrides,
   };
+}
+
+function buildPromoters(
+  reader: ScheduledRetryReader,
+  writer: RunDispatchWriter,
+) {
+  const promoteScheduledRetry = createPromoteScheduledRetry({ writer });
+  return createPromoteDueScheduledRetries({
+    reader,
+    promoteScheduledRetry,
+  });
 }
 
 describe("createEvaluateScheduledRetryGate", () => {
@@ -114,13 +195,207 @@ describe("createPromoteDueScheduledRetries", () => {
     }));
     const reader = fakeReader(dueRuns);
     const writer = fakeWriter();
-    const result = await createPromoteDueScheduledRetries({
-      reader,
-      promoteScheduledRetry: createPromoteScheduledRetry({ writer }),
-    })({ cutoff: null });
+    const result = await buildPromoters(reader, writer)({ cutoff: null });
 
     expect(result.promoted).toBe(50);
     expect(result.runIds).toEqual(dueRuns.slice(0, 50).map(({ runId }) => runId));
+  });
+
+  it("leaves far-future candidates untouched during a due sweep", async () => {
+    const reader = fakeReader([{ runId: "due-run", companyId: "company-1" }], {
+      candidates: [reprobeCandidate()],
+      evidence: RECOVERY_EVIDENCE,
+    });
+    const listCandidates = vi.spyOn(reader, "listEarlyUpstreamReprobeCandidates");
+    const writer = fakeWriter();
+    const result = await buildPromoters(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 1, runIds: ["due-run"] });
+    expect(listCandidates).not.toHaveBeenCalled();
+    expect(writer.advanceCalls).toEqual([]);
+  });
+});
+
+describe("createPromoteEarlyUpstreamRecoveryRetries", () => {
+  function buildEarlyPromoter(reader: ScheduledRetryReader, writer: RunDispatchWriter) {
+    return createPromoteEarlyUpstreamRecoveryRetries({
+      reader,
+      writer,
+      promoteScheduledRetry: createPromoteScheduledRetry({ writer }),
+    });
+  }
+
+  it("pulls a stale pin forward, then promotes through the normal retry path", async () => {
+    const reader = fakeReader([], { candidates: [reprobeCandidate()], evidence: RECOVERY_EVIDENCE });
+    const writer = fakeWriter();
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 1, runIds: ["pinned-run"] });
+    expect(writer.promoteCalls).toEqual([
+      { runId: "pinned-run", companyId: "company-1", now: REPROBE_NOW },
+    ]);
+  });
+
+  it("holds the pin while the upstream is still down", async () => {
+    const reader = fakeReader([], { candidates: [reprobeCandidate()], evidence: null });
+    const writer = fakeWriter();
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 0, runIds: [] });
+    expect(writer.advanceCalls).toEqual([]);
+    expect(writer.promoteCalls).toEqual([]);
+    // Without a success there is nothing for a later failure to outweigh.
+    expect(reader.failureCalls).toEqual([]);
+  });
+
+  it("holds the pin when the upstream failed again after the success", async () => {
+    const reader = fakeReader([], {
+      candidates: [reprobeCandidate()],
+      evidence: RECOVERY_EVIDENCE,
+      failure: { runId: "quota-run", finishedAt: new Date(REPROBE_NOW.getTime() - 30_000) },
+    });
+    const writer = fakeWriter();
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 0, runIds: [] });
+    expect(writer.advanceCalls).toEqual([]);
+    expect(reader.failureCalls).toEqual([
+      {
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        since: RECOVERY_EVIDENCE.finishedAt,
+      },
+    ]);
+  });
+
+  it("leaves a run alone when another writer released its pin first", async () => {
+    const reader = fakeReader([], { candidates: [reprobeCandidate()], evidence: RECOVERY_EVIDENCE });
+    const writer = fakeWriter({
+      advanceScheduledRetryPin: vi.fn(async () => ({ advanced: false as const })),
+    });
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 0, runIds: [] });
+    expect(writer.promoteCalls).toEqual([]);
+  });
+
+  it("reads recovery evidence once per upstream scope per sweep", async () => {
+    const reader = fakeReader([], {
+      candidates: [
+        reprobeCandidate({ runId: "pinned-1" }),
+        reprobeCandidate({ runId: "pinned-2" }),
+        reprobeCandidate({ runId: "pinned-3", companyId: "company-2" }),
+      ],
+      evidence: RECOVERY_EVIDENCE,
+    });
+    const writer = fakeWriter();
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result.runIds).toEqual(["pinned-1", "pinned-2", "pinned-3"]);
+    expect(reader.evidenceCalls).toEqual([
+      { companyId: "company-1", agentId: "agent-1", adapterType: "codex_local", now: REPROBE_NOW },
+      { companyId: "company-2", agentId: "agent-1", adapterType: "codex_local", now: REPROBE_NOW },
+    ]);
+    expect(reader.failureCalls).toEqual([
+      { companyId: "company-1", agentId: "agent-1", adapterType: "codex_local", since: RECOVERY_EVIDENCE.finishedAt },
+      { companyId: "company-2", agentId: "agent-1", adapterType: "codex_local", since: RECOVERY_EVIDENCE.finishedAt },
+    ]);
+  });
+
+  it("returns a cursor after each full page and reaches every candidate", async () => {
+    // One agent per candidate defeats the per-scope cache: every candidate costs one evidence read.
+    const candidates = Array.from({ length: 120 }, (_, index) =>
+      reprobeCandidate({ runId: `pinned-${index}`, agentId: `agent-${index}` }),
+    );
+    const reader = fakeReader([], {
+      candidates,
+      evidenceFor: ({ agentId }) => agentId === "agent-119" ? RECOVERY_EVIDENCE : null,
+    });
+    const writer = fakeWriter();
+    const promote = buildEarlyPromoter(reader, writer);
+
+    const evidenceReadsPerPage: number[] = [];
+    const promotedPerPage: string[][] = [];
+    let after: Awaited<ReturnType<typeof promote>>["nextCursor"] = null;
+    for (let page = 0; page < 3; page += 1) {
+      const readsBefore = reader.evidenceCalls.length;
+      const result = await promote({ now: REPROBE_NOW, cutoff: null, after });
+      evidenceReadsPerPage.push(reader.evidenceCalls.length - readsBefore);
+      promotedPerPage.push(result.runIds);
+      after = result.nextCursor;
+    }
+
+    expect(evidenceReadsPerPage).toEqual([50, 50, 20]);
+    expect(promotedPerPage).toEqual([[], [], ["pinned-119"]]);
+    expect(after).toBeNull();
+    expect(writer.advanceCalls).toHaveLength(1);
+  });
+
+  it("starts each event from the first page", async () => {
+    const candidates = Array.from({ length: 60 }, (_, index) =>
+      reprobeCandidate({ runId: `pinned-${index}`, agentId: `agent-${index}` }),
+    );
+    const reader = fakeReader([], { candidates, evidence: null });
+    const listCandidates = vi.spyOn(reader, "listEarlyUpstreamReprobeCandidates");
+    const promote = buildEarlyPromoter(reader, fakeWriter());
+
+    const first = await promote({ now: REPROBE_NOW, cutoff: null });
+    await promote({ now: REPROBE_NOW, cutoff: null, after: first.nextCursor });
+    await promote({ now: REPROBE_NOW, cutoff: null });
+
+    expect(listCandidates.mock.calls.map(([input]) => input.after?.runId ?? null)).toEqual([
+      null,
+      "pinned-49",
+      null,
+    ]);
+  });
+
+  it("retries the same page after a transient evidence-read failure", async () => {
+    let fails = true;
+    const reader = fakeReader([], {
+      candidates: [reprobeCandidate()],
+      evidenceFor: () => {
+        if (fails) throw new Error("evidence read failed");
+        return RECOVERY_EVIDENCE;
+      },
+    });
+    const promote = buildEarlyPromoter(reader, fakeWriter());
+
+    await expect(promote({ now: REPROBE_NOW, cutoff: null })).rejects.toThrow("evidence read failed");
+    fails = false;
+    const result = await promote({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result.runIds).toEqual(["pinned-run"]);
+  });
+
+  it("keeps a retry pinned when the predecessor's adapter is unknown", async () => {
+    const reader = fakeReader([], {
+      candidates: [reprobeCandidate({ adapterType: null })],
+      evidence: RECOVERY_EVIDENCE,
+    });
+    const writer = fakeWriter();
+
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result.promoted).toBe(0);
+    expect(reader.evidenceCalls).toEqual([]);
+    expect(writer.advanceCalls).toEqual([]);
+  });
+
+  it("does not promote a candidate whose gate suppressed it after the pin moved", async () => {
+    const reader = fakeReader([], { candidates: [reprobeCandidate()], evidence: RECOVERY_EVIDENCE });
+    const writer = fakeWriter({
+      promoteOrCancelDueRetry: vi.fn(async () => ({
+        outcome: "gate_suppressed" as const,
+        reason: "issue reassigned",
+        errorCode: "issue_reassigned" as const,
+      })),
+    });
+    const result = await buildEarlyPromoter(reader, writer)({ now: REPROBE_NOW, cutoff: null });
+
+    expect(result).toMatchObject({ promoted: 0, runIds: [], postCommitEffects: [] });
+    expect(writer.advanceCalls).toHaveLength(1);
   });
 });
 

@@ -672,6 +672,41 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(promotedRun?.status).toBe("queued");
   });
 
+  it("reconstructs a far-future retry through the assembled heartbeat startup pass", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), sourceRunId = randomUUID(), retryRunId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    const pinSetAt = new Date(now.getTime() - 6 * 60_000);
+    const farPin = new Date(now.getTime() + 15 * 60 * 60_000);
+    await seedRetryFixture({ runId: sourceRunId, companyId, agentId,
+      now: new Date(pinSetAt.getTime() - 60_000), errorCode: "provider_quota" });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } })
+      .where(eq(heartbeatRuns.id, sourceRunId));
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Pinned retry", status: "in_progress", assigneeAgentId: agentId,
+    }).returning();
+    await db.insert(heartbeatRuns).values({
+      id: retryRunId, companyId, agentId, retryOfRunId: sourceRunId,
+      invocationSource: "retry", status: "scheduled_retry", scheduledRetryAttempt: 1,
+      scheduledRetryAt: farPin, scheduledRetryReason: "transient_failure",
+      contextSnapshot: { issueId: issue.id, errorFamily: "transient_upstream" },
+      createdAt: pinSetAt, updatedAt: pinSetAt,
+    });
+    await db.update(issues).set({ executionRunId: retryRunId }).where(eq(issues.id, issue.id));
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, invocationSource: "assignment", status: "succeeded",
+      finishedAt: new Date(now.getTime() - 60_000),
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      createdAt: new Date(now.getTime() - 60_000),
+    });
+
+    expect(await heartbeat.promoteDueScheduledRetries(now)).toEqual({ promoted: 0, runIds: [] });
+    expect(await heartbeat.promoteEarlyUpstreamRecoveryRetries(undefined, now))
+      .toEqual({ promoted: 1, runIds: [retryRunId] });
+    const [retry] = await db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+    expect(retry?.status).toBe("queued");
+  });
+
   it.each([1, 2])("ACCT-01 a failed disposition repair %s receives its own first infrastructure retry", async repairAttempt => {
     const f = await seedMaxTurnFixture();
     const episode = { id: f.runId, attempt: repairAttempt, maxAttempts: 2 };

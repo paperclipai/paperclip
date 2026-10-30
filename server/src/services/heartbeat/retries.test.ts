@@ -6,7 +6,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import {
+  createRunDispatch,
+  EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS,
+  type PostCommitEffect,
+} from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -37,6 +41,7 @@ function callbacks() {
     runDispatch: {
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
       promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
+      promoteEarlyUpstreamRecoveryRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteEarlyUpstreamRecoveryRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], nextCursor: null })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
     },
   } satisfies HeartbeatRetryDependencies;
@@ -64,6 +69,22 @@ function deferral() {
     projectWorkspaceId: "workspace", deferralAttempt: 0, wasIssueAssignee: true,
   });
 }
+
+describe("bounded transient retry backoff", () => {
+  // The early upstream re-probe treats only pins beyond this threshold as an
+  // inherited far-future reset hint. A jittered step landing past it would be
+  // mistaken for one and could be promoted before its due time.
+  it("never schedules a jittered step past the early re-probe's far-pin threshold", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    for (let attempt = 1; attempt <= extracted.BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length; attempt += 1) {
+      for (const sample of [0, 0.5, 1]) {
+        const schedule = extracted.computeBoundedTransientHeartbeatRetrySchedule(attempt, now, () => sample);
+        expect(schedule).not.toBeNull();
+        expect(schedule!.delayMs).toBeLessThanOrEqual(EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS);
+      }
+    }
+  });
+});
 
 describe("heartbeat retry module callbacks", () => {
   it("preserves legacy helper and error-class identity", () => {
@@ -150,6 +171,47 @@ describe("heartbeat retry module callbacks", () => {
     deps.runDispatch.promoteDueScheduledRetries.mockRejectedValue(new Error("promotion failed"));
     await expect(extracted.createHeartbeatRetries(guardedDatabase().db, deps).promoteDueScheduledRetries()).rejects.toThrow("promotion failed");
     expect(deps.applyRunDispatchPostCommitEffects).not.toHaveBeenCalled();
+  });
+
+  it("follows all early re-probe pages on a success event and publishes each committed page", async () => {
+    const deps = callbacks();
+    const now = new Date("2026-10-08T12:00:00Z");
+    const scope = { companyId: "company", agentId: "agent", adapterType: "codex_local" };
+    const cursor = { scheduledRetryAt: new Date(now.getTime() + 60_000), createdAt: now, runId: "pin-50" };
+    const firstEffect: PostCommitEffect = {
+      kind: "run_queued", runId: "pin-1", companyId: "company", agentId: "agent",
+      invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "wake-1",
+    };
+    deps.runDispatch.promoteEarlyUpstreamRecoveryRetries
+      .mockResolvedValueOnce({ promoted: 1, runIds: ["pin-1"], postCommitEffects: [firstEffect], nextCursor: cursor })
+      .mockResolvedValueOnce({ promoted: 1, runIds: ["pin-51"], postCommitEffects: [], nextCursor: null });
+
+    expect(await extracted.createHeartbeatRetries(guardedDatabase().db, deps)
+      .promoteEarlyUpstreamRecoveryRetries(scope, now))
+      .toEqual({ promoted: 2, runIds: ["pin-1", "pin-51"] });
+    expect(deps.runDispatch.promoteEarlyUpstreamRecoveryRetries.mock.calls).toEqual([
+      [{ now, cutoff: null, after: null, scope }],
+      [{ now, cutoff: null, after: cursor, scope }],
+    ]);
+    expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenNthCalledWith(1, [firstEffect]);
+    expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenNthCalledWith(2, []);
+  });
+
+  it("reconstructs early re-probes at startup without a success-event scope", async () => {
+    const deps = callbacks();
+    const now = new Date("2026-10-08T12:00:00Z");
+    const cursor = { scheduledRetryAt: new Date(now.getTime() + 60_000), createdAt: now, runId: "pin-50" };
+    deps.runDispatch.promoteEarlyUpstreamRecoveryRetries
+      .mockResolvedValueOnce({ promoted: 0, runIds: [], postCommitEffects: [], nextCursor: cursor })
+      .mockResolvedValueOnce({ promoted: 1, runIds: ["pin-51"], postCommitEffects: [], nextCursor: null });
+
+    expect(await extracted.createHeartbeatRetries(guardedDatabase().db, deps)
+      .promoteEarlyUpstreamRecoveryRetries(undefined, now))
+      .toEqual({ promoted: 1, runIds: ["pin-51"] });
+    expect(deps.runDispatch.promoteEarlyUpstreamRecoveryRetries.mock.calls).toEqual([
+      [{ now, cutoff: null, after: null, scope: undefined }],
+      [{ now, cutoff: null, after: cursor, scope: undefined }],
+    ]);
   });
 
   it.each(["workspace", "connection"] as const)("leaves a %s cancellation race winner alone", async (kind) => {
