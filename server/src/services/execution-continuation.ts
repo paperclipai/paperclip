@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  activityLog,
   agentWakeupRequests,
   heartbeatRuns,
   issueComments,
@@ -287,8 +288,32 @@ export async function buildExecutionContinuation(input: {
     ]),
   ];
   // Missing source rows cannot silently become a claim of complete context.
-  if (originCommentIds.some((id) => !rows.some((row) => row.id === id)))
-    throw new Error("continuation_source_context_missing");
+  // One exception is provable: a queued comment its author discarded before
+  // dispatch is hard-deleted, but the discard writes an activity row naming
+  // the comment. Only ids with that proof are dropped; any other missing row
+  // still throws.
+  const missingOriginIds = originCommentIds.filter((id) => !rows.some((row) => row.id === id));
+  if (missingOriginIds.length > 0) {
+    const discardRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.queued_comment_discarded"),
+        ),
+      );
+    const discardedIds = new Set(
+      discardRows.map((row) => string(row.details?.commentId)).filter(Boolean),
+    );
+    const unprovenMissingIds = missingOriginIds.filter((id) => !discardedIds.has(id));
+    if (unprovenMissingIds.length > 0)
+      throw new Error("continuation_source_context_missing");
+    for (let i = originCommentIds.length - 1; i >= 0; i--) {
+      if (missingOriginIds.includes(originCommentIds[i])) originCommentIds.splice(i, 1);
+    }
+  }
   const messages = rows.map((row) => {
     const safe = input.exposeLowTrustRaw
       ? row

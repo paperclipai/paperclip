@@ -899,6 +899,9 @@ function isOperatorCancelledRun(
     return true;
   if (!latestRun || latestRun.status !== "cancelled") return false;
   if (latestRun.errorCode === "operator_interrupted") return true;
+  // The author of the run's only queued message discarded it before dispatch;
+  // that is an operator cancellation of work that never started.
+  if (latestRun.errorCode === "queued_comment_discarded") return true;
   const result = parseObject(latestRun.resultJson);
   return (
     result.cancelledByActorType === "user" ||
