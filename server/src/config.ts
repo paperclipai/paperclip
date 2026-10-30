@@ -1,3 +1,4 @@
+import { validateManagedCloudBootstrapPrerequisites, validateManagedCloudPrerequisites } from "./managed-cloud-prerequisites.js";
 import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
 import { isCloudManagedInstance } from "./services/cloud-instance.js";
 import { StartupRefusalError } from "./startup-refusals.js";
@@ -143,7 +144,10 @@ function detectTailnetBindHost(): string | undefined {
   }
 }
 
-export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()): Config {
+export function loadConfig(override?: PaperclipConfig | null): Config {
+  const configFile = override === undefined ? readConfigFile({ includeProvenance: true })
+    : override ? { config: override, explicitStorageS3Bucket: true } : null;
+  const fileConfig = configFile?.config ?? null;
   const fileDatabaseMode =
     (isCloudManagedInstance() || fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
@@ -163,6 +167,11 @@ export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()
   const secretsProvider: SecretProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
 
   const storage = loadStorageConfig(fileConfig);
+  validateManagedCloudPrerequisites({ ...storage,
+    storageS3Bucket: process.env.PAPERCLIP_STORAGE_S3_BUCKET
+      ?? (configFile?.explicitStorageS3Bucket ? fileConfig?.storage.s3.bucket : undefined),
+    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+  }, process.env);
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -448,5 +457,6 @@ export function loadCloudBootstrapConfig(): CloudBootstrapConfig {
     try { parsed = new URL(value); } catch { throw new Error(`Cloud bootstrap ${name} must use PostgreSQL`); }
     if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error(`Cloud bootstrap ${name} must use PostgreSQL`);
   }
+  validateManagedCloudBootstrapPrerequisites({ databaseUrl: url }, process.env);
   return { databaseMode: "postgres", databaseUrl: url, databaseMigrationUrl: migrationUrl };
 }
