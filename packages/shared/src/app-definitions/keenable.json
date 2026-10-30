@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "slug": "keenable",
+  "name": "Keenable",
+  "description": "Search the public web and read source pages with Keenable.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/keenable.svg"
+  },
+  "urlPatterns": [
+    "https://api.keenable.ai/*"
+  ],
+  "docsUrl": "https://docs.keenable.ai/mcp-server",
+  "methods": [
+    {
+      "key": "public-search",
+      "label": "Use public Keenable search",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Keenable’s public, keyless search MCP.",
+      "defaults": {
+        "serverUrl": "https://api.keenable.ai/mcp?keenable_title=paperclip"
+      },
+      "guidanceMd": "The public route exposes search_web_pages and fetch_page_content, both read-only. Keep source URLs with results. Keyless use is rate-limited per IP; this method does not configure an API key.",
+      "riskTier": "S2"
+    }
+  ]
+}

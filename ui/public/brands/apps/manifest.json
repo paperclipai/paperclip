@@ -715,6 +715,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "keenable",
+      "provider": "Keenable",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/keenable.svg"
     }
   ]
 }
