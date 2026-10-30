@@ -732,8 +732,21 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface RequiredQualityReview {
+  version: 1;
+  /** Named outputs whose exact versions require a human quality verdict. */
+  deliverables: Array<{ key: string; label: string }>;
+}
+
+export interface QualityReviewBinding {
+  key: string;
+  /** Server-stamped fingerprint; input values are never trusted. */
+  requirementHash?: string;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
+  requiredQualityReview?: RequiredQualityReview;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
@@ -843,6 +856,8 @@ export type IssueSummary = Pick<
 };
 
 export interface Issue {
+  /** Collection projections omit task bodies and cannot seed the detail cache. */
+  listProjection?: "index" | "rows";
   statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
@@ -958,6 +973,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "listProjection"
   | "externalConversationState"
   | "id"
   | "companyId"
@@ -1203,6 +1219,9 @@ export interface SuggestedTaskDraft {
   parentId?: string | null;
   title: string;
   description?: string | null;
+  /** Persisted atomically as the new task's initial plan after acceptance. */
+  initialPlan?: string | null;
+  requiredQualityReview?: RequiredQualityReview;
   priority?: IssuePriority | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
@@ -1236,6 +1255,25 @@ export interface SuggestTasksResult {
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
+}
+
+/** Server-recorded task creation in a standing chat's current session. */
+export interface ConversationTaskHandoff {
+  id: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  createdAt: string;
+  /** Durable creation provenance; null for older or human-created handoffs. */
+  sourceRunId: string | null;
+  /** When present, the accepted suggestion already renders this task card. */
+  suggestionInteractionId: string | null;
+}
+
+export interface ConversationTaskHandoffPage {
+  items: ConversationTaskHandoff[];
+  nextCursor: string | null;
 }
 
 export interface AskUserQuestionsQuestionOption {
@@ -1362,8 +1400,20 @@ export interface RequestConfirmationCustomTarget {
   href?: string | null;
 }
 
+/** An uploaded artifact's immutable bytes, independent of its display name. */
+export interface RequestConfirmationIssueAttachmentTarget {
+  type: "issue_attachment";
+  issueId?: string | null;
+  attachmentId: string;
+  assetId: string;
+  sha256: string;
+  label?: string | null;
+  href?: string | null;
+}
+
 export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationIssueAttachmentTarget
   | RequestConfirmationCustomTarget;
 
 /**
@@ -1448,6 +1498,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Existing chat setup; the server derives the destination from these IDs. */
+  savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;
   /** Server-authored consent to a fixed set of tools on an existing connection. */
   accessRequest?: {
@@ -1483,6 +1535,7 @@ export interface ConnectionIntentResult {
 }
 
 export interface RequestConfirmationPayload {
+  qualityReview?: QualityReviewBinding;
   version: 1;
   prompt: string;
   acceptLabel?: string | null;
@@ -1526,6 +1579,8 @@ export interface RequestCheckboxConfirmationPayload {
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";
 
 export interface RequestItemVerdictsItem {
+  qualityReview?: QualityReviewBinding;
+  target?: RequestConfirmationTarget | null;
   id: string;
   label: string;
   description?: string | null;
@@ -1719,4 +1774,11 @@ export interface IssueAttachment {
   contentPath: string;
   openPath?: string;
   downloadPath?: string;
+}
+
+/** Bounded cold-open window; the complete chronological feed stays paginated. */
+export interface IssueRecentComments {
+  latestCommentId: string | null;
+  comments: IssueComment[];
+  hasMore: boolean;
 }

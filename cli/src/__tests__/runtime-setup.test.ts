@@ -3,17 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { resolveCursorProvisioner } from "../commands/runtime.js";
+import { resolveAntigravityProvisioner, resolveCursorProvisioner } from "../commands/runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture() {
+async function fixture(provider = "cursor") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "cursor-public-setup-")));
   roots.push(root);
   await mkdir(join(root, "dist/vendor/paperclip-runner/cli"), { recursive: true });
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server" }));
   await writeFile(join(root, "dist/index.js"), "throw new Error('must not import server');");
-  const provisioner = join(root, "dist/vendor/paperclip-runner/cli/provision-cursor.cjs");
+  const provisioner = join(root, `dist/vendor/paperclip-runner/cli/provision-${provider}.cjs`);
   await writeFile(provisioner, "fixture");
   return { root, provisioner, url: pathToFileURL(join(root, "dist/index.js")).href };
 }
@@ -35,4 +35,16 @@ it("rejects a provisioner linked outside the installed package", async () => {
   const f = await fixture(); const other = await fixture();
   await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
   await expect(resolveCursorProvisioner(f.url)).rejects.toThrow("escapes");
+});
+
+it("resolves Antigravity setup from the public server without importing it", async () => {
+  const f = await fixture("antigravity");
+  expect(await resolveAntigravityProvisioner(f.url)).toBe(f.provisioner);
+});
+
+it("rejects an Antigravity provisioner outside the installed server", async () => {
+  const f = await fixture("antigravity"); const other = await fixture("antigravity");
+  await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
+  await expect(resolveAntigravityProvisioner(f.url)).rejects.toThrow("escapes");
+  await expect(resolveAntigravityProvisioner(`${f.url}?redirect=1`)).rejects.toThrow("installed Paperclip server");
 });

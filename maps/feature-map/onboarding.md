@@ -48,6 +48,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
 
+The [published canary smoke](../../tests/canary-onboarding/canary-onboarding.spec.ts)
+checks the exact installed version through Connect a model. Submitting the agent
+name must save one paused setup record with disabled heartbeats and no task or
+run. The [authenticated release smoke](../../tests/release-smoke/docker-auth-onboarding.spec.ts)
+checks the same held state, then completes that record through Connect without
+creating a second agent. Its Docker harness mocks credential verification; live
+provider authentication remains separate evidence.
+
+Name-only setup defers the runner field while the provisional adapter remains
+held in setup. Choosing a provider updates that same setup record with its
+selected runner. The wizard regression covers a saved native choice followed by
+OpenAI Subscription selection; it does not prove provider authentication.
+
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
   `node .agents/skills/verify-paperclip/scripts/onboarding-smoke.mjs --evidence-dir "$VERIFY_EVIDENCE_DIR"`.
@@ -131,6 +144,40 @@ failed: the child document existed, but the physical file was attached to the
 parent, and recovery stopped the completion callback before a provider turn.
 The failed report remains evidence; the revised source still needs live proof.
 Local cases and automatic selection remain unchanged.
+
+First-task task creation enforces proposal acceptance at the shared server
+boundary. Verify that native `create_task` and both REST creation endpoints reject
+an authenticated onboarding run before its latest proposal has a saved human
+acceptance, including an explicit standalone parent. Then accept a confirmation
+or the current plan revision and verify creation succeeds. Opening answers,
+agent-only acceptance, stale plans and newer pending/rejected proposals must not
+admit new work. [Admission controls](../../server/src/__tests__/onboarding-first-task-admission.test.ts)
+exercise native and REST calls against disposable PostgreSQL; live model and
+Cloud onboarding remain separate evidence.
+
+For a native proposal, reject root-level `version` or `supersedeOnUserComment`
+without creating a card. Correct them inside `payload`, preserve the confirmation
+or checkbox approval kind, and verify one pending card after idempotent replay.
+An answered question form still cannot authorize the proposed child task.
+
+After acceptance, reject a new task whose blockers include its onboarding source.
+The rejected command must leave no task, dependency, wake or creation receipt;
+a corrected retry must still create the ready child. Preserve valid blockers for
+other work. Check equivalent UUID spellings and a later child PATCH as well as
+native dependency edits, including the child's own run with a waiting parent and
+no first-class dependency yet. Preserve normal API attempt auditing and allow blocker
+corrections without a new proposal acceptance. The shipped handoff recipe copies the actual approved inputs and
+constraints into the child, then makes the parent depend on the child. Its
+schema and persistence controls do not prove that a live model follows it.
+
+Native completion also requires a saved human proposal decision. An opening
+answer alone must leave the first task in review. Verify that premature native
+completion is refused, including a result already saved before finalization.
+Accepted proposals and acknowledged human rejections can close the first task;
+rejection still does not authorize new tasks. The
+[native completion controls](../../server/src/services/native-runtime/paperclip-control-plane-port.test.ts)
+exercise these boundaries against disposable PostgreSQL. These controls do not
+identify a historical Cloud failure or establish live onboarding success.
 
 For accepted file-producing work, verify exactly one self-assigned child with a
 self-contained description. The onboarding run must yield through the existing

@@ -31,6 +31,14 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+export async function pluginEnvironmentRequiresAgent(db: Db, environment: { driver: string; config: Record<string, unknown> | null }) {
+  if (environment.driver !== "plugin") return false;
+  const config = environment.config;
+  if (typeof config?.pluginKey !== "string" || typeof config.driverKey !== "string") return false;
+  const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
+  return plugin?.manifestJson.environmentDrivers?.some(driver => driver.driverKey === config.driverKey && driver.requiresAgent === true) ?? false;
+}
+
 /**
  * The worker methods a sandbox provider must advertise before the host reuses
  * a provider lease across runs. The host resumes a lease through

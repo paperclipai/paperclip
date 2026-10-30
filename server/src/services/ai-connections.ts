@@ -1,4 +1,5 @@
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -42,6 +43,8 @@ import {
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
+import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
+import { assertAiCredentialCleanupSettled, reconcileRetainedAiCleanup } from "./retained-ai-credential-cleanup.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -572,7 +575,10 @@ export function aiConnectionService(db: Db) {
     verifiedCredential: string,
     loginSession?: { id: string; complete?: (tx: Db) => Promise<void> },
     attemptStartedAt = new Date(),
+    managementContext?: ConnectionManagementContext,
+    verifiedAccountLabel?: string,
   ) {
+    await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
@@ -610,6 +616,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
         const [session] = await tx
@@ -795,7 +802,7 @@ export function aiConnectionService(db: Db) {
             },
             createdByUserId: userId,
           });
-      let accountLabel: string | undefined;
+      let accountLabel: string | undefined = input.provider === "google" ? verifiedAccountLabel : undefined;
       if (input.method === "subscription" && input.provider !== "anthropic") {
         try {
           const credential = JSON.parse(verifiedCredential);
@@ -902,8 +909,7 @@ export function aiConnectionService(db: Db) {
       await loginSession?.complete?.(tx as unknown as Db);
       await logActivity(tx as unknown as Db, {
         companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: reconnect
           ? "ai_connection.reconnected"
           : "ai_connection.connected",
@@ -927,14 +933,29 @@ export function aiConnectionService(db: Db) {
     tx: Db, row: Parameters<typeof credential>[0], current: string, onRecoveryStarted?: () => void,
   ) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return null;
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return null;
     const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
     const pending = await recovery.read();
     if (!pending) return null;
     const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
-    if (!ref || pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current)) {
+    if (!ref || (pending.provider ?? "openai") !== metadata.data.provider
+      || pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current)) {
       await recovery.clear();
       return null;
+    }
+    if (metadata.data.provider === "google") {
+      const [secret] = await tx.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+        .from(companySecrets).where(and(eq(companySecrets.companyId, row.connection.companyId), eq(companySecrets.id, ref.secretId))).for("update");
+      if (!pending.google || pending.google.sessionEpoch !== secret?.epoch || pending.google.baseVersion !== secret?.version
+        || pending.google.versionSelector !== (ref.versionSelector ?? "latest")
+        || pending.google.accountEmail.toLowerCase() !== row.grant.providerTenant?.name?.toLowerCase()) {
+        await recovery.clear();
+        return null;
+      }
+      if (!pending.google.verified) {
+        onRecoveryStarted?.();
+        throw new Error("Google credential recovery needs account verification");
+      }
     }
     onRecoveryStarted?.();
     await secretService(tx).rotate(ref.secretId, { value: pending.value, preserveAiSessionEpoch: true }, { userId: row.grant.subjectUserId });
@@ -942,16 +963,48 @@ export function aiConnectionService(db: Db) {
     // used to fence reconnect attempts. Ownership and access are unchanged.
     await logActivity(tx, { companyId: row.connection.companyId, actorType: "system", actorId: "quota_recovery",
       action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
-      details: { provider: "openai", grantId: row.grant.id } });
+      details: { provider: metadata.data.provider, grantId: row.grant.id } });
     return pending.value;
   }
 
   /** Never hand a consumed token to a new provider while its replacement awaits commit. */
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], ownership?: { credentialLockHeld: true }) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return credential(row);
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
+    // Retirement callbacks acquire this same mutation lock to persist their
+    // final generation. Join them before taking the lock they need. A caller
+    // already holding it must only check, for both rotated-credential lanes.
+    const scope = { companyId: row.connection.companyId, accountKey: row.grant.id };
+    if (ownership?.credentialLockHeld) assertAiCredentialCleanupSettled(scope);
+    else await reconcileRetainedAiCleanup(scope);
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
+      // An owner can arrive while lock acquisition waits. Never join under it.
+      assertAiCredentialCleanupSettled(scope);
+      if (metadata.data.provider === "google") {
+        const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
+        const pending = await recovery.read();
+        if (pending?.provider === "google" && pending.google && !pending.google.verified
+          && pending.connectionId === row.connection.id
+          && pending.google.accountEmail.toLowerCase() === row.grant.providerTenant?.name?.toLowerCase()) {
+          const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
+          const [secret] = await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+            .from(companySecrets).where(and(eq(companySecrets.companyId, row.connection.companyId), eq(companySecrets.id, pending.secretId)));
+          const current = await credential(row);
+          if (ref?.secretId === pending.secretId && (ref.versionSelector ?? "latest") === pending.google.versionSelector
+            && secret?.epoch === pending.google.sessionEpoch && secret?.version === pending.google.baseVersion
+            && pending.baseHash === quotaCredentialHash(current)) {
+            savingReplacement = true;
+            // Network verification runs before acquiring database row locks.
+            // The transaction below rechecks the exact saved generation.
+            await prepareAntigravityCredentialRecovery({ originalCredential: current,
+              refreshedCredential: pending.value, accountEmail: pending.google.accountEmail,
+              scope: { companyId: row.connection.companyId, accountKey: row.grant.id },
+              persistVerified: value => recovery.write({ ...pending, value, google: { ...pending.google!, verified: true } }),
+            });
+          }
+        }
+      }
       let recovered = false;
       const value = await db.transaction(async tx => {
         const [grant] = await tx.select().from(connectionGrants).where(and(

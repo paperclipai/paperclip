@@ -5,22 +5,30 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 
 describe("historical ACPX profile decoding", () => {
   it("retains each provider's existing revision boundary", () => {
+    expect(isSupportedAcpxProfileVersion("grok", 7)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("pi", 30)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 71)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 17)).toBe(true);
     expect(isSupportedAcpxProfileVersion("pi", 17)).toBe(true);
     expect(isSupportedAcpxProfileVersion("pi", 18)).toBe(true);
     expect(isSupportedAcpxProfileVersion("pi", 23)).toBe(true);
     expect(isSupportedAcpxProfileVersion("cursor", 15)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("cursor", 16)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("cursor", 16)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("cursor", 17)).toBe(false);
     for (const agent of ["pi", "copilot"]) {
       expect(isSupportedAcpxProfileVersion(agent, 16)).toBe(true);
       const current = QUALIFIED_ACPX_PROFILE_DATA[agent as "pi" | "copilot"].agentProfileVersion;
       expect(isSupportedAcpxProfileVersion(agent, current)).toBe(true);
       expect(isSupportedAcpxProfileVersion(agent, Math.max(16, current) + 1)).toBe(false);
     }
-    for (const agent of ["claude", "codex", "grok"]) {
+    for (const agent of ["claude", "codex"]) {
       expect(isSupportedAcpxProfileVersion(agent, 5)).toBe(true);
       expect(isSupportedAcpxProfileVersion(agent, 6)).toBe(false);
     }
+    for (const version of [1, 2, 3, 4, 5, QUALIFIED_ACPX_PROFILE_DATA.grok.agentProfileVersion]) {
+      expect(isSupportedAcpxProfileVersion("grok", version)).toBe(true);
+    }
+    expect(isSupportedAcpxProfileVersion("grok", QUALIFIED_ACPX_PROFILE_DATA.grok.agentProfileVersion + 1)).toBe(false);
   });
   it("decodes retained Copilot revisions and the current profile without widening other providers", () => {
     for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]) {
@@ -46,6 +54,15 @@ describe("historical ACPX profile decoding", () => {
     for (const file of files) {
       const identity = JSON.parse(readFileSync(new URL(file, root), "utf8"));
       expect(isSupportedAcpxProfileVersion("copilot", identity.declaration.agentProfileVersion), file).toBe(true);
+    }
+  });
+  it("decodes every retained Grok identity so saved runs can reach recovery", () => {
+    const root = new URL("../../../test/fixtures/", import.meta.url);
+    const files = readdirSync(root).filter(name => /^grok-profile-v\d+-identity\.json$/u.test(name));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const identity = JSON.parse(readFileSync(new URL(file, root), "utf8"));
+      expect(isSupportedAcpxProfileVersion("grok", identity.declaration.agentProfileVersion), file).toBe(true);
     }
   });
   it.each([0, 1.5, "11", null, undefined, NaN])("rejects invalid revisions: %s", version => {

@@ -9,6 +9,11 @@ The sibling [agent access map](../agent-access-map/README.md) records APIs,
 agent entry points and permission boundaries for the same capability IDs.
 Follow the [shared map contract](../README.md) when maintaining either map.
 
+The [chat scenario catalog](../../tests/runner-e2e/chat-scenarios/README.md)
+describes how people might request these capabilities in conversation, including
+setup and permission branches. These are planned Product E2E journeys, not live
+coverage results.
+
 ## IDs and references
 
 Use the existing IDs in issues, PRs, Storybook annotations, tests, and verification

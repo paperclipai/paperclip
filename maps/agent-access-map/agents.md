@@ -50,11 +50,46 @@ permission. Its creator can finish their own inactive setup with that permission
 changing another person's setup requires configuration permission.
 Creation retries reuse only records owned by the caller. Returning a completed
 record also requires the normal agent-read and configuration-read checks.
-An unfinished record stays paused with a
+An unfinished record keeps compatibility status `paused` with a
 `setup` hold and cannot receive API keys or authenticate with keys or JWTs.
 Its standard grants apply at hire. Authorized completion retries recover the
 same record and approval without changing the submitted configuration.
 Normal agent-authored hiring keeps its existing approval policy.
+
+An agent-owned plugin may prepare the draft and leave its lifecycle in
+`verifying` while that setup hold remains. Only bounded Core-issued setup probes
+can run there. The creator's company creation permission also covers configuring
+and retrying their draft during preparation or stopping; other actors still require the
+ordinary configuration permission. This is a board wizard path, not new agent
+execution or probe authority. Lifecycle and component regressions cover these
+transitions; no permitted-agent or live-provider journey is claimed here.
+Companies requiring hire approval keep drafts paused and allocate no agent-owned
+resource before approval. Selecting an account there is pending verification,
+not approval or execution authority.
+The board confirmation follows preparation and verification through the existing
+foreground detail query before presenting readiness or enabling first-task
+assignment. The handoff updates only an older cached roster record; it cannot
+resume an explicit pause, clear an import hold or bypass approval.
+
+The ordinary picker also exposes pending Google Antigravity configuration when
+the native Runner adapter is available. This is a board configuration preview: selecting it
+does not write native execution settings or remove the inactive draft's setup
+hold. Non-secret draft metadata retains only the selected adapter/provider and
+runner intent for display and resume; it cannot admit execution. Existing Google connection authorization governs credential setup and
+account metadata; Test, hire completion and execution still require the normal
+provider release gates. An isolated operator can authorize one company, exact
+model and pinned local native candidate until a fixed expiry. Only company-local
+adapter discovery projects its agent/model as a Candidate; it never returns the
+launch descriptor or stores that authority on the agent. Server validation and
+native launch independently enforce the trusted descriptor. The selected managed
+home feeds a zero-turn native admission Test; uncertain cleanup returns a bounded
+diagnostic and retains the credential home until physical retirement and refresh
+handoff, then performs normal writeback. This exception leaves global release
+qualification pending. UI discoverability grants no additional agent or probe
+authority. Source: [picker](../../ui/src/components/new-agent/AgentBasicsDialog.tsx)
+and [setup](../../ui/src/components/new-agent/NewAgentSetup.tsx). This scoped note
+is source-only and does not claim a permitted-agent journey or live Antigravity
+task acceptance.
 
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the
@@ -75,6 +110,13 @@ Scoped Evidence: `source-only` — [creation policy](../../server/src/services/a
 [frozen approval activation](../../server/src/modules/agent-lifecycle/adapters/approvals.ts)
 and [same-harness import preservation](../../server/src/services/company-portability.ts)
 at the scoped commit. No permitted-agent journey was executed for this map update.
+
+The board-driven [Antigravity setup/task eval](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+creates its measured agent through the ordinary wizard and reuses only the
+signed-in owner's existing personal default Google grant. Its observer may read
+the owned records; it cannot seed the hire or manufacture readiness. This case
+does not qualify agent-authored hiring, credential administration or a broader
+agent permission boundary.
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.
@@ -97,6 +139,26 @@ qualification remains not run.
 
 ## `instructions`
 
+The operator's Advanced YAML editor uses the existing configuration GET/PATCH
+operations plus the owning instructions, skills, tools, channels, permissions,
+secrets, API key, and revision APIs. It does not add aggregate write authority;
+each request retains its own company and actor checks. Resource reads fail closed.
+The compact YAML editor omits inherited access/history, company catalogs, and
+instruction contents. Profile-key references resolve only within the company.
+Omitted settings are preserved; named file patches use explicit null for deletion.
+The normal domain APIs still enforce every write. Multi-resource writes are
+sequential, with preflight comparison and explicit partial-failure recovery;
+Core configuration, managed files, and entry revisions enforce their existing
+atomic revision/hash preconditions. External supporting files and other
+unversioned resource writes retain a race window after preflight. Configuration reads include the complete redacted, revisioned fields
+and `configurationRevision`; writes accept an optional
+`expectedConfigurationRevision`, checked again under the write lock. A stale
+write returns `409`. Revision-guarded writes preserve unchanged redacted values
+at their original paths. Configuration read/configure authority, company scope,
+instruction-path restrictions, environment/account checks, revision history, and
+activity attribution still apply. YAML does not expose a permission-grant or
+lifecycle mutation shortcut. See [the format](../../doc/agent-configuration-yaml.md).
+
 Capability ID: `agents/instructions`.
 
 Review: `baseline`.
@@ -112,7 +174,7 @@ API: `present` — representative operation IDs:
   receives `canManage: false`. Saving never creates a run or wakeup.
 - `PUT /api/agents/{id}/instructions-bundle/file`.
 - `PATCH /api/agents/{id}` with an explicit `runner: "paperclip"` upgrade.
-- `POST /api/agents/{id}/qualify-runner` to qualify the saved effective sandbox before upgrading.
+- `POST /api/agents/{id}/qualify-runner` to qualify the saved effective sandbox before upgrading or testing an existing native runner.
 - `PATCH /api/agents/{id}` with `runtimeSettings: { harness, model?, aiConnection?, expected: { model, aiConnection } }` for a narrow roster edit. Each request handles one agent; the UI batches at most four writes and collects per-agent outcomes.
 
 Agent access: `available` — Native read/update/history/restore instruction tools; REST /
@@ -128,9 +190,11 @@ environment, and consent checks as other edits. It adds no agent permission or
 credential fallback. Pool and externally managed agents use their existing
 configuration surfaces. Board browser verification does not qualify agent access.
 
-The existing-agent upgrade notice uses this configuration PATCH. It does not
+The existing-agent upgrade notice for Claude, Codex, and Grok Build uses this configuration PATCH. It does not
 grant configuration, account, or environment access. The server resolves the
-saved settings under normal company/configuration authorization. Obsolete Claude
+saved settings under normal company/configuration authorization. Grok migration preserves
+the effective legacy search setting. Task model/effort overrides retain the
+agent's account binding and tool policy without granting extra account access. Obsolete Claude
 tuning fields are removed with `configurationWarnings`; security incompatibilities
 remain errors. Unqualified sandbox upgrades first use the agent-scoped
 `POST /api/agents/{id}/qualify-runner` under the same `agent_config:update`
@@ -138,7 +202,11 @@ authorization as saving the upgrade. The server resolves the saved computer;
 `expectedEnvironmentId` rejects stale state and cannot select another computer.
 Qualification checks company binding, returns only its receipt, and audits within
 the agent's company. General instance environment probes still require instance
-admin. No probe runs merely on page load. Operator browser evidence does not
+admin. An existing native agent's clean configuration Test uses the same
+saved-computer qualification before its runtime test. A current proof is reused;
+a missing or stale proof requires a real successful probe and verified cleanup.
+Draft settings and target changes do not qualify another computer. No probe runs
+merely on page load. Operator browser evidence does not
 qualify the agent permission paths for this operation.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L1395) at

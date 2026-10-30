@@ -9,6 +9,9 @@ import { grantsForHumanRole } from "../services/company-member-roles.js";
 import { agentRoutes } from "../routes/agents.js";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { environmentService } from "../services/environments.js";
+import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.js";
+import { fingerprintEnvironmentSandboxProviderConfig, SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
 
 const probe = vi.hoisted(() => vi.fn());
 vi.mock("../services/environment-probe.js", async original => ({
@@ -55,7 +58,8 @@ describe.skipIf(!support.supported)("agent-scoped runner qualification", () => {
   });
   const qualify = () => request(app).post(`/api/agents/${agentId}/qualify-runner`).send({ expectedEnvironmentId: environmentId });
 
-  it("allows the company owner without instance admin and keeps the generic probe restricted", async () => {
+  it.each(["claude_local", "grok_local"])("allows the company owner to qualify %s without instance admin and keeps the generic probe restricted", async adapterType => {
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, agentId));
     const before = await db.select().from(agents).where(eq(agents.id, agentId));
     const res = await qualify();
     expect(res.status).toBe(200);
@@ -69,6 +73,53 @@ describe.skipIf(!support.supported)("agent-scoped runner qualification", () => {
     expect(generic.status).toBe(403);
     expect(probe).toHaveBeenCalledTimes(1);
   });
+  it("lets the owner requalify an existing native runner's saved computer without changing its configuration", async () => {
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "example/model" } })
+      .where(eq(agents.id, agentId));
+    const before = await db.select().from(agents).where(eq(agents.id, agentId));
+    const response = await qualify();
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, details: { platformQualificationRecorded: true } });
+    expect(probe).toHaveBeenCalledWith(db, expect.objectContaining({ id: environmentId }),
+      expect.objectContaining({ companyId, assertCompanyBinding: true, acquireSandboxRuntimeLease: true }));
+    expect(await db.select().from(agents).where(eq(agents.id, agentId))).toEqual(before);
+    expect(JSON.stringify(response.body)).not.toMatch(/provider-secret|private-id/);
+    expect((await request(app).post(`/api/environments/${environmentId}/probe?companyId=${companyId}`).send({})).status).toBe(403);
+  });
+
+  it("reuses a current native snapshot proof without invalidating it or allocating another probe", async () => {
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } }).where(eq(agents.id, agentId));
+    const config = { provider: "daytona", snapshot: "managed-snapshot" };
+    const fingerprint = fingerprintEnvironmentSandboxProviderConfig(config);
+    const saved = (await environmentService(db).getById(environmentId))!;
+    const runtime = await resolveEnvironmentDriverConfigForRuntime(db, companyId, saved, { applyCustomImageTemplate: true, readOnlyCustomImageTemplate: true });
+    const runtimeFingerprint = fingerprintEnvironmentSandboxProviderConfig(runtime.config as typeof config);
+    const metadata = { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: {
+      v: 2, companyId, baseConfigFingerprint: fingerprint, runtimeConfigFingerprint: runtimeFingerprint,
+      snapshot: config.snapshot, template: null,
+      snapshotIdentity: { provider: "daytona", requestedRef: config.snapshot, id: randomUUID(), name: config.snapshot,
+        organizationId: "fixture-organization", createdAt: new Date().toISOString() },
+      facts: { platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.36" },
+    } } };
+    await db.update(environments).set({ metadata }).where(eq(environments.id, environmentId));
+    expect((await qualify()).body).toMatchObject({ ok: true, details: { platformQualificationRecorded: true } });
+    expect(probe).not.toHaveBeenCalled();
+    expect((await db.select().from(environments).where(eq(environments.id, environmentId)))[0]?.metadata).toEqual(metadata);
+  });
+
+  it.each(["revoked", "changed-computer", "foreign-computer"])("keeps native saved-computer qualification closed for %s authority", async state => {
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } }).where(eq(agents.id, agentId));
+    if (state === "revoked") await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
+    if (state === "changed-computer") await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agentId));
+    if (state === "foreign-computer") {
+      const other = randomUUID();
+      await db.insert(companies).values({ id: other, name: "Other", issuePrefix: `F${other.slice(0, 7)}` });
+      await db.insert(builtInManagedResources).values({ companyId: other, bundleKey: "test", resourceKind: "environment", resourceKey: "computer", resourceId: environmentId, stockVersion: "test", stockHash: "test" });
+    }
+    expect((await qualify()).status).toBe(state === "changed-computer" ? 409 : 403);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it("rejects an owner whose configure grant is absent before any provider work", async () => {
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, userId));
     expect((await qualify()).status).toBe(403);

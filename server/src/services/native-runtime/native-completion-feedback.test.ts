@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { documentService } from "../documents.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -15,9 +15,9 @@ const done: PrpStructuredRunResult = {
 };
 
 describe("native final-response feedback", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { temporary = await startEmbeddedPostgresTestDatabase("native-final-response-"); db = createDb(temporary.connectionString); });
+  beforeAll(async () => { temporary = await startRecoveryPostgres("native-final-response-"); db = createDb(temporary.connectionString); });
   afterAll(async () => { await temporary?.cleanup(); });
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -128,6 +128,19 @@ describe("native final-response feedback", () => {
       idempotencyKey: "briefing", key: "briefing", title: "Briefing", body: "The retrieved page titles and verification code.", baseRevisionId: null,
     } });
     await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.toContain("Saved document");
+  });
+  it("requires a requested JSON file even when the child task already has a saved result document", async () => {
+    const value = await fixture();
+    const objective = [
+      "Decode the supplied input into `input.json` in your workspace, then compute `proof.json`.",
+      "Requirements:",
+      "- Write `input.json` from the exact input bytes.",
+      "- Save a document on this child task describing the result and file link.",
+      "- Publish `proof.json` on the child task with `register_deliverable` using the workspace-relative path, correct byte size, and correct SHA-256.",
+    ].join("\n");
+    await db.update(issues).set({ title: "Compute the proof", description: objective }).where(eq(issues.id, value.issueId));
+    const report = { ...done, summary: "Computed the JSON and saved its task document.", evidence: [{ ref: value.saved.documentHref }] };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow("register_deliverable");
   });
   it("accepts a still-published document from an earlier run after a response continuation", async () => {
     const value = await fixture(), continuationRunId = randomUUID();

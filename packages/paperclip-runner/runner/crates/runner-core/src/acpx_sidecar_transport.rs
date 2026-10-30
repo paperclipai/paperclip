@@ -216,6 +216,10 @@ impl AcpxSidecarTransport {
             "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "antigravity" => &[
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a known agent profile",
@@ -250,7 +254,7 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "antigravity") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
@@ -326,6 +330,10 @@ impl AcpxSidecarTransport {
                 "XDG_DATA_HOME",
                 "XDG_CACHE_HOME",
             ]);
+        }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
         }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at
@@ -893,6 +901,23 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
 
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
+        "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
+        "GROK_EFFORT_MISMATCH" => return "grok_effort_mismatch",
+        "GROK_MODEL_MISMATCH" => return "grok_model_mismatch",
+        "GROK_SESSION_MISMATCH" => return "grok_session_mismatch",
+        "GROK_CONFIGURATION_CONFLICT" => return "grok_configuration_conflict",
+        "GROK_CONFIGURATION_DRIFT" => return "grok_configuration_drift",
+        "GROK_ADMISSION_PROTOCOL_VIOLATION" => return "grok_admission_protocol_violation",
+        "ACPX_ADMISSION_BINDING" => return "admission_binding",
+        "ACPX_ADMISSION_INSTALLATION" => return "admission_installation",
+        "ACPX_ADMISSION_SANDBOX" => return "admission_sandbox",
+        "ACPX_ADMISSION_CREDENTIAL" => return "admission_credential",
+        "ACPX_ADMISSION_CONFIGURATION" => return "admission_configuration",
+        "ACPX_ADMISSION_SKILLS" => return "admission_skills",
+        "ACPX_ADMISSION_COMMAND" => return "admission_command",
+        "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
+        "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
+        "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
         "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
@@ -1120,6 +1145,20 @@ mod tests {
             message: message.to_owned(),
             retryable: false,
         };
+        for (code, expected) in [
+            ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
+            ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+            ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            (
+                "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+                "grok_effort_acknowledgement_missing",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error(code, "private-token-canary")),
+                expected
+            );
+        }
         assert_eq!(
             response_error_classification(&error(
                 "acpx_sidecar_command_failed",

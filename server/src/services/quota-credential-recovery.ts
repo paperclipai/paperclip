@@ -9,8 +9,21 @@ import { idleQuotaRecoveryPath } from "./idle-local-work.js";
 const recoverySchema = z.object({
   companyId: z.string().uuid(), grantId: z.string().uuid(), connectionId: z.string().uuid(), secretId: z.string().uuid(),
   baseHash: z.string().length(64), value: z.string().min(1),
+  provider: z.enum(["openai", "google"]).optional(),
+  google: z.object({
+    sessionEpoch: z.number().int().nonnegative(), baseVersion: z.number().int().positive(),
+    versionSelector: z.union([z.literal("latest"), z.number().int().positive()]),
+    accountEmail: z.string().email(), verified: z.boolean(),
+  }).strict().optional(),
 });
 type Recovery = z.infer<typeof recoverySchema>;
+/** The native owner retired and an fsynced encrypted journal owns its refresh. */
+export class RetiredCredentialRecoveryError extends Error {
+  constructor(cause: unknown) {
+    super("The selected account credential is awaiting durable recovery. Retry shortly.", { cause });
+    this.name = "RetiredCredentialRecoveryError";
+  }
+}
 export const quotaCredentialHash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const quotaCredentialRecoveryPath = (companyId: string, grantId: string) =>
   path.join(idleQuotaRecoveryPath(), companyId, `${grantId}.json`);

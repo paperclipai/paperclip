@@ -129,6 +129,7 @@ export interface HeartbeatWorkspacePreparationInput {
     mergedConfig: Record<string, unknown>;
     configSnapshot: WorkspaceMetadataInput["configSnapshot"];
     secretManifest: WorkspaceMetadataInput["secretManifest"];
+    managedAiCredentialIdentity?: string;
   };
   reuse: {
     requestedShouldReuseExisting: boolean;
@@ -277,18 +278,33 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
       if (useIsolatedTaskDirectory && issueRef && !pluginTaskWorkspace) {
-        const cwd = await materializeIsolatedTaskDirectory({
-          companyId: agent.companyId,
-          issueId: issueRef.id,
-          ...(input.task.freshWorkspace?.mode === "fresh_isolated_workspace" ? { attemptId: run.id } : {}),
-        });
-        if (reusableExistingExecutionWorkspace && (
-          reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
-          reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
-          reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
-          reusableExistingExecutionWorkspace.strategyType !== "project_primary" ||
-          reusableExistingExecutionWorkspace.cwd !== cwd
-        )) {
+        // A completed fresh attempt becomes the current task directory. New
+        // input reuses that binding; only another fresh attempt changes roots.
+        let cwd: string;
+        try {
+          if (reusableExistingExecutionWorkspace) {
+            const [currentIssue] = await db.select({ workspaceId: issues.executionWorkspaceId }).from(issues)
+              .where(and(eq(issues.id, issueRef.id), eq(issues.companyId, agent.companyId)));
+            const stored = await executionWorkspacesSvc.getStoredById(agent.companyId, reusableExistingExecutionWorkspace.id);
+            if (fresh || currentIssue?.workspaceId !== reusableExistingExecutionWorkspace.id ||
+                reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
+                reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
+                reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
+                reusableExistingExecutionWorkspace.strategyType !== "project_primary" || !stored ||
+                stored.companyId !== agent.companyId || stored.sourceIssueId !== issueRef.id ||
+                stored.mode !== "isolated_workspace" || stored.strategyType !== "project_primary" ||
+                stored.status !== "active" || stored.cwd !== reusableExistingExecutionWorkspace.cwd || !stored.cwd) {
+              throw new Error("The saved task directory binding changed");
+            }
+          }
+          cwd = await materializeIsolatedTaskDirectory({
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            ...(fresh ? { attemptId: run.id } : {}),
+            ...(reusableExistingExecutionWorkspace ? { reuseCwd: reusableExistingExecutionWorkspace.cwd! } : {}),
+          });
+        } catch (error) {
+          if (!reusableExistingExecutionWorkspace) throw error;
           throw new WorkspaceValidationFailure("The existing execution workspace is not this task's isolated directory.", {
             workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issueRef.id },
           });
@@ -1092,11 +1108,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     await controllerLease.assertOwned();
     const remoteRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
       ? runOptions.nativeRestartRecovery : null;
-    const recoveryWorkspace = remoteRecovery
+    const pluginRecovery = remoteRecovery?.remote.kind === "plugin_task" ? remoteRecovery.remote : null;
+    const sandboxRecovery = remoteRecovery && remoteRecovery.remote.kind !== "plugin_task" ? remoteRecovery.remote : null;
+    const recoveryWorkspace = sandboxRecovery
       ? readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) : null;
-    if (remoteRecovery && (!recoveryWorkspace || remoteRecovery.runId !== run.id ||
-        recoveryWorkspace.providerLeaseId !== remoteRecovery.remote.providerLeaseId ||
-        recoveryWorkspace.remoteCwd !== remoteRecovery.remote.remoteCwd)) {
+    if (remoteRecovery && (remoteRecovery.runId !== run.id || (sandboxRecovery && (!recoveryWorkspace ||
+        recoveryWorkspace.providerLeaseId !== sandboxRecovery.providerLeaseId ||
+        recoveryWorkspace.remoteCwd !== sandboxRecovery.remoteCwd)))) {
       throw new Error("native_remote_recovery_lease_mismatch");
     }
     acquiredEnvironment = await timeWorkspace("workspace_environment_acquire", () => envOrchestrator.acquireForRun({
@@ -1106,6 +1124,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       adapterType: agent.adapterType,
       adapterConfig: parseObject(agent.adapterConfig),
       admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
+      managedAiCredentialIdentity: input.config.managedAiCredentialIdentity,
       runnerTaskProjectIds:[...new Set([executionWorkspace.projectId,...resolvedWorkspace.runnerTaskProjectIds ?? [],
         ...(executionWorkspace.additionalWorkspaces ?? []).map(workspace=>workspace.projectId)]
         .filter((id):id is string=>Boolean(id)))],
@@ -1115,10 +1134,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       agentId: agent.id,
       persistedExecutionWorkspace,
       executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
-      ...(remoteRecovery && recoveryWorkspace ? { reattachRemoteLease: {
+      ...(pluginRecovery ? { reattachRemoteLease: pluginRecovery } : sandboxRecovery && recoveryWorkspace ? { reattachRemoteLease: {
         leaseId: recoveryWorkspace.leaseId,
-        providerLeaseId: remoteRecovery.remote.providerLeaseId,
-        remoteCwd: remoteRecovery.remote.remoteCwd,
+        providerLeaseId: sandboxRecovery.providerLeaseId,
+        remoteCwd: sandboxRecovery.remoteCwd,
       } } : {}),
     }));
     await controllerLease.assertOwned();

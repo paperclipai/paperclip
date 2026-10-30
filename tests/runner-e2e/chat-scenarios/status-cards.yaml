@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: status-cards
+status: planned
+scenarios:
+  - id: status-cards.create-card
+    capabilities:
+      - status-cards/authoring
+    context: >-
+      Status cards are enabled, the CEO may assign the summarizer task and no matching card
+      exists.
+    query: >-
+      Make me a status card showing the launch's biggest blockers.
+    expected_outcome: >-
+      One card is saved with the requested purpose, watched work, supported refresh behavior and
+      valid summarizer. Chat links to it and distinguishes its configuration from an actual
+      generated summary. Required source visibility is retained rather than broadening access to
+      make compilation succeed.
+  - id: status-cards.refresh-card
+    capabilities:
+      - status-cards/generation
+    context: >-
+      The CEO authored the card; its source tasks changed since the previous summary.
+    query: >-
+      Refresh the launch status card now.
+    expected_outcome: >-
+      One authorized refresh creates observable generation work and the card updates only from
+      the resulting saved output. Failure remains visible alongside the prior summary's age. The
+      response does not describe stale content as freshly compiled just because refresh was
+      requested.
+  - id: status-cards.explain-card
+    capabilities:
+      - status-cards/inspection
+    context: >-
+      A card shows a blocker and has inspectable source work, generation time and history.
+    query: >-
+      Why does this card say the launch is blocked?
+    expected_outcome: >-
+      The agent explains the saved summary using its accessible source tasks and generation
+      context, with links. It distinguishes the card's last observation from newer live task
+      state. If the summary is stale or source access is missing, it says so rather than
+      inventing supporting evidence.
+  - id: status-cards.archive-card
+    capabilities:
+      - status-cards/archive
+    context: >-
+      The CEO authored a card and may archive and restore it.
+    query: >-
+      Archive this launch card; we will reuse it next quarter.
+    expected_outcome: >-
+      The saved card receives the supported archive state without deleting its history. Chat
+      explains the available restore path and that restored content may need refresh. Other
+      cards and source tasks remain unchanged.
+  - id: status-cards.other-authors-card
+    capabilities:
+      - status-cards/authoring
+      - status-cards/archive
+    context: >-
+      Morgan authored the card; the CEO can see it but cannot manage another agent's card.
+    query: >-
+      Change Morgan's status card to update every hour.
+    expected_outcome: >-
+      The agent respects author-specific management policy and identifies the supported owner or
+      human path. It does not claim a saved change or archive and recreate the card under its
+      own identity to evade ownership restrictions.

@@ -1,3 +1,4 @@
+import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
 import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
@@ -51,7 +52,7 @@ import {
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
+import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
 import { verifyNativeHarnessBackupStamp } from "./native-runtime/native-harness-backup-stamp.js";
 import {
   collectEnvironmentSecretRefs,
@@ -1871,11 +1872,12 @@ function createSandboxEnvironmentDriver(
       if (parsed.driver !== "sandbox" || storedParsed.driver !== "sandbox") {
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
       }
-      const pinnedSnapshotId = input.adapterType === "paperclip_runner"
-        ? qualifiedSandboxSnapshotId(configuredEnvironment, input.companyId, parsed.config, selectedTemplate.value) : null;
-      if (input.adapterType === "paperclip_runner" && !pinnedSnapshotId
-        && hasSandboxSnapshotQualification(configuredEnvironment, input.companyId)) {
-        throw new Error("sandbox_snapshot_qualification_required: The snapshot qualification is missing or stale. Test this environment again before running Paperclip Runner.");
+      let pinnedSnapshotId: string | null = null;
+      if (input.adapterType === "paperclip_runner" && !usesManagedCloudSandboxImage(configuredEnvironment, selectedTemplate.value)) {
+        pinnedSnapshotId = qualifiedSandboxSnapshotId(configuredEnvironment, input.companyId, parsed.config, selectedTemplate.value);
+        if (!pinnedSnapshotId && hasSandboxSnapshotQualification(configuredEnvironment, input.companyId)) {
+          throw new Error("sandbox_snapshot_qualification_required: The snapshot qualification is missing or stale. Open the agent's Harness / Runtime page and select Run test before running Paperclip Runner.");
+        }
       }
       if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease, archiveOnRelease: storedParsed.config.archiveOnRelease };
       if (pinnedSnapshotId) parsed.config = { ...parsed.config, snapshot: pinnedSnapshotId };
@@ -4018,10 +4020,11 @@ export function environmentRuntimeService(
     return driver;
   }
 
-  async function destroyScopedReusableSandboxLease(input: {
+  async function destroyClaimedSandboxLease(input: {
     environment: Environment;
     leaseRow: typeof environmentLeases.$inferSelect;
     scopeCondition?: ReturnType<typeof and>;
+    runId?: string;
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     if (await nativeWorkspaceExportPendingForLease(db, input.leaseRow)) return null;
@@ -4046,16 +4049,19 @@ export function environmentRuntimeService(
       eq(environmentLeases.id, input.leaseRow.id),
       eq(environmentLeases.companyId, input.leaseRow.companyId),
       eq(environmentLeases.environmentId, input.environment.id),
-      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+      input.runId ? eq(environmentLeases.heartbeatRunId, input.runId)
+        : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
       eq(environmentLeases.status, input.leaseRow.status),
       input.scopeCondition,
       sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
-      sql`NOT EXISTS (
+
+
+      input.runId ? undefined : sql`NOT EXISTS (
         SELECT 1 FROM ${heartbeatRuns}
         WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
           AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
       )`,
-    )).returning());
+    )).returning(), { companyId: input.leaseRow.companyId, runId: input.leaseRow.heartbeatRunId ?? undefined });
     if (!claimed) return null;
     const lease = toEnvironmentLeaseSnapshot(claimed);
     let renewalInFlight = false;
@@ -4077,12 +4083,14 @@ export function environmentRuntimeService(
     try {
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
-      return await driver.destroyRunLease({
+      const released = await driver.destroyRunLease({
         environment: input.environment,
         lease,
         failureReason: input.failureReason,
-      }) ?? lease;
-    } catch {
+      });
+      return released ?? (input.runId ? null : lease);
+    } catch (error) {
+      if (input.runId) throw error;
       // Even a failed settlement write leaves the durable provider handle for
       // the sweep. Continue with later leases without logging provider errors.
       return lease;
@@ -4094,7 +4102,7 @@ export function environmentRuntimeService(
         metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupInFlight":false}'::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),
         sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-      ))).catch(() => {
+      )), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined }).catch(() => {
         logger.warn({ leaseId: lease.id }, "scoped cleanup ownership settlement failed");
       });
     }
@@ -4198,6 +4206,7 @@ export function environmentRuntimeService(
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
       cancelActiveWork?: boolean,
+      releaseOptions?: { respectCleanupDeadlines?: boolean },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4205,11 +4214,8 @@ export function environmentRuntimeService(
         .where(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
-            or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
-              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
-              providerResourceDisposition === "destroy"
-                ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))
-                : undefined),
+            pendingRunLeaseReleaseCondition(providerResourceDisposition === "destroy"),
+            releaseOptions?.respectCleanupDeadlines ? dueRunLeaseReleaseCondition() : undefined,
           ),
         );
       if (leaseRows.length === 0) {
@@ -4237,15 +4243,17 @@ export function environmentRuntimeService(
             ? await environmentsSvc.getById(leaseRow.environmentId)
             : null;
           let leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+          let preparedStopAttemptId: unknown;
           if (hasNativeWorkspaceExportResume(leaseSnapshot) && providerResourceDisposition === "destroy") {
             const completed = await releaseCompletedNativeWorkspaceExportRetention(db, leaseSnapshot);
-            if (completed) leaseSnapshot = toEnvironmentLeaseSnapshot(completed);
+            if (completed) { leaseRow = completed; leaseSnapshot = toEnvironmentLeaseSnapshot(completed); }
           }
           if (providerResourceDisposition === "stop_and_retain" && !hasStopOnlyCleanup(leaseSnapshot)
             && getLeaseDriverKey(leaseSnapshot, environment) === "sandbox") {
             const prepared = await prepareSandboxStopAndRetain(db, leaseSnapshot);
             if (!prepared) continue;
             leaseSnapshot = toEnvironmentLeaseSnapshot(prepared);
+            preparedStopAttemptId = prepared.metadata?.pendingCleanupAttemptId;
           }
           if (hasStopOnlyCleanup(leaseSnapshot)) {
             const intentKey = stopOnlyCleanupKey(leaseSnapshot);
@@ -4257,8 +4265,15 @@ export function environmentRuntimeService(
             }).where(and(eq(environmentLeases.id, leaseRow.id), eq(environmentLeases.heartbeatRunId, heartbeatRunId),
               inArray(environmentLeases.status, ["active", "pending_cleanup"]),
               sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'false'`,
+              releaseOptions?.respectCleanupDeadlines ? or(dueRunLeaseReleaseCondition(),
+
+
+                typeof preparedStopAttemptId === "string" ? and(
+                  sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${preparedStopAttemptId}`,
+                  sql`${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs' = '0'`,
+                ) : undefined) : undefined,
               sql`${environmentLeases.metadata}->${intentKey} = ${JSON.stringify(leaseSnapshot.metadata?.[intentKey])}::jsonb`,
-            )).returning());
+            )).returning(), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
             if (!claimed) continue;
             const snapshot = toEnvironmentLeaseSnapshot(claimed);
             try {
@@ -4331,9 +4346,10 @@ export function environmentRuntimeService(
             );
           }
           const lease = providerResourceDisposition === "destroy" && driver?.destroyRunLease
-            ? await driver.destroyRunLease({
-                environment,
-                lease: leaseSnapshot,
+            ? await destroyClaimedSandboxLease({
+                environment, leaseRow, runId: heartbeatRunId,
+                scopeCondition: and(pendingRunLeaseReleaseCondition(true),
+                  releaseOptions?.respectCleanupDeadlines ? dueRunLeaseReleaseCondition() : undefined),
                 failureReason: "paperclip_runner_destroy_after_turn",
               })
             : driver
@@ -4494,7 +4510,7 @@ export function environmentRuntimeService(
           ? await environmentsSvc.getById(leaseRow.environmentId)
           : null;
         if (!environment) continue;
-        const lease = await destroyScopedReusableSandboxLease({
+        const lease = await destroyClaimedSandboxLease({
           environment,
           leaseRow,
           scopeCondition: and(...scopeConditions),
@@ -4575,7 +4591,7 @@ export function environmentRuntimeService(
           skippedLiveRun += 1;
           continue;
         }
-        const lease = await destroyScopedReusableSandboxLease({ environment, leaseRow, failureReason });
+        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.

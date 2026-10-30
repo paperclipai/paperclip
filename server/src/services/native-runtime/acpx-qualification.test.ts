@@ -9,6 +9,19 @@ const authorize = (value: unknown) => ({ [ACPX_QUALIFICATION_ENV]: JSON.stringif
 describe("host ACPX qualification admission", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it.each([undefined, "malformed", JSON.stringify([{ agent: "antigravity", model: "exact-model" }])])(
+    "keeps pending Antigravity closed despite host authorization (%s)", host => {
+      vi.stubEnv(ACPX_QUALIFICATION_ENV, host);
+      const config = { provider: "acpx", acpxAgent: "antigravity", model: "exact-model",
+        env: { [ACPX_QUALIFICATION_ENV]: JSON.stringify([{ agent: "antigravity", model: "exact-model" }]) } };
+      for (const resolve of [() => resolvePaperclipRunnerProviderProfile(config),
+        () => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })]) {
+        expect(resolve).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
+        expect(resolve).toThrow("Google Antigravity is awaiting native Runner acceptance");
+      }
+    },
+  );
+
   it("admits only the exact Pi model without host authorization and preserves permission modes", () => {
     const config = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
     for (const authorization of [undefined, "malformed unrelated candidate authorization"]) {

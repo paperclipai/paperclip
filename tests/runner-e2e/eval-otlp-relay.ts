@@ -14,7 +14,7 @@ export const EVAL_OTLP_DEFAULT_LIMITS = { ...EVAL_OTLP_LIMITS,
 
 export async function startEvalOtlpRelay(input: {
   projectId: string; apiKey: string; campaignId: string; attemptId: string; receiptPath: string; deadlineAt: number;
-  limits?: { [K in keyof typeof EVAL_OTLP_LIMITS]: number }; transport?: typeof fetch;
+  limits?: { [K in keyof typeof EVAL_OTLP_LIMITS]: number }; transport?: typeof fetch; expectedParent?: string;
 }) {
   const limits = input.limits ?? EVAL_OTLP_DEFAULT_LIMITS;
   if (!isEvalProjectId(input.projectId) || !input.apiKey.trim() || /[\r\n]/.test(input.apiKey)
@@ -24,6 +24,7 @@ export async function startEvalOtlpRelay(input: {
     || Object.keys(limits).sort().join(",") !== Object.keys(EVAL_OTLP_LIMITS).sort().join(",")
     || Object.entries(EVAL_OTLP_LIMITS).some(([key, maximum]) => !Number.isSafeInteger(limits[key as keyof typeof limits])
       || limits[key as keyof typeof limits] < 1 || limits[key as keyof typeof limits] > maximum)) throw new Error("Invalid eval OTLP relay policy");
+  if (input.expectedParent !== undefined) validateEvalOtlpParent(input.expectedParent, input.projectId);
   await mkdir(path.dirname(input.receiptPath), { recursive: true, mode: 0o700 });
   const file = await open(input.receiptPath, "ax", 0o600);
   let writes = Promise.resolve(), poisoned = false, closed = false, quotaRecorded = false;
@@ -33,7 +34,7 @@ export async function startEvalOtlpRelay(input: {
     return writes;
   };
   try { await record({ type: "policy", version: 2, sizing: "otlp-v1.9-expanded-source-json", projectId: input.projectId, campaignId: input.campaignId,
-    attemptId: input.attemptId, limits, deadlineAt: new Date(input.deadlineAt).toISOString(), openedAt: new Date().toISOString() }); }
+    attemptId: input.attemptId, ...(input.expectedParent === undefined ? {} : { expectedParent: input.expectedParent }), limits, deadlineAt: new Date(input.deadlineAt).toISOString(), openedAt: new Date().toISOString() }); }
   catch (error) { await file.close(); throw error; }
   const token = randomBytes(32).toString("hex");
   const pending = new Set<Promise<void>>(), controllers = new Set<AbortController>();
@@ -57,7 +58,7 @@ export async function startEvalOtlpRelay(input: {
       if (!["application/json", "application/x-protobuf"].includes(contentType ?? "") || encoding && encoding !== "gzip" && encoding !== "identity") return deny(response, 415, "unqualified_encoding");
       let body: Buffer, parent: string, wireBytes = 0, expandedBytes = 0, recordCount = 0;
       try {
-        parent = validateEvalOtlpParent(String(request.headers["x-bt-parent"] ?? `project_id:${input.projectId}`), input.projectId);
+        parent = validateEvalOtlpParent(String(request.headers["x-bt-parent"] ?? `project_id:${input.projectId}`), input.projectId, input.expectedParent);
         const chunks: Buffer[] = [];
         for await (const chunk of request) {
           wireBytes += chunk.length;
@@ -66,7 +67,7 @@ export async function startEvalOtlpRelay(input: {
         }
         body = Buffer.concat(chunks);
         if (encoding === "gzip") body = gunzipSync(body, { maxOutputLength: limits.maxRequestBytes });
-        const validated = validateEvalOtlpPayload(body, contentType!, signal, input.projectId);
+        const validated = validateEvalOtlpPayload(body, contentType!, signal, input.projectId, input.expectedParent);
         ({ body, expandedBytes, recordCount } = validated);
         if (body.length > limits.maxRequestBytes) throw new Error("request_limit");
       } catch { return deny(response, 400, "invalid_or_oversized_payload"); }

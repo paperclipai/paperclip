@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
   forIssue: vi.fn(),
+  inputFactsForIssue: vi.fn(),
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   create: vi.fn(),
@@ -152,6 +153,22 @@ describe("activity routes", () => {
     expect(res.body).toEqual([{ action: "issue.recovery_action_resolved", actorType: "system" }]);
   });
 
+  it("reads bounded input facts with the same issue access checks", async () => {
+    const commentId = "11111111-1111-4111-8111-111111111111";
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-1", companyId: "company-1" });
+    mockActivityService.inputFactsForIssue.mockResolvedValue([{ action: "issue.queued_comment_steered" }]);
+    const app = await createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" });
+    const res = await requestApp(app, baseUrl => request(baseUrl).get(`/api/issues/TEST-1/activity?view=comment-inputs&commentIds=${commentId}`));
+    expect(res.status).toBe(200);
+    expect(mockActivityService.inputFactsForIssue).toHaveBeenCalledWith("company-1", "issue-1", [commentId]);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    const invalid = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/TEST-1/activity?view=comment-inputs&commentIds=invalid"));
+    expect(invalid.status).toBe(400);
+    const oversized = await requestApp(app, baseUrl => request(baseUrl).get(`/api/issues/TEST-1/activity?view=comment-inputs&commentIds=${Array(101).fill(commentId).join(",")}`));
+    expect(oversized.status).toBe(400);
+    expect(mockActivityService.inputFactsForIssue).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["boundary", "company"])("denies agent activity reads outside the %s scope", async (kind) => {
     const issue = { id: "issue-1", companyId: kind === "company" ? "company-2" : "company-1" };
     mockIssueService.getById.mockResolvedValue(issue);
@@ -161,6 +178,9 @@ describe("activity routes", () => {
     const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/issue-1/activity"));
     expect(res.status).toBe(kind === "company" ? 404 : 403);
     expect(mockActivityService.forIssue).not.toHaveBeenCalled();
+    const inputs = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/issue-1/activity?view=comment-inputs"));
+    expect(inputs.status).toBe(kind === "company" ? 404 : 403);
+    expect(mockActivityService.inputFactsForIssue).not.toHaveBeenCalled();
   });
 
   it("returns redacted all-actors rows to a basic company reader", async () => {

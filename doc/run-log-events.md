@@ -92,6 +92,14 @@ They also become native Observability spans only with an operator OTLP endpoint.
 
 ## Native PRP Run-Log Events
 
+Completed OpenCode builtin `bash` parts preserve the numeric process exit from
+`state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
+status stays `completed` even when the command exits with a nonzero code. This
+status describes completion of the tool call, not success of the command or the
+native run. Metadata adds an exit only when it is an integer. Conflicting supplied
+legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
+metadata on other tools cannot add process-exit proof.
+
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
 refreshes on the new account. The bundled transport awaits a host commit callback
@@ -175,6 +183,28 @@ These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
 ## Semantic Settlement Diagnostics and Retry Logs
+
+When native tool arguments fail their authorized JSON Schema, the runner records
+`harness.diagnostic` with code `semantic_tool_denied` and `paperclipExecuted: false`.
+Its optional `inputSchemaGuidance` retains the same safe repair guidance sent to
+the provider: at most three authorized schema locations within 512 bytes.
+It includes no rejected arguments, submitted values, or unknown input keys.
+The rejected call does not create a semantic input event or execution receipt.
+Validated runner diagnostics retain this scalar metadata even when the operation
+is an API or case tool. API request and response bodies keep their existing redaction.
+
+If a declared native completion tool is rejected and the turn ends without an
+accepted replacement report, the runner emits `session.failed` with code
+`semantic_completion_rejected` and `recoverable: false` before the provider's
+original turn terminal. It emits no successful result proposal or human review
+request. Core uses its existing permanent native failure path and does not start
+a missing-result recovery turn. This failure also precedes terminal goal updates;
+Core records the original turn terminal before rejecting goal success or further
+goal continuation. Recoverable goal failures retain their existing behavior.
+The rejection survives same-turn restoration;
+a new turn or run binding clears it. A later accepted completion report keeps
+its normal authority, and ordinary turns with no completion-tool attempt keep
+their existing fallback.
 
 Before interrupting a Codex turn, the runner durably records a
 `harness.diagnostic` event with code `provider_interrupt_requested`, the stop
@@ -624,3 +654,43 @@ write the warning must not replace the provider outcome or stop lease release.
 cannot apply company export settings. Its payload contains only a closed reason
 and the settings revision. It carries no endpoint, credential, secret reference
 or resolver error. Recording the diagnostic never contacts a destination.
+
+## Runtime activity
+
+`runtime.activity.recorded` is a P1 Runner PRP event with a closed
+`{ namespace, activityKey }` payload. `namespace` groups a producer's activity
+types under a stable name. `activityKey` identifies an activity within that group.
+Consumers use the pair to select a response to activity in the current run.
+
+For example, `{ namespace: "example.computer", activityKey: "desktop.used" }`
+records successful desktop use. Core can map that activity to a Desktop viewer
+for the task's running agent. The authenticated event envelope supplies the run,
+session, source sequence and emission time. Core resolves the company, task and
+agent through the run's existing authorization checks.
+
+Both activity identifiers contain 1–160 Unicode code points and exclude C0
+controls and DEL. Callers cannot supply run, task or agent identity in this payload.
+
+The ordinary authenticated Runner event is the durable record. Normal source-event
+acknowledgement and replay deduplicate delivery. Existing run-read authorization
+and secret redaction apply to saved and live events. Recording reported activity
+is not independent proof that it happened and grants no resource permission.
+
+The native transport forwards runtime activity as a run-scoped fact. It retains
+the authenticated run identity across warm session attachment. Provider messages
+cannot impersonate this transport-owned notification.
+New-run activity waits for warm attachment to finish. A failed attachment does
+not retarget queued activity to the previous run.
+
+Runner accepts local activity records only with an opaque context
+captured before the operation. Warm run attachment and process recovery rotate
+that authority. Runner supplies the run identity from its active authenticated
+binding. Optional hint failure does not fail the underlying operation. No output
+text is scanned and no synthetic receipt is written.
+
+`GET /api/heartbeat-runs/:runId/events?view=plugin-panels` reads these events and
+returns only installed agent task-panel contributions under normal run-read and
+telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
+and current-user redaction. The task page uses one history read on mount/reconnect
+and the existing live transcript stream, then makes a bounded plugin readiness
+check. No panel discovery timer scans runs or provider state while connected.

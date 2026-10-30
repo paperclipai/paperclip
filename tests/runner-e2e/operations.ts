@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createEvalAttemptPhase, readEvalAttemptPhase } from "./attempt-phase.js";
 import { EvalSpendState, openEvalCostLedger, type EvalSpendLimits } from "./cost-ledger.js";
 import { evalRequestReservation, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
+import { startEvalRemoteGateway } from "./eval-remote-gateway.js";
 import type { MatrixExecution } from "./types.js";
 import { evalBraintrustConfig } from "./braintrust.js";
 import { startEvalOtlpRelay } from "./eval-otlp-relay.js";
@@ -17,13 +18,15 @@ export interface EvalOperationsManifest {
   maxAttemptsPerExecution: number;
   route: "direct" | "braintrust";
   projectId?: string;
+  remoteGateway?: "cloudflare";
   models: Array<Omit<EvalGatewayRoute, "apiKey" | "projectId" | "endpointName" | "mode">>;
 }
 const fields = (value: object, names: string[]) => {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(name => !names.includes(name))) throw new Error("Invalid eval operations manifest fields");
 };
 export function validateEvalOperationsManifest(value: EvalOperationsManifest, executions: readonly MatrixExecution[], maxRetries: number) {
-  fields(value, ["version", "limits", "ledgerPath", "executionIds", "maxAttemptsPerExecution", "route", "projectId", "models"]);
+  fields(value, ["version", "limits", "ledgerPath", "executionIds", "maxAttemptsPerExecution", "route", "projectId", "remoteGateway", "models"]);
+  if (value.remoteGateway !== undefined && value.remoteGateway !== "cloudflare") throw new Error("Invalid remote eval gateway policy");
   const initial = new EvalSpendState(value.limits).snapshot();
   const initialModelAllowance = usdToUnits(value.limits.maxUsd) - usdToUnits(initial.committedUsd);
   if (value.version !== 1 || !["direct", "braintrust"].includes(value.route) || !path.isAbsolute(value.ledgerPath)
@@ -37,7 +40,7 @@ export function validateEvalOperationsManifest(value: EvalOperationsManifest, ex
   for (const model of value.models) {
     fields(model, ["provider", "price", "maximumInputTokens", "maximumOutputTokens", "timeoutMs", "provisionalBound"]);
     const rateFields = ["inputUsdPerMillion", "cachedReadUsdPerMillion", "outputUsdPerMillion", "cacheWrite5mUsdPerMillion", "cacheWrite1hUsdPerMillion", "cacheWrite30mUsdPerMillion", "cacheWrite12hUsdPerMillion"];
-    fields(model.price, ["provider", "model", "version", "sourceUrl", "longContext", ...rateFields]);
+    fields(model.price, ["provider", "model", "responseModels", "version", "sourceUrl", "longContext", ...rateFields]);
     if (model.price.longContext) { fields(model.price.longContext, ["aboveInputTokens", "rates"]); fields(model.price.longContext.rates, rateFields); }
     const url = new URL(model.price.sourceUrl);
     if (!["openai", "anthropic"].includes(model.provider) || url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("Invalid model price provenance");
@@ -46,9 +49,11 @@ export function validateEvalOperationsManifest(value: EvalOperationsManifest, ex
     models.set(key, usdToUnits(evalRequestReservation({ ...model, mode: value.route, apiKey: "validation" })));
   }
   for (const execution of executions) {
-    if (execution.environment.id !== "local" || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id)
+    if (!(execution.environment.id === "local" || execution.environment.id === "daytona" && value.remoteGateway === "cloudflare"
+          && ["runner-codex", "runner-acpx-claude"].includes(execution.profile.id)) || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id)
         || !["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"].includes(execution.profile.id)
-        || execution.requiredCredentials.length !== 1) throw new Error(`Unqualified budgeted eval route: ${execution.id}`);
+        || execution.requiredCredentials.length !== (execution.environment.id === "daytona" ? 2 : 1)
+        || execution.requiredCredentials.filter(name => name !== "DAYTONA_API_KEY").length !== 1) throw new Error(`Unqualified budgeted eval route: ${execution.id}`);
     const provider = execution.profile.credential === "ANTHROPIC_API_KEY" ? "anthropic" : "openai";
     if (!models.has(`${provider}:${execution.profile.model}`)) throw new Error(`Missing exact model pricing: ${execution.id}`);
     if (models.get(`${provider}:${execution.profile.model}`)! > initialModelAllowance) {
@@ -65,7 +70,8 @@ export async function openEvalOperations(file: string, executions: readonly Matr
       || Date.parse(manifest.limits.deadlineAt) >= Date.parse(manifest.limits.overhead.expiresAt))) {
     throw new Error("Operating overhead allowance does not cover the campaign window");
   }
-  const required = manifest.route === "braintrust" ? ["BRAINTRUST_API_KEY"] : executions.map(execution => execution.profile.credential);
+  const required = [...(manifest.route === "braintrust" ? ["BRAINTRUST_API_KEY"] : executions.map(execution => execution.profile.credential)),
+    ...(executions.some(execution => execution.environment.id === "daytona") ? ["DAYTONA_API_KEY"] : [])];
   if (required.some(name => !env[name]?.trim())) throw new Error("Missing eval gateway upstream credential");
   const observability = evalBraintrustConfig({ ...env, PAPERCLIP_E2E_OTLP_RELAY_URL: undefined });
   if (observability && manifest.route === "braintrust" && observability.projectId !== manifest.projectId) throw new Error("Eval gateway and OTLP projects differ");
@@ -99,14 +105,19 @@ export async function openEvalOperations(file: string, executions: readonly Matr
         persist: (receipt: EvalGatewayReceipt) => atomicJson(path.join(receiptDirectory, `${receipt.requestId}.json`), receipt),
       });
       let relay: Awaited<ReturnType<typeof startEvalOtlpRelay>> | undefined;
+      let remote: Awaited<ReturnType<typeof startEvalRemoteGateway>> | undefined;
       try {
         if (observability) relay = await startEvalOtlpRelay({ projectId: observability.projectId, apiKey: observability.apiKey,
           campaignId: manifest.limits.campaignId, attemptId, deadlineAt: Math.min(Date.parse(manifest.limits.deadlineAt), Date.now() + 4 * 3_600_000),
           receiptPath: path.join(`${manifest.ledgerPath}.otlp`, `${createHash("sha256").update(attemptId).digest("hex")}.jsonl`) });
-      } catch (error) { await gateway.close(); throw error; }
+        if (execution.environment.id === "daytona") remote = await startEvalRemoteGateway({ gateway, observability: relay,
+          deadlineAt: Math.min(Date.parse(manifest.limits.deadlineAt), Date.now() + 4 * 3_600_000) }, env);
+      } catch (error) { await Promise.allSettled([gateway.close(), relay?.close()]); throw error; }
       let closing: Promise<void> | undefined;
-      const endpoint = { ...gateway, phasePath, observability: relay, close: () => closing ??= (async () => {
-        const results = await Promise.allSettled([gateway.close(), relay?.close()]);
+      const endpoint = { ...gateway, baseUrl: remote?.baseUrl ?? gateway.baseUrl, phasePath,
+        observability: relay ? { ...relay, baseUrl: remote ? `${remote.baseUrl}/otel` : relay.baseUrl } : undefined, close: () => closing ??= (async () => {
+        const remoteResults = await Promise.allSettled([remote?.close()]);
+        const results = [...remoteResults, ...await Promise.allSettled([gateway.close(), relay?.close()])];
         active.delete(endpoint);
         if (results.some(result => result.status === "rejected")) throw new Error("Eval gateway or OTLP relay cleanup failed");
       })() };

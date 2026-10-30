@@ -288,6 +288,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     for (const path of [
       `/api/heartbeat-runs/${fixture.privateRunId}`,
       `/api/heartbeat-runs/${fixture.privateRunId}/events`,
+      `/api/heartbeat-runs/${fixture.privateRunId}/events?view=plugin-panels`,
       `/api/heartbeat-runs/${fixture.privateRunId}/log`,
       `/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`,
       `/api/workspace-operations/${fixture.operationId}/log`,
@@ -326,6 +327,37 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const maintenance = await request(app).get(`/api/heartbeat-runs/${fixture.maintenanceRunId}`);
     expect(maintenance.status).toBe(200);
     expect(maintenance.body.resultJson.summary).toBe("Maintenance complete");
+  });
+
+  it("filters latest failures within the requested run window and preserves private-run redaction", async () => {
+    const f = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", createdAt: new Date("2026-10-26T10:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.privateRunId));
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-10-26T09:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.maintenanceRunId));
+    const timeoutId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: timeoutId, companyId: f.companyId, agentId: f.otherAgentId, scopeKind: "company",
+      invocationSource: "timer", status: "timed_out", createdAt: new Date("2026-10-26T11:00:00Z"),
+    });
+    const app = createApp(f.companyId, f.otherAgentId);
+    const path = `/api/companies/${f.companyId}/heartbeat-runs?summary=true&latestFailuresOnly=true`;
+    const response = await request(app).get(path).expect(200);
+    expect(response.body.map((run: { id: string }) => run.id)).toEqual([timeoutId, f.privateRunId]);
+    const privateStub = response.body[1];
+    expect(privateStub).toMatchObject({ redacted: true, status: "failed" });
+    expect(privateStub).not.toHaveProperty("issueId");
+    expect(privateStub).not.toHaveProperty("contextSnapshot");
+    expect(JSON.stringify(response.body)).not.toContain("Confidential email triage");
+    const bounded = await request(app).get(`${path}&limit=1`).expect(200);
+    expect(bounded.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
+    const agentOnly = await request(app).get(`${path}&agentId=${f.ownerAgentId}`).expect(200);
+    expect(agentOnly.body.map((run: { id: string }) => run.id)).toEqual([f.privateRunId]);
+    // A newer success suppresses an older failure rather than selecting the latest failure alone.
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-10-26T12:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.maintenanceRunId));
+    const recovered = await request(app).get(path).expect(200);
+    expect(recovered.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
   });
 
   it("returns full private-run content to the owner and an explicitly granted agent", async () => {

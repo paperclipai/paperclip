@@ -1,4 +1,7 @@
 export const queryKeys = {
+  workspacePreferences: {
+    mine: (userId: string | null) => ["workspace-preferences", userId] as const,
+  },
   agentCommentary: {
     list: (companyId: string, filters: object) => ["agent-commentary", companyId, "list", filters] as const,
     detail: (companyId: string, id: string | null) => ["agent-commentary", companyId, "detail", id] as const,
@@ -222,7 +225,7 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
-    projectAccess: (id: string) => ["agents", "project-access", id] as const,
+    projectAccess: (id: string) => ["agents", "detail", id, "project-access"] as const,
     identity: (id: string) => ["agents", "identity", id] as const,
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
@@ -653,6 +656,8 @@ export const queryKeys = {
     detail: (id: string) => ["decisions", "detail", id] as const,
     forTargetIssue: (companyId: string, issueId: string) =>
       ["decisions", companyId, "target", issueId] as const,
+    taskRecord: (companyId: string, issueId: string, viewerId: string | null, decisionId: string | null) =>
+      ["decisions", companyId, "task-record", issueId, viewerId, decisionId] as const,
   },
   decisionQueues: {
     list: (companyId: string) => ["decision-queues", companyId] as const,

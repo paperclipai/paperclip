@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -80,12 +81,11 @@ export async function ensureProjectAccessMember(
     subjectId: string;
   },
 ) {
-  return dbOrTx
-    .insert(projectAccessMembers)
-    .values(input)
-    .onConflictDoNothing()
-    .returning()
-    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+  return dbOrTx.transaction(async (tx: Db) => {
+    await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+    return tx.insert(projectAccessMembers).values(input).onConflictDoNothing().returning()
+      .then(rows => rows[0] ?? null);
+  });
 }
 
 /**
@@ -920,7 +920,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
         const project = await service.create(companyId, data);
         for (const repo of repositories) {
-          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
         }
         return (await service.getById(project.id))!;
       });
@@ -946,15 +946,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         for (const repo of repositories) {
           const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
           if (retained) {
-            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName) {
-              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url });
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName || retained.metadata?.githubRepositoryPrivate !== repo.private || retained.metadata?.githubRepositoryUrl !== repo.url) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url, metadata: { ...retained.metadata, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
             }
             continue;
           }
           const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
           if (legacy) {
-            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id } });
-          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
+          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
         }
         await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, projectId);
@@ -1013,6 +1013,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
         const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();

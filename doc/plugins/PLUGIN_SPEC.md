@@ -373,6 +373,14 @@ export interface PaperclipPluginManifestV1 {
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** Optional agent detail tab mirrored beside a running task.
+       * Declared board GET route scoped to agent :entityId returns { available: boolean }.
+       */
+      taskSidePanel?: {
+        availabilityPath: string;
+        /** Match runtime.activity.recorded; absent mappings add no task panel. */
+        activation?: { namespace: string; activityKey: string };
+      };
       /** For page and companySettingsPage: single route segment */
       routePath?: string;
     }>;

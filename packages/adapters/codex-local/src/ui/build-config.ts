@@ -73,7 +73,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 }
 
 /** Build a provider profile accepted by the experimental Rust runner. */
-export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
+export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
+  candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];
+}): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
   const configuredEffort = typeof v.thinkingEffort === "string"
@@ -110,7 +112,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
   }
   const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
-  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
+  const candidate = context?.candidateHarnesses?.find(candidate => candidate.agent === schemaValues.acpxAgent);
+  const selectedModel = typeof v.model === "string" && v.model ? v.model : schemaValues.model;
+  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified
+    && !(candidate && candidate.model === selectedModel)) {
     throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
   }
   const acpxAgent = selectedAcpxProfile?.value ?? "claude";
@@ -249,6 +254,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     provider,
     ...(provider === "codex"
       ? { model: resolvePaperclipRunnerModel("codex", config.model),
+          ...(v.search === false ? { search: false } : {}),
           ...(configuredEffort ? { modelReasoningEffort: configuredEffort } : {}) }
       : {}),
     codexPermissionMode: "never",

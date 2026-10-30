@@ -31,17 +31,29 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     vi.restoreAllMocks(); vi.unstubAllEnvs();
   });
   afterAll(async () => { await temporary?.cleanup(); });
-  function fixture() {
+  function fixture(prepare?: boolean) {
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
     const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
-    const db = createDb(temporary.connectionString);
+    const db = createDb(temporary.connectionString, { prepare });
     clients.push(db); captures.push(capture);
     expect(installDatabaseResponseCapture(db, { table, encodedTable }, capture)).toBe(db);
     expect(installDatabaseResponseCapture(db, { table, encodedTable }, capture)).toBe(db);
     return { db, capture, events };
   }
   function summary(events: Array<Record<string, unknown>>) { return events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!; }
+
+  it("retains capture counts when ORM preparation is enabled", async () => {
+    const f = fixture(true), id = randomUUID(), payload = "prepared-capture-value";
+    await f.db.insert(table).values({ id, payload });
+    await f.db.transaction(async tx => {
+      expect(await tx.select().from(table).where(eq(table.id, id))).toEqual([{ id, payload }]);
+    });
+    f.capture.flush();
+    expect(summary(f.events)).toMatchObject({ startedQueries: 2, completedQueries: 2 });
+    expect(JSON.stringify(f.events)).not.toContain(payload);
+    expect(JSON.stringify(f.events)).not.toContain(id);
+  });
 
   it("keeps rows and builder identity through lazy select and write returning", async () => {
     const f = fixture(), id = randomUUID(), payload = "sentinel-result-and-parameter-value🙂\n\"";
@@ -173,11 +185,11 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     f.capture.flush();
     expect(summary(f.events).completedQueries).toBeGreaterThan(4);
   });
-  it("covers automatically created dedicated pools and retains owner identity", async () => {
+  it.each([undefined, true])("covers automatically created dedicated pools with prepare %s and retains owner identity", async prepare => {
     const logs: string[] = [], now = Date.now();
     vi.spyOn(console, "info").mockImplementation(value => logs.push(String(value)));
     vi.stubEnv("PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW", `${new Date(now - 100).toISOString()}/${new Date(now + 59_000).toISOString()}`);
-    const db = createDb(temporary.connectionString); clients.push(db);
+    const db = createDb(temporary.connectionString, { prepare }); clients.push(db);
     const capture = databaseResponseCaptureFromEnv()!; captures.push(capture);
     expect(await withDedicatedDbConnection(db, async dedicated => dedicated.execute(sql`select ${"dedicated-value"}::text as value`)))
       .toEqual([{ value: "dedicated-value" }]);

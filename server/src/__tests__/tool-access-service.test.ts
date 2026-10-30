@@ -1,3 +1,5 @@
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -15,6 +17,7 @@ import {
   vi,
 } from "vitest";
 import {
+  applyPendingMigrations,
   activityLog,
   agents,
   authUsers,
@@ -97,8 +100,8 @@ import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
-const externalDatabaseUrl = process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -392,7 +395,15 @@ function createRouteApp(
 ) {
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => {
+  app.use(async (req, _res, next) => {
+    // Session fixtures must persist the membership normally loaded by authentication.
+    // Keep existing rows unchanged so explicit restrictions and revocations survive.
+    if (actor?.type === "board" && actor.userId) {
+      for (const membership of actor.memberships ?? []) await db.insert(companyMemberships).values({
+        companyId: membership.companyId, principalType: "user", principalId: actor.userId,
+        membershipRole: membership.membershipRole, status: membership.status,
+      }).onConflictDoNothing();
+    }
     req.actor = actor ?? {
       type: "board",
       userId: "board-user",
@@ -914,6 +925,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   beforeAll(async () => {
     if (externalDatabaseUrl) {
+      await applyPendingMigrations(externalDatabaseUrl);
       db = createDb(externalDatabaseUrl);
       await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
       return;
@@ -1744,7 +1756,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).post(`/api/tool-connections/${connection.id}/health-check`);
 
     expect(response.status).toBe(403);
-    expect(response.body.error).toContain("need access to this connection");
+    expect(response.body.error).toContain("Missing permission: tools:manage_connections");
   });
 
   it("serializes delegation creation behind membership removal so reauthorization cannot revive stale consent", async () => {
@@ -2049,6 +2061,13 @@ describeEmbeddedPostgres("tool access service", () => {
         maxConnections: 1,
       });
       const replacementService = createTestToolAccessService(replacementDb);
+      const firstReplacementPid = (await firstReplacementDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const cleanupPid = (await cleanupDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const replacementPid = (await replacementDb.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      const waitForFirstReplacementLock = (waitingPid: number) => vi.waitFor(async () => {
+        const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${waitingPid}) as blockers`);
+        expect(waiting!.blockers).toContain(firstReplacementPid);
+      }, { timeout: 5000 });
       let releaseFirstReplacement!: () => void;
       const firstReplacementMayCommit = new Promise<void>((resolve) => {
         releaseFirstReplacement = resolve;
@@ -2104,70 +2123,76 @@ describeEmbeddedPostgres("tool access service", () => {
         }
       });
 
-      // The first replacement still owns the departing member lock, so this
-      // gives cleanup time to queue for that lock before the empty replacement
-      // queues for the grant lock.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      let replacementSettled = false;
-      const replacement = replacementService
-        .replaceConnectionGrantMembers(connection.id, grant.id, [])
-        .then(
-          (value) => ({ value, error: null }),
-          (error: unknown) => ({ value: null, error }),
-        )
-        .finally(() => {
-          replacementSettled = true;
-        });
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(replacementSettled).toBe(false);
+      let replacementFinished: Promise<unknown> | undefined;
+      try {
+        await waitForFirstReplacementLock(cleanupPid);
+        let replacementSettled = false;
+        const replacement = replacementService
+          .replaceConnectionGrantMembers(connection.id, grant.id, [])
+          .then(
+            (value) => ({ value, error: null }),
+            (error: unknown) => ({ value: null, error }),
+          )
+          .finally(() => {
+            replacementSettled = true;
+          });
+        replacementFinished = replacement;
+        await waitForFirstReplacementLock(replacementPid);
+        expect(replacementSettled).toBe(false);
 
-      releaseFirstReplacement();
-      await firstReplacement;
-      await membershipIsLocked;
-      expect(replacementSettled).toBe(false);
-      releaseCleanup();
-      await cleanup;
-      const replacementResult = await replacement;
-      expect(replacementResult.value).toBeNull();
-      expect(replacementResult.error).toEqual(
-        expect.objectContaining({
-          message:
-            "Replace inactive audience members before widening access to the whole company",
-          status: 409,
-          details: {
-            code: "audience_widening_blocked",
-            inactiveUserIds: ["departing-user"],
-          },
-        }),
-      );
-      expect(
-        await db
-          .select()
-          .from(connectionGrantMembers)
-          .where(eq(connectionGrantMembers.grantId, grant.id)),
-      ).toEqual([
-        expect.objectContaining({
-          subjectType: "user",
-          subjectId: "departing-user",
-        }),
-      ]);
-
-      const fetchMock = vi
-        .spyOn(globalThis, "fetch")
-        .mockResolvedValue(
-          mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+        expect(replacementSettled).toBe(false);
+        releaseCleanup();
+        await cleanup;
+        const replacementResult = await replacement;
+        expect(replacementResult.value).toBeNull();
+        expect(replacementResult.error).toEqual(
+          expect.objectContaining({
+            message:
+              "Replace inactive audience members before widening access to the whole company",
+            status: 409,
+            details: {
+              code: "audience_widening_blocked",
+              inactiveUserIds: ["departing-user"],
+            },
+          }),
         );
-      const denied = await request(
-        createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
-      )
-        .post(`/api/agents/me/connections/${connection.id}/token`)
-        .send({});
-      expect(denied.status).toBe(403);
-      expect(denied.body).toMatchObject({
-        code: "grant_audience_denied",
-        grantId: grant.id,
-      });
-      expect(fetchMock).not.toHaveBeenCalled();
+        expect(
+          await db
+            .select()
+            .from(connectionGrantMembers)
+            .where(eq(connectionGrantMembers.grantId, grant.id)),
+        ).toEqual([
+          expect.objectContaining({
+            subjectType: "user",
+            subjectId: "departing-user",
+          }),
+        ]);
+
+        const fetchMock = vi
+          .spyOn(globalThis, "fetch")
+          .mockResolvedValue(
+            mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+          );
+        const denied = await request(
+          createRouteApp(db, agentJwtActor(company.id, agent.id, run.id)),
+        )
+          .post(`/api/agents/me/connections/${connection.id}/token`)
+          .send({});
+        expect(denied.status).toBe(403);
+        expect(denied.body).toMatchObject({
+          code: "grant_audience_denied",
+          grantId: grant.id,
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        releaseFirstReplacement();
+        releaseCleanup();
+        await Promise.allSettled([firstReplacement, cleanup, ...(replacementFinished ? [replacementFinished] : [])]);
+        await Promise.all([firstReplacementDb.$client.end(), replacementDb.$client.end(), cleanupDb.$client.end()]);
+      }
     },
   );
 
@@ -4111,8 +4136,9 @@ describeEmbeddedPostgres("tool access service", () => {
       .from(toolActionRequests)
       .where(eq(toolActionRequests.companyId, company.id));
     expect(requests).toHaveLength(2);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(requests.map((row) => row.status).sort()).toEqual([
-      "approved",
+      "executed",
       "pending",
     ]);
   });
@@ -4849,7 +4875,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("keeps duplicate, delete, and new-tools profile routes board-only and viewer-safe", async () => {
+  it("keeps duplicate, delete, and new-tools profile routes permission-gated and viewer-safe", async () => {
     const company = await createCompany(db);
     const [agent] = await db
       .insert(agents)
@@ -10074,6 +10100,45 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
 
+  });
+
+  it.each(["creation", "reopening", "rollback"] as const)("signals native review recovery after OAuth card %s settles", async mode => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const connected = await createTestToolAccessService(db).connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth" });
+    if (mode !== "creation") await db.insert(issueThreadInteractions).values({ companyId: company.id,
+      issueId: issue.id, kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Previous authorization" },
+      idempotencyKey: `connection-authorization:${connected.connectionId}:user-for-run`, sourceRunId: run.id });
+    const reassessment = vi.fn(), reviewResponse = vi.fn();
+    const unsubscribe = [subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, reassessment),
+      subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeReviewResponse, reviewResponse)];
+    const rollback = new Error("rollback OAuth reopening");
+    try {
+      const operation = db.transaction(async tx => {
+        const started = await createTestToolAccessService(tx as unknown as typeof db).startOAuth(company.id, connected.connectionId, {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback", actor: { actorType: "agent", actorId: agent.id, sessionId: run.id },
+          issueId: issue.id, subjectUserId: "user-for-run", scopes: ["channels:read"],
+        });
+        const [inside] = await tx.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+        expect(inside.status).toBe("pending");
+        expect(inside.payload).toMatchObject({ target: { href: started.authorizationUrl } });
+        expect(reassessment).not.toHaveBeenCalled(); expect(reviewResponse).not.toHaveBeenCalled();
+        const [outside] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+        expect(outside?.status).toBe(mode === "creation" ? undefined : "accepted");
+        if (mode === "rollback") throw rollback;
+      });
+      if (mode === "rollback") await expect(operation).rejects.toBe(rollback); else await operation;
+
+
+      expect(reassessment).toHaveBeenCalledTimes(1); expect(reviewResponse).toHaveBeenCalledTimes(1);
+      const [persisted] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(persisted.status).toBe(mode === "rollback" ? "accepted" : "pending");
+      expect(await db.select().from(toolOauthStates).where(eq(toolOauthStates.issueId, issue.id)))
+        .toHaveLength(mode === "rollback" ? 0 : 1);
+    } finally { unsubscribe.forEach(stop => stop()); }
   });
 
   it("creates and resolves an agent-initiated user authorization grant card", async () => {
@@ -15874,38 +15939,44 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     await service.archiveConnection(first.connectionId, company.id, actor);
     fetchMock.mockRejectedValue(new Error("provider unavailable"));
-    const runTransaction = db.transaction.bind(db);
-    vi.spyOn(db, "transaction")
-      .mockImplementationOnce(runTransaction)
-      .mockRejectedValueOnce(new Error("rollback unavailable"));
+    await db.execute(sql`create function tool_health_rollback_failure() returns trigger language plpgsql as $$
+      begin raise exception 'rollback unavailable'; end $$`);
+    await db.execute(sql.raw(`create trigger tool_health_rollback_failure before update on tool_connections
+      for each row when (old.id = '${first.connectionId}'::uuid and old.credential_policy = 'per_user' and new.credential_policy = 'shared')
+      execute function tool_health_rollback_failure()`));
+    try {
 
-    await expect(
-      service.connectGalleryApp(
-        company.id,
-        {
-          galleryKey: "github",
-          connectionMethodKey: "mcp-key",
-          grantKind: "user",
-          name: "GitHub rollback failure",
-          credentialValues: {
-            "credentials.authorization": "new-personal-token",
+      await expect(
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "github",
+            connectionMethodKey: "mcp-key",
+            grantKind: "user",
+            name: "GitHub rollback failure",
+            credentialValues: {
+              "credentials.authorization": "new-personal-token",
+            },
           },
-        },
-        actor,
-      ),
-    ).rejects.toMatchObject({
-      status: 500,
-      details: { code: "connection_identity_rollback_failed" },
-    });
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        status: 500,
+        details: { code: "connection_identity_rollback_failed" },
+      });
 
-    await expect(
-      service.getConnection(first.connectionId, company.id),
-    ).resolves.toMatchObject({
-      status: "draft",
-      enabled: false,
-      healthStatus: "error",
-      lastError: "connection_identity_rollback_failed",
-    });
+      await expect(
+        service.getConnection(first.connectionId, company.id),
+      ).resolves.toMatchObject({
+        status: "draft",
+        enabled: false,
+        healthStatus: "error",
+        lastError: "connection_identity_rollback_failed",
+      });
+    } finally {
+      await db.execute(sql`drop trigger tool_health_rollback_failure on tool_connections`);
+      await db.execute(sql`drop function tool_health_rollback_failure()`);
+    }
   });
 
   it("automatically gives same-named connections distinct names", async () => {
@@ -20177,7 +20248,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({ name: "Member edit" });
     expect(denied.status).toBe(403);
     expect(denied.body.error).toContain(
-      "connection creator or a connection manager",
+      "Missing permission: tools:manage_connections",
     );
 
     await request(createRouteApp(db, creator))

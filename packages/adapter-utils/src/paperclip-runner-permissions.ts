@@ -205,7 +205,7 @@ export function paperclipRunnerTransitionConfig(
   providerOverride?: unknown,
 ): Record<string, unknown> {
   const previousProvider =
-    (previousAdapterType === "claude_local" || previousAdapterType === "pi_local")
+    (["claude_local", "pi_local", "grok_local"].includes(previousAdapterType))
       ? "acpx"
       : previousAdapterType === "opencode_local"
         ? "opencode"
@@ -218,13 +218,15 @@ export function paperclipRunnerTransitionConfig(
       : previousProvider;
   return {
     provider,
-    model: provider === "acpx" && previousAdapterType === "pi_local"
+    model: provider === "acpx" && previousAdapterType === "grok_local"
+      ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
+      : provider === "acpx" && previousAdapterType === "pi_local"
       ? typeof previousModel === "string" ? previousModel.trim() : ""
       : resolvePaperclipRunnerModel(
       provider,
       provider === previousProvider ? previousModel : undefined,
     ),
-    ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
+    ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "grok_local" ? "grok" : previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
     [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
     lifecycleMode: "per_turn",
@@ -251,6 +253,7 @@ export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
   { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
   { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
+  { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
 ] as const);
 
 /** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */

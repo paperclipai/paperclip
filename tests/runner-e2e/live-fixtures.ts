@@ -1,3 +1,4 @@
+import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
@@ -7,6 +8,7 @@ import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { isImmutableDaytonaImage } from "./catalog.js";
 import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS } from "./chat-feature-cases.js";
 import { codexSubscriptionAgentConfig, stageCodexSubscriptionFixture } from "./codex-subscription-fixture.js";
 import { caseReceiptTask, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
@@ -167,7 +169,8 @@ export async function setupLiveFixtures(input: {
       const company = await api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
+        budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
+          : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
@@ -278,8 +281,9 @@ export async function setupLiveFixtures(input: {
   const gatewayUrl = process.env.PAPERCLIP_E2E_GATEWAY_BASE_URL;
   const gatewayToken = process.env.PAPERCLIP_E2E_GATEWAY_TOKEN;
   const budgetedGateway = Boolean(gatewayUrl || gatewayToken);
-  if (budgetedGateway && (!gatewayUrl || !gatewayToken || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gatewayUrl)
-      || execution.environment.id !== "local" || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id))) throw new Error("Unqualified fixture gateway route");
+  if (budgetedGateway && (!gatewayUrl || !gatewayToken || !(execution.environment.id === "local" ? /^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gatewayUrl)
+        : isEvalRemoteOrigin(gatewayUrl) && gatewayUrl === process.env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN)
+      || !["local", "daytona"].includes(execution.environment.id) || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id))) throw new Error("Unqualified fixture gateway route");
   if (managedHiring || savedCopilot || budgetedGateway) {
     registry.register<ManagedAccountFixture>({
       id: "ai-connection",
@@ -381,6 +385,7 @@ export async function setupLiveFixtures(input: {
       if (managedHiring || savedCopilot || budgetedGateway) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
+        if (budgetedGateway && execution.environment.id === "daytona") config.helloProbeTimeoutSec = 300;
         delete config.env;
         agent.runtimeConfig = {
           ...(agent.runtimeConfig as Record<string, unknown>),

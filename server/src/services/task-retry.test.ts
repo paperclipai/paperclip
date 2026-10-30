@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -10,6 +10,7 @@ import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.j
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { heartbeatService } from "./heartbeat.js";
+import { taskChatRetryCanAwaitRecovery, taskChatRetryExecutionStopped } from "./chat-channels/task-retry-authority.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -55,6 +56,53 @@ describe("durable task Retry admission", () => {
     await db.update(issues).set({ status: "blocked", assigneeAgentId: null }).where(eq(issues.id, input.issueId));
     expect(await requestTaskRetry(input)).toMatchObject({ accepted: false, stale: true });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+  });
+  it.each(["prepared", "mismatched", "owned"] as const)("reconstructs missing native preservation on deliberate Retry only for an exact unowned source: %s", async state => {
+    const input = await seed();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    const [environment] = await db.insert(environments).values({ name: input.observedRunId, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: input.companyId, issueId: input.issueId,
+      heartbeatRunId: input.observedRunId, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "reuse_by_environment", metadata: { remoteCwd: "/work" },
+    }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: input.issueId,
+      nativePhase: "terminal_failure", errorCode: "execution_finalization_deadline_exceeded", runnerProfileJson: {
+        nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+          workspaceId: input.observedRunId, leaseId: lease.id,
+          providerLeaseId: state === "mismatched" ? randomUUID() : lease.providerLeaseId,
+          remoteCwd: "/work", resourceDisposition: "keep_running" },
+      } }).where(eq(heartbeatRuns.id, input.observedRunId));
+    await db.insert(nativeRunFinalizations).values({ companyId: input.companyId, issueId: input.issueId,
+      runId: input.observedRunId, phase: "terminal_failure", leaseOwner: state === "owned" ? "live-controller" : null });
+    await db.insert(issueRecoveryActions).values({ companyId: input.companyId, sourceIssueId: input.issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "board",
+      cause: "execution_finalization_deadline_exceeded", fingerprint: randomUUID(), outcome: "blocked",
+      nextAction: "Inspect the failed run.", evidence: { runId: input.observedRunId,
+        providerOwnership: "unverified", automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } });
+
+    const receipt = await requestTaskRetry(input);
+    expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+    const [retained] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    const repairs = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, input.issueId)))
+      .filter(action => action.evidence.workspaceRestoreRecovery);
+    if (state === "prepared") {
+      expect(source.resultJson).toMatchObject({ workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+      expect(retained).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+      expect(repairs).toHaveLength(1);
+      expect(readSystemRecovery(repairs[0].evidence)).toMatchObject({ state: "scheduled", intentId: receipt.requestId });
+      expect(await taskChatRetryCanAwaitRecovery(db, source, input.issueId, receipt.requestId!)).toBe(true);
+    } else {
+      expect(source.resultJson).toBeNull();
+      expect(retained).toMatchObject({ status: "active", leasePolicy: "reuse_by_environment" });
+      expect(repairs).toHaveLength(0);
+    }
+    expect(await taskChatRetryExecutionStopped(db, source)).toBe(false);
+    expect(retained.metadata).not.toHaveProperty("remoteExecutionTermination");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, input.companyId))).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, input.issueId)))[0])
+      .toMatchObject({ status: "blocked", assigneeAgentId: issue.assigneeAgentId, executionRunId: null, checkoutRunId: null });
   });
   it("requires current Agent Chat ownership and enablement even when replaying a retry receipt", async () => {
     const input = await seed();

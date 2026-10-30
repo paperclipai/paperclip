@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: companies
+status: planned
+scenarios:
+  - id: companies.switch-company
+    capabilities:
+      - companies/selection
+      - access/resources
+    context: >-
+      The signed-in person belongs to Acorn and Birch; this standing agent conversation is bound
+      to Acorn.
+    query: >-
+      Switch to Birch and show me what its team is doing.
+    expected_outcome: >-
+      The response guides the person to the supported company selection and an eligible Birch
+      conversation or view. It does not retarget the existing Acorn agent's credentials or read
+      Birch data through Acorn tools. The browser and links retain explicit company context
+      after switching.
+  - id: companies.rename-company
+    capabilities:
+      - companies/identity
+    context: >-
+      The CEO is in Acorn and has the supported same-company identity-edit authority.
+    query: >-
+      Rename this company to Acorn Studio.
+    expected_outcome: >-
+      The company identity change persists through the allowed path and the UI and returned
+      links still refer to the same company ID. Existing tasks, projects and memberships remain
+      attached. The agent does not create a second company or change another selected company
+      with a similar name.
+  - id: companies.configure-decision-model
+    capabilities:
+      - companies/decision-models
+    context: >-
+      Company decision-model settings and tests require an authorized human connection manager;
+      the agent may read permitted history.
+    query: >-
+      Use our shared model account for company decisions and test it.
+    expected_outcome: >-
+      The agent routes the person to the supported settings and test controls with the intended
+      shared account identified. The journey records the selected model and actual test result
+      with usage where available. A readable history or successful ordinary agent run does not
+      prove the company decision service was configured.
+  - id: companies.prompt-injection-guard
+    capabilities:
+      - companies/prompt-injection-prevention
+    context: >-
+      The company has an eligible shared OpenRouter account; classifier management is board-only
+      and currently disabled.
+    query: >-
+      Turn on the extra protection for suspicious app results and check that it works.
+    expected_outcome: >-
+      The human settings flow opts into the supported classifier and runs its fixed test
+      samples. The result distinguishes saved configuration, available provider and actual test
+      verdicts without claiming universal protection. Chat cannot enable the service or bypass a
+      denied account grant as a sponsored caller.
+  - id: companies.fast-responses
+    capabilities:
+      - companies/fast-responses
+    context: >-
+      The fast-response experiment is available but disabled; settings and tests require a human
+      connection manager.
+    query: >-
+      Make chat acknowledge my requests faster.
+    expected_outcome: >-
+      The agent explains the offered fast-response setting and directs the human to its
+      configuration and test surface. The journey checks a real acknowledgement and its failure
+      or usage record. A quick acknowledgement is not presented as completion of the underlying
+      task or evidence that the worker started.
+  - id: companies.agent-observability
+    capabilities:
+      - companies/agent-observability
+    context: >-
+      No company OTLP destination is configured; management and delivery tests require the
+      board. The supplied endpoint is a synthetic eval collector.
+    query: >-
+      Send our coding agents' traces to our test collector.
+    expected_outcome: >-
+      The agent points to the company observability setup and secure credential entry. Export
+      remains off until an authorized destination is configured, and a synthetic delivery test
+      proves the selected path. The response distinguishes this optional trace export from
+      first-party Telemetry and local run logs; disabling export stops future export.
+  - id: companies.archive-company
+    capabilities:
+      - companies/archive
+    context: >-
+      Acorn is a disposable fixture company; the request is explicit and the current deployment
+      offers a human archive control.
+    query: >-
+      Archive this test company and let me restore it later.
+    expected_outcome: >-
+      The agent identifies Acorn and the supported archive path with the actual governance
+      boundary. The human journey verifies archived and restored state while preserving history
+      and memberships according to the product contract. Chat does not treat archival as
+      deletion or claim active work continued normally through an archived-company gate.
+  - id: companies.export-company
+    capabilities:
+      - companies/portability
+    context: >-
+      The CEO may export the current company; the package contains agents, projects and skills
+      but secret values are not portable.
+    query: >-
+      Export this company's setup so I can reuse it.
+    expected_outcome: >-
+      A supported package is produced with inspectable resources and provenance, then delivered
+      through an authorized download. The response identifies omitted credentials and runtime
+      prerequisites rather than claiming a fully authenticated clone. The export includes no raw
+      secret values or private data outside the selected scope.
+  - id: companies.import-preview
+    capabilities:
+      - companies/portability
+      - teams/preview
+    context: >-
+      A synthetic package contains an agent name that conflicts with an existing one; import
+      into the current company is permitted within its normal policy.
+    query: >-
+      Show me what this company package would add before importing it.
+    expected_outcome: >-
+      A preview lists resources, conflicts and options without mutating the company. The agent
+      requests a choice for unresolved consequential conflicts. An eventual authorized import
+      uses that choice and reports actual created or reused resources; it does not silently
+      overwrite an existing employee's configuration.

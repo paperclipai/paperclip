@@ -2134,6 +2134,37 @@ describe("personal Muse control plane",()=>{
     }finally{await detach();}
   });
 
+  it("notifies maintenance when a real Muse finish receipt commits", async () => {
+    const f = await active();
+    const events: string[] = [];
+    let unsubscribe = () => {};
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, event => events.push(event));
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      expect((await db.select().from(assignments).where(eq(assignments.id, f.assignment.id)))[0].acceptedResultAt).not.toBeNull();
+    } finally { unsubscribe(); await f.detach(); }
+  });
+
+  it("does not rewrite settled Muse terminal history", async () => {
+    const f = await active();
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      const version = async () => (await db.select({ version: sql<string>`${assignments}.xmin::text` })
+        .from(assignments).where(eq(assignments.id, f.assignment.id)))[0].version;
+      const settled = await version();
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      expect(await version()).toBe(settled);
+      const [hold] = await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId, f.assignment.id));
+      expect(hold).toMatchObject({ workerUnknown: false, nativeEffectsUnknown: false, releasedAt: expect.any(Date) });
+    } finally { await f.detach(); }
+  });
+
   it("makes identical native result replay idempotent after finish and finalization",async()=>{
     const f=await active();try {
       const acceptId=randomUUID(),finishId=randomUUID();

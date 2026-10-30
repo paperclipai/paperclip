@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:e80c6dc7bde12790371345ee5a12f0201d30941d26f1a780aec3d090545b2a06";
+    "sha256:9473de6ef4baf2bd82fe8b6757239bdc160960b0a78ae6f47fa9e0996544226c";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -142,6 +142,7 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
     let mut config = config(state_dir);
     let command = PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar"));
     config.acpx_launch_profile = Some(AcpxLaunchProfile {
+        candidate_admission: None,
         authority_digest: format!("sha256:{}", "d".repeat(64)),
         command: command.clone(),
         args: vec![
@@ -156,6 +157,116 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
         }],
     });
     config
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+    use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
+    let profiles: Value =
+        serde_json::from_str(include_str!("../../../../acpx-profiles.json")).unwrap();
+    let distributions: Value =
+        serde_json::from_str(include_str!("../../../../antigravity-distributions.json")).unwrap();
+    let profile = &profiles["profiles"]["antigravity"];
+    let admission = AcpxCandidateAdmission::parse_json(&json!({
+        "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
+        "agent":"antigravity", "model":"explicit-test-model", "profileDigest":profile["commandDigest"],
+        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
+        "platform":"darwin", "architecture":"arm64", "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+        "runId":"run-1", "normalizedSessionId":"session-1"
+    }).to_string()).unwrap();
+    let mut config = acpx_config(directory, "turns-reserved-result-terminal");
+    let launch = config.acpx_launch_profile.as_mut().unwrap();
+    *launch.args.last_mut().unwrap() = admission.profile_digest.clone();
+    launch.candidate_admission = Some(admission);
+    let mut payload = prepare_payload(directory, "antigravity");
+    let provider = &mut payload["provider"];
+    for field in [
+        "agentServerPackage",
+        "agentServerVersion",
+        "agentRuntimePackage",
+        "agentRuntimeVersion",
+        "commandDigest",
+    ] {
+        provider[field] = profile[field].clone();
+    }
+    provider["sidecarArgs"] = json!(launch.args);
+    provider["providerPolicy"] = json!({"readOnly":true});
+    (config, payload)
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
+    let directory = temporary_directory("candidate-provider-authority");
+    let (config, mut payload) = candidate_fixture(&directory);
+    for kind in [
+        "codex",
+        "opencode",
+        "openai_dot",
+        "grok_bot",
+        "muse",
+        "claude_managed",
+        "aws_agentcore",
+    ] {
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        let error = executor
+            .execute(&command(
+                1,
+                "run.prepare",
+                json!({"provider":{"kind":kind}}),
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot authorize another provider kind"),
+            "{kind}: {error}"
+        );
+        assert!(!directory.join("acpx-runtime").exists());
+    }
+    payload["paperclipNextAuthority"] = json!({});
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(executor
+        .execute(&command(1, "run.attach", payload))
+        .unwrap_err()
+        .to_string()
+        .contains("cannot rotate a live runner authority"));
+    assert!(!directory.join("acpx-provider-state.json").exists());
+    fs::write(directory.join("codex-provider-state.json"), b"{}").unwrap();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(recovered
+        .poll_events()
+        .unwrap_err()
+        .to_string()
+        .contains("cannot adopt a prior durable runner activation"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption() {
+    let directory = temporary_directory("candidate-cold-session");
+    let (config, payload) = candidate_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    let opened = executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(opened.result["status"], "started");
+    let closed = executor
+        .execute(&command(3, "runner.suspend", json!({})))
+        .unwrap();
+    assert_eq!(closed.result["status"], "closed");
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["lifecycle"], "closed");
+    executor.shutdown().unwrap();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(recovered.poll_events().is_err());
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn pi_acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
@@ -1100,6 +1211,67 @@ fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
         1
     );
     executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
+    let directory = temporary_directory("acpx-transport-failure");
+    let mode = "turns-malformed-activity";
+    let config = acpx_config(&directory, mode);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload_with_mode(&directory, "codex", mode),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Read the saved question", "turnId":"provider-turn-transport"}),
+        ))
+        .unwrap();
+    let mut events = Vec::new();
+    for _ in 0..20 {
+        let batch = executor.poll_events().unwrap();
+        executor.acknowledge_events(batch.len()).unwrap();
+        events.extend(batch);
+        if events
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let failures: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "turn.failed")
+        .collect();
+    assert_eq!(failures.len(), 1);
+    let failure = &failures[0].payload;
+    assert_eq!(failure["providerTurnId"], "provider-turn-transport");
+    assert_eq!(failure["providerTerminalObserved"], false);
+    assert_eq!(failure["error"]["code"], "acpx_provider_transport_failed");
+    assert!(failure["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ACPX sidecar emitted invalid JSON"));
+    assert_eq!(failure["error"]["recoverable"], false);
+    let snapshot = executor
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap()
+        .result;
+    assert_eq!(snapshot["status"], "closed");
+    assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
+    assert!(executor.poll_events().unwrap().is_empty());
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
     fs::remove_dir_all(directory).unwrap();
 }
 

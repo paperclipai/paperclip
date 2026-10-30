@@ -1,5 +1,5 @@
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
-import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -12,6 +12,10 @@ import { credentialAccessNotice } from "@/lib/credential-access-notice";
 import type { ActivityEvent, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { CoordinatorChatHandoffStatus, CoordinatorChatTaskHandoff, standaloneChatHandoffs, useCoordinatorChatTaskHandoffs, useLiveChatHandoffIds } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
+import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
+import { CoordinatorChatQuestionStatus, useCoordinatorChatPendingQuestions } from "@/components/coordinator/CoordinatorChatPendingQuestions";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
@@ -23,6 +27,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import {
   IssueAssigneePausedNotice,
@@ -88,6 +93,7 @@ import {
   interactionThreadAnchorMs,
   isSuppressedThreadInteraction,
 } from "@/components/task-chat/interaction-thread-order";
+import { orderTaskCreationItems, taskCreationSourceRunId } from "@/components/task-chat/task-creation-order";
 import {
   interactionReplacesComposerSkip,
   shouldHideInteractionCard,
@@ -109,7 +115,6 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
@@ -138,6 +143,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
+const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -422,6 +428,9 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
   conversationMode?: boolean;
   creationActivity?: ActivityEvent[];
+  compactHistory?: boolean;
+  historyControl?: ReactNode;
+  onExpandHistory?: () => void;
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
@@ -492,7 +501,9 @@ function durableInputLabel(
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const coordinatorEnabled = useCoordinatorPresentation();
+  const { enabled: streamlinedPreference } = useStreamlinedUiEnabled();
+  const streamlinedUiEnabled = coordinatorEnabled || streamlinedPreference;
   const {
     initialHistoryPending = false,
     initialHistoryError = false,
@@ -509,7 +520,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     userProfileMap,
     currentUserId,
     onAdd,
-    onReviewConversation,
     onCancelRun,
     stopPending,
     stopScope,
@@ -606,6 +616,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : onRetryFailedRun;
   const canRetryFailedRun = Boolean(retryFailedRunHandler);
   const queryClient = useQueryClient();
+  const decisionReceipts = useCoordinatorChatDecisionReceipts(issueId, conversationMode);
+  const pendingQuestions = useCoordinatorChatPendingQuestions(issueId, conversationMode);
+  const taskHandoffs = useCoordinatorChatTaskHandoffs(issueId, conversationMode === true);
+  const liveHandoffIds = useLiveChatHandoffIds(`${currentUserId}:${issueId}`, taskHandoffs.handoffs, taskHandoffs.isSuccess);
   const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const createdSkillItems = useMemo(() => skillCreatedItems(props.creationActivity ?? []), [props.creationActivity]);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
@@ -898,6 +912,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of linkedRuns ?? []) {
       map.set(r.runId, {
         id: r.runId,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType ?? "",
         runtimeMode: r.runtimeMode,
@@ -908,6 +923,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of liveRuns ?? []) {
       map.set(r.id, {
         id: r.id,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType,
         runtimeMode: r.runtimeMode,
@@ -919,6 +935,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if (activeRun) {
       map.set(activeRun.id, {
         id: activeRun.id,
+        createdAt: activeRun.createdAt,
         status: activeRun.status,
         adapterType: activeRun.adapterType,
         runtimeMode: activeRun.runtimeMode,
@@ -929,9 +946,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
+  const openedAt = useMemo(() => Date.now(), [issueId]);
   const nativeRuns = useMemo(
-    () => runs.filter((run) => run.runtimeMode === "native"),
-    [runs],
+    () => runs.filter((run) => run.runtimeMode === "native").map((run) => ({
+      ...run,
+      conversationOnly: Boolean(props.compactHistory && (!run.createdAt || new Date(run.createdAt).getTime() <= openedAt)),
+    })),
+    [runs, props.compactHistory, openedAt],
   );
   const {
     transcriptByRun: nativeTranscriptByRun,
@@ -940,8 +961,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     hydratedRunIds: hydratedNativeRunIds,
     terminalHydratedRunIds,
     retry: retryNativeEvents,
-  } = useNativeRunTranscripts(nativeRuns);
+  } = useNativeRunTranscripts(nativeRuns, { companyId });
   const logRuns = useMemo(() => runs.filter((run) =>
+    (!nativeRuns.some((nativeRun) => nativeRun.id === run.id && nativeRun.conversationOnly) ||
+      nativeTranscriptErrorsByRun.has(run.id) ||
+      (hydratedNativeRunIds.has(run.id) && (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)) && (
     run.runtimeMode !== "native" ||
     // Active runs still need the websocket log stream. Only settled native
     // history can skip the legacy transport when event history is available.
@@ -949,14 +973,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     nativeTranscriptErrorsByRun.has(run.id) ||
     (hydratedNativeRunIds?.has(run.id) &&
       (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)
-  ), [runs, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
+  )), [runs, nativeRuns, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
   const {
     transcriptByRun: logTranscriptByRun,
     isInitialHydrating: logsAreInitiallyHydrating,
     hydratedRunIds: hydratedLogRunIds,
+    truncatedRunIds,
     errorsByRun: logErrorsByRun,
     retry: retryLogs,
-  } = useLiveRunTranscripts({ runs: logRuns, companyId });
+  } = useLiveRunTranscripts({ runs: logRuns, companyId, ...(props.compactHistory ? { logReadLimitBytes: COMPACT_RUN_LOG_READ_LIMIT_BYTES } : {}) });
   const fallbackByRunRef = useRef(
     new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>(),
   );
@@ -1120,7 +1145,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Prefer a native review request's explicit run binding; while that request
   // is still being created, infer the native owner from the document timestamp.
   const planDocumentSourceRunId = useMemo(() => {
-    if (!planDocument) return null;
+    // Coordinator keeps saved plans in document chronology. A run may write
+    // several documents (or use shell tools with no semantic write boundary);
+    // attaching the plan to its last write can put it after the resulting work.
+    if (!planDocument || coordinatorEnabled) return null;
     const candidates = new Map<
       string,
       {
@@ -1177,7 +1205,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         toMs(b.startedAt ?? b.createdAt) - toMs(a.startedAt ?? a.createdAt),
     );
     return matchingRuns[0]?.id ?? null;
-  }, [activeRun, interactions, linkedRuns, liveRuns, planDocument]);
+  }, [activeRun, coordinatorEnabled, interactions, linkedRuns, liveRuns, planDocument]);
 
   const planTurnItem = useMemo<TaskChatPlanDocumentItem | null>(() => {
     if (!planDocument || !planDocumentSourceRunId) return null;
@@ -1503,7 +1531,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // double-rendering beside its own settled turn.
     const settledRunIds = new Set<string>();
     const settledReplyRunIds = new Set<string>();
+    const sourceRunByItemId = new Map<string, string>();
+    const commentsById = new Map(projectedComments.map(comment => [comment.id, comment]));
+    for (const { item } of orderedEntries) {
+      if (item.kind !== "message" || item.author !== "agent") continue;
+      const comment = commentsById.get(item.id);
+      const runId = comment?.createdByRunId ?? comment?.runId ?? comment?.derivedCreatedByRunId;
+      if (runId) sourceRunByItemId.set(item.id, runId);
+    }
     const entriesWithFailures = [...orderedEntries];
+    for (const question of pendingQuestions.questions) {
+      const id = `pending-question:${question.subject.id}`;
+      entriesWithFailures.push({ id, ms: toMs(question.createdAt), order: 4, item: { id, kind: "pending_question", question } });
+    }
+    for (const receipt of decisionReceipts.receipts) {
+      entriesWithFailures.push({ id: `decision-receipt:${receipt.id}`, ms: toMs(receipt.resolvedAt), order: 4,
+        item: { id: `decision-receipt:${receipt.id}`, kind: "decision_receipt", receipt } });
+    }
+    for (const handoff of standaloneChatHandoffs(taskHandoffs.handoffs, interactions ?? [])) {
+      entriesWithFailures.push({ id: handoff.id, ms: toMs(handoff.createdAt), order: 4,
+        item: { id: handoff.id, kind: "task_handoff", handoff, animateEntry: liveHandoffIds.has(handoff.id) } });
+    }
     // Settled turns for every terminal run whose transcript we have. Provider
     // commentary, grouped activity (including reasoning summaries), and
     // terminal request receipts remain in transcript order. Final text is
@@ -1511,6 +1559,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // runs remain activity/waiting state and never occupy a final-response slot.
     const settledTurns: {
       turn: TaskChatTurnItem;
+      sourceRunId: string;
       anchorCommentId: string | null;
       startMs: number;
     }[] = [];
@@ -1782,7 +1831,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             runId: source.status === "cancelled" ? undefined : source.id,
             ...(branchUnavailable || aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
-              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
+              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive"
+                && meta?.resultJson?.workspaceRestoreFailure !== "restore_invalid_metadata",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,
@@ -1823,6 +1873,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             parts: [{ entries, durationMs, failed }],
           });
           settledTurns.push({
+            sourceRunId: source.id,
             turn: {
               id: turnId,
               kind: "turn",
@@ -2009,6 +2060,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ],
         });
         settledTurns.push({
+          sourceRunId: source.id,
           turn: {
             id: turnId,
             kind: "turn",
@@ -2102,6 +2154,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ],
           });
           settledTurns.push({
+            sourceRunId: liveRun.id,
             turn: {
               id: turnId,
               kind: "turn",
@@ -2135,7 +2188,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
     const turnsByAnchor = new Map<string, TaskChatTurnItem[]>();
     const unanchored: { turn: TaskChatTurnItem; startMs: number }[] = [];
-    for (const { turn, anchorCommentId, startMs } of settledTurns) {
+    for (const { turn, sourceRunId, anchorCommentId, startMs } of settledTurns) {
+      sourceRunByItemId.set(turn.id, sourceRunId);
       if (anchorCommentId) {
         const list = turnsByAnchor.get(anchorCommentId) ?? [];
         list.push(turn);
@@ -2169,7 +2223,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return {
       items: prependIssueBrief(
         attachSettledTurns(
-          coalesceSettledTurns(out, turnMergeMetaById),
+          coalesceSettledTurns(
+            coordinatorEnabled ? orderTaskCreationItems(out, sourceRunByItemId) : out,
+            turnMergeMetaById,
+          ),
           turnMergeMetaById,
         ),
         hasBrief,
@@ -2179,6 +2236,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     };
   }, [
     orderedEntries,
+    coordinatorEnabled,
+    decisionReceipts.receipts,
+    pendingQuestions.questions,
+    taskHandoffs.handoffs,
+    liveHandoffIds,
     props.interruption,
     statusRelevance,
     canRetryFailedRun,
@@ -2264,6 +2326,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     : showSettlingTail
       ? settlingRun!.id
       : null;
+  // A running (or still settling) turn lives outside the chronological body.
+  // Its task cards follow that same tail until the complete turn takes over.
+  const [threadItems, tailTaskCreationItems] = useMemo<[TaskChatItem[], TaskChatItem[]]>(() => {
+    if (!coordinatorEnabled || !tailRunId) return [items, []];
+    const body: TaskChatItem[] = [];
+    const tail: TaskChatItem[] = [];
+    for (const item of items) {
+      (taskCreationSourceRunId(item) === tailRunId ? tail : body).push(item);
+    }
+    return [body, tail];
+  }, [items, coordinatorEnabled, tailRunId]);
   const tailStreaming = Boolean(liveRun);
   const tailRunSource = tailRunId
     ? runs.find((run) => run.id === tailRunId)
@@ -2519,6 +2592,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (interaction) =>
           interaction.status === "pending" &&
           interaction.kind !== "connection_intent" &&
+          !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));
@@ -2539,7 +2613,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
     }
     return result;
-  }, [interactions, pendingRuntimeRequest]);
+  }, [interactions, pendingRuntimeRequest, coordinatorEnabled]);
   const { dismissedQuestionIds: dismissedInputIds, dismissQuestion: dismissInput } = useDismissedTaskQuestions(issueId, currentUserId);
   const isInputDismissed = useCallback((input: PendingComposerInput) =>
     input.kind === "durable"
@@ -2632,55 +2706,45 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
   const hasAgentAssignee = Boolean(issueAssigneeAgentId);
-  const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
-  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
-  const submissionRequestId = useRef<string | null>(null);
-  useEffect(() => {
-    const confirmed = submissionRequestId.current && comments.some(comment =>
-      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    // The previous intent's projection cannot acknowledge this submission.
-    if (tailRunId || confirmed) {
-      setRunnerSubmissionPending(false);
-      setSubmissionTakingLonger(false);
-    }
-  }, [tailRunId, comments, runnerSubmissionPending]);
-  useEffect(() => {
-    if (!runnerSubmissionPending || tailRunId) return;
-    const timeout = window.setTimeout(
-      () => {
-        setSubmissionTakingLonger(true);
-        void props.onRefreshLatestComments?.();
-      },
-      10_000,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [runnerSubmissionPending, tailRunId]);
+  const {
+    pending: runnerSubmissionPending,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      if (hasAgentAssignee) {
-        submissionRequestId.current = args[4] ?? null;
-        setRunnerSubmissionPending(true);
-        setSubmissionTakingLonger(false);
-      }
+      args[4] ??= crypto.randomUUID();
+      const attempt = beginSubmission(args[4]);
       try {
         await onAdd(...args);
-        setRunnerSubmissionPending(false);
-        setSubmissionTakingLonger(false);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
           dismissInput(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
           setTakeoverMode("normal");
         }
       } catch (error) {
-        setRunnerSubmissionPending(error instanceof CommentSubmissionUnknownError);
-        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
+        rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [hasAgentAssignee, onAdd, selectedPendingInput, dismissInput],
+    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
+    !startupBlocked &&
     !tailRunId &&
     (props.retryPreparing || props.interruption?.state === "working" || runnerSubmissionPending ||
       commentItems.some(
@@ -2812,9 +2876,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const historyControl = props.historyControl ?? (
+    props.compactHistory && props.onExpandHistory
+    && logRuns.some((run) => truncatedRunIds?.has(run.id))
+      ? <Button type="button" variant="ghost" size="sm" onClick={props.onExpandHistory}>More run output</Button>
+      : null
+  );
   const renderBrief = useCallback(
-    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
-    [issueBrief],
+    () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} />{historyControl}</> : null,
+    [issueBrief, historyControl],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2968,9 +3038,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : logsAreInitiallyHydrating;
   });
   // Hydrating a run inserts activity around its saved reply and can move the
-  // latest viewport substantially. Wait for the initial comment window's run
-  // history and plan before revealing; older runs outside that window do not
-  // delay it, and the latch below keeps subsequent refreshes visible.
+  // latest viewport substantially. Compact opens hydrate only their bounded
+  // recent window, but its saved cards and latest turn must arrive together so
+  // the first readable frame already has its final structure.
   const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
   const scrollNavigation = useTaskChatScrollNavigation();
   useEffect(() => {
@@ -2986,10 +3056,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         : Boolean(logErrorsByRun?.has(run.id)),
     );
   const historyKey = conversationMode && draftKey ? draftKey : issueId;
-  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(
-    () => (historyPending ? undefined : historyKey),
-  );
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(undefined);
   const historyRevealed = revealedHistoryKey === historyKey;
+  const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
   const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
@@ -3004,12 +3073,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [historyRevealed, historyKey]);
-  // Mount and measure the real thread while concealed, then reveal in one
-  // commit. A frame also lets ancestor navigation scroll restoration finish.
+  // Mount and measure the real thread while concealed. The properties pane
+  // can still be opening when data becomes ready; revealing during its width
+  // transition rewraps cards and races initial anchor/focus scrolling.
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    const frame = requestAnimationFrame(() => setRevealedHistoryKey(historyKey));
+    let previousWidth: number | undefined;
+    let stableFrames = 0;
+    let frame: number;
+    const revealWhenSettled = () => {
+      const width = historyShellRef.current?.getBoundingClientRect().width;
+      stableFrames = width === previousWidth ? stableFrames + 1 : 0;
+      previousWidth = width;
+      if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
+      else frame = requestAnimationFrame(revealWhenSettled);
+    };
+    frame = requestAnimationFrame(revealWhenSettled);
     return () => cancelAnimationFrame(frame);
   }, [historyPending, historyRevealed, historyKey]);
   useEffect(() => {
@@ -3027,25 +3107,20 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={!historyPending || historyWaitExpired}>
-        <TaskChatWindowScroll
-          contentKey={isMobile ? autoFollowContentKey : 0}
-          enabled={isMobile && historyRevealed}
-        />
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >
           <div
             className={cn(
-              "flex flex-col",
-              !isMobile && "min-h-0 flex-1",
+              "flex min-h-0 flex-1 flex-col",
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
+            ref={historyShellRef}
           >
             <div
               className={cn(
-                "relative flex flex-col",
-                (!isMobile || !historyRevealed) && "min-h-0 flex-1",
+                "relative flex min-h-0 flex-1 flex-col",
               )}
               aria-busy={!historyRevealed}
             >
@@ -3080,8 +3155,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <div
                 data-testid="task-chat-history-content"
                 className={cn(
-                  "flex flex-col",
-                  !isMobile && "min-h-0 flex-1",
+                  "flex min-h-0 flex-1 flex-col",
                   !historyRevealed && "invisible",
                 )}
                 inert={!historyRevealed}
@@ -3090,11 +3164,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <>
                     {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
                       <div
-                        className={
-                          isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
-                        }
+                        className="min-h-0 flex-1 overflow-y-auto"
                       >
-                        {threadHeaderWithBlockers ? (
+                        {threadHeaderWithBlockers || pendingQuestions.isError || decisionReceipts.isError || decisionReceipts.hasNextPage || taskHandoffs.isError || taskHandoffs.hasNextPage ? (
                           <div
                             className={cn(
                               "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
@@ -3104,6 +3176,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             data-testid="task-chat-thread-header"
                           >
                             {threadHeaderWithBlockers}
+                            <CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} />
+                            <CoordinatorChatHandoffStatus query={taskHandoffs} />
                           </div>
                         ) : null}
                         <div className="px-3 py-10 text-center text-sm text-muted-foreground">
@@ -3122,9 +3196,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       </div>
                     ) : (
                       <TaskChatThreadView
-                        items={items}
+                        items={threadItems}
                         attachments={attachments}
-                        header={threadHeaderWithBlockers}
+                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} /><CoordinatorChatHandoffStatus query={taskHandoffs} /></>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
                         renderMessageActions={renderMessageActions}
@@ -3222,13 +3296,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                   )}
                                 </div>
                               ) : null}
+                              {tailTaskCreationItems.map(item => (
+                                <div key={item.id} data-thread-anchor={item.id} data-thread-item-kind={item.kind} className="mt-4">
+                                  {item.kind === "task_handoff"
+                                    ? <CoordinatorChatTaskHandoff handoff={item.handoff} animateEntry={item.animateEntry} />
+                                    : item.kind === "interaction" ? renderInteraction(item) : null}
+                                </div>
+                              ))}
                               {bottomBlockerLinks}
                             </>
                           ) : null
                         }
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
-                        scroll={!isMobile}
                       />
                     )}
                   </>
@@ -3280,7 +3360,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           onInterrupt={
                             onInterruptQueued && queuedMessageQueue?.queueId
                               ? async () => {
-                                  await onInterruptQueued(
+                                  return onInterruptQueued(
                                     queuedMessageQueue.targetRunId,
                                   );
                                 }
@@ -3308,7 +3388,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             comment.authorUserId === currentUserId && comment.clientRequestId &&
                             !("clientStatus" in comment && comment.clientStatus)
                           ).map((comment) => comment.clientRequestId!))}
-                          onReviewConversation={onReviewConversation}
                           onStop={liveRun ? onCancelRun : undefined}
                           stopPending={stopPending}
                           stopScope={stopScope}

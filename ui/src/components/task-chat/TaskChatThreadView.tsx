@@ -26,6 +26,9 @@ import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { compactAdjacentErrors } from "./adjacent-errors";
+import { CoordinatorChatTaskHandoff } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
+import { CoordinatorChatDecisionReceipt } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
+import { CoordinatorChatPendingQuestion } from "@/components/coordinator/CoordinatorChatPendingQuestions";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
@@ -101,6 +104,9 @@ function renderItem(
   onOpenBrowser?: (browserId: string) => void,
 ) {
   switch (item.kind) {
+    case "pending_question": return <CoordinatorChatPendingQuestion item={item.question} />;
+    case "task_handoff": return <CoordinatorChatTaskHandoff handoff={item.handoff} animateEntry={item.animateEntry} />;
+    case "decision_receipt": return <CoordinatorChatDecisionReceipt receipt={item.receipt} />;
     case "browser": return <TaskBrowserActivity browser={item.browser} label={item.label} onOpen={onOpenBrowser} />;
     case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "skill_created": return <TaskChatSkillCreatedCard item={item} onOpen={onOpenSkill} />;
@@ -435,7 +441,7 @@ export function TaskChatThreadView({
 
 // Cheap content signature so streaming growth (text lengthening without the
 // item count changing) still advances the auto-follow key. Shared by the
-// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+// shared message scroller on desktop and mobile (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
   if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);

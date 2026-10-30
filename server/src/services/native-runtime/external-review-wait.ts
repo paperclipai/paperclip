@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issues, statusDecisions, type Db } from "@paperclipai/db";
+import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { authorizeChatConversationForBoundRun } from "./chat-attachment-reuse.js";
 import { EXTERNAL_CHAT_QUESTION_RESPONSE_KEY } from "./external-chat-question-response.js";
 
@@ -30,6 +31,8 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
     runId: heartbeatRuns.id,
     agentId: heartbeatRuns.agentId,
     contextSnapshot: authorizationContext,
+    responsibleUserId: heartbeatRuns.responsibleUserId,
+    activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
   }).from(issues)
     .innerJoin(statusDecisions, and(
       eq(statusDecisions.id, issues.lastStatusDecisionId),
@@ -58,9 +61,14 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
       eq(chatEndpoints.status, "active"),
     ))
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), eq(issues.status, "in_review")));
-  const waits = await Promise.all(candidates.map(async ({ runId, agentId, contextSnapshot, ...wait }) => {
+  const waits = await Promise.all(candidates.map(async ({ runId, agentId, contextSnapshot, responsibleUserId, activeIdentityContextId, ...wait }) => {
     try {
-      await authorizeChatConversationForBoundRun(db, { companyId, issueId: wait.issueId, runId, agentId }, contextSnapshot, "read");
+      const inheritedWait = await readInheritedGitHubReviewWait(db, {
+        id: runId, companyId, agentId, responsibleUserId, activeIdentityContextId,
+        nativeIssueId: wait.issueId, issueId: wait.issueId, contextSnapshot,
+      });
+      if (inheritedWait?.kind === "revoked") return null;
+      await authorizeChatConversationForBoundRun(db, { companyId, issueId: wait.issueId, runId, agentId }, inheritedWait?.context ?? contextSnapshot, "read");
       return wait;
     } catch (error) {
       if (error instanceof Error && ["paperclip_runner_chat_attachment_binding_denied",

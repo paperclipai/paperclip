@@ -68,6 +68,7 @@ export interface LogActivityInput {
   issueId?: string | null;
   details?: Record<string, unknown> | null;
   responsibleUserIdOverride?: string | null;
+  authorization?: { action: string; operation: string; reason: string };
 }
 
 
@@ -163,7 +164,7 @@ export function publishActivity(publication: ActivityPublication) {
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
-  const redactedDetails = await redactActivityDetails(db, input.details ?? null);
+  const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({
     companyId: input.companyId,

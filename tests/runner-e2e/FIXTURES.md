@@ -1,5 +1,12 @@
 # Runner E2E fixture authoring
 
+[Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
+only company, agents and project context through public APIs. Both agents use
+production role instructions; evaluator outcomes are never injected. Real browser
+submission, task audits, worker document provenance, completion delivery and
+reload readback establish the outcome. The existing fixture registry, subscription
+credential staging and whole-company cleanup own setup and teardown.
+
 [Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
 fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
 argument preserves the existing all-fixtures behavior. A verified onboarding
@@ -10,6 +17,17 @@ context may seed the graph; independent setup is labeled as recipe provenance.
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+[Antigravity additional-agent setup](ANTIGRAVITY-AGENT-JOURNEY.md) instead reuses
+an existing same-user personal default Google subscription on an attached local
+macOS ARM64 candidate. That prerequisite does not seed the measured new agent or
+task: both are created through ordinary visible controls. The attempt journals
+owned resources before task dispatch, preserves the supplied company/account/grant,
+and exposes bounded read-only preflight and ownership-checked recovery. Native
+Test is prompt-free; exactly two work turns are admitted. Independent actual
+downloaded bytes, effective model/conversation, accepted/committed Done lineage
+and local physical retirement determine the outcome. No fresh OAuth or
+managed-local bootstrap is claimed.
 
 The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
 authenticated browser session. `RunnerApi.setBrowserSession` binds that session
@@ -1014,14 +1032,18 @@ The oracle rejects a missing or pending terminal intent.
 
 ## Feedback persistence (explicit only)
 
-`--suite feedback-persistence` selects two local native Claude/Codex cells.
+`--suite feedback-persistence` selects four native Claude/Codex cells across local and Daytona execution.
 Each creates one standard task through the browser, asks for two distinct
 synthetic feedback items, and requires the real `submit_complaint` and
-`submit_suggestion` tools. The five-minute case expects one task work run and
-disables automatic retries. Company and agent accounted-work budgets are $10.
+`submit_suggestion` tools. The case expects one task work run and disables
+automatic retries. Local attempts have five minutes; Daytona inherits the
+15-minute remote deadline. Company and agent accounted-work budgets are $10.
 Setup probes and any background work must also pass through the separately
 budgeted gateway when using an operations manifest. Local compute is unmetered.
-Cost and duration forecasts remain unmeasured until a retained live attempt.
+Daytona cells require an immutable image and the existing provider credential.
+Their ephemeral sandboxes carry the 60-minute provider lifetime. Historical local
+measurements remain separate; Daytona cost and time are unknown until measured.
+These registrations do not qualify remote behavior or change daily/weekly selections.
 The runner E2E maintainers own this manual case; `--all` excludes it.
 
 After collection and fixture teardown, the oracle reads the retained evidence
@@ -1036,5 +1058,6 @@ quality or survival after an abrupt worker kill.
 
 ```sh
 pnpm test:e2e:runner -- --list --suite feedback-persistence
+pnpm test:e2e:runner -- --list --suite feedback-persistence --environment daytona
 pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
 ```

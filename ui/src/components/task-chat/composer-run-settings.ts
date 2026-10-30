@@ -45,6 +45,7 @@ export function composerDefaultModel(agent: Agent | undefined): string {
   if (agent.adapterType === "paperclip_runner") {
     const provider = composerCatalogProvider(agent);
     if (provider === "codex" || provider === "opencode") return resolvePaperclipRunnerModel(provider, config.model);
+    if (provider === "acpx" && config.acpxAgent === "grok") return "grok-4.7";
     if (provider === "acpx" && config.acpxAgent !== "grok") return resolvePaperclipRunnerModel(provider, config.model);
   }
   return "";
@@ -72,7 +73,7 @@ export function composerEfforts(agent: Agent | undefined, model: string, catalog
   }
   if (!catalogIds.includes(effectiveModel)) return [];
   if (agentHarnessType(agent.adapterType, agent.adapterConfig) === "claude_local") return claudeLocalReasoningEffortsForModel(effectiveModel);
-  if (agent.adapterType === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
+  if (agentHarnessType(agent.adapterType, agent.adapterConfig) === "grok_local") return grokLocalReasoningEffortsForModel(effectiveModel);
   if (agent.adapterType === "pi_local") return ["off", "minimal", "low", "medium", "high", "xhigh"];
   if (agent.adapterType === "kimi_local" && typeof agent.adapterConfig.engine === "string"
     && agent.adapterConfig.engine.trim().toLowerCase() === "cli" && modelSupportsEffort(effectiveModel)) return KIMI_SUPPORTED_EFFORTS;

@@ -46,6 +46,11 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 }));
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
+const mockPluginEnvironmentRequiresAgent = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("../services/plugin-environment-driver.js", async importOriginal => ({
+  ...(await importOriginal<typeof import("../services/plugin-environment-driver.js")>()),
+  pluginEnvironmentRequiresAgent: mockPluginEnvironmentRequiresAgent,
+}));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false, executionMode: "local" })),
@@ -682,6 +687,37 @@ describe("agent test-environment route", () => {
     }
   });
 
+  it("passes the selected Antigravity managed home through ordinary Test and accepts its native admission receipt", async () => {
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("paperclip_runner");
+    const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-google-model" };
+    const binding = { provider: "google", method: "subscription", mode: "responsible_user" };
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({ id: agentId, companyId: "company-1", adapterType: "paperclip_runner",
+      adapterConfig, runtimeConfig: { aiConnection: binding }, createdByUserId: "local-board", pauseReason: "setup" });
+    mockPrepareManagedAiRuntime.mockImplementation(async (_db: unknown, input: { config: Record<string, unknown> }) => ({
+      config: { ...input.config, env: { GEMINI_HOME: "/selected-private-home/provider" }, managedAiConnection: { method: "subscription" } },
+      home: "/selected-private-home", cleanup: vi.fn(), accountName: "My Google subscription", attribution: { provider: "google" },
+    }));
+    const nativeProbe = vi.fn(async () => ({ adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date(0).toISOString(),
+      checks: [{ code: "antigravity_metadata_verified", level: "info" as const, message: "Native account and model accepted without a prompt." }] }));
+    unregisterServerAdapter("paperclip_runner");
+    registerServerAdapter({ ...externalAdapter, type: "paperclip_runner", testEnvironment: nativeProbe });
+    try {
+      const app = await createApp();
+      const response = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig, aiConnection: binding, agentId });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.status).toBe("pass");
+      expect(nativeProbe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: "company-1", managedAiCredentialHome: "/selected-private-home/provider" }));
+      expect(response.body.checks).toContainEqual(expect.objectContaining({ code: "antigravity_metadata_verified" }));
+      expect(response.body.checks.some((check: { code: string }) => check.code.includes("hello_probe"))).toBe(false);
+    } finally {
+      unregisterServerAdapter("paperclip_runner");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("passes one-shot provider credentials only to the probe, never persistence normalization", async () => {
     const app = await createApp();
     const res = await request(app)
@@ -1051,6 +1087,19 @@ describe("agent test-environment route", () => {
     beforeEach(() => {
       mockEnvironmentService.getById.mockResolvedValue(pluginEnvironment);
       mockResolveNewAgentRunnerForCompany.mockClear();
+    });
+
+    it("reports the missing agent prerequisite without acquiring a lease or probing the host", async () => {
+      mockPluginEnvironmentRequiresAgent.mockResolvedValueOnce(true);
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({ adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "warn", checks: [{ code: "environment_agent_required", level: "warn" }] });
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
     });
 
     it("checks the plugin driver against the resolved Runner adapter, not the requested harness", async () => {

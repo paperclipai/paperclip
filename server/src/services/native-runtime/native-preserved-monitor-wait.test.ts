@@ -1,26 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, heartbeatRuns,
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { agents, agentWakeupRequests, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns,
   issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, subscribeDatabaseWork } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeSha256 } from "./canonical.js";
 import * as monitorDelivery from "./native-monitor-delivery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { heartbeatService } from "../heartbeat.js";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PRESERVED_MONITOR_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("released native monitor results", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-preserved-monitor-");
-    db = createDb(temporary.connectionString);
-  });
+    if (external) await applyPendingMigrations(external);
+    else temporary = await startEmbeddedPostgresTestDatabase("native-preserved-monitor-");
+    db = createDb(external ?? temporary.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
+  beforeEach(async () => { await db.execute(sql`truncate table companies restart identity cascade`); });
 
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -126,35 +131,66 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
     },
   );
 
-  it("supersedes an earlier authority error without replaying the accepted result", async () => {
+  it.each(["schedule", "receipt", "finished_time"] as const)("supersedes an earlier authority error after restoring %s without replaying the result", async state => {
     const f = await fixture(), scheduled = await f.readIssue();
-    await db.update(issues).set({ executionPolicy: {}, monitorNextCheckAt: null }).where(eq(issues.id, f.issueId));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), attempt: 1 })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (state === "schedule") await db.update(issues).set({ executionPolicy: {}, monitorNextCheckAt: null }).where(eq(issues.id, f.issueId));
+    if (state === "receipt") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.runId));
+    if (state === "finished_time") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
     await f.finalize();
     const old = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
     expect(old.some(decision => decision.reasonCode === "monitor_wait_authority_lost")).toBe(true);
-    await db.update(issues).set({ executionPolicy: scheduled.executionPolicy, monitorNextCheckAt: scheduled.monitorNextCheckAt })
+    if (state === "schedule") await db.update(issues).set({ executionPolicy: scheduled.executionPolicy, monitorNextCheckAt: scheduled.monitorNextCheckAt })
       .where(eq(issues.id, f.issueId));
+    if (state === "receipt") {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(heartbeatRuns).set({ resultJson: { ...current.resultJson,
+        semanticToolReceipts: source.resultJson?.semanticToolReceipts } }).where(eq(heartbeatRuns.id, f.runId));
+    }
+    if (state === "finished_time") await db.update(heartbeatRuns).set({ finishedAt: f.finishedAt }).where(eq(heartbeatRuns.id, f.runId));
     await f.finalize();
-    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].phase).toBe("committed");
+    const [settled] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(settled).toMatchObject({ phase: "committed", nextAttemptAt: null, attempt: 1 });
     const after = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
     for (const before of old) expect(after.find(decision => decision.id === before.id)).toEqual(before);
     expect(after.some(decision => decision.reasonCode === "scheduled_monitor_preserved")).toBe(true);
     expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0].resultJson).toEqual(f.result);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+    expect(await f.readIssue()).toMatchObject({ monitorNextCheckAt: scheduled.monitorNextCheckAt,
+      executionRunId: null, checkoutRunId: null });
+    await f.finalize();
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toEqual(after);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].finishedAt).toEqual(f.finishedAt);
   });
 
-  it("notifies the existing monitor scheduler once when finalization stops blocking it", async () => {
-    const f = await fixture(), events: string[] = [];
+  it("makes the saved deadline eligible after finalization commits without replaying the result", async () => {
+    const f = await fixture();
+    const scheduler = heartbeatService(db, { runtimeEnv: {} });
+    const observedDeadlines: Promise<number | null>[] = [];
     expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(true);
-    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => { events.push(event); });
+    expect(await scheduler.nextIssueMonitorAt()).toBeNull();
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => {
+      if (event === "settled") observedDeadlines.push(scheduler.nextIssueMonitorAt());
+    });
     try {
       await f.finalize();
-      expect(events).toEqual(["intent", "settled"]);
+      const deadline = new Date(f.nextCheckAt).getTime();
+
+
+      expect(await Promise.all(observedDeadlines)).toContain(deadline);
+      expect(await scheduler.nextIssueMonitorAt()).toBe(deadline);
       expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(false);
-      expect((await f.readIssue()).monitorNextCheckAt?.toISOString()).toBe(f.nextCheckAt);
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
       await f.finalize();
-      expect(events).toEqual(["intent", "settled"]);
-    } finally { unsubscribe(); }
+      expect(await scheduler.nextIssueMonitorAt()).toBe(deadline);
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toEqual(decisions);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+    } finally {
+      unsubscribe();
+      await Promise.all(observedDeadlines);
+    }
   });
 
   it.each(["live", "recovered"])("publishes the accepted monitor explanation once (%s)", async mode => {
@@ -190,8 +226,8 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
     const [owner] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
     const nextCheckAt = new Date(Date.now() + 7_200_000).toISOString();
     const original = monitorDelivery.readNativePreservedMonitorWait;
-    const events: string[] = [];
-    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => { events.push(event); });
+    const scheduler = heartbeatService(db, { runtimeEnv: {} });
+    expect(await scheduler.nextIssueMonitorAt()).toBeNull();
     const race = vi.spyOn(monitorDelivery, "readNativePreservedMonitorWait").mockImplementationOnce(async (...args) => {
       const proof = await original(...args);
       expect(proof).not.toBeNull();
@@ -203,10 +239,10 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
       } }).where(eq(issues.id, f.issueId));
       return proof;
     });
-    try { await f.finalize(); } finally { race.mockRestore(); unsubscribe(); }
+    try { await f.finalize(); } finally { race.mockRestore(); }
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(coordinator.phase).toBe(state === "rescheduled" ? "committed" : "retryable_failure");
-    expect(events).toEqual(state === "rescheduled" ? ["intent", "settled"] : []);
+    expect(await scheduler.nextIssueMonitorAt()).toBe(state === "rescheduled" ? new Date(nextCheckAt).getTime() : null);
     const task = await f.readIssue();
     expect(task.executionRunId).toBe(state === "owner" ? owner!.id : null);
     expect(task.monitorNextCheckAt?.toISOString() ?? null).toBe(state === "cleared" ? null : state === "rescheduled" ? nextCheckAt : f.nextCheckAt);

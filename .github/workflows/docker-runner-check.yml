@@ -164,6 +164,16 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Apply reviewed qualification lock corrections
+        if: inputs.release_run_id == '' && (inputs.build_eval_image || inputs.publish_eval_image)
+        env:
+          TARGET_SHA: ${{ needs.authorize_manual.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_SHA" = "$GITHUB_SHA" ]; then
+            node tests/runner-e2e/prepare-report-lock.mjs
+          fi
+
       - name: Resolve source dependencies without lifecycle scripts
         if: inputs.release_run_id == ''
         run: |

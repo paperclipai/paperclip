@@ -24,6 +24,9 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { createOpenCodeCompanyObservability } from "./company-observability.js";
+import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
+import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
@@ -217,6 +220,7 @@ interface OpenCodeRuntime {
   bridge: OpenCodeMcpBridge;
   trace: ProviderTraceFileSink | null;
   sensitiveValues: readonly string[];
+  performanceDiagnostics: Awaited<ReturnType<typeof startOpenCodePerformanceDiagnostics>> | null;
   close(input?: {
     finalizeTrace?: boolean;
     reason?: string | null;
@@ -440,6 +444,8 @@ export class OpenCodeServerDriver implements HarnessDriver {
           completionFeedback: this.#options.completionFeedback,
           snapshot,
           now: this.#options.now ?? (() => new Date()),
+          observabilityEnvironment: this.#options.environment,
+          onDiagnostic: this.#options.onDiagnostic,
         });
         session.startEventPump();
         return session;
@@ -520,6 +526,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #activeTraceEmittedEventIds: string[] = [];
   #sourceSequence: number;
   #activeTurnId: string | null;
+  #performanceBoundaryMs = 0;
   #result: PrpStructuredRunResult | null;
   #resultFingerprint: string | null;
   #resultCallId: string | null;
@@ -530,6 +537,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #usage: Record<string, unknown> | null = null;
   readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
+  readonly #companyObservability: ReturnType<typeof createOpenCodeCompanyObservability>;
   #closed = false;
   #completionSettlement: Promise<void> | null = null;
   #abort = new AbortController();
@@ -550,8 +558,14 @@ class OpenCodeHarnessSession implements HarnessSession {
     completionFeedback?: OpenCodeCompletionFeedback;
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
+    observabilityEnvironment?: NodeJS.ProcessEnv;
+    onDiagnostic?: (message: string) => void;
   }) {
     this.#runtime = input.runtime;
+    this.#companyObservability = createOpenCodeCompanyObservability({
+      environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
+    });
     this.#fetch = input.fetcher;
     this.#runId = input.runId;
     this.#sourceSequence = 0;
@@ -675,7 +689,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
       text: input.message.text,
-    });
+    }, { turnId });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
     const [providerID, ...modelParts] = this.#model.split("/");
@@ -987,7 +1001,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     for (const requestId of [...this.#pendingRuntimeRequests.keys()])
       this.#settlePendingRuntimeRequest(requestId);
     this.#events.close();
-    await this.#runtime.close();
+    await Promise.all([this.#runtime.close(), this.#companyObservability?.close()]);
   }
 
   // A request can outlive its own turn: the turn can fail or get cancelled
@@ -1026,7 +1040,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
-    const tool = canonicalOpenCodeMcpToolName(call.tool);
+    // The authenticated MCP bridge has resolved this against its closed
+    // declared catalog. A second prefix strip changes legitimate operation IDs.
+    const tool = call.tool;
     const turnId = this.#activeTurnId;
     if (turnId === null)
       throw new Error("OpenCode tool call is not bound to an active turn");
@@ -2131,6 +2147,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       });
       return;
     }
+    if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(eventType)) {
+      const performance = this.#runtime.performanceDiagnostics?.take(this.#performanceBoundaryMs);
+      this.#performanceBoundaryMs = this.#now().getTime();
+      if (performance) this.#emit("harness.diagnostic", performance, refs);
+    }
     const sourceSeq = ++this.#sourceSequence;
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
@@ -2151,6 +2172,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#activeTraceFrameId !== null) {
       this.#activeTraceEmittedEventIds.push(event.sourceEventId);
     }
+    this.#companyObservability?.observe(event);
     this.#transcript.push(structuredClone(event));
     this.#events.push(event);
   }
@@ -2205,7 +2227,8 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(body.toString("utf8")); }
       catch { response.writeHead(400).end(); return; }
-      if (!payload || typeof payload !== "object" || payload.model !== model) {
+      if (!payload || typeof payload !== "object" || payload.model !== model ||
+        ["models", "route", "plugins", "transforms"].some(field => Object.hasOwn(payload, field))) {
         response.writeHead(400).end();
         return;
       }
@@ -2312,14 +2335,15 @@ async function startRuntime(input: {
   const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
   const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
     ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
+  const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
     password,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
-    input.options.environment?.OPENROUTER_API_KEY,
-    input.options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+    providerEnvironment.OPENROUTER_API_KEY,
+    providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
   input.trace?.addSensitiveValues(sensitiveValues);
   const instructionRoot =
@@ -2335,8 +2359,13 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
+  const providerRoute = modelProvider === "openrouter"
+    ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
+    : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+      ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
+      : null;
+  const providerProxy = providerRoute
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
@@ -2347,6 +2376,15 @@ async function startRuntime(input: {
     input.trace?.addSensitiveValues([providerProxy.token]);
   }
   let child: ChildProcess | undefined;
+  // Failure to collect diagnostics must not prevent the requested work.
+  const performanceDiagnostics = input.options.environment?.[PROVIDER_PERFORMANCE_ENV] === "1"
+    ? await startOpenCodePerformanceDiagnostics().catch(() => null) : null;
+  if (performanceDiagnostics) {
+    const values = [performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS,
+      performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS.replace("Authorization=Bearer ", "")];
+    sensitiveValues.push(...values);
+    input.trace?.addSensitiveValues(values);
+  }
   let launchPrepared = false;
   const releaseExecutable = () => {
     if (!launchPrepared) return;
@@ -2364,6 +2402,7 @@ async function startRuntime(input: {
       small_model: input.options.model,
       share: "disabled",
       autoupdate: false,
+      ...(performanceDiagnostics ? { experimental: { openTelemetry: true } } : {}),
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
@@ -2376,8 +2415,9 @@ async function startRuntime(input: {
           ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
-            name: "Paperclip connection",
+            name: modelProvider === "openrouter" ? "OpenRouter" : "Paperclip connection",
             options: {
+              ...(modelProvider === "openrouter" ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
               baseURL: providerProxy.baseURL,
               apiKey: providerProxy.token,
             },
@@ -2448,7 +2488,8 @@ async function startRuntime(input: {
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
-        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+        ...performanceDiagnostics?.environment,
+        ...(providerProxy ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
@@ -2545,6 +2586,7 @@ async function startRuntime(input: {
       bridge,
       trace: input.trace,
       sensitiveValues,
+      performanceDiagnostics,
       close: async (closeInput = {}) => {
         await providerProxy?.close();
         await bridge.close().catch(() => {});
@@ -2568,6 +2610,7 @@ async function startRuntime(input: {
           }
           await waitForExit(providerChild, 2_000);
         }
+        await performanceDiagnostics?.close().catch(() => {});
         await rm(join(configHome, "opencode", "opencode.json"), {
           force: true,
         }).catch(() => undefined);
@@ -2578,6 +2621,7 @@ async function startRuntime(input: {
       },
     };
   } catch (error) {
+    await performanceDiagnostics?.close().catch(() => {});
     await providerProxy?.close();
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
@@ -2923,6 +2967,7 @@ function sanitizedEnvironment(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const allowed = [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     "PATH",
     "LANG",
@@ -2935,7 +2980,6 @@ function sanitizedEnvironment(
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
   const result: NodeJS.ProcessEnv = {};
   const candidate = source ?? process.env;
@@ -2946,6 +2990,7 @@ function sanitizedEnvironment(
 
 function sanitizedEnvironmentKeys(): string[] {
   return [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PATH",
     "LANG",
     "LC_ALL",
@@ -2957,7 +3002,6 @@ function sanitizedEnvironmentKeys(): string[] {
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
 }
 

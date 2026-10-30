@@ -1,3 +1,4 @@
+import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
 import { readRecoveredFeedback } from "./feedback-recovery.js";
@@ -32,6 +33,10 @@ import {
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { packageEvidence } from "./evidence.js";
+import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
+import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
+import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
+import { copySharedEvidence } from "./shared-evidence.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
@@ -87,7 +92,9 @@ import {
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
-const resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
+let resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
+const manualEvidenceSecrets = new Set<string>();
+let manualPrivateHandoff: ManualPrivateHandoff | undefined;
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
@@ -451,24 +458,6 @@ async function readResult(resultPath: string, fallback: RunnerE2EResult) {
   }
 }
 
-async function copySharedEvidence(privateRoot: string, casePrivateDir: string) {
-  for (const relative of [
-    "server.log",
-    "playwright.log",
-    "junit.xml",
-    "html-report",
-    "blob-report",
-    "playwright-output",
-  ]) {
-    await cp(
-      path.join(privateRoot, relative),
-      path.join(casePrivateDir, relative),
-      { recursive: true, force: true },
-    ).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-    });
-  }
-}
 
 async function runAttempt(input: {
   executions: readonly MatrixExecution[];
@@ -494,6 +483,16 @@ async function runAttempt(input: {
       "One isolated runner E2E harness cannot mix profiles or environments",
     );
   }
+  if (process.env.GITHUB_ACTIONS === "true" && !input.operations && executions.some(candidate => requiresPrivateManualEvidence(candidate.id)) && !manualPrivateHandoff) throw new Error("Sensitive manual evidence requires verified restricted retention before setup");
+  const upgrades = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
+  if (upgrades) {
+    // All attempts and the browser use A's installed fixture admission. The
+    // supervisor changes only the server artifact; the original sandbox lives on.
+    Object.assign(process.env, upgrades.artifacts.A.pins);
+    for (const artifact of [upgrades.artifacts.A, upgrades.artifacts.B]) {
+      await verifyUpgradeArtifact(artifact, process.env, executions);
+    }
+  }
   assertInstalledCliSelection(process.env, executions);
   const installedCli = await verifyInstalledCli(process.env, executions);
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
@@ -501,6 +500,7 @@ async function runAttempt(input: {
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
   const temporaryParent = await realpath(os.tmpdir());
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
+  const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
   const publishedResultPaths = new Map<string, string>();
   let attemptSecrets: string[] = [];
@@ -511,7 +511,6 @@ async function runAttempt(input: {
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
     const workspace = path.join(temporaryRoot, "workspace");
-    const privateDir = path.join(temporaryRoot, "artifacts-private");
     const instanceId = `runner-e2e-${randomBytes(8).toString("hex")}`;
     const configPath = path.join(
       paperclipHome,
@@ -548,6 +547,7 @@ async function runAttempt(input: {
     };
     const credentials = normalizedSecrets(Object.values(credentialSources));
     attemptSecrets = credentials;
+    if (manualPrivateHandoff) for (const credential of credentials) manualEvidenceSecrets.add(credential);
     if (installedCli) await writeFile(path.join(privateDir, "installed-cli-admission.json"), `${JSON.stringify(installedCli, null, 2)}\n`, { mode: 0o600 });
     if (installedPlugin) await writeFile(path.join(privateDir, "installed-daytona-plugin-admission.json"), `${JSON.stringify(installedPlugin, null, 2)}\n`, { mode: 0o600 });
     const runnerBinary = installedCli ? undefined : resolvePaperclipRunnerBinaryForHarness(
@@ -595,6 +595,9 @@ async function runAttempt(input: {
     };
     if (gateway) {
       applyEvalGatewayEnvironment(childEnv, execution.profile.credential, gateway);
+      // The fixture/server controller needs Daytona provisioning access. The
+      // remote provider still receives only the scoped model and OTLP tokens.
+      if (execution.environment.id === "daytona") childEnv.DAYTONA_API_KEY = process.env.DAYTONA_API_KEY;
     }
     // The database URLs are stripped here and again at the Playwright web-server
     // boundary so a developer's shell can never redirect this paid test.
@@ -715,6 +718,7 @@ async function runAttempt(input: {
             const leak = await findSecretLeakInDirectory(directory, credentials, {
               includeShapes: false,
               sources: credentialSources,
+              ...(label === "Paperclip home" ? { privateCodexRuntimeIdentityRoot: paperclipHome } : {}),
               ignoreFile: (file) => expectedEphemeralCredentials.has(file),
               allowDisappearedFile: (file) =>
                 label === "Paperclip home" &&
@@ -812,7 +816,7 @@ async function runAttempt(input: {
         `attempt-${attempt}`,
       );
       await mkdir(casePrivateDir, { recursive: true });
-      await copySharedEvidence(privateDir, casePrivateDir);
+      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials);
       if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
         const snapshots = path.join(casePrivateDir, "snapshots");
         await mkdir(snapshots, { recursive: true });
@@ -823,6 +827,7 @@ async function runAttempt(input: {
           originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
         }, credentials), null, 2)}\n`, { mode: 0o600 });
       }
+      if (manualPrivateHandoff) await preserveOriginalFrameworkResult(casePrivateDir);
       await writeFile(
         resultPath,
         `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
@@ -833,7 +838,9 @@ async function runAttempt(input: {
         uploadDir,
         secrets: credentials,
         expectPassScreenshot: result.status === "passed",
+        ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
       });
+      const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
       if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
         result = {
           ...result,
@@ -857,8 +864,11 @@ async function runAttempt(input: {
           uploadDir,
           secrets: credentials,
           expectPassScreenshot: false,
+          ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
         });
       }
+      if (manualPrivateHandoff) await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
+        executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       console.log(
         `${result.status === "passed" ? "PASS" : "FAIL"} ${candidate.id} attempt ${attempt} -> ${uploadDir}`,
       );
@@ -874,7 +884,7 @@ async function runAttempt(input: {
     try { await gateway?.close(); } catch (error) { gatewayCleanupError = error; }
     if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
-    const resourceAdmissionStarted = await access(path.join(temporaryRoot, "artifacts-private", "resource-admission-started"))
+    const resourceAdmissionStarted = await access(path.join(privateDir, "resource-admission-started"))
       .then(() => true).catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
     if (mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults })) {
       // Remote allocation cleanup is journaled in this instance's database.
@@ -1049,6 +1059,8 @@ async function main() {
     throw error;
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
+  manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
+  if (manualPrivateHandoff) resultsRoot = path.join(manualPrivateHandoff.root, "results");
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
     assertRunnerE2EPrerequisites(executions);
@@ -1074,6 +1086,14 @@ async function main() {
   }
 
   if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST && executions.some(execution => execution.task.flow === "provider_connection")) throw new Error("Provider connection campaign has no budgeted routing qualification");
+  if (executions.some(execution => execution.task.flow === "antigravity_agent_journey")) {
+    if (options.connectionConfig || options.githubReviewConfig || options.provisionGitHubRepository) throw new Error("Use --antigravity-journey-config for the Antigravity journey.");
+    const { runAntigravityJourneyCampaign } = await import("./antigravity-journey-launch.js");
+    await runAntigravityJourneyCampaign({ executions, catalog: runnerMatrix, configFile: options.antigravityJourneyConfig, repositoryRoot,
+      preflight: options.antigravityJourneyPreflight, recoverFile: options.antigravityJourneyRecover });
+    return;
+  }
+  if (options.antigravityJourneyConfig || options.antigravityJourneyPreflight || options.antigravityJourneyRecover) throw new Error("Antigravity journey options require its explicit registered cell.");
   if (executions.some(execution => execution.task.flow === "github_review_journey")) {
     if (options.connectionConfig) throw new Error("Use --github-review-config for the GitHub journey.");
     const { runGitHubReviewCampaign } = await import("./github-review-launch.js");
@@ -1229,4 +1249,6 @@ async function main() {
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-});
+}).finally(async () => {
+  if (manualPrivateHandoff) await sealManualResultEvidence(manualPrivateHandoff, [...manualEvidenceSecrets]);
+}).catch(() => { process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1; });

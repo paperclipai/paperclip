@@ -29,7 +29,13 @@ Message the configured bot/address from its external provider and follow the cor
 
 ### `endpoint-management`
 
+Delegated setup can save ordinary bot tokens and API keys. Provider verification keys require the addressed human credential-entry step or verified provider provisioning. Generic setup returns the saved handoff without changing those keys, and generic connection updates cannot replace channel credential references. A replacement card waits for an actual protected-value change and restored verification; old health, unchanged entry and unrelated bot-token repair do not complete it. Fresh GitHub handoffs open the import form; configured endpoints retain reconnect. Credential-entry field sets and completion modes stay distinct while matching retries reuse their saved baseline. Complete human replacements can repair disabled, deleted or unreadable old vault values. Saved links name the requested fields and completion mode; configured GitHub forms support targeted replacements while keeping other saved credentials. Provisioned Slack challenge proof survives runtime storage only for the same signing key and callback URL. The actual-auth Slack/GitHub fixtures cover these boundaries, retries, revocation and permitted bot-token repair; live provider repair remains separately qualified.
+
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
+
+For GitHub external contributors, open the connection's Access tab and look up a username. The lookup uses that endpoint's active GitHub App installation with a metadata-only token. Verify that a person or bot resolves to its numeric identity and that unavailable accounts, rate limits, and installation failures show distinct errors. [Lookup regressions](../../server/src/services/chat-github-management.test.ts) use provider fixtures; live installation lookup remains separate evidence.
+
+For delegated Slack test messages and identity invitations, apply a Block or Ask first rule to the calling agent while allowing the endpoint's assigned agent. Verify no message is sent. Exercise caller, target and shared rate limits: one shared quota admits one send and the next distinct request is denied. For a saved GitHub identity handoff on an otherwise healthy endpoint, verify the card stays pending before identity confirmation and after an OAuth callback alone. Confirm the addressed user's identity through their human session, then verify continuation becomes available. Revoked, expired, wrong-user and wrong-installation links must keep the handoff blocked. These cases pass through the assembled API with real key/JWT/session middleware and deterministic providers; live Slack/GitHub consent remains separate evidence.
 
 ### `outbound-agentmail`
 
@@ -72,6 +78,17 @@ database suite checks these states and revoked endpoints using stored provider
 receipts; live model adherence remains a separate check.
 It also checks saved monitors, disabled repositories, multiple reviewed heads,
 read-only finish validation, withdrawal rollback, and separate approval gates.
+Repeat the review wait after a tree resume and a same-agent continuation with
+no new provider message. Accepted requester lineage and the latest saved review
+publication keep the task in review without a self-wake or duplicate publication.
+A newer unreviewed head, changed requester/repository, or revoked access cannot
+inherit the prior head's passive wait. Omitted/null yielded continuation is filled
+from authorized server task context after a current-head review, an accepted tree
+resume inheriting it, or a same-head follow-up with this run's processed useful
+reply bound to its exact current source. Pending or ambiguous replies and
+acknowledgements do not authorize this fallback. A malformed first report can recover by omitting the continuation;
+explicit malformed input remains rejected. Revocation between context read,
+finish and commit preserves the task without self-waking. Done policy is unchanged.
 
 Manual: For each supported provider being changed, send a unique message, verify the intended agent/company receives it, and inspect the actual external reply in the original thread. Repeat with an unlinked/unauthorized sender, duplicate inbound delivery, and one supported attachment. Record provider-specific results separately.
 
@@ -129,6 +146,18 @@ contracts with synthetic providers; record a live journey separately.
 For a long-lived task, repeat more than 100 continuations and check that tool
 access remains available. Fail a later GitHub run after a final answer and
 check that the earlier answer remains intact.
+After publishing a PR assessment, deliver an ordinary no-new-work author reply.
+Hold native presentation after execution succeeds. Verify maintenance makes no
+provider write while undecided, including repeated passes and the explicit
+fallback path. Commit either a passive wait, genuine missing response, or failure
+and verify that the same request settles once with the corresponding behavior.
+Verify the actual shared summary stays unchanged during queued/running
+acknowledgements and after the committed passive wait, including maintenance,
+restart and cleanup. Confirm the per-request acknowledgement is terminal and a
+second maintenance pass makes no write. Then request a real same-head and
+changed-head assessment and confirm canonical publication can replace it.
+Real-PostgreSQL provider fixtures cover this producer and missing/error/unknown
+write safety; record hosted destination acceptance separately.
 
 ### `endpoint-management`
 
@@ -154,6 +183,15 @@ covers these views, pending/failure/success, mobile, and light theme with simula
 provider responses. Verify actual credential validity and restored delivery
 separately against GitHub; a Storybook success does not establish live recovery.
 
+For an agent-requested GitHub credential handoff, open the saved link as the
+addressed human and verify it asks for exactly the requested fields and all/any
+completion mode. A fresh App opens import; a configured App opens replacement
+through reconnect and retains credentials omitted from the request. Interrupt
+the response after a successful rotation, reload, and verify the saved rotation
+resumes without replacing the key again. Wrong-user access, unchanged credentials
+and missing verification must not complete the request. After OAuth, confirm the
+addressed user's exact endpoint identity before expecting task continuation.
+
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
@@ -163,7 +201,12 @@ write and verify one summary, finding, and App-scoped check. Retry the same tool
 call and verify it returns the saved receipt. Include text longer than 500
 characters and coverage with more than 50 entries. Change only the text suffix
 or final coverage entry and verify rejection without another write. Remove the
-durable publication and verify that a retry cannot dispatch a new write.
+completed durable publication and verify that a retry cannot dispatch a new write.
+Also interrupt metadata reads before publication staging, repeat the exact
+`begin_review` and `submit_review` requests, and verify typed results and one
+assessment publication. Let the original metadata read finish alongside its
+retry and verify that both converge on the same publication. Changed requests
+and revoked access must still stop preflight recovery.
 Leave a transient failure queued,
 restart the instance, and verify publication resumes at its saved deadline
 without another inbound message. Revoked access and permanent rejections must
@@ -217,3 +260,27 @@ Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChat
 ### Documentation scope: Chat and email channel setup
 
 Shared recipes name provider checks; each provider transport/thread/identity/file-size/type combination needs separate live evidence and deeper instructions.
+
+Saved-input Retry regression: fail a disposable GitHub turn, change the
+configured instruction skill, and send a new authorized request while an agent
+budget gate blocks admission. Clear that gate and use the task thread's ordinary
+**Retry** control. Verify the new saved message and its admitted skill snapshot
+reach one run, rather than replaying the previous failed request. Preserve both
+original receipts. With a committed failed native result, continuation requires
+verified controller and environment cleanup; an unknown executor remains held.
+After successful admission, reload and verify that the prior skipped receipt does
+not strand a later real provider reply or tree resume. Provider fixtures support
+this behavior; live fixed-source runtime and destination proof remain separate.
+
+Also defer Retry behind cleanup, queue an independent board message, then
+complete cleanup. Verify one run receives the exact GitHub batch and the board
+message enters its own turn. For an older mixed batch rejected before provider
+startup, ordinary task Retry must recover only certified undelivered receipts.
+Changed input, active ownership, allocations and prior delivery must keep the
+refusal effective. Check the restoration audit and unchanged failed-run history.
+
+### `delegated-configuration`
+
+Endpoint activity hides private-task events while retaining a next-page cursor across private-only windows, so older readable history stays reachable. Actual-JWT fixtures verify this separately from live provider delivery.
+
+See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

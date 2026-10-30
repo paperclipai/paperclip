@@ -44,8 +44,11 @@ type DialogProps = {
 
 export function GoogleWorkspaceServicesDialog(props: DialogProps) {
   const existing = props.connection && props.connection.status !== "draft" ? props.connection : null;
-  const grants = useQuery({ queryKey: ["workspace-service-consent", existing?.id], queryFn: () => toolsApi.listConnectionGrants(existing!.id), enabled: Boolean(existing) });
-  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
+  const oauth = props.connection?.config?.oauth as { pendingWorkspaceServiceRequests?: Record<string, { requestedScopes?: unknown; requestedAt?: string }> } | undefined;
+  const pendingRequests = oauth?.pendingWorkspaceServiceRequests;
+  const loadConnection = existing ?? (pendingRequests && Object.keys(pendingRequests).length ? props.connection : null);
+  const grants = useQuery({ queryKey: ["workspace-service-consent", loadConnection?.id], queryFn: () => toolsApi.listConnectionGrants(loadConnection!.id), enabled: Boolean(loadConnection) });
+  if (loadConnection && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
     <DialogTitle>Connect Google Workspace</DialogTitle><DialogDescription>{grants.isError ? "Could not load your saved service access. Your connection has not changed." : "Loading your saved service access…"}</DialogDescription>
     <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>Cancel</Button>{grants.isError && <Button onClick={() => void grants.refetch()}>Try again</Button>}</footer>
   </DialogContent></Dialog>;
@@ -55,7 +58,14 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
       ? grant.kind === "agent" && grant.subjectAgentId === (existing.config?.oauth as { connectorSubjectAgentId?: string } | undefined)?.connectorSubjectAgentId
       : grant.kind === "organization");
   const savedScopes = grant?.providerTenant?.oauth?.requestedScopes ?? grant?.providerTenant?.oauth?.scopes ?? [];
-  return <ServicePicker {...props} initial={props.initial ?? (existing ? googleWorkspaceSelectionForScopes(savedScopes) : undefined)} />;
+  const pending = grants.data?.currentUserId ? pendingRequests?.[grants.data.currentUserId] : undefined;
+  const pendingTime = Date.parse(pending?.requestedAt ?? "");
+  // Refresh and lease writes update the grant row without changing consent.
+  const consentTime = grant ? Date.parse(grant.providerTenant?.oauth?.consentedAt ?? String(grant.createdAt)) : NaN;
+  const grantTime = Number.isFinite(consentTime) ? consentTime : -Infinity;
+  const pendingScopes = Number.isFinite(pendingTime) && pendingTime > grantTime && Array.isArray(pending?.requestedScopes) && pending.requestedScopes.every(scope => typeof scope === "string")
+    ? pending.requestedScopes as string[] : undefined;
+  return <ServicePicker {...props} initial={props.initial ?? (pendingScopes ? googleWorkspaceSelectionForScopes(pendingScopes) : existing ? googleWorkspaceSelectionForScopes(savedScopes) : undefined)} />;
 }
 
 function ServicePicker({ onContinue, onCancel, initial = GOOGLE_WORKSPACE_DEFAULT_SELECTION }: DialogProps) {

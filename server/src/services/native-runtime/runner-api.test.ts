@@ -11,6 +11,7 @@ import {
   validateRunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
+import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 const context = {
@@ -54,6 +55,26 @@ describe("bounded response capture receipts", () => {
     input.saveResponse = async () => { throw new Error("storage unavailable"); };
     await expect(executeRunnerApi({ operationId: projects }, context, input)).rejects.toThrow("storage unavailable");
     expect(settle).toHaveBeenCalledExactlyOnceWith(bytes.length, true);
+  });
+});
+
+describe("connection setup response protection", () => {
+  it.each([
+    ["POST", "/api/chat-endpoints/{endpointId}/setup"],
+    ["POST", "/api/chat-endpoints/{endpointId}/setup-secret"],
+    ["POST", "/api/chat-endpoints/{endpointId}/github/setup"],
+    ["POST", "/api/chat-endpoints/{endpointId}/slack/resume"],
+    ["POST", "/api/companies/{companyId}/adapters/{type}/login-sessions"],
+    ["GET", "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt"],
+    ["POST", "/api/tool-gateway/gateways/{gatewayId}/tokens"],
+    ["POST", "/api/companies/{companyId}/ai-connections/local/check"],
+    ["POST", "/api/tool-connections/{connectionId}/test-calls"],
+    ["GET", "/api/tool-connections/{connectionId}/test-calls/{actionRequestId}"],
+  ])("protects %s %s receipts and history", (method, path) => {
+    expect(runnerApiSensitiveResponse(method, path)).toBe(true);
+  });
+  it("keeps ordinary connection metadata shareable", () => {
+    expect(runnerApiSensitiveResponse("GET", "/api/tool-connections/{connectionId}")).toBe(false);
   });
 });
 
@@ -197,8 +218,6 @@ describe("runner API request boundary", () => {
   it.each([
     "POST /api/mcp/project-tools",
     "POST /api/agents/{id}/claude-login",
-    "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
-    "POST /api/agents/me/connections/{connectionId}/start-authorization",
   ])(
     "directs authentication handshake %s to its existing client",
     async (operationId) => {
@@ -210,6 +229,16 @@ describe("runner API request boundary", () => {
       expect(request).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
+    "POST /api/agents/me/connections/{connectionId}/start-authorization",
+  ])("calls JSON authentication initiation through REST: %s", async operationId => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ error: "Route permission required" }, { status: 403 }));
+    expect(runnerApiOperation(operationId).transport).toBe("rest");
+    const result = await executeRunnerApi({ operationId, pathParams: operationId.includes("{type}") ? { type: "codex_local" } : { connectionId: "connection-a" }, body: {} }, context, io(request));
+    expect(result).toMatchObject({ status: 403 });
+    expect(request).toHaveBeenCalledOnce();
+  });
   it.each(
     runnerApiCatalog().filter(
       (operation) =>

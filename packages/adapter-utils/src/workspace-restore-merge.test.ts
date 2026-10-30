@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { GitShallowMetadataError } from "./git-workspace-sync.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
@@ -195,6 +196,12 @@ describe("workspace restore merge", () => {
     ])("holds the deterministic confinement refusal: %s", (message) => {
       expect(classifyWorkspaceRestoreFailure(new Error(message))).toBe("restore_unsafe_archive");
       expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(new Error(message)))).not.toContain("private");
+    });
+
+    it("keeps invalid metadata distinct from an omittable unsafe archive", () => {
+      const error = new GitShallowMetadataError("Invalid Git shallow boundaries /private/source");
+      expect(classifyWorkspaceRestoreFailure(error)).toBe("restore_invalid_metadata");
+      expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(error))).not.toContain("private");
     });
 
     it("preserves the generic policy for other outbound command failures", () => {

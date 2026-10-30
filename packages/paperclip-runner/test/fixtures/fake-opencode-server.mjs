@@ -93,10 +93,17 @@ let pendingPermission = await readFile(
 let permissionStyle = "v2";
 
 await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+await writeFile(join(process.env.XDG_DATA_HOME, "fake-provider-custody.json"), JSON.stringify({
+  openrouterKey: process.env.OPENROUTER_API_KEY,
+  providerOptions: runtimeConfig.provider?.openrouter?.options,
+}));
 await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    notificationContext: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT,
+    notificationHelper: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_HELPER,
+    noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
@@ -128,6 +135,24 @@ let promptTurnSeq = 0;
 // sealed.
 let lateStragglerRemaining = 0;
 function emit(value) {
+  if (value.type === "session.idle" && runtimeConfig.experimental?.openTelemetry) {
+    const now=Date.now();
+    const headers=Object.fromEntries((process.env.OTEL_EXPORTER_OTLP_HEADERS??"").split(",").map(entry=>{
+      const i=entry.indexOf("=");return [entry.slice(0,i),entry.slice(i+1)];
+    }));
+    void fetch(`${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,{method:"POST",headers,
+      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",
+        startTimeUnixNano:String(BigInt(now-22)*1000000n),endTimeUnixNano:String(BigInt(now)*1000000n),
+        attributes:[{key:"prompt",value:{stringValue:"private-performance-sentinel"}}],
+      }]}]}]})}).then(response=>{
+      if(!response.ok)throw new Error(`Performance fixture rejected: ${response.status}`);
+      emitFrame(value);
+    }).catch(error=>{process.stderr.write(String(error));process.exit(1)});
+    return;
+  }
+  emitFrame(value);
+}
+function emitFrame(value) {
   const scoped =
     promptTurnSeq > 0 && typeof value.id === "string"
       ? { ...value, id: `${value.id}#${promptTurnSeq}` }
@@ -288,8 +313,16 @@ const server = createServer(async (request, response) => {
   if (
     request.method === "GET" &&
     request.url === `/session/${session.id}/message`
-  )
-    return json(response, 200, []);
+  ) {
+    // A long-lived session can hold many megabytes of retained message parts.
+    const historyBytes = Number(
+      await readFile(join(process.env.XDG_DATA_HOME, "fake-message-history-bytes"), "utf8").catch(() => "0"),
+    );
+    return json(response, 200, historyBytes > 0
+      ? [{ info: { id: "msg-history-1", sessionID: session.id, role: "assistant" },
+          parts: [{ id: "part-history-1", type: "text", text: "x".repeat(historyBytes) }] }]
+      : []);
+  }
   if (request.method === "GET" && request.url === "/session/status")
     return json(response, 200, { [session.id]: { type: "idle" } });
   if (request.method === "GET" && request.url?.startsWith("/question?"))

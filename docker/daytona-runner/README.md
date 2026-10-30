@@ -10,8 +10,8 @@ This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
 OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
-and binds the pack to the runner source revision, avoiding artifact upload and
-npm installation on every fresh lease.
+and records the runner source revision as provenance. Its interface declaration
+allows compatible app releases to reuse it without uploading or installing a pack.
 
 The fleet pins are intentionally copied from
 [`paperclip-cloud/fleet-sandbox-image/Dockerfile`](https://github.com/paperclipai/paperclip-cloud/blob/master/fleet-sandbox-image/Dockerfile).
@@ -27,11 +27,11 @@ pack. Claude Code 2.1.280 is the minimum for
 minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Codex
 0.160.0 ships bundled metadata for the current
 [GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models).
-The same refresh pins Grok CLI 1.0.46, Gemini CLI 0.62.0, Kimi Code 2.1.1,
-Cursor CLI 2026.10.01-e373342, and GitHub CLI 2.102.0 in the sandbox layer.
-The native Cursor provider uses its separately verified distribution, pinned to
-2026.09.26-dd393fe; it does not use the sandbox layer’s global Cursor executable.
-Grok CLI 1.0.46 supports the current
+The sandbox layer pins Grok CLI 1.0.70, Gemini CLI 0.65.0, Kimi Code 2.3.3,
+Cursor CLI 2026.10.22-27dcf5f, and GitHub CLI 2.103.3 (October 2026
+refresh). The native Cursor provider uses its separately verified distribution,
+pinned to 2026.09.26-dd393fe; it does not use the sandbox layer’s global Cursor
+executable. Grok CLI 1.0.70 supports the current
 [Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family. Hermes stays
 at 0.19.0, the newest release on PyPI.
 
@@ -94,10 +94,37 @@ editor's **Configure image** flow to produce a Daytona snapshot. Set the
 environment image to that immutable tag or snapshot. Paperclip probes the
 sandbox user's `PATH` for `paperclip-runnerd` and `codex` and checks
 `/opt/paperclip-runner/provider-pack` for OpenCode and ACPX. It uses the pack
-only when its complete manifest matches the controller's build-owned pack;
-otherwise it stages the pack configured by
+when its selected provider interface and platform are compatible. App source
+revisions and unrelated provider pins do not force an update. Startup reads the
+small manifest in the existing runner metadata query. It does not scan the pack,
+run a version command, or transfer files on this path. Otherwise it stages the pack configured by
 `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`. Remote OpenCode and ACPX never
 fall back to host-local processes.
+
+`src/live/provider-pack-contract.json` in the Runner package declares the
+OpenCode and ACPX interface revisions. Change a revision only for an incompatible
+runner/pack boundary change, and qualify the new pack before publishing it.
+Bumping a revision also retires every older image pack.
+The pack build also records a `contractDigest`, computed by
+`scripts/contracts/contract-fingerprints.mjs` from the JSON contracts under
+`protocol/` and `generated/` and from Rust serde shapes, payload keys, match
+literals and env keys, rather than from source bytes. An image pack is reused
+only when its digest equals the controller's bundled pack; comments and
+refactors leave it unchanged, so a mismatch means a contract changed and the
+controller uploads its bundled pack. Packs without a digest are not reused.
+Define a new runner/pack contract in a schema under `protocol/` and generate the
+TypeScript from it, as the sidecar's `session.open` parameter allowlist is
+generated from `acpx-sidecar.schema.json`; TypeScript-only definitions are not
+part of the digest.
+Dependency versions and Git SHAs remain build provenance. ACPX retains its
+selected agent's qualified profile checks.
+
+The image build makes the pack root-owned and non-writable to the execution user. Fast admission
+requires protected ancestors and manifest, with no writable path alias. Task-owned
+packs and older packs without an interface declaration keep full content
+verification. An attached session retains the exact pack and daemon identity
+admitted at launch. Publish one new image with the interface declaration to enable
+reuse across later compatible app releases.
 
 Do not promote `paperclip-runner-e2e-20260826-v2` for OpenCode or ACPX. Build a
 new immutable image or snapshot from a clean committed revision and pass that

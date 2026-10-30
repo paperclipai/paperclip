@@ -57,6 +57,8 @@ import {
 } from "../services/execution-workspace-policy.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -4111,14 +4113,15 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
-describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
+const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_DEPENDENCIES_TEST_DATABASE_URL");
+(dependencyTestDatabaseUrl ? describe : describeEmbeddedPostgres)("issueService blockers and dependency wake readiness", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blockers-");
-    db = createDb(tempDb.connectionString);
+    if (!dependencyTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blockers-");
+    db = createDb(dependencyTestDatabaseUrl ?? tempDb!.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
   }, 20_000);
@@ -4139,6 +4142,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 5 });
     await tempDb?.cleanup();
   });
 

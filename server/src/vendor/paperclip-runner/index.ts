@@ -10,6 +10,7 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  AcpxCandidateAdmission,
   DotHarnessDriver,
   DotAssignment,
   PaperclipJsonValue,
@@ -38,6 +39,7 @@ export type {
   NativeExecutionInputV6,
   NativeExecutionInputV8,
   NativeExecutionInputV9,
+  NativeExecutionInputV10,
   MuseBindingSnapshot,
   DotBindingSnapshot,
   ExternalProviderPort,
@@ -68,6 +70,7 @@ export type {
   RunnerExecutionDriver,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
+  DurablePrpCheckpoint,
   RunnerProcessHandle,
   RunnerProcessLaunchSpec,
   StrictCompletionContractInput,
@@ -85,6 +88,8 @@ const sourceUrl = new URL(
 const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
+export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
@@ -95,10 +100,12 @@ export const NativeSessionCleanupQuarantinedError =
   runner.NativeSessionCleanupQuarantinedError;
 export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
+export const NativeEnvironmentProbeCleanupError = runner.NativeEnvironmentProbeCleanupError;
 export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
 export const NATIVE_RUNTIME_ASSET_SCHEMA = runner.NATIVE_RUNTIME_ASSET_SCHEMA;
@@ -107,6 +114,7 @@ export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
   runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
 export const acpxRuntimeSessionDirectoryName =
   runner.acpxRuntimeSessionDirectoryName;
+export const resolveAcpxRuntimeRoot = runner.resolveAcpxRuntimeRoot;
 export const OPENCODE_ISOLATED_HOMES_DIRECTORY =
   runner.OPENCODE_ISOLATED_HOMES_DIRECTORY;
 export const opencodeRuntimeSessionDirectoryName =
@@ -146,7 +154,9 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
+export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
@@ -154,6 +164,7 @@ export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const resolveCodexCommand = runner.resolveCodexCommand;
 export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
 export const validatePrpEvent = runner.validatePrpEvent;
+export const parseProviderPerformanceSpans = runner.parseProviderPerformanceSpans;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
 
@@ -166,6 +177,12 @@ export const completeTerminatedLocalNativeSessionCleanup = runner.completeTermin
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
+export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
+export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;
+export const discoverAntigravityModels = runner.discoverAntigravityModels;
+export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
+export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;
 
@@ -177,3 +194,5 @@ export const configuredEnvironmentProjection = runner.configuredEnvironmentProje
 export const configuredEnvironment = runner.configuredEnvironment;
 
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
+
+export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;

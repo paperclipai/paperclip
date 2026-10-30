@@ -49,6 +49,41 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+The cancelled workspace-preservation partial index and bounded run/activity
+projections share the restore-failure allowlist. Changing those failure codes
+also changes the index predicate; use the normal migration-generation workflow.
+A required metadata repair is excluded from ordinary cancelled preservation work.
+
+Native session resume selects its newest progress barrier within the existing
+32-run task/session window in one SQL snapshot. Only the chosen checkpoint source
+returns its saved native input, checkpoint, tool fingerprint, wake envelope, and
+canonical task brief. Unused bootstrap candidates do not return full context or
+profiles. Wrong runtime, nonterminal status, process identity, provider events,
+invalid but non-null checkpoints, and future checkpoint barriers retain their
+existing selection rules. Stored run payloads and history reads stay complete.
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
+An optional `PAPERCLIP_SESSION_RESUME_BENCHMARK_DATABASE_URL` must name a dedicated
+test database ending in `_test`; otherwise the harness starts disposable PostgreSQL.
+
+Agent request authentication uses a compact run-identity read. It omits saved
+execution payloads, results, and log excerpts from the query response. The read
+still locks the task before the run and reconciles pending steering from durable
+acknowledgements on every request. Default identity reads retain the full run.
+Stored payloads and separate native tool authorization checks remain unchanged.
+
+Native event acknowledgements read a count and maximum through the existing
+source-sequence index. A stream with gaps uses indexed lookups for its first
+missing successor. The acknowledgement keeps its contiguous-prefix rule without
+returning every historical sequence number. All events stay stored. Counting the
+index entries still grows with the stream length.
+
+Conversation recovery reads only the saved run fields used to settle a turn.
+Settlement locks and reads current conversation state without loading the task
+description or comment bodies. It still checks the durable reply or pending
+interaction, session generation, owning run, and newer user messages. Saved
+execution payloads, task text, and comments remain stored in full.
+
 The attention feed checks for newer runs with company-scoped existence probes.
 The probes match the failed run's agent and issue or task context. They preserve
 the existing millisecond comparison and empty-context rules. Each batch holds
@@ -156,6 +191,11 @@ those JSON values before it sends the row to the controller. Unused prompt and
 launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
+
+Restoring a saved monitor's receipt or completion proof creates a new native
+assessment identity even when its scheduled deadline is unchanged. The saved
+proof is part of the assessment input. Prior decisions and accepted results stay
+intact, and an unchanged replay reuses the same assessment and decision.
 
 Native tool authority lookups select current run identity, status, invocation,
 responsible user, context, and receipt data. Saved profiles and output excerpts
@@ -435,20 +475,28 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
+If your transaction-mode pooler does not support protocol-level named prepared statements, set `DATABASE_PREPARED_STATEMENTS=false`. If your pooler supports them, you can opt in with `DATABASE_PREPARED_STATEMENTS=true`. Check your provider's pooler configuration before you enable this setting. Keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
 
 ### Client tuning (optional)
 
 All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
 
 ```sh
-DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
+DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
 DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
+
+An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
+for parameterized ORM queries, transactions, reserved connections, and dedicated
+clients. Postgres.js manages the statement cache. This does not cache query
+results. Bound values and returned data stay fresh. Explicit per-query options
+still apply, including `prepare: false` and simple-protocol execution. With the
+setting unset, ORM queries keep their existing unprepared behavior and tagged
+SQL uses the driver default. With `false`, preparation stays disabled.
 
 ### Bounded response diagnostics
 
@@ -548,6 +596,16 @@ The patch covers both ESM and CommonJS. The regression suite terminates real
 PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
 Remove the patch when an upstream release passes these tests. Installs of the
 unmodified `postgres` package outside this workspace do not include the patch.
+
+The patch also preserves transaction connection reservation when pipelining is
+disabled with `PGMAX_PIPELINE=0`. Without this fix, the driver's pipeline capacity
+check skips the transaction reservation callback and `BEGIN` fails with
+`UNSAFE_TRANSACTION`. Disabling pipelining makes a queued query wait for the next
+available pool connection instead of sending it behind unrelated work on a busy
+connection. This can help interactive requests that share a prepared-query pool
+with slow background work. It does not make the SQL itself faster. The default
+pipeline limit remains unchanged. Test transaction behavior before using this
+setting with a driver build that does not include the patch.
 
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
@@ -712,6 +770,17 @@ restart with stale provider variables on an isolated warm application first.
 Rollback by setting the marker to `0` and restarting. No schema changes are
 required. This mechanism does not sleep claimed workspaces or replace a durable
 scheduler for their background work.
+
+## Native finalization history and idle sleep
+
+Idle sleep retains committed native finalization records as audit history.
+A record permits sleep only after its owned run, accepted result, assessment,
+applied status decision, and effect deliveries agree on completion. Leases,
+retries, recovery requests, unfinished accounting, and incomplete run projections
+keep the instance awake. Historical controller identity alone does not block sleep.
+The exact run also needs its successful workspace-finalization receipt. Pending
+final-reply recovery shares its discovery predicate with the recovery worker, and
+live warm sessions remain local work through close/checkpoint completion.
 
 ## Feedback history and idle sleep
 
@@ -1199,6 +1268,30 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+### Installed skill packages
+
+`company_skill_repository_snapshots` retains its identity and company/content-hash
+uniqueness. Despite its historical name, it can also hold editable skill packages.
+Migration 0414 (`0414_sleepy_payback.sql`) adds `storage` (archive/manifest receipts) and `upload` (a bounded
+pending attempt). `file_inventory` remains the legacy payload, defaulting to `[]`.
+`company_skill_versions.package_snapshot_id` and `package_file_map` preserve the
+public version file inventory without storing its contents again. Existing repository
+snapshot/entrypoint references and version IDs remain unchanged. Reference indexes
+support bounded orphan checks; restrictive FKs protect retained version packages.
+Version mappings preserve kinds and encodings when identical bytes share a package.
+Authored saves mark the storage receipt `durable`; retirement atomically respects that
+marker even when the save joins a concurrent Git upload.
+
+`skill_package_deletions` is a durable object-deletion outbox populated by snapshot
+update/delete triggers. Its company ID deliberately has no cascading company FK:
+cleanup must retain exact object keys after company deletion. Upload promotion skips
+retirement; replacing a pending token retires only the old attempt's unique keys.
+The same migration adds exact-commit restore recipes and indexed conversion/maintenance
+deadlines. A bounded coordinator worker automatically converts and clears verified
+legacy payloads; no migration command is required. Warm reads exclude recipe manifests.
+See [package storage](skill-package-storage.md) for acquisition, retention, compatibility
+overrides, independent restore verification and coordinated backup policy.
+
 ### Project repository skill synchronization
 
 `project_skill_sources` stores durable workspace import jobs and originating project
@@ -1377,3 +1470,23 @@ human's decision to leave a pending request in history. They are independent of
 The board-only dismissal path locks the task then interaction, checks audience,
 and never enqueues a continuation. Ordinary deferred requests are excluded from
 completion arbitration; protected authorization gates remain active.
+
+### GitHub inherited review-wait reads
+
+Passive GitHub review waits select only the assessment's `reviewedCommit` JSON
+value. The read preserves its JSON type for strict comparison with the review
+head. It still checks current requester provenance, company and agent bindings,
+connection state, repository identity, latest review, and processed publication.
+The complete assessment remains stored for review and publication.
+
+The synthetic PostgreSQL benchmark captures the service-generated baseline and
+treatment queries, compares complete outputs, and measures raw DataRow bytes:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-github-review-wait.ts --baseline-ref=663fe667d66d3863d0919a8724f1d99500feef0b
+```
+
+It uses disposable embedded PostgreSQL by default. A disposable local database
+named `review_wait_benchmark...` can be supplied through
+`PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
+DataRow bytes exclude response metadata and transport overhead.

@@ -34,6 +34,7 @@ import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
+import { pendingAgentSetupChoice } from "../lib/agent-setup-choice";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
@@ -240,6 +241,8 @@ export function AgentActionButtons({
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
   const isError = agent.status === "error";
+  const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
+    && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
 
   const reportError = useCallback(
     (message: string) => {
@@ -382,7 +385,17 @@ export function AgentActionButtons({
         <Plus className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
-      {showRun && <RunButton
+      {needsSetup ? (
+        <Button variant="outline" size={size} disabled={disabled} onClick={() => {
+          if (!confirmNavigationStart(agentActionStartedDirtyRef)) return;
+          navigate(`/agents/new?${new URLSearchParams({
+            name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
+            runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
+            ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
+            ...pendingAgentSetupChoice(agent),
+          })}`);
+        }}>Finish setup</Button>
+      ) : showRun && <RunButton
         onClick={() => {
           if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
           agentAction.mutate("invoke");
@@ -391,18 +404,12 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {isError ? (
+      {!needsSetup && (isError ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}
           size={size}
         />
-      ) : agent.pauseReason === "setup" && agent.lifecycleState === "paused" ? (
-        <Button variant="outline" size={size} disabled={disabled} onClick={() => navigate(`/agents/new?${new URLSearchParams({
-          name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
-          runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
-          ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
-        })}`)}>Finish setup</Button>
       ) : (
         <PauseResumeButton
           isPaused={isPaused}
@@ -411,7 +418,7 @@ export function AgentActionButtons({
           disabled={pauseResumeDisabled}
           size={size}
         />
-      )}
+      ))}
       {pauseConfirm && (
         <AlertDialog open={pauseConfirmOpen} onOpenChange={setPauseConfirmOpen}>
           <AlertDialogContent>

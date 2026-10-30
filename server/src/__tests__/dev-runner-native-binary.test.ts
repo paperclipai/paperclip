@@ -138,6 +138,23 @@ describe("paperclip runner native dev prerequisite", () => {
     ).toBe(false);
   });
 
+  it.each([
+    "antigravity-distributions.json", "rust-toolchain.toml", "protocol/provider-schemas/acpx-sidecar.schema.json",
+  ])("rebuilds an existing native binary after changing embedded input %s", input => {
+    const checkout = createRunnerCheckout();
+    const dependency = path.join(checkout.root, "packages/paperclip-runner", input);
+    fs.mkdirSync(path.dirname(dependency), { recursive: true });
+    fs.writeFileSync(dependency, "fixture compile input\n");
+    const now = Date.now(), old = new Date(now - 2_000), built = new Date(now + 2_000), changed = new Date(now + 4_000);
+    fs.utimesSync(dependency, old, old);
+    fs.utimesSync(checkout.binary, built, built);
+    const options = { repoRoot: checkout.root, nativeRunnerRequired: true };
+    expect(paperclipRunnerBinaryNeedsBuild(options)).toBe(false);
+    fs.utimesSync(dependency, changed, changed);
+    expect(paperclipRunnerBinaryNeedsBuild(options)).toBe(true);
+    expect(paperclipRunnerBinaryNeedsBuild({ ...options, nativeRunnerRequired: false })).toBe(false);
+  });
+
   it.each(["arm64", "x64"])("uses the staged Mac %s target before the flat build output", architecture => {
     const checkout = createRunnerCheckout();
     const target = path.join(path.dirname(checkout.binary), `darwin-${architecture}`, "paperclip-runnerd");

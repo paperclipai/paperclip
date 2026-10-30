@@ -16,6 +16,54 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: action.startsWith("decision.") ? "decision" : "issue", entityId: "task-1", action,
+    }, { userId: "user-1", agentId: null });
+    for (const queryKey of [queryKeys.attention("company-1"), ["decisions", "company-1"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    client.clear();
+  });
+  it("drops cached decision content when its access is revoked", () => {
+    const client = new QueryClient();
+    const receiptKey = ["issues", "decision-receipts", "chat-1", "user-1"];
+    const historyKey = [...queryKeys.attention("company-1"), "history"];
+    const questionKey = ["issues", "pending-questions", "chat-1", "user-1"];
+    const taskRecordKey = queryKeys.decisions.taskRecord("company-1", "task-1", "user-1", "decision-1");
+    client.setQueryData(taskRecordKey, { title: "Private decision" });
+    client.setQueryData(questionKey, [{ title: "Private question" }]);
+    client.setQueryData(receiptKey, { items: [{ title: "Private decision" }] });
+    client.setQueryData(historyKey, { items: [{ title: "Private decision" }] });
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue_access_grant", entityId: "grant-1", action: "issue_access_grant.revoked",
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryData(receiptKey)).toBeUndefined();
+    expect(client.getQueryData(historyKey)).toBeUndefined();
+    expect(client.getQueryData(questionKey)).toBeUndefined();
+    expect(client.getQueryData(taskRecordKey)).toBeUndefined();
+    client.clear();
+  });
+  it("refreshes saved project access with permission saves and live agent activity", async () => {
+    const client = new QueryClient();
+    const target = queryKeys.agents.projectAccess("agent-1");
+    const other = queryKeys.agents.projectAccess("agent-2");
+    client.setQueryData(target, { projectIds: [] });
+    client.setQueryData(other, { projectIds: ["other-project"] });
+    await client.invalidateQueries({ queryKey: queryKeys.agents.detail("agent-1") });
+    expect(client.getQueryState(target)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+    client.setQueryData(target, { projectIds: ["project-1"] });
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "agent", entityId: "agent-1", action: "agent.permissions_updated",
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(target)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+    client.clear();
+  });
+
   it('refreshes sources, legacy repositories and installed skills after a background import', () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

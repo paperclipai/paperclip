@@ -31,13 +31,14 @@ export function openSkillPanelState(
 
 export type TaskSidePanelTabPayload =
   | { kind: "browser"; browserId: string }
+  | { kind: "plugin-panel"; pluginKey: string; slotId: string; entityId: string }
   | { kind: "properties" }
   | { kind: "subtasks" }
   | { kind: "artifacts" }
   | { kind: "agent-tasks" }
   | { kind: "attachment"; attachmentId: string }
   | { kind: "skill"; skillId: string }
-  | { kind: "issue-document"; documentKey: string }
+  | { kind: "issue-document"; documentKey: string; revisionId?: string; documentIssueId?: string }
   | {
       kind: "files-browser";
       query: string | null;
@@ -92,6 +93,8 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   if (!input) return null;
   const kind = input.kind;
   if (kind === "browser") return typeof input.browserId === "string" && /^[0-9a-f-]{36}$/i.test(input.browserId) ? { kind, browserId: input.browserId } : null;
+  if (kind === "plugin-panel") return [input.pluginKey, input.slotId, input.entityId].every(value => typeof value === "string" && value.length > 0)
+    ? { kind, pluginKey: input.pluginKey as string, slotId: input.slotId as string, entityId: input.entityId as string } : null;
   if (kind === "properties") return { kind };
   if (kind === "subtasks") return { kind };
   if (kind === "artifacts") return { kind };
@@ -104,7 +107,7 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   }
   if (kind === "issue-document") {
     return typeof input.documentKey === "string" && input.documentKey.length > 0
-      ? { kind, documentKey: input.documentKey }
+      ? { kind, documentKey: input.documentKey, ...(typeof input.revisionId === "string" ? { revisionId: input.revisionId } : {}), ...(typeof input.documentIssueId === "string" && input.documentIssueId ? { documentIssueId: input.documentIssueId } : {}) }
       : null;
   }
   if (kind === "files-browser") {
@@ -240,14 +243,14 @@ export function taskPanelSkillTab(skillId: string, label = "Skill"): SidePanelTa
   return { id: `skill:${skillId}`, type: "skill", label, closable: true, contentMode: "prose", payload: { kind: "skill", skillId } };
 }
 
-export function taskPanelDocumentTab(documentKey: string, label: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+export function taskPanelDocumentTab(documentKey: string, label: string, revisionId?: string, documentIssueId?: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return {
-    id: `document:${documentKey}`,
+    id: `document:${documentIssueId ? `${documentIssueId}:` : ""}${documentKey}${revisionId ? `:${revisionId}` : ""}`,
     type: "issue-document",
     label,
     closable: true,
     contentMode: "prose",
-    payload: { kind: "issue-document", documentKey },
+    payload: { kind: "issue-document", documentKey, ...(revisionId ? { revisionId } : {}), ...(documentIssueId ? { documentIssueId } : {}) },
   };
 }
 
@@ -298,4 +301,8 @@ export function taskPanelAttachmentTab(attachmentId: string, title: string): Sid
 
 export function taskPanelBrowserTab(browserId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: `browser:${browserId}`, type: "browser", label: "Browser", closable: true, contentMode: "full-bleed", payload: { kind: "browser", browserId } };
+}
+
+export function taskPanelPluginTab(panel: { entityId: string; slot: { pluginKey: string; id: string; displayName: string } }): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`, type: "plugin-panel", label: panel.slot.displayName, closable: true, contentMode: "padded", payload: { kind: "plugin-panel", pluginKey: panel.slot.pluginKey, slotId: panel.slot.id, entityId: panel.entityId } };
 }

@@ -8,8 +8,13 @@ import {
   type GitHubReviewConclusion,
   type GitHubReviewEventContext,
   type GitHubAutomaticEventContext,
+  type GitHubIssueEventContext,
   type GitHubReviewPolicy,
 } from "@paperclipai/shared";
+
+export type GitHubAutomaticPolicyContext =
+  | Pick<GitHubReviewEventContext, "event" | "repositoryId" | "repository" | "author" | "sender" | "draft" | "baseBranch" | "labels">
+  | Pick<GitHubIssueEventContext, "event" | "repositoryId" | "repository" | "author" | "sender" | "labels">;
 
 export function effectiveGitHubReviewPolicy(
   configuration: GitHubChatConfiguration,
@@ -85,7 +90,7 @@ export function githubReviewLineIsInPatch(
 
 export function githubReviewSchedulingDecision(input: {
   configuration: GitHubChatConfiguration;
-  context: GitHubAutomaticEventContext;
+  context: GitHubAutomaticPolicyContext;
   repositoryEnabled: boolean;
   /** Resolved against current company membership and the user's confirmed link. */
   linkedMemberUserId: string | null;

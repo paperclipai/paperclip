@@ -2,7 +2,8 @@ import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "../drivers
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as codexSecurity from "../drivers/codex/codex-security-config.js";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
@@ -210,6 +211,26 @@ function managedExecution(
 }
 
 describe("native backend factory", () => {
+  it.each([undefined, "disabled"] as const)("honors saved webSearch=%s with the default process transport", async webSearch => {
+    const input = preparedExecution(execution());
+    if (input.provider.kind !== "codex") throw new Error("Codex fixture required");
+    if (webSearch) Object.assign(input.provider, { webSearch });
+    const buildArgs = codexSecurity.createIsolatedCodexAppServerArgs;
+    let generated: string[] | undefined;
+    const spy = vi.spyOn(codexSecurity, "createIsolatedCodexAppServerArgs").mockImplementation((...args) => {
+      generated = buildArgs(...args);
+      throw new Error("offline-stop-before-process-spawn");
+    });
+    try {
+      const backend = createNativeSessionBackend(input, { environment: {} });
+      await expect(backend.openSession({ identity: { runId: "run", sessionId: "session", companyId: "company", agentId: "agent" },
+        workingDirectory: WORKSPACE })).rejects.toThrow("offline-stop-before-process-spawn");
+      expect(generated).toBeDefined();
+      if (webSearch) expect(generated?.slice(-3)).toEqual(["-c", 'web_search="disabled"', "app-server"]);
+      else expect(generated).not.toContain('web_search="disabled"');
+    } finally { spy.mockRestore(); }
+  });
+
   it("constructs the Codex backend without starting its transport", async () => {
     const backend = createNativeSessionBackend(execution(), {
       codexTransportFactory: () => {
@@ -635,8 +656,16 @@ describe("native backend factory", () => {
 
   it.each([
     ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v74-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v75-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v76-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v77-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v78-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v32-identity.json"],
+    ["grok", "../../test/fixtures/grok-profile-v10-identity.json"],
     ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
     ["copilot", "../../test/fixtures/copilot-profile-v14-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v60-identity.json"],
     ["pi", "../../test-fixtures/pi-acp/profile-v13-identity.json"],
     ["pi", "../../test-fixtures/pi-acp/profile-v14-identity.json"],
     ["pi", "../../test-fixtures/pi-acp/profile-v18-identity.json"],

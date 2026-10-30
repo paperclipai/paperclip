@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, environmentLeases, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -14,8 +14,10 @@ import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
 import { HttpError } from "../../errors.js";
 import { captureException } from "../../sentry.js";
 import { terminateLocalService } from "../local-service-supervisor.js";
+import { publishLiveEvent } from "../live-events.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunControl } from "./run-control.js";
+import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { preserveCancelledNativeWorkspaces } from "../native-runtime/native-failed-workspace-recovery.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -173,6 +175,79 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     )).toMatchObject({ status: "cancelled" });
   });
 
+  it.each([["40P01", 3], ["XX000", 1]] as const)("bounds cancellation transaction attempts for PostgreSQL %s", async (code, attempts) => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Cancellation failure", status: "in_progress",
+      assigneeAgentId: agent.id, executionRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, run.id));
+    await db.execute(sql`create sequence run_control_cancel_attempts`);
+    await db.execute(sql.raw(`create function run_control_cancel_fault() returns trigger language plpgsql as $$
+      begin
+        if new.result_json->'executionCancellation'->>'state' = 'requested' then
+          perform nextval('run_control_cancel_attempts');
+          raise exception using errcode = '${code}', message = 'Synthetic cancellation transaction failure';
+        end if;
+        return new;
+      end $$`));
+    await db.execute(sql`create trigger run_control_cancel_fault before update on heartbeat_runs
+      for each row execute function run_control_cancel_fault()`);
+    const deps = callbacks(db);
+    try {
+      await expect(createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+      })).rejects.toMatchObject({ cause: { code } });
+      const [counter] = await db.execute<{ count: number }>(sql`select last_value::int as count from run_control_cancel_attempts`);
+      expect(counter.count).toBe(attempts);
+      expect(await deps.getRun(run.id)).toMatchObject({ status: "running", resultJson: null });
+      expect(terminateLocalService).not.toHaveBeenCalled();
+      expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    } finally {
+      await db.execute(sql`drop trigger run_control_cancel_fault on heartbeat_runs`);
+      await db.execute(sql`drop function run_control_cancel_fault()`);
+      await db.execute(sql`drop sequence run_control_cancel_attempts`);
+    }
+  });
+
+  it("finishes operator Stop after a concurrent run writer causes a transaction deadlock", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Stop contention", status: "in_progress",
+      assigneeAgentId: agent.id, executionRunId: run.id, checkoutRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, run.id));
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let blockerPid = 0;
+    const writer = db.transaction(async tx => {
+      // Make Stop's default detector see the cycle first, so this reproduces
+      // the API-side victim observed in CI rather than a random victim.
+      await tx.execute(sql`set local deadlock_timeout = '10s'`);
+      const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      blockerPid = backend.pid;
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      enter(); await released;
+      await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issue.id));
+    });
+    await entered;
+    const deps = callbacks(db);
+    const stopping = createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+    }).then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where ${blockerPid} = any(pg_blocking_pids(pid)) and wait_event_type = 'Lock'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+    } finally { release(); }
+    await writer;
+    const result = await stopping;
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({ status: "cancelled" });
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled" });
+  });
+
   it.each(["queued", "running"] as const)("preserves case intent when a guarded Stop loses to %s promotion", async status => {
     const { company, agent } = await fixture();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Promoted case work", status: "todo", assigneeAgentId: agent.id }).returning();
@@ -197,6 +272,50 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, handoff.id)))[0])
       .toMatchObject({ state: "awaiting_release", cancelledAt: null });
     expect(deps.appendRunEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { boundary: "task", actorType: "user" },
+    { boundary: "run", actorType: "user" },
+    { boundary: "run", actorType: "board" },
+  ] as const)("preserves $actorType Stop attribution when recovery wins after the $boundary fence", async ({ boundary, actorType }) => {
+    const { company, agent } = await fixture();
+    const issue = boundary === "task" ? (await db.insert(issues).values({
+      companyId: company.id, title: "Keep operator Stop", status: "in_progress", assigneeAgentId: agent.id,
+    }).returning())[0] : undefined;
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id, agentId: agent.id, issueId: issue?.id, status: "scheduled_retry",
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+      scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+    }).returning();
+    const deps = callbacks(db);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+
+
+    if (boundary === "task") {
+      const getAgent = deps.getAgent.getMockImplementation()!;
+      deps.getAgent.mockImplementationOnce(async id => { enter(); await held; return getAgent(id); });
+    } else {
+      const settle = deps.setRunStatusFromLive.getMockImplementation()!;
+      deps.setRunStatusFromLive.mockImplementationOnce(async (...args) => { enter(); await held; return settle(...args); });
+    }
+    const stopping = createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+      expectedStatus: "scheduled_retry", resultJson: { cancelledByActorType: actorType, cancelledByUserId: "operator" },
+    });
+    try {
+      await Promise.race([entered, stopping.then(() => { throw new Error("Foreground Stop did not reach its fence"); })]);
+      const recovery = createHeartbeatRunControl(db, callbacks(db));
+      await createScheduledRetryCancellationRecovery(db, recovery.cancelRunInternal).sweep();
+      expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", resultJson: {
+        cancelledByActorType: actorType, cancelledByUserId: "operator",
+        cancellation: { source: "operator", initiator: { type: "user", id: "operator" } },
+      } });
+    } finally { release(); await stopping; }
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", resultJson: {
+      cancelledByActorType: actorType, cancelledByUserId: "operator",
+    } });
   });
 
   it("blocks promotion after guarded cancellation wins but before it settles", async () => {
@@ -393,6 +512,63 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       .toMatchObject({ status: "in_progress", phase: "verification", completedAt: null });
   });
 
+  it.each([false, true])("discards rolled-back native Stop claims and activity before retry (authority revoked=%s)", async revokeAuthority => {
+    const f = await boardTerminalFixture("running", "native");
+    const requestId = randomUUID(), deps = callbacks(db);
+    vi.mocked(publishLiveEvent).mockClear();
+    const transact = db.transaction.bind(db);
+    let injected = false;
+    const transaction = vi.spyOn(db, "transaction").mockImplementationOnce(async (operation, config) => {
+      try {
+        return await transact(async tx => {
+          const result = await operation(tx);
+          const [claimed] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+          expect(claimed.resultJson?.startupCancellation).toMatchObject({ cancellationRequestId: requestId });
+          expect(claimed.resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+          expect((await tx.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0].state).toBe("cancelled");
+          expect((await tx.select().from(activityLog).where(eq(activityLog.companyId, f.company.id)))
+            .filter(row => row.action === "case.handoff_cancelled")).toHaveLength(1);
+          expect(deps.getAgent).not.toHaveBeenCalled();
+          injected = true;
+          await tx.execute(sql`do $$ begin raise exception using errcode = '40P01', message = 'Deadlock after native Stop claim'; end $$`);
+          return result;
+        }, config);
+      } catch (error) {
+        if (injected && revokeAuthority) await db.update(nativeRunFinalizations)
+          .set({ phase: "terminal_failure", failureCode: "retry_authority_revoked", nextAttemptAt: null })
+          .where(eq(nativeRunFinalizations.runId, f.run.id));
+        throw error;
+      }
+    });
+    try {
+      const stopping = createHeartbeatRunControl(db, deps).cancelRunInternal(f.run.id, "Retry native Stop", {
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+        cancellationRequestId: requestId, cancellationRequestedByUserId: "operator",
+      });
+      if (revokeAuthority) {
+        await expect(stopping).rejects.toMatchObject({ status: 409 });
+        expect(await deps.getRun(f.run.id)).toMatchObject({ status: "failed", resultJson: null });
+        expect(deps.getAgent).not.toHaveBeenCalled();
+        expect(deps.options.closeWarmNativeSessionsForRun).not.toHaveBeenCalled();
+        expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+      } else {
+        await expect(stopping).resolves.toMatchObject({ status: "cancelled" });
+        expect((await deps.getRun(f.run.id))?.resultJson?.startupCancellation).toMatchObject({ cancellationRequestId: requestId });
+      }
+      expect(injected).toBe(true);
+      expect(transaction.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0].state)
+        .toBe(revokeAuthority ? "awaiting_completion" : "cancelled");
+      const expected = revokeAuthority ? 0 : 1;
+      expect((await db.select().from(activityLog).where(eq(activityLog.companyId, f.company.id)))
+        .filter(row => row.action === "case.handoff_cancelled")).toHaveLength(expected);
+      expect(vi.mocked(publishLiveEvent).mock.calls.map(([event]) => event)
+        .filter(event => event.companyId === f.company.id && event.type === "activity.logged"
+          && event.payload?.action === "case.handoff_cancelled")).toHaveLength(expected);
+      expect(terminateLocalService).not.toHaveBeenCalled();
+    } finally { transaction.mockRestore(); }
+  });
+
   it("stops current preparing execution despite a prior terminal checkout when cancelling board intent", async () => {
     // Queue admission binds the new execution before preparation adopts its
     // predecessor's checkout. The execution owner is authoritative in this gap.
@@ -427,6 +603,38 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     await issueService(db).update(f.issue.id, { status: "done" });
     expect((await db.select().from(cases).where(eq(cases.id, f.caseRow.id)))[0])
       .toMatchObject({ status: "done", phase: "done", completedAt: expect.any(Date) });
+  });
+
+  it.each(["confirmed", "missing", "wrong_allocation", "unacknowledged", "still_running", "wrong_intent"] as const)("publishes native Stop acknowledgement only after exact remote containment: %s", async proof => {
+    const { company, agent } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Save work after Stop", assigneeAgentId: agent.id }).returning();
+    const runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id, agentId: agent.id,
+      nativeIssueId: issue.id, runtimeMode: "native", status: proof === "still_running" ? "running" : "cancelled", finishedAt: proof === "still_running" ? null : new Date(),
+      resultJson: { executionCancellation: { state: "requested", requestedAt: new Date().toISOString() },
+        cancelledByActorType: "user", cancelledByUserId: "operator", nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId: proof === "wrong_intent" ? randomUUID() : runId, companyId: company.id, issueId: issue.id,
+          scope: "run", reasonCode: "cancellation_run_only", dispatchState: proof === "unacknowledged" ? "pending" : "acknowledged", dispatched: true,
+          intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID(),
+        }, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+          schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId],
+        } },
+    }).returning();
+    const receipt = { schema: "paperclip.remote-termination.v1", companyId: company.id, runId, leaseId,
+      provider: "daytona", providerLeaseId: proof === "wrong_allocation" ? randomUUID() : providerLeaseId,
+      state: "stopped", confirmedAt: new Date().toISOString() };
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, issueId: issue.id, heartbeatRunId: runId,
+      provider: "daytona", providerLeaseId, status: proof === "missing" ? "active" : "released", leasePolicy: "retain_on_failure",
+      releasedAt: proof === "missing" ? null : new Date(), cleanupStatus: proof === "missing" ? null : "success",
+      metadata: proof === "missing" ? {} : { remoteExecutionTermination: receipt } });
+    const control = createHeartbeatRunControl(db, callbacks(db));
+    await control.acknowledgeRemoteStop(run.id, company.id);
+    await control.acknowledgeRemoteStop(run.id, company.id);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.resultJson?.executionCancellation).toMatchObject({ state: proof === "confirmed" ? "acknowledged" : "requested" });
+    if (proof === "confirmed") expect(stopped.resultJson?.executionCancellation).toMatchObject({ proof: "provider_termination_receipt" });
+    expect(stopped.resultJson?.workspaceRestoreFailure).toBe("restore_failed");
+    expect(stopped.resultJson?.workspaceRestoreRecovery).toMatchObject({ leaseIds: [leaseId] });
   });
 
   it("keeps pre-Stop input pending until a later user message authorizes one continuation", async () => {

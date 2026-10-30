@@ -764,6 +764,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
 
 describe("native runner lifecycle changes before lease acquisition", () => {
+  it.each([undefined, "account:generation"])("uses a warm plugin lease only with a managed credential identity: %s", async managedAiCredentialIdentity => {
+    const environment = { ...makeEnvironment("plugin"), config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {} } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async input => ({ environment: input.environment,
+      lease: makeLease({ leasePolicy: input.environment.config.runnerLifecycleMode === "warm" ? "reuse_by_environment" : "ephemeral" }), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    const result = await orchestrator.acquireForRun({ companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+      adapterType: "paperclip_runner", adapterConfig: { lifecycleMode: "warm" }, managedAiCredentialIdentity,
+      issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1", persistedExecutionWorkspace: null, executionWorkspaceSettings: null });
+    expect(result.environment.config.runnerLifecycleMode).toBe(managedAiCredentialIdentity ? "warm" : "per_turn");
+    expect(result.lease.leasePolicy).toBe(managedAiCredentialIdentity ? "reuse_by_environment" : "ephemeral");
+    expect(environment.config).not.toHaveProperty("runnerLifecycleMode");
+  });
+
   it("requests a reusable lease when an existing task switches from per-turn to warm", async () => {
     const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
     mockGetEnvironment.mockResolvedValue(environment);
@@ -865,6 +879,22 @@ describe("live remote runner lease reattachment", () => {
     expect(result.lease).toEqual(savedLease);
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
+  });
+  it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
+    mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
+    const lease = originalLease();
+    lease.metadata = { agentId: "agent-1", runnerTaskLease: true,
+      runnerTaskDispatched: state !== "undispatched", runnerTaskExecutionStopped: state === "stopped" };
+    if (state === "foreign-company") lease.companyId = "foreign";
+    if (state === "revoked") lease.status = "released";
+    mockGetLease.mockResolvedValue(lease);
+    const runtime = makeMockRuntime();
+    const acquired = environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun({
+      ...input, reattachRemoteLease: { kind: "plugin_task", leaseId: lease.id },
+    });
+    if (state === "active") await expect(acquired).resolves.toMatchObject({ lease });
+    else await expect(acquired).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
   it.each([
     { companyId: "foreign" }, { environmentId: "foreign" }, { heartbeatRunId: "another-run" },
