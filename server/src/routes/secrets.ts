@@ -20,7 +20,7 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleReso
 import { logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -1115,7 +1115,29 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    // The service counts the bindings and deletes the secret under one
+    // per-secret advisory lock shared with every binding write funnel, so an
+    // agent update cannot land a new binding between the count and the
+    // delete. A bound secret surfaces as a 409 that names the consumers.
+    let removed: Awaited<ReturnType<typeof svc.removeIfUnbound>>;
+    try {
+      removed = await svc.removeIfUnbound(id);
+    } catch (error) {
+      if (
+        error instanceof HttpError &&
+        error.status === 409 &&
+        error.details &&
+        typeof error.details === "object" &&
+        Array.isArray((error.details as { bindings?: unknown }).bindings)
+      ) {
+        res.status(409).json({
+          error: error.message,
+          bindings: (error.details as { bindings: unknown[] }).bindings,
+        });
+        return;
+      }
+      throw error;
+    }
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;
