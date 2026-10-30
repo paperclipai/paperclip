@@ -14,6 +14,23 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 type Row = Record<string, any>;
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 
+export async function readClarificationState(context: JourneyContext, issueId: string) {
+  const route = `/api/issues/${issueId}`;
+  const [currentIssue, summaries, interactions, documents, attachments, children] = await Promise.all([
+    context.api.get<Row>(route), context.api.get<Row[]>(`${route}/runs`), context.api.get<Row[]>(`${route}/interactions`),
+    context.api.get<Row[]>(`${route}/documents`), context.api.get<Row[]>(`${route}/attachments`),
+    context.api.get<Row[]>(`/api/companies/${context.company.id}/issues?view=index&parentIds=${encodeURIComponent(issueId)}&limit=2`),
+  ]);
+  if (!Array.isArray(summaries) || summaries.length > 3) throw new JourneyError("failed", "clarification_run_limit_exceeded");
+  const runs = await Promise.all(summaries.map(summary => context.api.get<Row>(`/api/heartbeat-runs/${summary.runId}`)));
+  validateAgentTaskState(context, issueId, { currentIssue: currentIssue as Row & { id: string; status: string },
+    taskRuns: runs as Array<Row & { status: string }>, interactions: interactions as Array<Row & { id: string; status: string }>, comments: [], attachments: [] }, 3);
+  if (!Array.isArray(children) || children.some(child => child.parentId !== issueId || child.companyId !== context.company.id)) {
+    throw new JourneyError("failed", "clarification_child_query_mismatch");
+  }
+  return { currentIssue, runs, interactions, documents, attachments, children };
+}
+
 export async function runClarificationJourney(context: JourneyContext, session: TargetSession,
   campaignId: string, evidence: JourneyEvidence, options: Options) {
   if (!context.agent || context.agent.runtimeMode !== "native" || !context.environmentId) {
@@ -24,22 +41,7 @@ export async function runClarificationJourney(context: JourneyContext, session: 
   let issue: Row | undefined, readback: ClarificationReadback | undefined;
   await mkdir(options.directory, { recursive: true, mode: 0o700 });
   const retain = (name: string, value: unknown) => writeFile(path.join(options.directory, name), JSON.stringify(value, null, 2), { mode: 0o600 });
-  const read = async () => {
-    const route = `/api/issues/${issue!.id}`;
-    const [currentIssue, summaries, interactions, documents, attachments, children] = await Promise.all([
-      context.api.get<Row>(route), context.api.get<Row[]>(`${route}/runs`), context.api.get<Row[]>(`${route}/interactions`),
-      context.api.get<Row[]>(`${route}/documents`), context.api.get<Row[]>(`${route}/attachments`),
-      context.api.get<Row[]>(`/api/companies/${context.company.id}/issues?parentId=${encodeURIComponent(issue!.id)}&limit=2`),
-    ]);
-    if (!Array.isArray(summaries) || summaries.length > 3) throw new JourneyError("failed", "clarification_run_limit_exceeded");
-    const runs = await Promise.all(summaries.map(summary => context.api.get<Row>(`/api/heartbeat-runs/${summary.runId}`)));
-    validateAgentTaskState(context, issue!.id, { currentIssue: currentIssue as Row & { id: string; status: string },
-      taskRuns: runs as Array<Row & { status: string }>, interactions: interactions as Array<Row & { id: string; status: string }>, comments: [], attachments: [] }, 3);
-    if (!Array.isArray(children) || children.some(child => child.parentId !== issue!.id || child.companyId !== context.company.id)) {
-      throw new JourneyError("failed", "clarification_child_query_mismatch");
-    }
-    return { currentIssue, runs, interactions, documents, attachments, children };
-  };
+  const read = () => readClarificationState(context, issue!.id);
   const settle = async (answeredId?: string, final = false) => {
     let stable = "";
     while (Date.now() < options.deadlineAt) {
