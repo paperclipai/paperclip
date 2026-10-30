@@ -1490,3 +1490,20 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+
+### Sandbox creation ownership
+
+Migration 0417 adds `sandbox_creation_operations`. Admission commits company,
+original environment, run, request key and provider identity before external
+creation. Configuration contains nonsecret values and existing secret references.
+The original identity survives environment, run, task and company deletion; only
+the optional live environment FK uses SET NULL. Company/run deletion must not
+erase an outstanding remote-resource obligation.
+
+The unique company/environment/run/request index fences duplicate creation and
+ambiguous successful lease commits. Normal lease attachment and operation transfer
+share a transaction. Recovery transfers one claimed cleanup lease after provider
+ownership lookup. The pending deadline index drives the existing cleanup worker.
+`needs_reconciliation` is a durable manual outcome, not an automatic retry or an
+idle blocker. See [cleanup ownership](idle-environment-cleanup.md).

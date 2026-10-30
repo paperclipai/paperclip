@@ -63,3 +63,22 @@ second export after reconnect. The test creates and deletes one disposable
 - `src/manifest.ts` declares the sandbox-provider driver metadata
 - `src/plugin.ts` implements the environment lifecycle hooks
 - `paperclipPlugin.manifest` and `paperclipPlugin.worker` point the host at the built plugin entrypoints in `dist/`
+
+
+### Interrupted run-lease creation
+
+The host commits a company-scoped creation operation before acquiring a new run
+lease. The operation UUID becomes `paperclip-create-<uuid>` and the
+`paperclip-create-attempt` label. The existing inspection hook can resolve that
+name and validate company, environment and run labels without starting a sandbox.
+Recovery persists the observed provider ID before the existing cleanup worker
+deletes it. A missing creation name is an uncertain outcome, not proof of removal.
+The host retains that operation for manual reconciliation and never repeats the
+creation request blindly. Credential identity must still match admission.
+
+This capability is declared as `creationOperationVersion: 1` in manifest version
+0.1.10. It covers normal run/ad-hoc lease acquisition and plugin task replacement.
+Legacy provider `environmentProbe` and custom-image interactive setup have separate
+lifecycles and are outside this lease-orphan fallback replacement. The normal Test
+path which acquires a runtime lease is covered. Unit fixtures exercise lookup and
+deletion; live provider qualification requires an explicit disposable test account.

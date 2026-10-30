@@ -1,3 +1,4 @@
+import { attachSandboxCreation } from "./sandbox-creation-operations.js";
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -16,6 +17,7 @@ import {
   companySecretBindings,
   environmentCustomImageSetupSessions,
   environmentLeases,
+  sandboxCreationOperations,
   environments,
   executionWorkspaces,
   heartbeatRuns,
@@ -47,6 +49,17 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+
+export async function assertEnvironmentCompanyBinding(db: Db, environmentId: string, companyId: string): Promise<void> {
+  const [environment] = await db.select({ id: environments.id }).from(environments)
+    .where(eq(environments.id, environmentId)).for("update");
+  if (!environment) throw new Error("Sandbox creation environment no longer exists");
+  const bindings = await db.select({ companyId: builtInManagedResources.companyId }).from(builtInManagedResources)
+    .where(and(eq(builtInManagedResources.resourceKind, "environment"), eq(builtInManagedResources.resourceId, environmentId)));
+  if (bindings.length && !bindings.some(binding => binding.companyId === companyId)) {
+    throw forbidden("The selected environment belongs to another company.", { code: "environment_company_mismatch" });
+  }
+}
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -1428,6 +1441,7 @@ export function environmentService(db: Db) {
     },
 
     acquireLease: async (input: {
+      creationOperationId?: string;
       companyId: string;
       environmentId: string;
       executionWorkspaceId?: string | null;
@@ -1465,6 +1479,11 @@ export function environmentService(db: Db) {
        */
       assertCompanyBinding?: boolean;
     }): Promise<EnvironmentLease> => {
+      if (input.creationOperationId) {
+        const { creationOperationId, ...leaseInput } = input;
+        return attachSandboxCreation(db, creationOperationId, { companyId: input.companyId, environmentId: input.environmentId, heartbeatRunId: input.heartbeatRunId },
+          tx => environmentService(tx).acquireLease({ ...leaseInput, assertCompanyBinding: true }));
+      }
       const now = new Date();
       const replacementLeaseId = input.replacesReusableLeaseId ? randomUUID() : null;
       const values = {
@@ -1515,48 +1534,7 @@ export function environmentService(db: Db) {
                 companyId: input.companyId, runId: input.heartbeatRunId,
               });
               if (input.assertCompanyBinding) {
-                // Lock the environment row first. Managed reconciliation locks the
-                // same sandbox environment rows with `for update` before it writes a
-                // company binding, so this lock serializes the two transactions on
-                // this row and closes the time-of-check to time-of-use window.
-                await tx
-                  .select({ id: environments.id })
-                  .from(environments)
-                  .where(eq(environments.id, input.environmentId))
-                  .for("update");
-                // Re-read the company binding inside the locked transaction. A
-                // binding a reconciliation committed after the route guard now
-                // appears here. Reject a foreign-company environment before the
-                // insert, so the login holds no lease.
-                const boundRows = await tx
-                  .select({ companyId: builtInManagedResources.companyId })
-                  .from(builtInManagedResources)
-                  .where(
-                    and(
-                      eq(
-                        builtInManagedResources.resourceKind,
-                        MANAGED_ENVIRONMENT_RESOURCE_KIND,
-                      ),
-                      eq(
-                        builtInManagedResources.resourceId,
-                        input.environmentId,
-                      ),
-                    ),
-                  );
-                const boundCompanyIds = Array.from(
-                  new Set(boundRows.map((boundRow) => boundRow.companyId)),
-                );
-                if (
-                  boundCompanyIds.length > 0 &&
-                  !boundCompanyIds.includes(input.companyId)
-                ) {
-                  throw forbidden(
-                    "The selected environment belongs to another company.",
-                    {
-                      code: "environment_company_mismatch",
-                    },
-                  );
-                }
+                await assertEnvironmentCompanyBinding(tx as unknown as Db, input.environmentId, input.companyId);
               }
               if (input.replacesReusableLeaseId) {
                 await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
@@ -1699,6 +1677,7 @@ export function environmentService(db: Db) {
         const [previous] = await tx.select({ companyId: environmentLeases.companyId, issueId: environmentLeases.issueId,
           heartbeatRunId: environmentLeases.heartbeatRunId, status: environmentLeases.status,
           cleanupStatus: environmentLeases.cleanupStatus, releasedAt: environmentLeases.releasedAt,
+          creationOperationId: sql<string | null>`${environmentLeases.metadata}->>'creationOperationId'`,
         }).from(environmentLeases).where(condition).for("update");
         if (!previous) return null;
         await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined });
@@ -1714,6 +1693,11 @@ export function environmentService(db: Db) {
           await notifyRetainedNativeSessionCleanup(tx, {
             companyId: previous.companyId, runId: previous.heartbeatRunId,
           });
+        }
+        if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
+          await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
+            .where(and(eq(sandboxCreationOperations.id, previous.creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
+              eq(sandboxCreationOperations.leaseId, id), eq(sandboxCreationOperations.state, "cleanup_pending")));
         }
         return tx.update(environmentLeases)
         .set({

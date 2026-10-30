@@ -1,3 +1,4 @@
+import { createOwnedSandbox } from "../services/sandbox-creation-operations.js";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { companies, createDb, environmentLeases, environments, type Db } from "@paperclipai/db";
+import { companies, createDb, sandboxCreationOperations, environmentLeases, environments, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerEnvironmentCleanupWork } from "../services/environment-cleanup-work.js";
@@ -34,7 +35,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
-    await db.execute(sql`TRUNCATE companies, environments CASCADE`);
+    await db.execute(sql`TRUNCATE sandbox_creation_operations, companies, environments CASCADE`);
     companyId = randomUUID(); environmentId = randomUUID(); draining = false; failing = false; errors.length = 0;
     await db.insert(companies).values({ id: companyId, name: "Cleanup worker", issuePrefix: "CLN" });
     await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
@@ -97,6 +98,34 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     await environmentService(db).updateLeaseMetadata(lease.id, { changed: "again" });
     await settle(90_000); expect(inspections).toHaveBeenCalledTimes(2);
     await settle(180_000); expect(inspections).toHaveBeenCalledTimes(3);
+    await quiet();
+  });
+  it("reconstructs a creation deadline after restart and leaves manual reconciliation quiet", async () => {
+    await start(); await quiet();
+    await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {}, metadata: {} },
+      async () => ({ providerLeaseId: "fixture-unattached" }));
+    await settle();
+    expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now());
+    worker!.stop(); await coordinator!.stop();
+    await start();
+    expect(coordinator!.nextWakeAt()).toBeGreaterThan(Date.now());
+    await settle(31 * 60_000);
+    await vi.waitFor(async () => expect(await db.select().from(sandboxCreationOperations)).toEqual([
+      expect.objectContaining({ state: "needs_reconciliation" }),
+    ]));
+    await quiet();
+  });
+  it("preserves a first creation signal during drain and disarms after atomic attachment", async () => {
+    await start(); await quiet(); draining = true;
+    const created = await createOwnedSandbox(db, { companyId, environmentId, provider: "fixture", driverKey: "fixture", config: {}, metadata: {} },
+      async () => ({ providerLeaseId: "fixture-attached" }));
+    const count = reads.mock.calls.length;
+    await settle(60_000, false); expect(reads).toHaveBeenCalledTimes(count);
+    draining = false;
+    await environmentService(db).acquireLease({ companyId, environmentId, provider: "fixture", providerLeaseId: created.providerLeaseId,
+      creationOperationId: String(created.metadata!.creationOperationId), metadata: created.metadata });
+    await settle();
+    expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "attached" })]);
     await quiet();
   });
   it("wakes on a real orphan insert, waits for its backoff, then disarms after deletion", async () => {
