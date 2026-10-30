@@ -6,13 +6,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium, type Browser, type BrowserContext } from "@playwright/test";
 import { runnerSuites } from "../catalog.js";
-import { productJourneys, parseTargetConfig, preparationPreview, isAgentJourney, agentJourneyRuns } from "./catalog.js";
+import { productJourneys, parseTargetConfig, preparationPreview, isAgentJourney, agentJourneyRuns, agentJourneyRunCountValid } from "./catalog.js";
 import { journeyFixtures } from "./fixtures.js";
 import { taskProperties } from "./task-properties.js";
 import { askQuestion, taskCreate } from "./basic-flows.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
-import { agentJourneyRunCountMatches } from "./success-contract.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
@@ -265,7 +264,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       }
       for (const result of results) {
         if (isAgentJourney(result.caseId as import("./types.js").JourneyId) && result.status === "passed"
-          && (!seen.has(result.caseId) || !agentJourneyRunCountMatches(result.caseId, result.runIds?.length))) throw new JourneyError("failed", "paid_journey_receipt_missing");
+          && (!seen.has(result.caseId) || !agentJourneyRunCountValid(result.caseId, result.runIds?.length))) throw new JourneyError("failed", "paid_journey_receipt_missing");
         if (result.caseId === "cloud-onboarding" && result.status === "passed" && (!seen.has(result.caseId) || !result.runIds?.length || !result.productJourney?.operations || !result.productJourney.operations.traceIds.length)) throw new JourneyError("failed", "paid_journey_receipt_missing");
         // Success-only checks must run before a disposable target can be deleted.
         // Cleanup is provisional here; the observed cleanup result is retained below.

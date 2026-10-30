@@ -1,12 +1,6 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
 export const agentJourneyRuns = { "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
   "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3 } as const;
-/** Existing journeys keep exact counts; active follow-up permits in-turn steering. */
-export function agentJourneyRunCountMatches(id: string, count: number | undefined) {
-  if (!Object.hasOwn(agentJourneyRuns, id) || !Number.isSafeInteger(count)) return false;
-  const maximum = agentJourneyRuns[id as keyof typeof agentJourneyRuns];
-  return count === maximum || id === "followup-while-running" && count === 1;
-}
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],

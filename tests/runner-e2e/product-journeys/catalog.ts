@@ -16,6 +16,13 @@ export const productJourneys = [
 
 export function isAgentJourney(id: JourneyId): id is keyof typeof agentJourneyRuns { return Object.hasOwn(agentJourneyRuns, id); }
 
+/** Existing journeys keep exact counts; active follow-up permits in-turn steering. */
+export function agentJourneyRunCountValid(id: string, count: number | undefined) {
+  if (!Object.hasOwn(agentJourneyRuns, id) || !Number.isSafeInteger(count)) return false;
+  const maximum = agentJourneyRuns[id as keyof typeof agentJourneyRuns];
+  return count === maximum || id === "followup-while-running" && count === 1;
+}
+
 export function preparationPreview(config: TargetConfig) {
   return {
     target: { id: config.id, mode: config.mode, executionEnvironment: config.executionEnvironment },

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { activeFollowupBoundary, activeFollowupOutcome, sameActiveFollowupBoundary } from "./active-followup-evidence.js";
 import { activeFollowupStory } from "./active-followup-flow.js";
-import { agentJourneyRunCountMatches, journeyRequiredChecks } from "./success-contract.js";
-import { parseTargetConfig, preparationPreview } from "./catalog.js";
+import { journeyRequiredChecks } from "./success-contract.js";
+import { parseTargetConfig, preparationPreview, agentJourneyRunCountValid } from "./catalog.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 
 const run = { id: "run", companyId: "company", agentId: "agent", issueId: "issue", runtimeMode: "native", status: "running" };
@@ -71,9 +71,9 @@ describe("deployment-independent active follow-up", () => {
     for (const change of changes) { const value = outcome(); change(value); expect(activeFollowupOutcome(value)).toBe(false); }
   });
   it("allows a maximum of two declared runs while preserving every other exact bound", () => {
-    for (const count of [1, 2]) expect(agentJourneyRunCountMatches("followup-while-running", count)).toBe(true);
-    for (const count of [undefined, 0, 3, NaN, 1.5]) expect(agentJourneyRunCountMatches("followup-while-running", count)).toBe(false);
-    expect(agentJourneyRunCountMatches("build-revise", 1)).toBe(false);
+    for (const count of [1, 2]) expect(agentJourneyRunCountValid("followup-while-running", count)).toBe(true);
+    for (const count of [undefined, 0, 3, NaN, 1.5]) expect(agentJourneyRunCountValid("followup-while-running", count)).toBe(false);
+    expect(agentJourneyRunCountValid("build-revise", 1)).toBe(false);
     const config = { version: 1, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs", journeys: ["followup-while-running"],
       executionEnvironment: "daytona", baseline: { features: {}, connections: [] }, limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 2 } };
     expect(preparationPreview(parseTargetConfig(config)).journeys[0]).toMatchObject({ id: "followup-while-running", paid: true });
