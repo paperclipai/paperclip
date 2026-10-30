@@ -22,10 +22,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
-import {
-  commitNativeStatusDecision,
-  type NativeStatusCommitFailpoint,
-} from "../services/native-runtime/status-decision-committer.js";
+import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -133,11 +130,11 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
   async function prepareCompletion(companyId: string, agentId: string, issueId: string) {
     const run = await seedNativeRun(companyId, agentId, issueId);
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    return (failpoint?: NativeStatusCommitFailpoint) =>
+    return () =>
       commitNativeStatusDecision({
         db, companyId, issueId, runId: run.runId, assessmentId: run.assessmentId,
         priorStatus: issue!.status, priorStatusVersion: Number(issue!.statusVersion),
-        priorDecisionId: issue!.lastStatusDecisionId, failpoint,
+        priorDecisionId: issue!.lastStatusDecisionId,
         decision: {
           policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "done", toStatus: "done",
           reasonCode: "completion_contract_satisfied", unblockDescriptor: null, effects: [],
@@ -333,10 +330,14 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
     expect(await dependencyWakes(outside.companyId, foreignDependent)).toHaveLength(0);
   });
 
-  async function issueRuns(companyId: string, dependentId: string) {
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
-    return runs.filter((run) => (run.contextSnapshot as Record<string, unknown> | null)?.issueId === dependentId
-      && run.nativeIssueId === null);
+  async function runIds(companyId: string) {
+    const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    return new Set(runs.map((run) => run.id));
+  }
+
+  async function newRunIds(companyId: string, before: Set<string>) {
+    return [...await runIds(companyId)].filter((id) => !before.has(id));
   }
 
   it.each(["manual", "budget"])(
@@ -350,16 +351,23 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
       await block(companyId, dependent, [blocker]);
       await startBlockedCycle(dependent, new Date("2026-10-28T01:00:00.000Z"));
       await complete(companyId, agentId, blocker);
-      expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
+      const [intent] = await dependencyWakes(companyId, dependent);
+      expect(intent).toBeDefined();
+      const runsBefore = await runIds(companyId);
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
       }
       await heartbeat.drainActiveRunExecutions();
-      expect(await issueRuns(companyId, dependent)).toHaveLength(0);
+      expect(await newRunIds(companyId, runsBefore)).toEqual([]);
       expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
       const requests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       expect(requests).toHaveLength(2);
+      const receipt = requests.find((row) => row.id !== intent!.id);
+      expect(requests.find((row) => row.id === intent!.id)).toMatchObject({ status: "skipped", runId: null });
+      expect(receipt).toMatchObject({
+        status: "skipped", runId: null, requestedByActorId: `native-status-wake-dispatch:${intent!.id}`,
+      });
     },
   );
 
@@ -375,9 +383,10 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
     expect(wake).toMatchObject({ agentId, status: "queued" });
 
     await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, dependent));
+    const runsBefore = await runIds(companyId);
     await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
     await heartbeat.drainActiveRunExecutions();
-    expect(await issueRuns(companyId, dependent)).toHaveLength(0);
+    expect(await newRunIds(companyId, runsBefore)).toEqual([]);
     expect((await dependencyWakes(companyId, dependent)).find((row) => row.id === wake!.id))
       .toMatchObject({ status: "skipped", error: "Native status wake target has a different assignee" });
   });
