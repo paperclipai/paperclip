@@ -370,6 +370,8 @@ agents you have left are omitted unless you have history with them. Search
 filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+The avatar and name in the conversation header link to the agent overview page.
+The link uses the current company on desktop and mobile.
 
 Beside a conversation, the side panel opens on the agent's tasks: one card per
 task the agent created, was assigned, commented on, or acted on, newest first,
