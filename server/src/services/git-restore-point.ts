@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import { REGENERABLE_WORKSPACE_DIR_NAMES } from "./workspace-compaction.js";
+import { GIT_NULL_DEVICE } from "./git-null-device.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -97,7 +98,7 @@ function isolatedEnv(extra: Record<string, string> = {}) {
   return {
     ...process.env,
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: "0",
     ...extra,
@@ -118,7 +119,7 @@ async function git(cwd: string, args: string[], options: GitOptions = {}): Promi
 }
 
 function gitArgs(cwd: string, args: string[]) {
-  return ["-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args];
+  return ["-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-c", `core.hooksPath=${GIT_NULL_DEVICE}`, "-C", cwd, ...args];
 }
 
 async function gitPipe(cwd: string, from: string[], to: string[], signal?: AbortSignal) {

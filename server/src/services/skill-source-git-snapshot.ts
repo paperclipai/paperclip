@@ -6,9 +6,8 @@ import type { SkillSourceScanProgress } from '@paperclipai/shared';
 import { parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { unprocessable } from '../errors.js';
 import { buildGitAuthInvocation } from './git-credentials.js';
+import { GIT_NULL_DEVICE } from './git-null-device.js';
 import { MAX_REPOSITORY_BYTES, MAX_REPOSITORY_FILES } from './skill-repository-package.js';
-
-const GIT_NULL_DEVICE = '/dev/null';
 
 export type GitSkillTreeEntry = { path: string; type: string; mode: string; sha: string; size?: number };
 export interface GitSkillSnapshot {
