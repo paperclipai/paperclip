@@ -46,6 +46,7 @@ import {
   notInArray,
   or,
   sql,
+  lt,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -6530,6 +6531,118 @@ export function recoveryService(
     return result;
   }
 
+  // SIA-803 backstop sweeper: a wakeup request that is still `claimed` while
+  // its run is already terminal (or missing entirely) can never be finalized
+  // by the normal run-completion path — the run row is closed and nobody is
+  // left to call setWakeupStatus. Every leak source (recovery-backstop
+  // terminalization, a crash between setRunStatus and setWakeupStatus, a
+  // deleted run row) converges on this same observable state, so one sweep
+  // over that state closes the whole class. Terminal statuses are delegated
+  // to TERMINAL_HEARTBEAT_RUN_STATUSES so native scheduled_retry stays a live
+  // claim. Idempotent: rows already finalized never match again, so no
+  // wake storm is possible.
+  //
+  // Greptile P1 (PR #13856): `runStatus === null` is not a sufficient orphan
+  // signal on its own — native status dispatch intentionally marks a wake as
+  // `claimed` with `runId: null` while it awaits `enqueueWakeup` and links
+  // the run afterward. We therefore require the claim to have been sitting
+  // in `claimed` state for at least `CLAIMED_WAKE_GRACE_MS` before we
+  // consider it a sweep candidate. The live path is well under this window
+  // in practice (single-digit milliseconds), and the existing terminal-status
+  // check still catches crashes-with-runId that survive past the grace.
+  const CLAIMED_WAKE_GRACE_MS = 5 * 60 * 1000;
+  async function sweepOrphanClaimedWakes() {
+    const result = {
+      finalized: 0,
+      missingRun: 0,
+      byRunStatus: {} as Record<string, number>,
+      skippedInFlight: 0,
+    };
+
+    const graceCutoff = new Date(Date.now() - CLAIMED_WAKE_GRACE_MS);
+    // Greptile P2: bounded query — even with the grace filter, cap the
+    // candidate set so a pathological surge of claimed rows cannot push the
+    // sweep into a multi-thousand-row loop. Anything older than the
+    // graceCutoff + 10k backlog is left for the next tick to pick up after
+    // earlier entries are finalized, which keeps load bounded and visible.
+    const SWEEP_BATCH_LIMIT = 1000;
+    const stale = await db
+      .select({
+        id: agentWakeupRequests.id,
+        companyId: agentWakeupRequests.companyId,
+        runId: agentWakeupRequests.runId,
+        claimedAt: agentWakeupRequests.requestedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "claimed"),
+          lt(agentWakeupRequests.requestedAt, graceCutoff),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(SWEEP_BATCH_LIMIT);
+
+    for (const row of stale) {
+      let runStatus: string | null = null;
+      if (row.runId) {
+        const [run] = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, row.runId))
+          .limit(1);
+        runStatus = run?.status ?? null;
+      }
+      const orphan =
+        runStatus === null || TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus);
+      if (!orphan) {
+        // Greptile P2: bounded queries — if a claimed row has a non-terminal
+        // run, leave it alone and do not count it. The grace window already
+        // excluded the very-recent ones.
+        continue;
+      }
+
+      const now = new Date();
+      const finalized = await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "failed",
+          finishedAt: now,
+          error: `orphan claimed wake sweep: linked run ${
+            row.runId ? `is ${runStatus}` : "missing"
+          }`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, row.id),
+            eq(agentWakeupRequests.companyId, row.companyId),
+            eq(agentWakeupRequests.status, "claimed"),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id })
+        .then((rows) => rows[0] ?? null);
+      if (!finalized) continue; // a live path finalized it concurrently
+
+      result.finalized += 1;
+      if (!row.runId || runStatus === null) result.missingRun += 1;
+      else
+        result.byRunStatus[runStatus] =
+          (result.byRunStatus[runStatus] ?? 0) + 1;
+
+      logger.warn(
+        {
+          wakeupRequestId: row.id,
+          runId: row.runId,
+          runStatus,
+        },
+        "finalized orphan claimed wakeup request in sweep",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -6541,6 +6654,7 @@ export function recoveryService(
     legacyRepairDispatchBlock,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
+    sweepOrphanClaimedWakes,
     readRecoveryTimerIntervalMs,
   };
 }
