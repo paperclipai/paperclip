@@ -14,6 +14,22 @@ function providerStatus(error: unknown): number | undefined {
   return error instanceof Error && 'details' in error ? (error.details as { status?: number })?.status : undefined;
 }
 
+async function companyGitHubTokenHeaders(db: Db, companyId: string): Promise<Record<string, string>> {
+  const { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveManagedGitHubIdentitySelection } = await import('./git-credentials.js');
+  if ((await resolveManagedGitHubIdentitySelection(db, companyId, {})).configured) return {};
+  const { secretService } = await import('./secrets.js');
+  const secrets = secretService(db);
+  for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
+    const secret = await secrets.getByName(companyId, name).catch(() => null);
+    if (!secret) continue;
+    const token = await secrets.resolveSecretValue(companyId, secret.id, 'latest', {
+      accessContext: { consumerType: 'system', consumerId: 'skill-source-github-access', actorType: 'system', issueId: null, heartbeatRunId: null, responsibleUserId: null },
+    }).then(value => value.trim()).catch(() => '');
+    if (token) return { Authorization: `Bearer ${token}` };
+  }
+  return {};
+}
+
 /** Automatic access considers only this caller's grants, never connection management visibility. */
 export function skillSourceGitHubReader(db: Db, companyId: string, actor: Request['actor'], connectionId: string | null, options: { grantId?: string | null } = {}): GitHubRead {
   let chosen: Authorization | undefined;
@@ -33,10 +49,10 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
         return { Authorization: `Bearer ${result.env.GH_TOKEN}` };
       }
       if (connectionId || result.status === 'unavailable') throw forbidden(result.reason ?? 'GitHub authorization is unavailable.');
-      return {};
+      return companyGitHubTokenHeaders(db, companyId);
     }
     if (actor.type !== 'board') throw forbidden('Authentication required.');
-    if (!authorization.connectionId) return {};
+    if (!authorization.connectionId) return companyGitHubTokenHeaders(db, companyId);
     return access.githubReadHeaders(companyId, authorization.connectionId, actor.userId ?? null, localTrusted, force, authorization.grantId);
   };
   const candidates = async (): Promise<Authorization[]> => {
@@ -132,7 +148,7 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
         const header = values.Authorization ?? values.authorization;
         if (header && !/^(Bearer|token)\s+\S+$/i.test(header)) throw unprocessable('Reconnect GitHub to download repositories.');
         const token = header?.replace(/^(Bearer|token)\s+/i, '') ?? '';
-        return openGitSkillSnapshot({ ...input, token, cacheScope: JSON.stringify([companyId, actor.type, actor.type === 'agent' ? actor.agentId : actor.userId, actor.type === 'agent' ? actor.runId : actor.source, authorization.connectionId, authorization.grantId]) }, { ...options, beforeDownload: lease.beforeDownload });
+        return openGitSkillSnapshot({ ...input, token, cacheScope: JSON.stringify([companyId, actor.type, actor.type === 'agent' ? actor.agentId : actor.userId, actor.type === 'agent' ? actor.runId : actor.source, authorization.connectionId, authorization.grantId, Boolean(token)]) }, { ...options, beforeDownload: lease.beforeDownload });
       }, options.signal);
       return { ...snapshot, release: async () => { try { await snapshot.release(); } finally { if (ownsLease) lease.release(); } } };
     } catch (error) {
