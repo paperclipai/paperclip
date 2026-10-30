@@ -662,7 +662,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
         assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
         assert.match(block, /testops-chat-reporter\.mjs verify-selection chat-testops-selection\/testops-selection\.json/);
         assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
-        assert.match(block, /--id chat-features\.runner-opencode\.local\.create-backlog --max-parallel 1 --max-automatic-retries 0/);
+        assert.match(block, /--id chat-features\.runner-opencode-deepseek-1017\.local\.create-backlog --max-parallel 1 --max-automatic-retries 0/);
         assert.doesNotMatch(block, /ALLURE_TOKEN/);
         assert.equal([...block.matchAll(providerSecretReference)].length, 1);
         assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
@@ -680,6 +680,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
         block.replace("      - *guard\n", ""),
         block.replace("testops-chat-reporter.mjs verify-selection", "testops-chat-reporter.mjs unverified-selection"),
         block.replace("OPENROUTER_API_KEY:", "ALLURE_TOKEN:"),
+        block.replace("--id chat-features.runner-opencode-deepseek-1017.local.create-backlog", "--id chat-features.runner-opencode.local.create-backlog"),
       ]) assert.throws(() => assertBoundary(mutant));
       continue;
     }
