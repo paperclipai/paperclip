@@ -15,7 +15,7 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 ## Sub-features
 
 - `instance`: `onboarding/instance` — choose local instance configuration and start the server.
-- `company`: `onboarding/company` — create a company with its identity and initial agent.
+- `company`: `onboarding/company` — create a company and either configure its first agent or continue without one.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
 - `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
 
@@ -70,6 +70,14 @@ OpenAI Subscription selection; it does not prove provider authentication.
   company-prefixed onboarding route and reload; the agent step must appear
   without creating another company. Screenshots and a trace capture the real UI action and result.
   This proves company creation/resumption, not hiring or a first model run.
+
+Manual: Open an agentless company's dashboard. At the agent-name step, choose
+**Skip for now** with the name empty. The wizard must close without
+creating an agent, task, project, or provider login. Visit a plugin page and return
+to the dashboard; the wizard must stay closed during this document visit. Repeat
+from the company-prefixed onboarding route; skipping must open that company's
+dashboard. A reload can offer setup again. The dashboard's explicit setup action
+must still open the wizard when the operator is ready to add an agent.
 
 Manual: Create a disposable company and first agent. Leave midway, reopen the
 company's onboarding route, and finish; drafts save automatically. Follow the

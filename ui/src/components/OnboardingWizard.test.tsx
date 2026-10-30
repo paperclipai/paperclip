@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, StrictMode } from "react";
+import { claimOnboardingOffer, resetOnboardingOffers } from "../lib/onboarding-auto-open";
 import { buildClaudeLocalConfig } from "../../../packages/adapters/claude-local/src/ui/build-config";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import type { LocalAiLoginStatus } from "@paperclipai/shared";
@@ -190,11 +191,12 @@ const mockAdapterRegistry = vi.hoisted(() => ({
   disabled: new Set<string>(),
 }));
 
+const mockNavigate = vi.hoisted(() => vi.fn());
 const mockRouterState = vi.hoisted(() => ({ pathname: "/" }));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useParams: () => ({}),
 }));
 vi.mock("../context/DialogContext", () => ({
@@ -361,6 +363,7 @@ function isArcPrimary(text: string): boolean {
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
+    resetOnboardingOffers();
     mockAdaptersApi.list.mockReset().mockResolvedValue([]);
     mockEnvironmentsApi.probe.mockReset().mockResolvedValue({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "platform-lease" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
@@ -1872,14 +1875,52 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       root.unmount();
     });
   });
-  // The close-on-storage-denial case is gone with the control that reached it.
-  // Onboarding is a gate now, not a dialog: there is no X, Escape does not
-  // dismiss it, and nothing in the wizard calls `handleClose`. A test that
-  // clicked Close was asserting a path a customer no longer has.
-  //
-  // The open side of the same hazard is still covered by "renders instead of
-  // throwing when the browser denies storage access" directly above, which is
-  // the half that can still happen.
+  it("does not offer to skip before a company exists", async () => {
+    const { root, queryClient } = render();
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+      await flushReact();
+      expect(document.body.textContent).not.toContain("Skip for now");
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it.each(["/ARC/dashboard", "/ARC/mail", "/ARC/beeper", "/ARC/onboarding"])(
+    "continues without an agent from %s without creating resources",
+    async (pathname) => {
+      mockRouterState.pathname = pathname;
+      mockDialog.onboardingOpen = !pathname.endsWith("/onboarding");
+      mockDialog.onboardingOptions = { initialStep: 3, companyId: "archive" };
+      mockCompany.companies = [{ id: "archive", name: "Archive", issuePrefix: "ARC" }];
+      mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+      const { root, queryClient } = render();
+      try {
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+        await flushReact();
+        const skip = [...document.body.querySelectorAll("button")].find(button => button.textContent === "Skip for now");
+        expect(skip).toBeTruthy();
+        await act(async () => skip!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+        expect(mockDialog.closeOnboarding).toHaveBeenCalledOnce();
+        expect(mockDialog.setOnboardingRouteDismissed).toHaveBeenCalledWith(true);
+        expect(mockCompany.setSelectedCompanyId).toHaveBeenCalledWith("archive", { source: "route_sync" });
+        expect(claimOnboardingOffer("archive")).toBe(false);
+        expect(mockAgentsApi.create).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(mockAgentsApi.update).not.toHaveBeenCalled();
+        expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+        expect(mockGoalsApi.create).not.toHaveBeenCalled();
+        expect(mockProjectsApi.create).not.toHaveBeenCalled();
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+        if (pathname.endsWith("/onboarding")) expect(mockNavigate).toHaveBeenCalledWith("/ARC/dashboard");
+        else expect(mockNavigate).not.toHaveBeenCalled();
+        mockDialog.onboardingOpen = false;
+        mockDialog.onboardingRouteDismissed = true;
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+        expect(document.body.querySelector('[data-testid="onboarding-wizard"]')).toBeNull();
+      } finally { await act(async () => root.unmount()); }
+    },
+  );
+
   it("leaves the draft untouched when the company query fails and onboarding is closed", async () => {
     // Mounting is safe for the draft precisely because the persist effect is
     // gated on the wizard being open. A closed wizard writes nothing, so the
