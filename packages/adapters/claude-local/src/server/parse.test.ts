@@ -4,6 +4,7 @@ import {
   parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeMaxBudgetResult,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -275,6 +276,25 @@ describe("isClaudeTransientUpstreamError", () => {
         },
       }),
     ).toBe(false);
+  });
+
+  it("does not classify a max-budget stop as transient or provider quota", () => {
+    // Real budget stops carry the agent's own tool output in stdout, which can
+    // mention "rate limit" or "429" and would otherwise trip the regex.
+    const input = {
+      parsed: {
+        type: "result",
+        subtype: "error_max_budget_usd",
+        is_error: true,
+        total_cost_usd: 8.02,
+      },
+      stdout: "grep output: 429 Too Many Requests, rate limit reached, usage limit reached",
+    };
+    expect(isClaudeMaxBudgetResult(input.parsed)).toBe(true);
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(false);
+    expect(isClaudeMaxBudgetResult({ subtype: "error_max_turns" })).toBe(false);
+    expect(isClaudeMaxBudgetResult({ subtype: "success" })).toBe(false);
   });
 
   it("does not classify deterministic validation errors as transient", () => {

@@ -535,6 +535,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  // An adapter-side --max-budget-usd stop: a replay spends the cap again.
+  "max_budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
   // This is the fail-closed fallback for exceptions raised before an adapter
