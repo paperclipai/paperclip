@@ -4736,6 +4736,10 @@ export function recoveryService(
         continue;
       }
       if (issue.status !== "in_review" && !agentInvokable) {
+        if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) {
+          result.skipped += 1;
+          continue;
+        }
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4866,7 +4870,15 @@ export function recoveryService(
           continue;
         }
       }
+      const recoveryNow = new Date();
       if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (
+          issue.monitorNextCheckAt &&
+          issue.monitorNextCheckAt.getTime() > recoveryNow.getTime()
+        ) {
+          result.skipped += 1;
+          continue;
+        }
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4931,7 +4943,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
       const providerQuotaMonitorRun =
         issue.status === "in_review"
           ? participantLatestRunForRecovery
