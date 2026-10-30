@@ -68,6 +68,13 @@ diagnostics and controlled batches. It defaults to dry run, supports
 or compatible routine upgrade. The installations phase is the one-time legacy
 conversion boundary described in the linked runbook. Never point it at another instance's database/storage configuration.
 
+New package-backed versions retain their complete path/kind/encoding index in
+`package_file_map`, including identity mappings. Library and version listing read
+this metadata without downloading manifests or archives. The bounded `versions`
+phase also backfills older null indexes from verified manifests without changing
+version IDs or content; include that phase in legacy conversion. Old null indexes
+remain readable during conversion, with a cold manifest read when needed.
+
 ## Acquisition and retention
 
 A missing package follows this order: verified local files, stored archive, legacy DB

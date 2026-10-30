@@ -68,7 +68,9 @@ use the latest branch as a replacement for missing installed content.
 1. Inventory all companies and source kinds. Identify missing versions, incomplete
    inventory, local storage receipts, catalog reset snapshots and unresolved runs.
 2. Backfill legacy package/version bodies with the existing `snapshots` and
-   `versions` phases. Keep original bytes until independent verification succeeds.
+   `versions` phases. The latter also fills missing version metadata indexes so
+   subsequent library/history reads need no object downloads. Keep original bytes
+   until independent verification succeeds.
 3. Stop admission and skill/source writers; retire every filesystem-authoritative
    process. The `--writers-stopped` flag attests this operator action; it does not
    stop the application itself.

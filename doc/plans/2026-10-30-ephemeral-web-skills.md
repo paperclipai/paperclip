@@ -73,3 +73,25 @@ handoff, and production volume removal are outside this slice.
 - Remaining: finish repository checks and PR review, candidate deployment and
   fresh-home remote Runner qualification including compatible rollback. The PR
   stays draft until hosted qualification and the final checks are complete.
+- Greptile reached 5/5 with all six comments resolved at `8c0fae76a6`.
+  CI at that revision passed typecheck, build, all unit/integration shards and
+  Runner checks; two browser shards still require investigation. The shared-chat
+  question fixture's five-second assertion raced a successful asynchronous run;
+  its readiness wait now follows the existing run-settlement helper.
+- A cold metadata assertion exposed three manifest downloads during history
+  listing. New versions now persist a complete metadata index and migration
+  backfills legacy indexes without changing content/version identity. Process
+  qualification confirmed zero metadata/warm downloads; its tiny fixture measured
+  a 176 ms cold read (two objects, 899 bytes), 37 ms warm execution preparation,
+  899 MB process RSS and 820 bytes of temporary files. These local fixture numbers
+  are not hosted latency or incremental memory claims. A follow-up compatibility
+  run caught changed file ordering; preserving the existing order fixes that drift.
+- Metadata/package compatibility passed all 44 tests after preserving file order.
+  Both affected browser cases passed independently. Stop/reset now allows a bounded
+  30-second cold startup; its failure trace showed cancellation during preparation
+  when the old five-second assertion expired, before the fixture began streaming.
+- The baseline image published successfully, but the deployment check rejected the
+  branch with `fleet_campaign_staging_requires_master` (Cloud run `41092962684`).
+  Current Cloud policy uses `test.paperclip.app` for branch experiments. The local
+  Cloud checkout's older runbook missed this boundary. Qualification is moving to
+  an owned disposable test tenant; the rejected request made no tenant deployment.

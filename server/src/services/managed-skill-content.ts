@@ -15,6 +15,7 @@ export type PreparedSkillContent = {
   files: CompanySkillVersionFileInventoryEntry[];
   packageSnapshotId: string | null;
   packageFileMap: (typeof companySkillVersions.$inferInsert)["packageFileMap"];
+  implicitFileMap: (typeof companySkillVersions.$inferInsert)["packageFileMap"];
   contentHash: string;
 };
 export type SkillContentPublication = {
@@ -56,7 +57,13 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
       throw unprocessable("Skill package is not durably available.");
     }
     return { files, packageSnapshotId, contentHash: skillSnapshotHash(files),
-      packageFileMap: packageSnapshotId ? skillVersionFileMap(files, await packages.manifest(companyId, packageSnapshotId)) : null };
+      packageFileMap: packageSnapshotId ? skillVersionFileMap(files) : null,
+      implicitFileMap: packageSnapshotId ? skillVersionFileMap((await packages.manifest(companyId, packageSnapshotId, signal)).files) : null };
+  }
+
+  function fileMapIdentity(files: PreparedSkillContent["packageFileMap"]) {
+    return JSON.stringify(files?.map(file => ({ path: file.path, sourcePath: file.sourcePath,
+      kind: file.kind, encoding: file.encoding ?? "utf8" })).sort((left, right) => left.path.localeCompare(right.path)));
   }
 
   async function append(tx: SkillContentTransaction, skill: SkillContentRow, candidate: PreparedSkillContent,
@@ -74,7 +81,12 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
         eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.companySkillId, skill.id),
         eq(companySkillVersions.id, skill.currentVersionId)));
       if (version && !version.repositorySnapshotId && version.packageSnapshotId === candidate.packageSnapshotId
-        && JSON.stringify(version.packageFileMap) === JSON.stringify(candidate.packageFileMap)) {
+        && fileMapIdentity(version.packageFileMap ?? candidate.implicitFileMap) === fileMapIdentity(candidate.packageFileMap)) {
+        if (!version.packageFileMap) {
+          await tx.update(companySkillVersions).set({ packageFileMap: candidate.packageFileMap })
+            .where(and(eq(companySkillVersions.companyId, skill.companyId), eq(companySkillVersions.id, version.id)));
+          version.packageFileMap = candidate.packageFileMap ?? null;
+        }
         const [saved] = await tx.update(companySkills).set({ ...fields, updatedAt: new Date() })
           .where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id))).returning();
         await options.afterPublish?.(tx, saved!, version);

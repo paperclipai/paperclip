@@ -9,7 +9,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companies, createDb } from "@paperclipai/db";
+import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -240,6 +240,7 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       metadata: { sourceKind: "managed_local" } }).returning();
     const service = companySkillService(db);
     const version = await service.createVersion(companyId, legacy!.id);
+    await db.update(companySkillVersions).set({ packageFileMap: null }).where(eq(companySkillVersions.id, version.id));
     const maintenance = skillInstallationMaintenance(db);
     expect((await maintenance.installations({ id: legacy!.id })).results[0]!.status).toBe("conversion_required");
     await expect(maintenance.installations({ companyId, apply: true })).rejects.toMatchObject({ status: 409 });

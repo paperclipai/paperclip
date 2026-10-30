@@ -3784,7 +3784,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     let packageFileMap = options.packageFileMap ?? null;
     const preparePackage = async (store: ReturnType<typeof skillPackageStore>) => {
       const id = await store.prepare(companyId, fileInventory);
-      packageFileMap = skillVersionFileMap(fileInventory, await store.manifest(companyId, id));
+      packageFileMap = skillVersionFileMap(fileInventory);
       return id;
     };
     const packageSnapshotId = options.packageSnapshotId ?? (options.release || !skillPackageStorageEnabled() ? null : options.database

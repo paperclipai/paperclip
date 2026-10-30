@@ -94,6 +94,14 @@ describe.skipIf(!enabled)("skills survive web-server replacement", () => {
     await db.insert(companies).values({ id: companyId, name: "Ephemeral skill qualification", issuePrefix: `EP${companyId.slice(0, 5)}` });
     return companyId;
   }
+  async function directoryBytes(directory: string): Promise<number> {
+    let bytes = 0;
+    for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const absolute = path.join(directory, entry.name);
+      bytes += entry.isDirectory() ? await directoryBytes(absolute) : (await fs.stat(absolute)).size;
+    }
+    return bytes;
+  }
 
   it("preserves unassigned content, exact receipts and executable delivery through A → B → C", async () => {
     const companyId = await company();
@@ -104,16 +112,26 @@ describe.skipIf(!enabled)("skills survive web-server replacement", () => {
     const files = `${route}/${created.id}/files`;
     const script = await request(a, files, "PATCH", { path: "scripts/run.sh", content: "#!/bin/sh\ncat references/value.txt\n", executable: true, expectedVersionId: created.currentVersionId });
     const saved = await request(a, files, "PATCH", { path: "references/value.txt", content: "durable useful result\n", expectedVersionId: script.versionId });
+    await request(a, route);
     await stop(a);
     await removeRuntimeAssetTree(a.home);
     await fs.writeFile(a.home, "predecessor filesystem unavailable");
     const b = await start("b");
+    await b.rpc("metrics");
     expect((await request(b, route)).some((skill: any) => skill.id === created.id)).toBe(true);
+    await request(b, `${route}/${created.id}/versions`);
+    expect((await b.rpc("metrics")).downloads).toBe(0);
+    const coldStarted = performance.now();
     expect(await request(b, `${files}?path=references/value.txt`)).toMatchObject({ content: "durable useful result\n", versionId: saved.versionId });
+    const coldReadMs = performance.now() - coldStarted;
+    const coldMetrics = await b.rpc("metrics");
+    expect(coldMetrics.downloads).toBeGreaterThan(0);
     expect(await b.rpc("runtime", { companyId, key: created.key, execute: true })).toMatchObject({ versionId: saved.versionId, output: "durable useful result\n" });
     await b.rpc("metrics");
     const warm = await b.rpc("runtime", { companyId, key: created.key, execute: true });
-    expect((await b.rpc("metrics")).downloads).toBe(0);
+    const warmMetrics = await b.rpc("metrics");
+    expect(warmMetrics.downloads).toBe(0);
+    const temporaryBytes = await directoryBytes(b.home);
     await b.rpc("faults", { lostResponse: true });
     const saveInput = { path: "SKILL.md", content: "# Version B\n", expectedVersionId: saved.versionId, idempotencyKey: "save-once" };
     await expect(request(b, files, "PATCH", saveInput)).rejects.toThrow();
@@ -127,7 +145,9 @@ describe.skipIf(!enabled)("skills survive web-server replacement", () => {
     expect(await c.rpc("runtime", { companyId, key: created.key, versionId: saved.versionId, execute: true }))
       .toMatchObject({ versionId: saved.versionId, markdown: "# Version A\n", output: "durable useful result\n" });
     expect(await request(c, files, "PATCH", { ...saveInput, content: "different" }, 409)).toHaveProperty("error");
-    console.info(JSON.stringify({ qualification: "A-B-C", versions: [created.currentVersionId, saved.versionId, receipt.versionId], warmMs: warm.elapsedMs }));
+    process.stdout.write(`${JSON.stringify({ qualification: "A-B-C", versions: [created.currentVersionId, saved.versionId, receipt.versionId],
+      coldReadMs, coldDownloads: coldMetrics.downloads, coldObjectBytes: coldMetrics.downloadedBytes,
+      warmMs: warm.elapsedMs, warmDownloads: warmMetrics.downloads, rssBytes: warmMetrics.memory.rss, temporaryBytes })}\n`);
   }, 180_000);
 
   it("rejects concurrent stale publication and survives upload failure or process death", async () => {

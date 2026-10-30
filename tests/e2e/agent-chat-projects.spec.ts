@@ -500,6 +500,7 @@ test("shared questions resume and existing project reuse creates no project card
     );
     await page.goto(f.route);
     await send(page, { action: "question" });
+    await idle(request, f.chatPath);
     await expect(
       page.getByRole("radio", { name: "Garden club", exact: true }).last(),
     ).toBeVisible();

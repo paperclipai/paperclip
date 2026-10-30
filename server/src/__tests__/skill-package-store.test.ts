@@ -942,6 +942,21 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(await skillPackageStore(db, storage).versionFiles(saved!)).toEqual([original]);
   });
 
+  it("backfills a cleared version's metadata index without changing its identity or bytes", async () => {
+    const f = await fixture();
+    const [version] = await db.insert(companySkillVersions).values({ companyId: f.companyId,
+      companySkillId: f.skills[0]!.skill.id, revisionNumber: 2, packageSnapshotId: f.id,
+      packageFileMap: null, fileInventory: [], migrationAt: null }).returning();
+    expect((await skillPackageMaintenance(db, storage).migrateVersions({ id: version!.id, apply: true })).migrated).toBe(1);
+    const [saved] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version!.id));
+    expect(saved).toMatchObject({ id: version!.id, revisionNumber: 2, packageSnapshotId: f.id, fileInventory: [] });
+    expect(await f.store.versionFiles(saved!)).toEqual(expect.arrayContaining(files));
+    const read = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("Metadata must not fetch objects"));
+    expect(await f.store.versionInventory(saved!)).toEqual(expect.arrayContaining(files.map(({ path, kind }) => ({ path, kind }))));
+    expect(read).not.toHaveBeenCalled();
+    expect((await skillPackageMaintenance(db, storage).migrateVersions({ id: version!.id, apply: true })).inspected).toBe(0);
+  });
+
   it.each([false, true])("restores across legacy payload clearing with a cached manifest: %s", async cachedManifest => {
     const companyId = await company();
     const [snapshot] = await db.insert(snapshots).values({ companyId, contentHash: skillSnapshotHash(files), fileInventory: files }).returning();

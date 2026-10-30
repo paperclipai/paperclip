@@ -30,10 +30,8 @@ type Descriptor = Pick<typeof snapshots.$inferSelect, "id" | "companyId" | "cont
 export const skillVersionMetadataColumns = { ...getTableColumns(companySkillVersions),
   fileInventory: sql<CompanySkillVersionFileInventoryEntry[]>`'[]'::jsonb` };
 export type StoredSkillVersion = typeof companySkillVersions.$inferSelect;
-export function skillVersionFileMap(files: CompanySkillVersionFileInventoryEntry[], manifest: SkillPackageManifest): SkillPackageFileMapping[] | null {
-  const stored = new Map(manifest.files.map(file => [file.path, file]));
-  if (files.every(file => stored.get(file.path)?.kind === file.kind && stored.get(file.path)?.encoding === (file.encoding ?? "utf8"))) return null;
-  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" }));
+export function skillVersionFileMap(files: Array<Pick<CompanySkillVersionFileInventoryEntry, "path" | "kind" | "encoding">>): SkillPackageFileMapping[] {
+  return files.map(file => ({ path: file.path, sourcePath: file.path, kind: file.kind, encoding: file.encoding ?? "utf8" as const }));
 }
 type ReadScope = { db: Db; descriptors: Map<string, Promise<Descriptor>>; durable: Map<string, Promise<boolean>>; versions: Map<string, StoredSkillVersion> };
 const readScope = new AsyncLocalStorage<ReadScope>();
