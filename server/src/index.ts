@@ -297,9 +297,11 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
-  ensureDecisionSigningSecret();
   const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
-  if ("deploymentMode" in startupConfig) initializeRuntimeConfigConsumers(startupConfig);
+  if ("deploymentMode" in startupConfig) {
+    ensureDecisionSigningSecret();
+    initializeRuntimeConfigConsumers(startupConfig);
+  }
   
   type MigrationSummary =
     | "skipped"
@@ -729,6 +731,9 @@ async function startServerWithDatabaseTeardown(
   
   await initializeCloudRuntimeConfig(db as any);
   let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
+  // Cloud storage depends on the canonical DB snapshot. Validate it before
+  // signing keys or other configuration consumers can mutate local state.
+  if (isCloudManagedInstance()) ensureDecisionSigningSecret();
 
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
