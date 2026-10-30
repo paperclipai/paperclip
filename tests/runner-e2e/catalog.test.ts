@@ -33,6 +33,37 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("keeps the Daytona controller outage inside the provider idle lifetime", () => {
+    const suite = runnerSuites.find(candidate => candidate.id === "daytona-restart-continuity")!;
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "44444444-4444-4444-8444-444444444444", version: "latest" as const },
+    };
+    const environmentInput = { executionId: "controller-outage", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    const base = runnerEnvironments.find(environment => environment.id === "daytona")!;
+    const baseConfig = base.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const cells = runnerMatrix.filter(entry => entry.suite.id === suite.id);
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) {
+      const config = cell.environment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+      expect(config.autoStopInterval).toBe(15);
+      expect(Number(config.autoStopInterval) * 60_000).toBeGreaterThan(420_000);
+      expect(config).toEqual({ ...baseConfig, autoStopInterval: 15 });
+      expect(cell.environment.configurationKey).toBe("controller-outage-v1");
+      const agentInput = { ...environmentInput, environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace" };
+      const adapterConfig = cell.profile.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      const original = runnerProfiles.find(profile => profile.id === cell.profile.id)!.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      expect(adapterConfig.idleTimeoutMs).toBe(300_000);
+      expect(adapterConfig.lifecycleMode).toBe(original.lifecycleMode);
+      expect(cell.suite.manualOnly).toBe(true);
+      expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
+    }
+    expect(baseConfig.autoStopInterval).toBe(5);
+    expect(daytonaWarmEnvironment.buildEnvironment(environmentInput).config).toMatchObject({ autoStopInterval: 5 });
+    expect(suite.definitionMetadata).toMatchObject({ version: 4, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15 });
+  });
+
   it.each([
     ["runner-codex-subscription", "CODEX_AUTH_JSON"], ["runner-codex", "OPENAI_API_KEY"],
   ])("keeps %s receipt smoke separately selectable with exactly four bounded native turns", (profile, credential) => {
