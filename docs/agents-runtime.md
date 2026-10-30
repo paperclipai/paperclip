@@ -71,6 +71,13 @@ For local adapters, set:
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
 
+### opencode_local: log surfacing and hang protection
+
+The `opencode_local` adapter surfaces OpenCode's own logs and bounds silent runs (a rate-limited or unhealthy model can otherwise retry with backoff for over an hour emitting nothing on stdout):
+
+- **Log surfacing (on by default):** runs start with `--print-logs --log-level WARN`, so OpenCode's own WARN logs — including model stream errors and retries — appear in the run's captured stderr. Disable with `PAPERCLIP_OPENCODE_PRINT_LOGS=0`, or change the level with `PAPERCLIP_OPENCODE_PRINT_LOG_LEVEL` (`DEBUG`|`INFO`|`WARN`|`ERROR`); both are read from the run env first, then the process env.
+- **Output-inactivity monitor (default 30 minutes):** a run that emits no stdout JSONL model events for 30 minutes is terminated (SIGTERM, 5s grace, then SIGKILL) and fails fast with the `opencode_output_inactivity_monitor` error instead of churning until `timeoutSec`. The signals land only on targets where Paperclip owns a local process group — local runs and SSH runs (via their local `ssh` client) — including local children that stayed in that group but ignored SIGTERM. The reach is the local process group only: for SSH runs, killing the client tears down the connection and the remote session, but a remote tool that has detached from that session (daemonized on the remote host) escapes the signal and can survive — do not assume the remote workspace is quiescent before starting another run. On sandbox targets there is no host-signallable process group, so the monitor sends no signals: it fails the run fast and leaves teardown to the sandbox runner, which applies its own timeout. Only model progress events count — `--print-logs` stderr output and long-but-healthy tool activity (tracked via process polling on Linux) do not keep a silent run alive. Configure per agent via `adapterConfig.outputInactivityTimeoutMs` (milliseconds); set it to `null` to disable the monitor.
+
 ## 3.4 Prompt templates
 
 You can set:
