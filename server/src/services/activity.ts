@@ -2,7 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -479,16 +479,25 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
+            inArray(
+              heartbeatRuns.id,
+              db
+                .select({ runId: heartbeatRuns.id })
+                .from(heartbeatRuns)
+                .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.issueId, issueId)))
+                .union(
+                  db
+                    .select({ runId: sql<string>`${activityLog.runId}` })
+                    .from(activityLog)
+                    .where(
+                      and(
+                        eq(activityLog.companyId, companyId),
+                        eq(activityLog.entityType, "issue"),
+                        eq(activityLog.entityId, issueId),
+                        isNotNull(activityLog.runId),
+                      ),
+                    ),
+                ),
             ),
           ),
         )
