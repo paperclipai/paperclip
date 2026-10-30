@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveServerDevWatchIgnorePaths } from "../src/dev-watch-ignore.ts";
+import { devEnvLocalNodeArgs, devEnvLocalWatchArgs } from "../src/dev-env-local.ts";
 
 const require = createRequire(import.meta.url);
 const tsxCliPath = require.resolve("tsx/cli");
@@ -11,7 +12,7 @@ const ignoreArgs = resolveServerDevWatchIgnorePaths(serverRoot).flatMap((ignoreP
 
 const child = spawn(
   process.execPath,
-  [tsxCliPath, "watch", ...ignoreArgs, "src/index.ts"],
+  [tsxCliPath, "watch", ...ignoreArgs, ...devEnvLocalWatchArgs(serverRoot), ...devEnvLocalNodeArgs(serverRoot), "src/index.ts"],
   {
     cwd: serverRoot,
     env: process.env,
