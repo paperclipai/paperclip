@@ -138,7 +138,7 @@ export function repositoryFileInputs(file, program) {
     if (typeof input !== "string" || !path.isAbsolute(input)) { invalid.add(binding.source); continue; }
     covered.add(binding.source);
     const values = inputs.get(binding.source) ?? new Set();
-    values.add(path.normalize(input)); inputs.set(binding.source, values);
+    values.add(path.resolve(input)); inputs.set(binding.source, values);
   }
   return {
     covered: [...covered].filter(source => !invalid.has(source)),

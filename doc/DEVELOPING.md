@@ -217,7 +217,10 @@ read API can be resolved without running code. This includes directory listings
 and transitive helper reads. Dynamic paths, writes, escaped filesystem APIs,
 mutable or shadowed bindings, generated inputs and paths outside the checkout
 remain opaque. Setup-file reads invalidate the whole project when their input
-changes. Symlink reads follow the physical target. Missing inputs retain coverage.
+changes. Object-valued constants, including URL objects, remain opaque even without
+an observed mutation; inline URL construction and immutable string constants can
+be resolved. Symlink reads track both the checked-in link and its physical target.
+Missing inputs retain coverage.
 The selector explicitly tracks setup/configuration dependencies as well as test
 imports. Ordinary source names such as `session-config-metadata.test.ts` or
 `setup-state.ts` remain eligible; the words `config` and `setup` alone do not
@@ -229,7 +232,8 @@ until reviewed. This is deliberately broader than `vitest related` alone.
 The reviewed Drizzle SQL/schema entry points have no ambient repository inputs.
 Their full import closures are content-hashed in
 `scripts/ci/reviewed-test-dependencies.mjs`; changed installed contents revoke the
-exception. Database drivers and migration readers remain opaque. OS information,
+exception. CommonJS and dynamic loaders reject a fingerprint rather than leave
+unhashed children outside the closure. Database drivers and migration readers remain opaque. OS information,
 in-memory streams, timers and compression do not read repository files themselves;
 filesystem or process operations using their outputs retain their normal guards.
 The syntax audit distinguishes data keys and erased types from runtime globals.

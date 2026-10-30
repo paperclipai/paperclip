@@ -16,6 +16,16 @@ export function dependencyFingerprint(file, packageRoot) {
     if (files.has(filename)) return;
     const source = readFileSync(filename, "utf8"), ast = parseSync(filename, source);
     if (ast.errors.length) throw new Error("Unparsed dependency");
+    const inspect = node => {
+      if (!node || typeof node !== "object") return;
+      if (node.type === "ImportExpression" || (node.type === "Identifier"
+        && /^(require|createRequire|getBuiltinModule|eval|Function)$/.test(node.name))) throw new Error("Unreviewed runtime loader");
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(inspect);
+        else if (value && typeof value === "object" && value.type) inspect(value);
+      }
+    };
+    inspect(ast.program);
     files.set(filename, createHash("sha256").update(source).digest("hex"));
     for (const node of ast.program.body) {
       if (!node.source) continue;
