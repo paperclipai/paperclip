@@ -36,7 +36,8 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
     const payload = record(notification.payload);
     return record(event).eventType === "session.goal.snapshot" && matchesSession(event) &&
       Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
-      notification.schema === "paperclip.prp.event.v1" && notification.eventType === "session.goal.snapshot" &&
+      (notification.schema === "paperclip.prp.event.v1" || notification.schema === "paperclip.prp.event.v2") &&
+      notification.eventType === "session.goal.snapshot" &&
       notification.sourceInstanceId === identity.runnerInstanceId && notification.sourceKind === "runner" &&
       notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId &&
       payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false;

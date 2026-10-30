@@ -10,10 +10,11 @@ const snapshot = { eventType: "session.goal.snapshot", envelope: { ...identity, 
 const state = (events: unknown[]) => ({ identity, commands: [{ status: "completed" }], committedEvents: events });
 
 describe("settled remote warm control evidence", () => {
-  it("accepts the terminal and an authenticated idle goal-read suffix without changing its order", () => {
-    const control = state([terminal, snapshot]);
+  it.each(["paperclip.prp.event.v1", "paperclip.prp.event.v2"])("accepts the terminal and an authenticated %s idle goal-read suffix without changing its order", schema => {
+    const suffix = { ...snapshot, envelope: { ...snapshot.envelope, payload: { ...notification, schema } } };
+    const control = state([terminal, suffix]);
     expect(isSettledRemoteWarmControlState(control, identity)).toBe(true);
-    expect(control.committedEvents).toEqual([terminal, snapshot]);
+    expect(control.committedEvents).toEqual([terminal, suffix]);
     expect(isSettledRemoteWarmControlState(state([terminal]), identity)).toBe(true);
   });
 
@@ -21,6 +22,7 @@ describe("settled remote warm control evidence", () => {
     ["active goal", { ...snapshot, envelope: { ...snapshot.envelope, payload: { ...notification, payload: { ...goal, goal: { status: "active" } } } } }],
     ["provider work", { ...snapshot, envelope: { ...snapshot.envelope, payload: { ...notification, payload: { ...goal, workingNow: true } } } }],
     ["unknown event", { ...snapshot, eventType: "unknown" }],
+    ["unknown protocol version", { ...snapshot, envelope: { ...snapshot.envelope, payload: { ...notification, schema: "paperclip.prp.event.v3" } } }],
     ["new turn", { ...snapshot, eventType: "turn.started" }],
     ["foreign run", { ...snapshot, envelope: { ...snapshot.envelope, runId: "other" } }],
     ["foreign session", { ...snapshot, envelope: { ...snapshot.envelope, normalizedSessionId: "other" } }],
