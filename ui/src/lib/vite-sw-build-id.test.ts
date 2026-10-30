@@ -6,12 +6,25 @@ import {
   SERVICE_WORKER_BUILD_ID_PLACEHOLDER,
   deriveBuildIdFromEntryFileName,
   embedServiceWorkerOfflineStyles,
+  embedServiceWorkerOfflineAnimation,
   stampServiceWorkerBuildId,
 } from "./vite-sw-build-id";
 
 const swSource = () =>
   `const BUILD_ID = "${SERVICE_WORKER_BUILD_ID_PLACEHOLDER}";\n` +
   "const CACHE_NAME = `paperclip-${BUILD_ID}`;\n";
+
+describe("embedServiceWorkerOfflineAnimation", () => {
+  it("embeds the complete media bytes without an external asset request", () => {
+    const bytes = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0, 255]);
+    const source = 'return "__PAPERCLIP_OFFLINE_ANIMATION__";';
+    const dataUrl = new Function(embedServiceWorkerOfflineAnimation(source, bytes))();
+    expect(dataUrl).toMatch(/^data:video\/webm;base64,/);
+    expect(Buffer.from(dataUrl.split(",")[1], "base64")).toEqual(Buffer.from(bytes));
+    expect(() => embedServiceWorkerOfflineAnimation(source, new Uint8Array())).toThrow(/missing/);
+    expect(() => embedServiceWorkerOfflineAnimation("", bytes)).toThrow(/missing/);
+  });
+});
 
 describe("embedServiceWorkerOfflineStyles", () => {
   it("embeds CSS as a safe JavaScript string, preserving quotes and newlines", () => {

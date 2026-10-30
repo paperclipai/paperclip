@@ -17,6 +17,16 @@ import type { Plugin } from "vite";
 
 export const SERVICE_WORKER_BUILD_ID_PLACEHOLDER = "__PAPERCLIP_BUILD_ID__";
 export const SERVICE_WORKER_OFFLINE_STYLES_PLACEHOLDER = "__PAPERCLIP_OFFLINE_STYLES__";
+export const SERVICE_WORKER_OFFLINE_ANIMATION_PLACEHOLDER = "__PAPERCLIP_OFFLINE_ANIMATION__";
+
+export function embedServiceWorkerOfflineAnimation(source: string, animation: Uint8Array): string {
+  const placeholder = JSON.stringify(SERVICE_WORKER_OFFLINE_ANIMATION_PLACEHOLDER);
+  if (!animation.length || !source.includes(placeholder)) {
+    throw new Error("service worker offline animation or placeholder is missing");
+  }
+  const dataUrl = `data:video/webm;base64,${Buffer.from(animation).toString("base64")}`;
+  return source.replace(placeholder, () => JSON.stringify(dataUrl));
+}
 
 export function embedServiceWorkerOfflineStyles(source: string, css: string): string {
   const styles = css.match(/\/\* offline-recovery:start \*\/([\s\S]*?)\/\* offline-recovery:end \*\//)?.[1].trim();
@@ -87,8 +97,10 @@ export function serviceWorkerBuildIdPlugin(
       const swPath = path.resolve(root, outDir, serviceWorkerFileName);
       const source = fs.readFileSync(swPath, "utf8");
       const css = fs.readFileSync(path.resolve(root, "src/index.css"), "utf8");
+      const animation = fs.readFileSync(path.resolve(root, "src/assets/offline-character.webm"));
       const stamped = stampServiceWorkerBuildId(
-        embedServiceWorkerOfflineStyles(source, css), buildId ?? "build",
+        embedServiceWorkerOfflineAnimation(embedServiceWorkerOfflineStyles(source, css), animation),
+        buildId ?? "build",
       );
       fs.writeFileSync(swPath, stamped);
     },

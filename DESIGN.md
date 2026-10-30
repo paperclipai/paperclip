@@ -997,3 +997,8 @@ a visible Reload page action. Keep the character inline and embed the marked
 `offline-recovery` section from `ui/src/index.css` at build time so the page needs
 no network requests or cached assets. Preserve the supplied character palette
 through the offline tokens.
+
+Embed the looping WebM at build time as well. Play it muted and inline, and keep
+the still character visible until playback starts. Reduced-motion preferences
+pause the video and show the still; blocked or unsupported playback also retains
+the still character.
