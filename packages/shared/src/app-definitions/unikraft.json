@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "slug": "unikraft",
+  "name": "Unikraft",
+  "description": "Manage Unikraft Cloud instances, services, volumes, images, certificates, autoscaling, and sandbox commands and files.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "urlPatterns": [
+    "https://console.unikraft.com/*",
+    "https://*.unikraft.cloud/*"
+  ],
+  "methods": [
+    {
+      "key": "api-token",
+      "label": "Connect Unikraft",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Manage resources and run sandbox commands in your Unikraft Cloud organization.",
+      "defaults": {
+        "serverUrl": "https://controlplane.unikraft.cloud/v1"
+      },
+      "guidanceMd": "Connect a Unikraft Cloud API token. All published platform API and sandbox plugin actions are available; your action policies control which ones agents can use. Each action can target any Unikraft Cloud metro, and uses the default metro when it does not name one.",
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Unikraft API token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter Unikraft API token",
+          "secret": true,
+          "helperMd": "Create an API token in the Unikraft Cloud console. A token acts for its whole organization in every metro, including running sandbox commands and deleting resources. Unikraft does not offer narrower token permissions, so choose trusted agents and use action permissions to limit what they can do."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "metro",
+          "label": "Default metro",
+          "type": "select",
+          "advanced": true,
+          "defaultValue": "fra",
+          "helperMd": "Used to verify the token and for actions that do not name a metro.",
+          "options": [
+            {
+              "value": "dal",
+              "label": "Dallas (dal)"
+            },
+            {
+              "value": "fra",
+              "label": "Frankfurt (fra)"
+            },
+            {
+              "value": "sfo",
+              "label": "San Francisco (sfo)"
+            },
+            {
+              "value": "sin",
+              "label": "Singapore (sin)"
+            },
+            {
+              "value": "was",
+              "label": "Washington, DC (was)"
+            }
+          ]
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "metro",
+        "instance"
+      ],
+      "consoleLinks": {
+        "keys": "https://console.unikraft.com",
+        "docs": "https://unikraft.com/docs/sdks/overview#authentication"
+      },
+      "warnings": [
+        "This connection can run commands in sandboxes, read and write sandbox files, start and stop instances, and delete instances, volumes, and other resources. Select trusted agents and set action permissions before use. Your Unikraft API token stays in the vault."
+      ]
+    }
+  ],
+  "docsUrl": "https://unikraft.com/docs/api/platform/v1",
+  "branding": {
+    "logoUrl": "/brands/apps/unikraft.svg"
+  }
+}

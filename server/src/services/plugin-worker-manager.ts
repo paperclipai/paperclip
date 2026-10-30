@@ -66,6 +66,8 @@ import {
   type LoginCommandKey,
 } from "./login-command.js";
 import { logger } from "../middleware/logger.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
+import { context as otelContext } from "@opentelemetry/api";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
@@ -539,6 +541,7 @@ interface PendingRequest {
 }
 
 interface ActiveInvocation {
+  providerSpanBudget: {remaining:number};
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
   // The host-minted W3C `traceparent` for the active startup span, or undefined
@@ -1158,7 +1161,26 @@ export function createPluginWorkerHandle(
     if (!isRecord(params)) return null;
 
     const directCompanyId = readNonEmptyString(params.companyId);
-    if (directCompanyId) return { companyId: directCompanyId };
+    if (directCompanyId) {
+      if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
+        return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
+      }
+      if (method === "workspaceOperation" && isRecord(params.operation)) {
+        const operation = params.operation;
+        const source = operation.kind === "prepare" ? operation.source : operation.binding;
+        const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
+        const projectId = readNonEmptyString(params.projectId);
+        if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
+          // Only foreground preparation may use a run. Maintenance uses project consent.
+          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
+          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
+          return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
+            ...(runId && agentId ? { runId, agentId } : {}) } };
+        }
+      }
+      return { companyId: directCompanyId };
+    }
 
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
@@ -1179,20 +1201,18 @@ export function createPluginWorkerHandle(
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
-    // Mint a W3C `traceparent` from the active startup span, so the worker's
-    // provider span can parent to it. The host keeps the value on its own record
-    // (below) and never trusts the worker to supply the parent. Outside a
-    // measured startup step there is no active span, so this is undefined.
+    // Keep the owning operation's parent host-side; workspace/runtime operations
+    // use the same per-invocation contract as measured provider startup.
     const activeStep = getActiveStepContext();
     const traceparent = activeStep
       ? traceparentFromContextToken(activeStep.parentContext)
-      : undefined;
+      : process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? traceparentFromContextToken(otelContext.active()) : undefined;
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
       ...(traceparent ? { traceparent } : {}),
     };
-    const entry: ActiveInvocation = { scope, traceparent };
+    const entry: ActiveInvocation = { scope, traceparent, providerSpanBudget:{remaining:256} };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -2727,7 +2747,7 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope, traceparent: entry.traceparent };
+    return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
   }
 
   /**
@@ -3353,6 +3373,20 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   function callInternal<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+    timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+  ): Promise<HostToWorkerMethods[M][1]> {
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled));
+    // Tracing wraps the RPC in a new promise. Guard the promise handed to the
+    // caller as well, without swallowing its eventual rejection for that caller.
+    void dispatched.catch(() => undefined);
+    return dispatched;
+  }
+
+  function callInternalRaw<M extends HostToWorkerMethodName>(
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { EXECUTION_PREPARATION_SPAN_ATTRS, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
 
@@ -34,12 +34,36 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "instruction_changes" | "warm_release" | "instruction_collection";
 
 export type ExecutionPhase =
+  | "skills.inventory" | "skills.inventory.wait" | "skills.inventory.bundled" | "skills.inventory.releases"
+  | "skills.inventory.folders" | "skills.inventory.local_sources" | "skills.rows"
+  | "skills.cache.acquire" | "skills.version.read" | "skills.repository.read"
+  | "skills.version.verify" | "skills.version.materialize" | "skills.consume"
   | "workspace.transaction" | "workspace.transaction.entry" | "workspace.transaction.commit" | "workspace.transaction.rollback"
   | "workspace.identity_read" | "workspace.row_lock" | "workspace.provenance" | "workspace.notification" | "workspace.write"
   | "workspace.sources" | "workspace.sources.canonicalize" | "workspace.sources.inventory" | "workspace.sources.alias_scan"
   | "workspace.sources.repository_scan" | "workspace.sources.project_scan" | "workspace.provenance_lock"
   | "workspace.readers" | "workspace.readers.identity" | "workspace.readers.trust" | "workspace.readers.projects" | "workspace.readers.sources"
   | "workspace.access" | "workspace.access.privacy" | "workspace.access.inventory" | "workspace.access.authorization"
+  | "workspace.access.execution" | "workspace.access.task_read" | "workspace.access.agent_read" | "workspace.access.run_read"
+  | "workspace.access.workspace_read" | "workspace.access.source_read" | "workspace.access.projects_read"
+  | "workspace.access.task_authorization" | "workspace.access.trust" | "workspace.access.trust.project_read"
+  | "authorization.base" | "authorization.responsible_user" | "authorization.authorizing_user"
+  | "authorization.task_privacy" | "authorization.project_privacy"
+  | "workspace.repository.binding" | "workspace.repository.current_policy" | "workspace.repository.acquisition"
+  | "workspace.repository.catalog" | "workspace.repository.receipts" | "workspace.repository.paths"
+  | "workspace.repository.fs_prepare" | "workspace.repository.publication" | "workspace.repository.lock_wait"
+  | "workspace.repository.critical_section" | "workspace.repository.lock_release" | "workspace.repository.checkout_identity"
+  | "workspace.repository.state_write" | "workspace.repository.ownership_read" | "workspace.repository.ownership_verify"
+  | "workspace.repository.materialize" | "workspace.repository.git_origin" | "workspace.repository.git_branch"
+  | "workspace.repository.git_commit" | "workspace.repository.ownership_write" | "workspace.repository.ignore_rules"
+  | "workspace.repository.db.issue" | "workspace.repository.db.workspace" | "workspace.repository.db.agent"
+  | "workspace.repository.db.project" | "workspace.repository.db.run"
+  | "connectors.github.catalog" | "connectors.github.connections" | "connectors.github.grants"
+  | "connectors.github.grant_members" | "connectors.github.membership"
+  | "connectors.github.refresh" | "connectors.github.credentials" | "connectors.github.repositories"
+  | "connectors.github.grant_lock" | "connectors.github.grant_write" | "connectors.github.webhooks"
+  | "connectors.github.refresh.transaction" | "connectors.github.refresh.transaction.entry"
+  | "connectors.github.refresh.transaction.commit" | "connectors.github.refresh.transaction.rollback"
   | "workspace.materialize.directories" | "workspace.materialize.source_identity"
   | "workspace.checkout.lookup" | "workspace.checkout.git_auth" | "workspace.checkout.git_clone"
   | "workspace.checkout.git_ref" | "workspace.checkout.publish"
@@ -58,7 +82,10 @@ export type ExecutionPhase =
   | "workspace_sync.manifests_persist" | "workspace_sync.descriptor_write" | "workspace_sync.reference_write"
   | "workspace_sync.source_root" | "workspace_sync.repositories" | "workspace_sync.ignore_rules"
   | "workspace_sync.seed_generation" | "workspace_sync.seed_lookup" | "workspace_sync.seed_publish"
+  | "workspace_sync.seed_cache_copy" | "workspace_sync.seed_cache_sync" | "workspace_sync.seed_cache_hash"
+  | "workspace_sync.seed_cache_capacity" | "workspace_sync.seed_cache_evict" | "workspace_sync.seed_cache_locked_publish"
   | "workspace_sync.git_clone" | "workspace_sync.git_archive" | "workspace_sync.seed_replay" | "workspace_sync.seed_persist"
+  | "workspace_sync.git_index_refresh"
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
   | "workspace_sync.seed_extract" | "workspace_sync.seed_snapshot" | "workspace_sync.seed_cleanup"
   | "workspace_sync.inbound_barrier" | "workspace_sync.transfer" | "workspace_sync.progress"
@@ -75,26 +102,53 @@ export type ExecutionPhase =
   | "execution.runtime" | "execution.workspace_ownership" | "execution.workspace_finalize" | "execution.workspace_restore" | "execution.workspace_commit"
   | "execution.workspace_ownership_wait" | "execution.realtime"
   | "execution.usage" | "execution.native_finalize"
+  | "execution.plugin_dispatch" | "execution.plugin_prepare" | "execution.plugin_project_auth" | "execution.plugin_submit" | "execution.plugin_connection"
   | "execution.usage_startup" | "execution.mcp_handoff" | "execution.dispatch_admission" | "execution.budget_reservation"
   | "completion.run" | "completion.output" | "completion.terminal_write" | "completion.cost" | "completion.liveness" | "completion.summary"
   | "response.transaction" | "response.transaction.entry" | "response.transaction.commit" | "response.transaction.rollback" | "response.row_lock" | "response.write"
   | "response.resolve" | "response.authorize" | "response.add_comment" | "response.activity" | "response.publish";
 
-type RunScope = { runId: string; parent?: Context; ended: boolean; details: Map<string, number> };
+type RunScope = { runId: string; phase: string; parent?: Context; ended: boolean; details: Map<string, number> };
 const ownership = new AsyncLocalStorage<RunScope>();
 const endpointEnabled = () => Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
+
+const repositoryCacheOutcomes = ["disabled", "hit", "miss", "published", "already_present", "contended", "capacity", "budget", "invalid", "error"] as const;
+export type RepositoryObjectCacheOutcome = typeof repositoryCacheOutcomes[number];
+
+export function recordRepositoryObjectCacheDetail(detail: {
+  outcome?: RepositoryObjectCacheOutcome;
+  referenceSupplied?: boolean;
+}): void {
+  const owned = ownership.getStore();
+  if (!endpointEnabled() || !owned?.parent || owned.ended) return;
+  try {
+    const span = trace.getSpan(owned.parent);
+    if (detail.outcome && repositoryCacheOutcomes.includes(detail.outcome)) {
+      span?.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.repositoryCacheOutcome, detail.outcome);
+    }
+    if (typeof detail.referenceSupplied === "boolean") {
+      span?.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.repositoryCacheReferenceSupplied, detail.referenceSupplied);
+    }
+  } catch {}
+}
 
 export function getRunExecutionTraceContext(runId: string): Context | undefined {
   const owned = ownership.getStore();
   return endpointEnabled() && owned?.runId === runId && !owned.ended ? owned.parent : undefined;
 }
 
-function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}): Promise<T> {
+/** Inspect only the current async scope; unrelated authorization must not consume its detail budget. */
+export function isRunPhaseActive(phase: ExecutionPhase): boolean {
+  const owned = ownership.getStore();
+  return endpointEnabled() && owned?.phase === phase && !owned.ended;
+}
+
+function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
     const previous = ownership.getStore();
-    const owned: RunScope = { runId,
+    const owned: RunScope = { runId, phase: name,
       parent: parent ?? (!independent && previous?.runId === runId && !previous.ended ? previous.parent : undefined),
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),
@@ -114,7 +168,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
   };
   if (!endpointEnabled()) return (async () => work())();
   try {
-    const parent = independent ? undefined : getRunExecutionTraceContext(runId);
+    const parent = independent ? undefined : activeParent ?? getRunExecutionTraceContext(runId);
     const trigger = parent ? undefined : trace.getActiveSpan()?.spanContext();
     const traced = trace.getTracer(name.startsWith("heartbeat.prepare.") ? "paperclip.heartbeat-preparation"
       : name.startsWith("native.controller.") ? "paperclip.native-controller" : "paperclip.execution").startActiveSpan(name, {
@@ -138,13 +192,19 @@ export function withRunExecutionTiming<T>(runId: string, work: () => T | Promise
   return measure(runId, "task.execution_attempt", work, true);
 }
 
+export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
+  return measure(runId, "task.workspace_finalization", work, true);
+}
+
 export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   const owned = ownership.getStore();
   if (!endpointEnabled() || !owned || owned.ended) return work();
   const count = owned.details.get(phase) ?? 0;
   if (count >= 16) return work();
   owned.details.set(phase, count + 1);
-  return measure(owned.runId, phase, work, false, counts);
+  // A startup step can be more specific than the owning run phase. Keep that
+  // causal parent while the child publishes its own context to plugin workers.
+  return measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined);
 }
 
 export function beginRunPhase(phase: ExecutionPhase): (failed?: boolean) => void {
@@ -192,8 +252,15 @@ const workspaceSyncDetailPhases = {
   "workspace.seed_generation": "workspace_sync.seed_generation",
   "workspace.seed_lookup": "workspace_sync.seed_lookup",
   "workspace.seed_publish": "workspace_sync.seed_publish",
+  "workspace.seed_cache_copy": "workspace_sync.seed_cache_copy",
+  "workspace.seed_cache_sync": "workspace_sync.seed_cache_sync",
+  "workspace.seed_cache_hash": "workspace_sync.seed_cache_hash",
+  "workspace.seed_cache_capacity": "workspace_sync.seed_cache_capacity",
+  "workspace.seed_cache_evict": "workspace_sync.seed_cache_evict",
+  "workspace.seed_cache_locked_publish": "workspace_sync.seed_cache_locked_publish",
   "workspace.git_clone": "workspace_sync.git_clone",
   "workspace.git_archive": "workspace_sync.git_archive",
+  "workspace.git_index_refresh": "workspace_sync.git_index_refresh",
   "workspace.seed_replay": "workspace_sync.seed_replay",
   "workspace.seed_persist": "workspace_sync.seed_persist",
   "workspace.overlay_copy": "workspace_sync.overlay_copy",

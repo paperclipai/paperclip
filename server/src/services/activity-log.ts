@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { beginRunPhase } from "./execution-preparation-timing.js";
 import type { ActivityPublication } from "../types/activity-publication.js";
 export type { ActivityPublication } from "../types/activity-publication.js";
@@ -67,6 +68,7 @@ export interface LogActivityInput {
   issueId?: string | null;
   details?: Record<string, unknown> | null;
   responsibleUserIdOverride?: string | null;
+  authorization?: { action: string; operation: string; reason: string };
 }
 
 
@@ -162,9 +164,9 @@ export function publishActivity(publication: ActivityPublication) {
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
-  const redactedDetails = await redactActivityDetails(db, input.details ?? null);
+  const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  const [activity] = await db.insert(activityLog).values({
+  const insert = (runner: Db) => runner.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -176,6 +178,12 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
+  const [activity] = input.entityType === "issue"
+    ? await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
+      return insert(tx as unknown as Db);
+    })
+    : await insert(db);
 
   const payload = {
     issueId: input.issueId ?? (input.entityType === "issue" ? input.entityId : null),

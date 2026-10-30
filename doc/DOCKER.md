@@ -32,6 +32,14 @@ docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
+The image starts the server from a runtime bundle, `server/dist-runtime/index.mjs`,
+with plain `node`. The build creates it from the server's `tsc` output with
+`pnpm --filter @paperclipai/server build:runtime` (`server/scripts/bundle-runtime.mjs`),
+compiling in the workspace packages that otherwise load as TypeScript source.
+This avoids transpiling them through the tsx loader on every boot. To check a
+build boots, run `scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs`;
+PR CI runs the same check after `pnpm build`.
+
 ## Standard images and downstream composition
 
 The Docker workflow publishes the standard `production` target for Linux AMD64
@@ -148,9 +156,11 @@ docker compose -f docker/docker-compose.yml up --build
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
 
 Both Compose files pass `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to the server.
-Set it to enable signed tool-action approvals, and keep it independent from
-`BETTER_AUTH_SECRET`. Leaving it unset preserves startup without approval-gated
-tool actions; those calls report `signing_secret_unconfigured`.
+When configured, keep it independent from `BETTER_AUTH_SECRET`. When unset,
+the server derives a separate signing key from its persisted secrets master key.
+Keep that key with database backups, and share the signing key or master key
+across processes serving the same instance. Approvals fail closed if valid key
+material cannot be loaded; rotating it can invalidate approvals and retry matching.
 
 ### Untrusted PR review
 

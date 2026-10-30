@@ -3,12 +3,14 @@ import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
+import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import * as extracted from "./retries.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 
@@ -17,6 +19,7 @@ type Agent = typeof agents.$inferSelect;
 
 function callbacks() {
   return {
+    hasCaseHandoffForRun: vi.fn<HeartbeatRetryDependencies["hasCaseHandoffForRun"]>(async () => false),
     getRun: vi.fn<HeartbeatRetryDependencies["getRun"]>(async () => null),
     getAgent: vi.fn<HeartbeatRetryDependencies["getAgent"]>(async () => undefined),
     resolveSessionBeforeForWakeup: vi.fn(async () => null),
@@ -108,6 +111,22 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("leaves successor work to the committed case handoff without retry escalation", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    deps.hasCaseHandoffForRun.mockResolvedValue(true);
+    const run = unitRun();
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run, { adapterType: "codex_local" } as Agent,
+      { retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, maxAttempts: 0 },
+    );
+    expect(retry).toMatchObject({ outcome: "not_scheduled", issueId: "issue" });
+    expect(deps.hasCaseHandoffForRun).toHaveBeenCalledWith(run);
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).not.toHaveBeenCalled();
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
   it("passes the service's worktree cutoff and publishes only returned effects", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
@@ -193,6 +212,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     const state = createHeartbeatRunState(db);
     const deps = {
       ...callbacks(), getRun: state.getRun, getAgent: state.getAgent,
+      hasCaseHandoffForRun: async (run: Pick<Run, "id" | "companyId">) => Boolean(await pendingCaseHandoffForRun(db, run.id, run.companyId)),
       resolveSessionBeforeForWakeup: state.resolveSessionBeforeForWakeup,
       getAgentInvokability: (agent: Agent | null | undefined) => evaluateAgentInvokabilityFromDb(db, agent),
       runDispatch: createRunDispatch(db),
@@ -214,6 +234,21 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, run };
   }
+
+  it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {
+    const {run,agent}=await fixture();
+    const snapshot={...run.contextSnapshot,skillVersions:{"company/review":"v1"},skillSelectionSnapshot:true,shadowedSkills:[{key:"old",shadowedBy:"company/review"}]};
+    await db.update(heartbeatRuns).set({contextSnapshot:snapshot}).where(eq(heartbeatRuns.id,run.id));
+    await db.update(agents).set({adapterConfig:writePaperclipSkillSyncPreference({},[{key:"company/review",versionId:"v2"}])}).where(eq(agents.id,agent.id));
+    const result=await boundRetries().retries.scheduleBoundedRetryForRun({...run,contextSnapshot:snapshot},agent,{now,random:()=>0});
+    expect(result.outcome).toBe("scheduled");
+    const [successor]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId,run.id));
+    expect(successor!.contextSnapshot).not.toHaveProperty("skillVersions");
+    expect(successor!.contextSnapshot).not.toHaveProperty("skillSelectionSnapshot");
+    expect(successor!.contextSnapshot).not.toHaveProperty("shadowedSkills");
+    const [history]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,run.id));
+    expect(history!.contextSnapshot).toEqual(snapshot);
+  });
 
   it("reuses one successor across concurrent factories and keeps writes committed before callbacks", async () => {
     const { run, agent, issue, companyId } = await fixture();

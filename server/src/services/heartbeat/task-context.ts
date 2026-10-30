@@ -12,10 +12,12 @@ import type { issueService } from "../issues.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getTaskPlanContext } from "../task-plan-context.js";
+import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
 import { buildPaperclipWakePayload, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { workspacePreferenceService } from "../workspace-preferences.js";
 
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecutionContext"]>>>;
@@ -36,7 +38,7 @@ export interface HeartbeatTaskContextInput {
   policy: {
     recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -136,6 +138,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           workMode: issueRef.workMode,
           projectId: issueRef.projectId,
           executionPolicy: issueContext?.executionPolicy ?? null,
+          originKind: issueContext?.originKind ?? null,
         }
       : null,
     exposeLowTrustRaw,
@@ -199,7 +202,17 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
+  // Use the standing chat owner's saved presentation choice, never worker text.
+  // Recovery retains the admitted choice instead of silently changing its prompt.
+  const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
+    && issueContext?.conversationUserId
+    ? input.policy.recovering
+      ? context.paperclipCoordinatorWorkspaceEnabled === true
+      : (await workspacePreferenceService(db).get(issueContext.conversationUserId)).coordinatorWorkspaceEnabled
+    : false;
+  context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
   const taskMarkdownInput = {
+    coordinatorWorkspace: Boolean(coordinatorWorkspace),
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
@@ -211,6 +224,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           titleNeedsGeneration: issueContext?.titleNeedsGeneration,
           workMode: issueRef.workMode,
           conversationAgentId: issueContext?.conversationAgentId,
+          executionPolicy: issueContext?.executionPolicy,
           description: issueRef.description,
         }
       : null,
@@ -266,18 +280,25 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   // Unlike the frozen initial communication preferences, live-call context
   // must also reach resumed turns. Rebuild it from server records each wake.
   const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
-  let taskMarkdown = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
-  let taskMarkdownAssignment = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  context.paperclipCasesEnabled = experimentalInstanceSettings.enableCases === true;
+  const workflowCase = issueRef && experimentalInstanceSettings.enableCases
+    ? await getCaseExecutionContext(db, { companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, runId: run.id, exposeLowTrustRaw })
+    : null;
+  if (workflowCase) context.paperclipCase = workflowCase;
+  else delete context.paperclipCase;
+  const assignmentPrefix = liveVoiceTaskPrefix + caseExecutionMarkdown(workflowCase);
+  let taskMarkdown = assignmentPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
+  let taskMarkdownAssignment = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
-  const taskMarkdownCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
   }) + chatCompletionInstruction(context);
-  const taskMarkdownAssignmentCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
@@ -325,6 +346,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       db,
     ).redactForIssue(agent.companyId, issueRef.id, {
       paperclipIssue: context.paperclipIssue,
+      paperclipCase: context.paperclipCase,
       paperclipWakeComment: context.paperclipWakeComment,
       paperclipTaskCommunicationGuidance: context.paperclipTaskCommunicationGuidance,
       paperclipTaskMarkdown: context.paperclipTaskMarkdown,
@@ -333,6 +355,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       paperclipTaskMarkdownAssignmentCompact: context.paperclipTaskMarkdownAssignmentCompact,
     });
     context.paperclipIssue = redactedWakeContext.paperclipIssue;
+    if (redactedWakeContext.paperclipCase) context.paperclipCase = redactedWakeContext.paperclipCase;
     context.paperclipTaskCommunicationGuidance = redactedWakeContext.paperclipTaskCommunicationGuidance;
     if (redactedWakeContext.paperclipWakeComment) {
       context.paperclipWakeComment =

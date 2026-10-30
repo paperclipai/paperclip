@@ -163,7 +163,10 @@ test("workspaces-c runs the db project alone and workspaces-b no longer carries 
   assert.ok(!workspacesB.workspaceProjects.includes("@paperclipai/db"), "db must not run twice");
   assert.ok(workspacesB.workspaceProjects.length > 0, "workspaces-b must still run its other projects");
   for (const workflow of ["pr-trusted.yml", "release-verify.yml"]) {
-    const entries = matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
+    const entries = workflow === "pr-trusted.yml"
+      ? JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8")).general_tests
+        .map((entry) => ({ ...entry, keys: Object.keys(entry) }))
+      : matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
     // The parser must demonstrably see shard keys in this workflow, otherwise
     // the unsharded assertions below could pass for the wrong reason.
     const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
@@ -360,7 +363,7 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(nativeRunnerSuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -405,6 +408,7 @@ for (const caller of ["Release", "Cloud readiness", "another caller"]) {
 test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   const lane = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"]);
   assert.deepEqual(lane.selectedGeneralServerSuites, [
+    "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,
@@ -426,9 +430,10 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   assert.match(prWorkflow, /^name: PR$/m,
     "renaming pr.yml silently moves the native-runner suite back into the uncached server shards");
 
-  const trustedWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
-  const lanes = [...trustedWorkflow.matchAll(/command: test:typescript:vitest --shard=(\d+)\/(\d+)/g)]
-    .map((match) => [Number(match[1]), Number(match[2])]);
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"));
+  const lanes = matrix.verify_paperclip_runner
+    .map((entry) => /test:typescript:vitest --shard=(\d+)\/(\d+)/.exec(entry.command))
+    .filter(Boolean).map((match) => [Number(match[1]), Number(match[2])]);
   assert.ok(lanes.length > 0, "expected sharded test:typescript:vitest lanes in pr-trusted.yml");
   assert.equal(new Set(lanes.map(([, count]) => count)).size, 1, "vitest lanes must agree on the shard count");
   const shardCount = lanes[0][1];

@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase, withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as legacyRecovery from "../legacy-execution-recovery.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { createAdapterExecutionControl } from "../adapter-execution-control.js";
@@ -117,6 +118,16 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  it("passes preparation renewal ownership to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const acquired = vi.fn(async () => undefined);
+    input.runtime.runOptions.onNativeExecutionLeaseAcquired = acquired;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({ onExecutionLeaseAcquired: acquired }));
+    // Preparation is still protected until the native executor claims its lease.
+    expect(acquired).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
     input.control.dispatchResolvedInteractionContinuationWithAtomicGate = async () => ({ dispatched: false });
@@ -200,6 +211,28 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await read(run.id)).toMatchObject({ status: "running", usageJson: { inputTokens: 7, outputTokens: 3, accountingReceiptReady: true } });
     expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
     expectCleanup(input);
+  });
+
+  it.each(["expected", "wrong"])("finalizes a plugin worktree through its owner (branch: %s)", async branch => {
+    const { input } = await fixture(true);
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: input.agent.companyId,
+      name: "Plugin worktree", providerType: "plugin", providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
+      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" }).returning();
+    input.workspace.persistedExecutionWorkspace = workspace;
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
+      branchName: branch === "expected" ? "task-branch" : "other-branch", headSha: "a".repeat(40),
+      hasDirtyTrackedFiles: true, hasUntrackedFiles: false, hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
+    try {
+      const result = executeHeartbeatRuntime(db, input);
+      if (branch === "expected") {
+        await expect(result).resolves.toMatchObject({ dispatched: true });
+        expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
+      } else {
+        await expect(result).rejects.toThrow("plugin_workspace_branch_mismatch");
+        expect((await finalizations()).some(row => row.status === "succeeded")).toBe(false);
+      }
+      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }), { agentId: input.agent.id, runId: input.run.id });
+    } finally { inspect.mockRestore(); }
   });
 
   it("retains the same-run retry signal without recording a failed workspace", async () => {

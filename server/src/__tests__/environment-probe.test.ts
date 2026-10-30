@@ -25,6 +25,8 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   probePluginEnvironmentDriver: mockProbePluginEnvironmentDriver,
   probePluginSandboxProviderDriver: mockProbePluginSandboxProviderDriver,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema: async (input: { db: unknown; driverKey: string }) =>
+    (await mockResolvePluginSandboxProviderDriverByKey(input))?.driver?.configSchema ?? null,
 }));
 
 vi.mock("../services/environment-runtime.js", () => ({
@@ -48,6 +50,35 @@ describe("probeEnvironment", () => {
     mockRuntimeAcquireRunLease.mockReset();
     mockRuntimeReleaseRunLease.mockReset().mockResolvedValue({ id: "lease", companyId: "company", environmentId: "env", status: "released", cleanupStatus: "success" });
     mockEnvironmentRuntimeService.mockClear();
+  });
+
+  it("qualifies a named Daytona snapshot only after an ID-pinned lease and owned cleanup", async () => {
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", snapshot: "managed-snapshot" }, metadata: null } as any;
+    const identity = { provider: "daytona", requestedRef: "managed-snapshot", id: "a6b9e7d0-f886-471a-b461-640dd03e8d0f", name: "managed-snapshot", organizationId: "provider-account", createdAt: "2026-10-07T23:19:57.133Z" };
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { snapshot: "managed-snapshot", snapshotIdentity: identity } } });
+    mockRuntimeExecute.mockResolvedValue({ exitCode: 0, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n" });
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true, assertCompanyBinding: true });
+    expect(result.details?.platformQualificationRecorded).toBe(true);
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ resolveSnapshotIdentity: true, assertCompanyBinding: true }));
+    const proof = mockRecordPlatformProbe.mock.calls[1]![0].proof;
+    expect(proof).toMatchObject({ v: 2, snapshotIdentity: identity });
+    environment.metadata = { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { company: proof } };
+    expect(await readSandboxPlatformQualification({} as any, environment, "company")).toMatchObject({ platform: "linux", architecture: "x64", glibcVersion: "glibc 2.39" });
+    expect(await readSandboxPlatformQualification({} as any, environment, "foreign-company")).toBeNull();
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["missing", "wrong-reference", "missing-owner", "cleanup"])("does not qualify a named snapshot after %s", async failure => {
+    const environment = { id: "env", driver: "sandbox", status: "active", config: { provider: "daytona", snapshot: "managed-snapshot" } } as any;
+    const identity = { provider: "daytona", requestedRef: failure === "wrong-reference" ? "other" : "managed-snapshot", id: "a6b9e7d0-f886-471a-b461-640dd03e8d0f", name: "managed-snapshot", organizationId: failure === "missing-owner" ? "" : "provider-account", createdAt: "2026-10-07T23:19:57.133Z" };
+    vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
+    mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { snapshot: "managed-snapshot", ...(failure === "missing" ? {} : { snapshotIdentity: identity }) } } });
+    mockRuntimeExecute.mockResolvedValue({ exitCode: 0, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n" });
+    if (failure === "cleanup") mockRuntimeReleaseRunLease.mockResolvedValue({ id: "lease", companyId: "company", environmentId: "env", status: "released", cleanupStatus: "failed" });
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    expect(result.details?.platformQualificationRecorded).toBe(false);
+    expect(mockRecordPlatformProbe).toHaveBeenCalledTimes(1);
   });
 
   it.each(["2.38", "2.39", "musl"])("records actual immutable-image facts for %s and reads them without another lease", async libc => {

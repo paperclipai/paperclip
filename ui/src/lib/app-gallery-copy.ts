@@ -74,6 +74,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Explore product usage, errors, flags, and experiments.",
     short: "Sign in with PostHog. Project pinning and access controls are optional.",
   },
+  ditto: {
+    tagline: "Reuse approved product copy and follow your style guide.",
+    short: "Sign in with Ditto. API keys are optional.",
+  },
   gauge: {
     tagline: "Track your brand in AI answers and run content workflows.",
     short: "Sign in with Gauge and pick an organization. API keys are optional.",
@@ -175,6 +179,7 @@ export function credentialFieldLabel(
   rawLabel: string,
   fieldCount: number,
 ): string {
+  if (/^Paste your\b/.test(rawLabel)) return sanitizeProsumerCopy(rawLabel);
   if (fieldCount <= 1) return `Your ${appName} key`;
   const cleaned = sanitizeProsumerCopy(rawLabel);
   return cleaned || `Your ${appName} key`;

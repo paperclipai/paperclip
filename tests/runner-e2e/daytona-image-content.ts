@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import acpxProfiles from "../../packages/paperclip-runner/acpx-profiles.json" with { type: "json" };
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -10,11 +11,7 @@ export const DAYTONA_IMAGE_CONTENT_SCHEMA =
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
 export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
-// This mirrors the explicit repository-local build inputs copied by
-// docker/daytona-runner/Dockerfile. Broad package-tree COPYs are forbidden by
-// the contract test so development-only files cannot silently enter the image
-// without first changing this content-identity contract.
-export const DAYTONA_IMAGE_INPUT_PATHS = [
+export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   ".dockerignore",
   ".npmrc",
   "docker/daytona-runner/Dockerfile",
@@ -29,22 +26,58 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [
   "packages/paperclip-eval-kernel/tsconfig.json",
   "packages/paperclip-runner/scripts/provision-grok.mjs",
   "packages/paperclip-runner/package.json",
+  "packages/paperclip-runner/acpx-profiles.json",
+  `packages/paperclip-runner/test/fixtures/copilot-profile-v${acpxProfiles.profiles.copilot.agentProfileVersion}-identity.json`,
   "packages/paperclip-runner/cursor-distributions.json",
   "packages/paperclip-runner/cursor-contract.json",
+  // The pack's contract digest fingerprints these generated contracts.
+  "packages/paperclip-runner/generated",
   "packages/paperclip-runner/protocol",
   "packages/paperclip-runner/runner/Cargo.lock",
   "packages/paperclip-runner/runner/Cargo.toml",
   "packages/paperclip-runner/runner/crates",
   "packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs",
   "packages/paperclip-runner/scripts/build-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/contracts/contract-fingerprints.mjs",
   "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
   "packages/paperclip-runner/scripts/build-node-startup-timeout.mjs",
   "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
   "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
+  "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+  "packages/paperclip-runner/scripts/copilot-profile-identity.mjs",
   "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+  "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v12-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v14-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v21-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v24-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v25-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v26-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v35-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v40-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v42-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v46-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v47-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v48-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v49-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v50-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v51-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v52-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v54-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v55-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v56-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v57-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v58-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v59-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v61-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v65-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v66-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v67-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v68-identity.json",
   "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
   "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
   "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
+  "packages/paperclip-runner/scripts/provider-pack-runtime-tree.mjs",
   "packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs",
   "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
   "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
@@ -59,7 +92,7 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [
   "packages/paperclip-runner/styles.css",
   "packages/paperclip-runner/tsconfig.json",
   "packages/paperclip-runner/tsconfig.surfaces.json",
-] as const;
+])] as const;
 
 const ignoredRunnerDevelopmentDirectoryPaths = new Set([
   "packages/paperclip-runner/devtools",

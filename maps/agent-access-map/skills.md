@@ -2,6 +2,8 @@
 
 Product map: [Skill discovery, authoring, and policy](../feature-map/skills.md).
 
+Feature ID: `skills`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -11,7 +13,25 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Cold Git package recovery rechecks the original source's current setup identity,
+company membership, policy and repository grant. It never borrows another company's
+credentials or substitutes a moving branch for the saved commit. A missing/revoked
+source fails with a reconnect error and persisted retry backoff. Warm access still
+uses the ordinary skill/project permission check.
+
+External package storage changes persistence, not agent authority. Runtime selection
+still checks current company/project access before consulting immutable package caches;
+no storage key is exposed as an agent capability. Public selected rows are constrained
+to `access_source_id IS NULL` at their final read. Warm package and native asset caches
+hold file metadata, never authorization decisions. The
+[concurrency regression](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
+covers separate actors and revoked project access; the
+[package regression](../../server/src/__tests__/skill-package-store.test.ts) covers
+company isolation and warm-cache behavior. This does not claim live agent qualification.
+
 ## `discovery`
+
+Capability ID: `skills/discovery`.
 
 Review: `baseline`.
 
@@ -20,7 +40,10 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/skills`.
 - `POST /api/companies/{companyId}/skills/import`.
 
-Agent access: `available` — REST / native call_api / CLI skills and sources.
+Agent access: `available` — REST / native call_api / CLI skills and sources. Queue
+and HTTP/2 sandbox callbacks also admit company skill detail and file reads;
+file paths travel in the existing `path` query parameter. Skill mutations stay
+subject to the existing bridge restrictions.
 
 Policy: Company skill policy by action/resource plus platform invariants; test execution
 additionally requires task-assignment authority.
@@ -38,6 +61,8 @@ Gaps: Installation/import is governed by company skill policy, not inferred from
 agent's role name.
 
 ## `authoring`
+
+Capability ID: `skills/authoring`.
 
 Review: `baseline`.
 
@@ -65,6 +90,14 @@ Gaps: Writable/fork policy and expected version apply. Native helpers intentiona
 support a narrower shape than full API.
 
 ## `versions`
+
+Version lists and current/test-run version summaries contain file names and kinds.
+Use `GET /api/companies/{companyId}/skills/{skillId}/versions/{versionId}` for the
+selected version's file contents. Authorization remains company/skill scoped; support
+inspection reads only stored bytes for the requested version and does not recover Git.
+
+
+Capability ID: `skills/versions`.
 
 Review: `baseline`.
 
@@ -111,6 +144,8 @@ cover separate actors and project-access revocation; this adds no agent API.
 
 ## `policy`
 
+Capability ID: `skills/policy`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -136,7 +171,19 @@ remaining operations before qualifying the whole capability.
 Gaps: Policy administration has an explicit agent grant branch; assigning agent skills
 also checks the target's config authority.
 
+The configuration-gated `GET /api/agents/{id}/skills` reads repository cache
+locations without materializing versions or validating their support files.
+Assignment mutations and run preparation retain their existing authorization.
+The [database-backed cache tests](../../server/src/__tests__/skill-version-cache.test.ts)
+cover latest/pinned reads and full validation during execution; they do not prove
+live agent access.
+Both skill-list and skill-sync responses preserve stored version pins rather than
+returning a resolved runtime version as a pin. Latest remains unpinned across an
+assignment round trip.
+
 ## `testing`
+
+Capability ID: `skills/testing`.
 
 Review: `baseline`.
 

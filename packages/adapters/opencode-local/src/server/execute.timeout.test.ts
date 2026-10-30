@@ -21,6 +21,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   runAdapterExecutionTargetProcess: mocks.process,
 }));
 import { execute } from "./execute.js";
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
 
 const rawOutput = "private-output-canary";
 const rawError = "<html>504 Gateway Time-out private-provider-token-canary</html>";
@@ -78,6 +79,21 @@ describe("OpenCode timeout reporting", () => {
     expect(mocks.process).toHaveBeenCalledTimes(1);
     expect(mocks.restore).toHaveBeenCalledTimes(1);
     expect(mocks.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads the sandbox shell plugin and launches with its remote config home", async () => {
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockImplementationOnce(async (input) => {
+      const asset = input.assets?.find(asset => asset.key === "xdgConfig");
+      expect(asset).toBeDefined();
+      const plugins = await fs.readdir(path.join(asset!.localDir, "opencode", "plugins"));
+      expect(plugins).toHaveLength(1);
+      return { target: input.target!, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+        runtimeRootDir: "/workspace/runtime", workspaceRemoteDir: "/workspace",
+        assetDirs: { xdgConfig: "/workspace/runtime/config" }, restoreWorkspace: mocks.restore };
+    });
+    await execute(context(0));
+    expect(mocks.process.mock.calls[0]![4].env.XDG_CONFIG_HOME).toBe("/workspace/runtime/config");
+    expect(mocks.process.mock.calls[0]![4].env).not.toHaveProperty("BASH_ENV");
   });
 
   it("runs the sandbox CLI through the actual process seam with session dispatch and incremental output", async () => {

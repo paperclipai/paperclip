@@ -7,6 +7,8 @@ import {
 } from "@paperclipai/shared";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { apiFetch } from "./client";
+import { apiErrorMessage, isRawErrorCode } from "./errors";
 import { readApiJson } from "./response";
 
 type AuthErrorBody =
@@ -45,6 +47,17 @@ function toSession(value: unknown): AuthSession | null {
   return nested.success ? nested.data : null;
 }
 
+/** The server's own explanation on an auth error body, if it sent one. */
+export function authErrorServerMessage(payload: unknown): string | null {
+  const body = payload && typeof payload === "object" ? payload as Exclude<AuthErrorBody, null> : null;
+  const nested = body?.error && typeof body.error === "object" ? body.error : null;
+  const candidates = [nested?.message, body?.message, typeof body?.error === "string" ? body.error : undefined];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
+  }
+  return null;
+}
+
 function extractAuthError(payload: AuthErrorBody, status: number) {
   const nested =
     payload?.error && typeof payload.error === "object"
@@ -56,16 +69,11 @@ function extractAuthError(payload: AuthErrorBody, status: number) {
       : typeof payload?.code === "string"
         ? payload.code
         : null;
-  const message =
-    typeof nested?.message === "string" && nested.message.trim().length > 0
-      ? nested.message
-      : typeof payload?.message === "string" && payload.message.trim().length > 0
-        ? payload.message
-        : typeof payload?.error === "string" && payload.error.trim().length > 0
-          ? payload.error
-          : `Request failed: ${status}`;
+  const message = authErrorServerMessage(payload);
 
-  return new AuthApiError(message, status, payload, code);
+  // Never surface a raw gateway code ("tenant_app_unavailable") as the message.
+  const readable = message && !isRawErrorCode(message) ? message : apiErrorMessage(status, payload);
+  return new AuthApiError(readable, status, payload, code);
 }
 
 // Rich diagnostics for auth requests. Network-layer failures (Safari
@@ -153,7 +161,7 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 
 export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
-    const res = await fetch("/api/auth/get-session", {
+    const res = await apiFetch("/api/auth/get-session", {
       credentials: "include",
       headers: { Accept: "application/json" },
       cache: "no-store",

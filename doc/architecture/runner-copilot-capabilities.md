@@ -1,9 +1,34 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current integration (2026-10-15): **Copilot profile v20 remains pending** with
+Current source declaration (2026-10-26): **Copilot profile v61** binds controller
+journal retirement and the historical profile decoder. Its digest is
+`sha256:956276ebee59f880249fa6955adc224af9ca7b6a9da59bcc5da4a8667550c5b3`.
+The v60 declaration remains unchanged and readable as history. This source
+identity update changes no Copilot executable, arguments, permission policy,
+tool receipts, or qualification flags. Offline compatibility checks supply no
+new live qualification; prior live outcomes retain their original identities.
+
+Historical source declaration (2026-10-26): **Copilot profile v60** binds the shared
+sources that carry Codex's explicit hosted-search restriction. Its digest is
+`sha256:ca3c2b38ed5f6e25cf1c96c1f73781a86cc90c1c0add93f64716c66f28b3f3aa`.
+The v59 declaration remains unchanged and readable as history. Exact-current
+launch admission still applies. The Copilot executable, arguments, permissions,
+receipts, and qualification flags are unchanged. Copilot authentication probes
+do not carry the Codex-only setting. Offline compatibility checks do not supply
+new live qualification; prior live outcomes remain attached to their original
+source identities.
+
+Historical integration (2026-10-17): **Copilot profile v21 remained pending** with
+digest `sha256:1dad3d26d91e66c6f911dbfa43e7963f36c0bbf0d7709f4bbb568029a8b4b46a`.
+It binds the shared provider completion contract, direct driver, production sidecar, and controller
+continuation resolver. Installation verification requires this generated v21
+identity. The permission policy, executable closure, and qualification gate are
+unchanged. This source declaration supplies no new paid qualification.
+
+Historical integration (2026-10-15): **Copilot profile v20 remained pending** with
 digest `sha256:7fa710c697582b1b4d85cdf833178b1940656cb6efb44ac4d356b2f27e6b3d4b`.
-Current installation verification requires this generated v20 identity. This
-source identity declaration supplies no new paid qualification.
+Its immutable declaration remains available for decoding historical checkpoints;
+it is no longer the current launch identity.
 
 Both profile v19 identities remain historical: upstream credential-observer
 `sha256:38abf359adeef43f1f19230245c6e2051c55fdd79571882ef6f00b7cb2958d93` and Muse

@@ -1,3 +1,5 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -180,6 +182,8 @@ export interface PluginApiRequestInput {
 }
 
 export interface PluginApiResponse {
+  /** Server-only upstream for a declared WebSocket route. Never returned as JSON. */
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -400,6 +404,12 @@ export interface PluginDefinition {
   onEnvironmentValidateConfig?(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Required with manifest.workspaceProvider, together with project resource lifecycle. */
+  onWorkspaceOperation?(params: PluginWorkspaceParams): Promise<PluginWorkspaceResult>;
+
+  /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
+  onEnvironmentTask?(params: PluginEnvironmentTaskParams): Promise<PluginEnvironmentTaskResult>;
 
   /** Called to test reachability or readiness of a plugin-hosted environment. */
   onEnvironmentProbe?(

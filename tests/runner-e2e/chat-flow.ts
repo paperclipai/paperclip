@@ -18,6 +18,8 @@ import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycl
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { runChatCompletionUpdate } from "./completion-update-flow.js";
+import { CHAT_FEATURE_SUITE } from "./chat-feature-cases.js";
+import { runChatFeatureFlow } from "./chat-feature-flow.js";
 
 /** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
 export function assertChatFlowRunCount(input: {
@@ -452,7 +454,10 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (caseId === "confirmation-ambiguous") {
+    if (execution.suite.id === CHAT_FEATURE_SUITE) {
+      await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (caseId === "confirmation-ambiguous") {
       await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
     } else if (caseId === "unanswered-question-return") {
       await runUnansweredQuestionReturn({ input, issue: () => issue!, idle, comments });

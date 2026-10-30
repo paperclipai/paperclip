@@ -113,7 +113,8 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(49);
+    expect(names).toHaveLength(57);
+    expect(names).toEqual(expect.arrayContaining(["list_workflows", "read_workflow", "create_workflow", "update_workflow"]));
     expect(names).toContain("set_task_monitor");
     expect(names).toEqual(expect.arrayContaining(["submit_complaint", "submit_suggestion"]));
     expect(names).toContain("get_task_context");
@@ -187,7 +188,7 @@ describe("Capability semantic catalog and authorization", () => {
     expect(found.operations).toEqual([]);
     expect(JSON.stringify(found.operations)).not.toMatch(/create_task|approval|secret|administer_company/);
     const before = adapter.snapshot().revision;
-    for (const operationId of ["create_project", "list_project_repositories", "list_projects", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"] as const) {
+    for (const operationId of ["create_project", "list_project_repositories", "list_projects", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "handoff_case", "create_case", "read_case", "update_case"] as const) {
       expect(dispatcher.listTools(OPEN.identity.runId).map((tool) => tool.name)).not.toContain(operationId);
       expect(await dispatcher.dispatch({
         runId: OPEN.identity.runId, callId: `unbound-${operationId}`, operationId,

@@ -1,5 +1,10 @@
+import { notifyGitHubReviewProjection } from "./chat-channels/github/review-projection-work.js";
+import { notifyGitHubReviewChecks } from "./chat-channels/github/review-check-work.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
@@ -144,10 +149,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           eq(heartbeatRuns.agentId, session.agentId),
         ),
       );
-    const taskId =
-      run?.nativeIssueId ??
-      run?.contextSnapshot?.issueId ??
-      run?.contextSnapshot?.taskId;
+    const taskId = run ? boundRunIssueId(run) : null;
     if (
       !run ||
       taskId !== session.issueId ||
@@ -155,7 +157,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       (publishing && !["running", "succeeded"].includes(run.status))
     )
       throw forbidden("This task run is no longer authorized");
-    const commentId = run.contextSnapshot?.wakeCommentId;
+    const commentId = await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" });
     const [source] =
       typeof commentId === "string"
         ? await db
@@ -350,16 +352,21 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       .limit(1);
     if (prior && prior.runId === source.run.id) return prior;
     if (prior && !prior.runId && prior.deliveryId === source.delivery.id) {
-      const [claimed] = await db
-        .update(chatGitHubReviews)
-        .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatGitHubReviews.id, prior.id),
-            isNull(chatGitHubReviews.runId),
-          ),
-        )
-        .returning();
+      const [claimed] = await db.transaction(async tx => {
+        await notifyGitHubReviewProjection(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id });
+        await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          repositoryId: source.repositoryId, number: source.number });
+        return tx
+          .update(chatGitHubReviews)
+          .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
+          .where(
+            and(
+              eq(chatGitHubReviews.id, prior.id),
+              isNull(chatGitHubReviews.runId),
+            ),
+          )
+          .returning();
+      });
       if (claimed) return claimed;
       return reviewForHead(source, pull);
     }
@@ -407,26 +414,30 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       labels: pull.labels.map((l) => l.name),
       ...(automatic ? automatic.context : {}),
     };
-    const [review] = await db
-      .insert(chatGitHubReviews)
-      .values({
-        companyId: source.endpoint.companyId,
-        endpointId: source.endpoint.id,
-        issueId: source.issue.id,
-        runId: source.run.id,
-        repositoryId: source.repositoryId,
-        repository: source.repository,
-        pullNumber: source.number,
-        headSha: pull.head.sha,
-        deliveryId: `run:${source.run.id}:${pull.head.sha}`,
-        configurationRevision:
-          manual?.revision ?? automatic?.revision ?? source.config.revision,
-        policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
-        event: context,
-        state: "running",
-      })
-      .onConflictDoNothing()
-      .returning();
+    const [review] = await db.transaction(async tx => {
+      await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+        repositoryId: source.repositoryId, number: source.number });
+      return tx
+        .insert(chatGitHubReviews)
+        .values({
+          companyId: source.endpoint.companyId,
+          endpointId: source.endpoint.id,
+          issueId: source.issue.id,
+          runId: source.run.id,
+          repositoryId: source.repositoryId,
+          repository: source.repository,
+          pullNumber: source.number,
+          headSha: pull.head.sha,
+          deliveryId: `run:${source.run.id}:${pull.head.sha}`,
+          configurationRevision:
+            manual?.revision ?? automatic?.revision ?? source.config.revision,
+          policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
+          event: context,
+          state: "running",
+        })
+        .onConflictDoNothing()
+        .returning();
+    });
     if (review) {
       await githubReviewCheckService(db, fetchImpl).enqueue(
         source.endpoint,
@@ -462,6 +473,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ): Promise<string> {
     if (writer === db) return db.transaction(tx => stage(source, operation, payload, key, invocationId, toolName, parameters, tx));
     const actionKey = `github_publication:${source.issue.id}:${operation}:${hash(key)}`;
+    await notifyChatResponseAvailability(writer, { companyId: source.endpoint.companyId, issueId: source.issue.id });
     await notifyDeliveryWork(writer, DELIVERY_QUEUES.chatGitHubPublications);
     const values = {
       companyId: source.endpoint.companyId,
@@ -512,6 +524,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       )
         throw conflict(
           "This publication key was already used for different content",
+          { reasonCode: "github_idempotency_conflict" },
         );
       return existing.id;
     }
@@ -843,6 +856,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         )
           throw conflict(
             "This run already submitted its assessment. Start another review to revise it.",
+            { reasonCode: "github_idempotency_conflict" },
           );
         await tx
           .update(chatGitHubReviews)
@@ -1045,6 +1059,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     )?.[1];
     if (!number || !binding?.repository.providerRepositoryId) {
       await db.transaction(async tx => {
+        await notifyChatResponseAvailability(tx, { companyId: action.companyId, conversationId: action.conversationId ?? undefined });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
         await tx.update(chatActions).set({ status: "cancelled", result: { code: "publication_binding_unavailable", retryable: false }, updatedAt: new Date() })
           .where(and(eq(chatActions.id, actionId), eq(chatActions.companyId, action.companyId)));

@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as localServiceSupervisor from "../services/local-service-supervisor.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
@@ -11,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
+  applyPendingMigrations,
   agents,
   companies,
   createDb,
@@ -160,7 +162,8 @@ describe("execution workspace config helpers", () => {
   });
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_WORKSPACES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -258,8 +261,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
+    await resetDatabase();
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
@@ -272,7 +277,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterEach(async () => {
+  async function resetDatabase() {
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
@@ -286,6 +291,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  }
+
+  afterEach(async () => {
+    await resetDatabase();
     pullRequestDetailsByKey.clear();
 
     for (const dir of tempDirs) {
@@ -295,6 +304,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -762,6 +772,101 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
+  describe("delivery reads after a pooled disconnect", () => {
+    const issueTreeFields = "id,status,completedAt,cancelledAt,updatedAt";
+    const pullRequestProductFields = "id,url,externalId,title,summary,metadata";
+
+    function disconnected() {
+      return new Error("Failed query", {
+        cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }),
+      });
+    }
+
+    // Fails the first `failuresPerRead` awaits of each delivery read, like a
+    // stale pooled socket, and counts every attempt by projection. Each
+    // attempt builds a fresh query, so recovery must rebuild the read.
+    function flakyDeliveryDb(failuresPerRead: number) {
+      const attempts = new Map<string, number>();
+      const errors: Error[] = [];
+      function failingQuery<T extends object>(query: T, key: string): T {
+        return new Proxy(query, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, target);
+            if (typeof value !== "function") return value;
+            if (prop === "then") {
+              return (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => {
+                const attempt = attempts.get(key) ?? 0;
+                attempts.set(key, attempt + 1);
+                if (attempt >= failuresPerRead) return value.call(target, resolve, reject);
+                const error = disconnected();
+                errors.push(error);
+                return Promise.reject(error).then(resolve, reject);
+              };
+            }
+            return (...args: unknown[]) => {
+              const result = value.apply(target, args);
+              return result === target ? receiver : result;
+            };
+          },
+        });
+      }
+      const flaky = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "select") return Reflect.get(target, prop, receiver);
+          return (fields?: Record<string, unknown>) => {
+            const builder = target.select(fields as never);
+            const key = fields ? Object.keys(fields).join(",") : "";
+            if (key !== issueTreeFields && key !== pullRequestProductFields) return builder;
+            return new Proxy(builder, {
+              get(inner, builderProp) {
+                const value = Reflect.get(inner, builderProp, inner);
+                if (builderProp !== "from" || typeof value !== "function") return value;
+                return (...args: unknown[]) => failingQuery(value.apply(inner, args) as object, key);
+              },
+            });
+          };
+        },
+      });
+      return { db: flaky, attempts, errors };
+    }
+
+    function serviceFor(flakyDb: typeof db) {
+      return executionWorkspaceService(flakyDb, {
+        resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null }
+        ),
+        workspaceReaperCooldownDays: 0,
+      });
+    }
+
+    it("rebuilds the issue tree and pull request reads in close readiness", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const expected = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      const flaky = flakyDeliveryDb(1);
+
+      const readiness = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId);
+
+      expect(readiness).toEqual(expected);
+      expect(readiness?.deliveryState).toBe("merged_via_pr");
+      expect(flaky.errors).toHaveLength(2);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(2);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBe(2);
+    }, 20_000);
+
+    it("propagates a persistent disconnect after three issue tree attempts", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const flaky = flakyDeliveryDb(3);
+
+      const failure = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId)
+        .then(() => null, (error: unknown) => error);
+      expect(flaky.errors).toHaveLength(3);
+      expect(failure).toBe(flaky.errors[2]);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(3);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBeUndefined();
+    }, 20_000);
+  });
+
   async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
     // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor
     // of the base. This workspace landed by ancestry and carries no tracked
@@ -854,6 +959,14 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       cwd: seed.worktreePath, baseRef: "main", config,
       deliveryState: "unknown", runtimeServices: [],
     });
+    const runtimeServiceId = randomUUID();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+    await insertRunningWorkspaceService(runtimeServiceId, seed.companyId, workspace!.projectId!, seed.executionWorkspaceId, workspace!.sourceIssueId!, seed.worktreePath);
+    expect(await service.getStoredById(seed.companyId, seed.executionWorkspaceId, { includeRuntimeServices: true })).toMatchObject({
+      deliveryState: "unknown", runtimeServices: [{ id: runtimeServiceId, status: "running", healthStatus: "healthy" }],
+    });
+    await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId, { includeRuntimeServices: true }))
+      .rejects.toThrow("Task workspace access is no longer available");
     await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId))
       .rejects.toThrow("Task workspace access is no longer available");
     expect(await service.getStoredById(seed.companyId, randomUUID())).toBeNull();
@@ -1021,6 +1134,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         .set({ sourceIssueId: openIssueId, updatedAt: new Date(Date.UTC(2020, 0, index + 1)) })
         .where(eq(executionWorkspaces.id, workspaceId));
     }
+    await db.execute(sql`update execution_workspaces set updated_at = updated_at + interval '456 microseconds'
+      where id in (${sql.join(skippedWorkspaceIds.map(id => sql`${id}::uuid`), sql`, `)})`);
     // The eligible workspace is newest, so it sorts after the whole skipped page.
     const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2020, 0, 9)) });
 

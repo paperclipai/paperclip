@@ -1,3 +1,5 @@
+import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
+
 /** Fixed SQL aliases only. These predicates do not accept request input. */
 export function finishedIdleRun(alias: string): string {
   return `${alias}.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
@@ -13,6 +15,37 @@ export function finishedIdleWake(alias: string): string {
       SELECT 1 FROM heartbeat_runs wake_target WHERE wake_target.id = ${alias}.run_id
         AND wake_target.company_id = ${alias}.company_id AND wake_target.agent_id = ${alias}.agent_id
         AND ${finishedIdleRun('wake_target')})))`;
+}
+
+export function completedAgentUnblockRequest(issue: string): string {
+  return `${issue}.blocked_transition_at IS NOT NULL
+    AND ${issue}.blocked_owner_notified_at >= ${issue}.blocked_transition_at
+    AND jsonb_typeof(${issue}.unblock_descriptor) = 'object'
+    AND ${issue}.unblock_descriptor = jsonb_build_object('owner', ${issue}.unblock_descriptor->'owner',
+      'action', ${issue}.unblock_descriptor->'action')
+    AND jsonb_typeof(${issue}.unblock_descriptor->'owner') = 'object'
+    AND ${issue}.unblock_descriptor->'owner' = jsonb_build_object('agentId', ${issue}.unblock_descriptor->'owner'->'agentId')
+    AND jsonb_typeof(${issue}.unblock_descriptor->'owner'->'agentId') = 'string'
+    AND jsonb_typeof(${issue}.unblock_descriptor->'action') = 'string'
+    AND length(trim(${issue}.unblock_descriptor->>'action')) > 0
+    AND EXISTS (SELECT 1 FROM agents unblock_owner
+      WHERE unblock_owner.company_id = ${issue}.company_id
+        AND unblock_owner.id::text = ${issue}.unblock_descriptor->'owner'->>'agentId')
+    AND EXISTS (SELECT 1 FROM agent_wakeup_requests unblock_wake
+      WHERE unblock_wake.company_id = ${issue}.company_id
+        AND unblock_wake.agent_id::text = ${issue}.unblock_descriptor->'owner'->>'agentId'
+        AND unblock_wake.idempotency_key = 'issue-unblock:' || ${issue}.id::text || ':'
+          || to_char(${issue}.blocked_transition_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        AND unblock_wake.payload->>'issueId' = ${issue}.id::text
+        AND unblock_wake.payload->>'action' = ${issue}.unblock_descriptor->>'action'
+        AND unblock_wake.status IN ('completed', 'coalesced') AND unblock_wake.finished_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM heartbeat_runs unblock_target
+          WHERE unblock_target.id = unblock_wake.run_id AND unblock_target.company_id = ${issue}.company_id
+            AND unblock_target.agent_id = unblock_wake.agent_id
+            AND (unblock_target.context_snapshot->>'issueId' = ${issue}.id::text
+              OR unblock_target.native_issue_id = ${issue}.id)
+            AND (unblock_target.native_issue_id IS NULL OR unblock_target.native_issue_id = ${issue}.id)
+            AND ${finishedIdleRun('unblock_target')}))`;
 }
 
 export function connectionDeliveryWaitingForResponse(delivery: string): string {
@@ -93,4 +126,31 @@ export function passiveBoardRecovery(alias: string): string {
         AND recovery_source.monitor_next_check_at IS NULL AND recovery_source.monitor_wake_requested_at IS NULL
         AND (recovery_source.execution_state IS NULL OR recovery_source.execution_state->>'status' = 'idle')
         AND COALESCE(recovery_source.execution_policy->'monitor', 'null'::jsonb) = 'null'::jsonb)`;
+}
+
+export function finishedFailedIdleLease(alias: string): string {
+  const receipt = `${alias}.metadata->'remoteExecutionTermination'`;
+  return `${alias}.status = 'failed' AND ${alias}.lease_policy = 'ephemeral'
+    AND ${alias}.released_at IS NOT NULL
+    AND COALESCE(${alias}.metadata->>'pendingCleanupInFlight', 'false') = 'false'
+    AND NOT (COALESCE(${alias}.metadata, '{}'::jsonb) ?| ARRAY['nativeWorkspaceExportResume', 'sandboxStopAndRetain'])
+    AND (( ${alias}.provider = 'local' AND ${alias}.provider_lease_id IS NULL
+      AND ${alias}.metadata->>'driver' = 'local'
+      AND ${receipt} IS NULL
+      AND EXISTS (SELECT 1 FROM environments local_environment
+        WHERE local_environment.id = ${alias}.environment_id AND local_environment.driver = 'local'))
+    OR (${alias}.cleanup_status = 'success' AND ${alias}.provider IS NOT NULL AND ${alias}.provider <> 'local'
+      AND ${alias}.provider_lease_id IS NOT NULL AND ${alias}.provider_lease_id <> ''
+      AND ((${receipt}->>'schema' = 'paperclip.remote-termination.v1'
+      AND ${receipt}->>'companyId' = ${alias}.company_id::text
+      AND ${receipt}->>'runId' = ${alias}.heartbeat_run_id::text
+      AND ${receipt}->>'leaseId' = ${alias}.id::text
+      AND ${receipt}->>'provider' = ${alias}.provider
+      AND ${receipt}->>'providerLeaseId' = ${alias}.provider_lease_id
+      AND ${receipt}->>'state' IN ('stopped', 'destroyed'))
+        OR (${verifiedResourceCleanup(alias, 'lease')}))))
+    AND ((${alias}.heartbeat_run_id IS NULL AND ${alias}.provider <> 'local'
+      AND (${verifiedResourceCleanup(alias, 'lease')})) OR EXISTS (SELECT 1 FROM heartbeat_runs r WHERE r.id = ${alias}.heartbeat_run_id
+      AND r.company_id = ${alias}.company_id
+      AND ${finishedIdleRun("r")}))`;
 }

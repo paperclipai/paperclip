@@ -1,6 +1,14 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
+import { notifyChatEndpointWork } from "./chat-work-notifications.js";
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   companyMemberships,
   companySecretBindings,
   companySecrets,
@@ -35,6 +43,17 @@ type MemberArchiveInput = {
 
 export function accessService(db: Db) {
   const authorization = authorizationService(db);
+
+  async function memberAccessTransaction<T>(operation: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try { return await db.transaction(operation); }
+      catch (error) {
+        const failure = error as { code?: string; cause?: { code?: string } };
+        if ((failure?.cause?.code ?? failure?.code) !== "55P03") throw error;
+        if (attempt >= 2) throw conflict("Member access changed during cleanup. Try again.", { retryable: true });
+      }
+    }
+  }
 
   async function sweepMemberConnectionAccess(
     tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
@@ -117,6 +136,7 @@ export function accessService(db: Db) {
     }> = [];
     let connectionRefs: Array<{
       id: string;
+      transport: typeof toolConnections.$inferSelect.transport;
       credentialRefs: typeof toolConnections.$inferSelect.credentialRefs;
       credentialSecretRefs: typeof toolConnections.$inferSelect.credentialSecretRefs;
     }> = [];
@@ -155,6 +175,7 @@ export function accessService(db: Db) {
         }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
         tx.select({
           id: toolConnections.id,
+          transport: toolConnections.transport,
           credentialRefs: toolConnections.credentialRefs,
           credentialSecretRefs: toolConnections.credentialSecretRefs,
         }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
@@ -229,6 +250,27 @@ export function accessService(db: Db) {
     const connectionSecretIdsToRemove = new Set(
       ownedSecretIds.filter((secretId) => !sharedConnectionSecretIds.has(secretId)),
     );
+    const affectedGrantIds = [...new Set([...grantIds, ...grantRefs
+      .filter(grant => affectedConnections.has(grant.connectionId))
+      .map(grant => grant.id)])];
+    if (affectedGrantIds.length > 0) {
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(and(eq(connectionGrants.companyId, companyId), inArray(connectionGrants.id, affectedGrantIds)))
+        .orderBy(connectionGrants.id).for("update");
+    }
+    if (affectedConnectionIds.length > 0) {
+      await tx.select({ id: toolConnections.id }).from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, affectedConnectionIds)))
+        .orderBy(toolConnections.id).for("update");
+    }
+    if (secretIdsToDelete.length > 0) {
+      await tx.select({ id: companySecrets.id }).from(companySecrets)
+        .where(and(eq(companySecrets.companyId, companyId), inArray(companySecrets.id, secretIdsToDelete)))
+        .orderBy(companySecrets.id).for("update", { noWait: true });
+    }
+    await tx.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.companyId, companyId), notInArray(agents.status, ["pending_approval", "terminated"])))
+      .orderBy(agents.id).for("no key update");
     const removedDelegations = grantIds.length === 0 ? [] : await tx
       .delete(connectionGrantDelegations)
       .where(and(
@@ -290,6 +332,9 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.length > 0
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
+          if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, companyId);
+          if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
+          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, { companyId, id: connection.id });
           await tx.update(toolConnections).set({
             credentialRefs,
             credentialSecretRefs,
@@ -448,10 +493,11 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
-    const member = await getMemberById(companyId, memberId);
-    if (!member) return null;
-
-    await db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
+      const member = await tx.select().from(companyMemberships)
+        .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+        .for("update").then(rows => rows[0] ?? null);
+      if (!member) return null;
       await tx
         .delete(principalPermissionGrants)
         .where(
@@ -475,9 +521,8 @@ export function accessService(db: Db) {
           })),
         );
       }
+      return member;
     });
-
-    return member;
   }
 
   async function updateMemberAndPermissions(
@@ -490,7 +535,7 @@ export function accessService(db: Db) {
     },
     grantedByUserId: string | null,
   ) {
-    return db.transaction(async (tx) => {
+    return memberAccessTransaction(async (tx) => {
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}
@@ -512,6 +557,11 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+
+      if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
+        && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
 
       if (
         existing.principalType === "user" &&
@@ -643,7 +693,7 @@ export function accessService(db: Db) {
   }
 
   async function archiveMember(companyId: string, memberId: string, input: MemberArchiveInput = {}) {
-    return db.transaction(async (tx) => {
+    return memberAccessTransaction(async (tx) => {
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}
@@ -692,6 +742,9 @@ export function accessService(db: Db) {
         eq(issues.assigneeUserId, existing.principalId),
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
+      await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const resetInProgress = await tx
         .update(issues)
         .set({
@@ -704,6 +757,7 @@ export function accessService(db: Db) {
         })
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))
         .returning({ id: issues.id });
+      if (assignmentPatch.assigneeAgentId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
       const reassigned = await tx
         .update(issues)
         .set(assignmentPatch)
@@ -777,13 +831,14 @@ export function accessService(db: Db) {
   ) {
     const target = new Set(companyIds);
 
-    await db.transaction(async (tx) => {
+    await memberAccessTransaction(async (tx) => {
       // Serialize every company-access removal/reactivation with personal OAuth
       // completion, which locks the same membership row before writing secrets.
       const existing = await tx
         .select()
         .from(companyMemberships)
         .where(and(eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId)))
+        .orderBy(companyMemberships.companyId, companyMemberships.id)
         .for("update");
       const existingByCompany = new Map(existing.map((row) => [row.companyId, row]));
       const toArchive = existing.filter((row) => !target.has(row.companyId) && row.status !== "archived");
@@ -844,6 +899,7 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
+            if (existingMembership.membershipRole !== "viewer") await notifyChatCompanyAuthorityChange(tx, { companyId });
             await tx
               .update(companyMemberships)
               .set({
@@ -855,6 +911,7 @@ export function accessService(db: Db) {
           }
           continue;
         }
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
         await tx.insert(companyMemberships).values({
           companyId,
           principalType: "user",
@@ -875,31 +932,43 @@ export function accessService(db: Db) {
     membershipRole: string | null = "member",
     status: "pending" | "active" | "suspended" = "active",
   ) {
-    const existing = await getMembership(companyId, principalType, principalId);
-    if (existing) {
-      if (existing.status !== status || existing.membershipRole !== membershipRole) {
-        const updated = await db
-          .update(companyMemberships)
-          .set({ status, membershipRole, updatedAt: new Date() })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return updated ?? existing;
+    return db.transaction(async tx => {
+      const existing = await tx.select().from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, principalType),
+        eq(companyMemberships.principalId, principalId),
+      )).for("update").then(rows => rows[0] ?? null);
+      if (existing) {
+        if (existing.status !== status || existing.membershipRole !== membershipRole) {
+          if (principalType === "user" && status === "active" && membershipRole !== "viewer"
+            && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+            await notifyChatCompanyAuthorityChange(tx, { companyId });
+          }
+          const updated = await tx
+            .update(companyMemberships)
+            .set({ status, membershipRole, updatedAt: new Date() })
+            .where(eq(companyMemberships.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return updated ?? existing;
+        }
+        return existing;
       }
-      return existing;
-    }
 
-    return db
-      .insert(companyMemberships)
-      .values({
-        companyId,
-        principalType,
-        principalId,
-        status,
-        membershipRole,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+      if (principalType === "user" && status === "active" && membershipRole !== "viewer") {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
+      return tx
+        .insert(companyMemberships)
+        .values({
+          companyId,
+          principalType,
+          principalId,
+          status,
+          membershipRole,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    });
   }
 
   async function setPrincipalGrants(
@@ -1057,7 +1126,7 @@ export function accessService(db: Db) {
       status?: "pending" | "active" | "suspended";
     },
   ) {
-    return db.transaction(async (tx) => {
+    return memberAccessTransaction(async (tx) => {
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}
@@ -1079,6 +1148,11 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+
+      if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
+        && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
 
       if (
         existing.principalType === "user" &&
@@ -1128,6 +1202,7 @@ export function accessService(db: Db) {
   return {
     isInstanceAdmin,
     decide,
+    decideReads: authorization.decideReads,
     projectDiscoveryCandidateIds: authorization.projectDiscoveryCandidateIds,
     canUser,
     hasPermission,

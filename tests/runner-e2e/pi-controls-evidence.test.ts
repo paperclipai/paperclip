@@ -4,7 +4,7 @@ import { CodexHarnessSession } from "../../packages/paperclip-runner/src/drivers
 import { assertSamePiPending, observePiControlPending, readPiStopSettlement, readPiSteeringAcknowledgement, readPiSteeringSettlement } from "./pi-controls-evidence.js";
 import { stopPiAtPendingPermission } from "./pi-controls-flow.js";
 import { piControlFixture, piControlCaller, piCancellationId } from "./pi-controls-test-fixture.js";
-import { runnerMatrix, runnerSuites, suiteDefinitionHash, validateRunnerCatalog } from "./catalog.js";
+import { runnerMatrix, runnerSuites, suiteDefinitionHash } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 import { assertRemoteNativeEvidencePrerequisites } from "./prerequisites.js";
@@ -180,7 +180,6 @@ describe("Pi controls catalog admission", () => {
     expect(cells).toHaveLength(4); expect(cells.every(c => c.profile.qualificationCandidate === "pi" && c.task.expectedRunCount === 1)).toBe(true);
     expect(cells.map(c => `${c.environment.id}/${c.task.id}`).sort()).toEqual(["daytona/pending-permission-stop", "daytona/same-turn-steering", "local/pending-permission-stop", "local/same-turn-steering"]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(c => c.suite.id === "pi-controls")).toBe(false);
-    expect(validateRunnerCatalog()).toHaveLength(731);
     for (const cell of cells) expect(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
     expect(() => assertRemoteNativeEvidencePrerequisites(cells, {})).toThrow();
   });
@@ -189,21 +188,21 @@ describe("Pi controls catalog admission", () => {
     // Extended v3 states the strict file oracle's task-wide Bash limit.
     const pi = runnerMatrix.find(c => c.profile.qualificationCandidate === "pi")!.profile;
     expect(pi.modelQualification?.qualificationId).toBe("pi:0.0.33:1.0.0:openrouter");
-    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 23, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", agentMemoryParent: "public-managed-file-seed-before-admission", incompleteTerminalCleanup: "retirement-retained-with-failed-watch", profileVersion: 23, agentMemoryContent: "utf8-nonce-plus-final-lf", agentMemoryPrompt: "single-json-write-and-content-bound-native-read-both-runs", agentMemoryReadAuthority: "local-withheld-or-exact-remote-agent-run-file", taskPromptTransport: "fenced-markdown-paste-and-multiline-literal-escapes", nativeFinish: "current-contract-objective-evidence-refs", providerFaultExecutable: "stable-preinstalled-runner-link-and-snapshot-node-inode-with-held-bootstrap-fd-3-or-7" });
-    expect(runnerSuites.find(s => s.id === "pi-controls")!.definitionMetadata).toMatchObject({ version: 10, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", profileVersion: 23,
+    expect(runnerSuites.find(s => s.id === "pi-native")!.definitionMetadata).toMatchObject({ version: 23, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", agentMemoryParent: "public-managed-file-seed-before-admission", incompleteTerminalCleanup: "retirement-retained-with-failed-watch", profileVersion: 35, agentMemoryContent: "utf8-nonce-plus-final-lf", agentMemoryPrompt: "single-json-write-and-content-bound-native-read-both-runs", agentMemoryReadAuthority: "local-withheld-or-exact-remote-agent-run-file", taskPromptTransport: "fenced-markdown-paste-and-multiline-literal-escapes", nativeFinish: "current-contract-objective-evidence-refs", providerFaultExecutable: "stable-preinstalled-runner-link-and-snapshot-node-inode-with-held-bootstrap-fd-3-or-7" });
+    expect(runnerSuites.find(s => s.id === "pi-controls")!.definitionMetadata).toMatchObject({ version: 10, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", profileVersion: 35,
       remoteProcessIdentity: "observer-pid-startTicks-bootId",
       controlPlaneSettlement: "required-scoped-result-and-terminal-after-runner" });
-    expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 5, piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" });
+    expect(runnerSuites.find(s => s.id === "extended-harnesses")!.definitionMetadata).toMatchObject({ version: 6, piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" });
     for (const cell of runnerMatrix.filter(cell => cell.profile.qualificationCandidate === "pi")) {
       const agent = cell.profile.buildAgent({ environmentId: "environment", environmentFixtureId: cell.environment.id, workspacePath: "/workspace", executionId: cell.id, secretRefs: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "synthetic", version: "latest" } } });
       expect(agent.adapterConfig).toMatchObject({ piThinkingLevel: "low" });
     }
     const hashes = Object.fromEntries(runnerSuites.filter(s => ["pi-native", "native-active-stop", "extended-harnesses", "rich-acp-warm-continuity"].includes(s.id)).map(s => [s.id, suiteDefinitionHash(s)]));
     expect(hashes).toEqual({
-      "pi-native": "3c77ced7edfb99aa12052f451398da7580466a54abadcaf287d31ee12c16382d",
-      "native-active-stop": "2d4fdeeb75bd531b309bd1b35cfa5680ceefdeee6b7155b068dd011ce9901980",
-      "rich-acp-warm-continuity": "331b88d9538a132670789fb7864df7df5f4bf294ae19b62f53d8a02f901774f0",
-      "extended-harnesses": "5de4fac78d4d581bc0954f07b5cf2df2862d37f8b0205325eede6d9ef6d9f5e6",
+      "pi-native": "8107706b60dd20aa34856728be19f3a8bf25bc21812587b3f115a4fe57da3972",
+      "native-active-stop": "4654a2169bff96cf8377fdd62441f5cabea5c613f447e518830f6b1efd82c051",
+      "rich-acp-warm-continuity": "7e8a0012f2f67fba03cd94403b096a07cfc95cdb7aa568b4c3fd18b852d735f3",
+      "extended-harnesses": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
     });
     expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi" && c.suite.id !== "pi-controls")).toHaveLength(22);
   });

@@ -76,12 +76,11 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.nextAction).toContain("stop it if it is stuck");
   });
 
-  it("explains a shared checkout restricted by another task instead of missing secrets", () => {
+  it("offers retry without a workspace repair checklist", () => {
     const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
-    expect(seed.title).toBe("Workspace source restricted");
-    expect(seed.body).toContain("shared project checkout");
-    expect(seed.body).not.toContain("secret/env bindings");
-    expect(seed.nextAction).toContain("select a new workspace");
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
   });
 
   it("keeps the secret-binding copy for other configuration gaps", () => {

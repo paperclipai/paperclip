@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { applyPendingMigrations } from '@paperclipai/db';
 import { reserveInitialSkillWork } from '../services/skill-source-import-budget.js';
 import { admitDeferredSkillImports, lockSkillImportQueue, MAX_COMPANY_PENDING_SKILL_IMPORTS, MAX_PROJECT_PENDING_SKILL_IMPORTS, SKILL_IMPORT_CAPACITY_WAIT } from '../services/skill-source-import-queue.js';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { activityLog, agents, authUsers, companies, companyMemberships, companySkillSources, companySkillImportBudgets, companySkills, createDb, projects,
+import { activityLog, agents, authUsers, companies, companyMemberships, companySkillSources, companySkillImportBudgets, companySkills, companySkillVersions, createDb, projects,
   projectWorkspaces, projectSkillSources, projectAccessMembers } from '@paperclipai/db';
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from './helpers/embedded-postgres.js';
 import { githubFixture } from './helpers/github-skills.js';
@@ -14,12 +16,14 @@ import { enqueueProjectSkillSource, detachProjectSkillSource, projectSkillSetupI
 import { adoptProjectSkillRepository, projectSkillRepositories, skillSourceSyncService } from '../services/skill-source-sync.js';
 import { skillSourceService, type SkillSourceContext } from '../services/skill-sources.js';
 import { companySkillService } from '../services/company-skills.js';
+import { skillPackagePaths } from '../services/skill-package-store.js';
 import { projectService } from '../services/projects.js';
 import { skillAccessService, withSkillActor } from '../services/skill-access.js';
 import type { AuthorizationActor } from '../services/authorization.js';
 import { forbidden, unprocessable } from '../errors.js';
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_PROJECT_SKILLS_TEST_DATABASE_URL');
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)('automatic project skill sources', () => {
   let testDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -37,8 +41,9 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       return fixture;
     }, authorize: async () => {}, audit: async () => {} };
   beforeAll(async () => {
-    testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
-    db = createDb(testDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
+    db = createDb(externalUrl ?? testDb.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-project-skills-home-'));
     process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Project skills', issuePrefix: 'PSK' });
@@ -93,6 +98,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
   });
   afterAll(async () => {
     if (oldHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = oldHome;
+    await db?.$client.end({ timeout: 1 });
     await testDb?.cleanup();
     if (home) await fs.rm(home, { recursive: true, force: true });
   });
@@ -441,6 +447,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const source = await skillSourceService(db).detail(companyId, binding!.sourceId!);
     const skillId = source.entries[0]!.skillId!;
     let privateSnapshotPath = '';
+    let privatePackagePath = '';
     const privateDerivatives: string[] = [];
     for (const user of ['alice', 'bob']) {
       await db.insert(authUsers).values({ id: user, name: user, email: `${user}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -454,6 +461,16 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       const [runtime] = await companySkillService(db).listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill.key]) });
       privateSnapshotPath = runtime!.source;
       await expect(companySkillService(db).importFromSource(companyId, runtime!.source)).rejects.toThrow(/Project-derived skill/);
+      const [version] = await db.select({ packageId: companySkillVersions.packageSnapshotId })
+        .from(companySkillVersions).where(eq(companySkillVersions.id, skill.currentVersionId!));
+      expect(version?.packageId).toBeTruthy();
+      privatePackagePath = skillPackagePaths(companyId, version!.packageId!).directory;
+      expect((await fs.stat(privatePackagePath)).isDirectory()).toBe(true);
+      for (const candidate of [privatePackagePath, path.join(privatePackagePath, 'private'), path.dirname(privatePackagePath)]) {
+        await expect(companySkillService(db).importFromSource(companyId, candidate)).rejects.toMatchObject({
+          status: 422, details: { code: 'skill_package_cache_import_denied' },
+        });
+      }
       const fork = await companySkillService(db).forkSkill(companyId, skillId, { slug: 'private-copy' });
       expect(fork.skill.accessSourceId).not.toBe(source.id);
       expect(fork.skill.accessSourceId).toBeTruthy();
@@ -470,6 +487,9 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       await expect(skillSourceService(db).branches(companyId, source.id, {}, { ...context, read: () => branchRead })).rejects.toThrow(/not found/);
       expect(branchRead).not.toHaveBeenCalled();
       await expect(companySkillService(db).importFromSource(companyId, privateSnapshotPath)).rejects.toThrow(/not found/);
+      await expect(companySkillService(db).importFromSource(companyId, privatePackagePath)).rejects.toMatchObject({
+        status: 422, details: { code: 'skill_package_cache_import_denied' },
+      });
       expect(await companySkillService(db).getById(companyId, skillId)).toBeNull();
       expect(await companySkillService(db).readFile(companyId, skillId, 'SKILL.md')).toBeNull();
       expect((await skillSourceService(db).list(companyId)).some(item => item.id === source.id)).toBe(false);

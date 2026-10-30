@@ -8,7 +8,7 @@ import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
 import { boundedCodexPayload as boundedPayload, boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
-import { runtimeRequestResponse } from "./codex-question-adapter.js";
+import { runtimeRequestProtocolPayload, runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
   isSupportedCodexNotificationMethod,
   codexThreadLineage as lineageFromThread,
@@ -28,6 +28,7 @@ import {
   recordWorkspaceChanges,
 } from "./codex-session-workspace.js";
 import {
+  RUNNERD_RUNTIME_ACTIVITY,
   boundedText,
   differingJsonPaths,
   itemFromParams,
@@ -105,6 +106,14 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
   }
 
 async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+    if (notification.method === "paperclip/runtimeActivityRecorded") {
+      const params = notification.params;
+      if ((params as Record<PropertyKey, unknown>)[RUNNERD_RUNTIME_ACTIVITY] !== true) return;
+      const pending = state.pendingRunAttachment;
+      if (pending && params.runId === pending.runId && params.runId !== state.runId) await pending.settled;
+      if (params.runId === state.runId) state.emit("runtime.activity.recorded", record(params.payload));
+      return;
+    }
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
     if (notification.method === "item/completed" && notification.params.kind === "steering_acknowledgement"
       && !notification.params.threadId && !notification.params.turnId && !notification.params.thread && !notification.params.turn) return;
@@ -150,6 +159,27 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    if (notification.method === "paperclip/runtimeRequestExpired") {
+      const payload = record(params.payload);
+      const requestId = text(payload.requestId);
+      const pending = state.pendingRuntimeRequestMap.get(requestId);
+      if (pending === undefined) return;
+      const expected = runtimeRequestProtocolPayload(pending.request);
+      if (pending.request.turnId !== turnId || payload.requestKind !== expected.requestKind
+        || payload.requestType !== (pending.request.input === undefined ? "permission" : "input")
+        || payload.replayAllowed !== false || typeof payload.reason !== "string" || !payload.reason) {
+        state.failProtocol("turn_binding_mismatch", "Canonical request expiry changed its callback binding.");
+        return;
+      }
+      state.pendingRuntimeRequestMap.delete(requestId);
+      // Preserve durable expiry evidence with the same facade identity used
+      // when creating this callback. Terminal handling must not cancel it again.
+      state.emit("runtime_request.expired", { ...payload,
+        turnId: pending.request.turnId, itemId: pending.request.itemId,
+      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
+      return;
+    }
     if (notification.method === "paperclip/canonicalProviderEvent") {
       if (!isCanonicalProviderEventType(params.eventType)) {
         state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");

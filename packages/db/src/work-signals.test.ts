@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { databaseWorkScopeKey, databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -185,5 +185,25 @@ describe("work signal query boundaries", () => {
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });
     await expect(signalDatabaseWork(connection, "bad")).rejects.toThrow("inside a transaction");
+  });
+});
+
+
+describe("database work scope identity", () => {
+  type TestConnection = { execute: () => Promise<unknown[]>; transaction: (callback: (tx: TestConnection) => unknown) => Promise<unknown> };
+  function connection(): TestConnection {
+    return { execute: vi.fn(async () => []), transaction: async callback => callback(connection()) };
+  }
+  it("shares owner identity through child pools and nested transactions, but isolates independent owners", async () => {
+    const first = installDatabaseWorkSignals(connection());
+    const second = installDatabaseWorkSignals(connection());
+    const child = installDatabaseWorkSignals(connection(), first);
+    const key = databaseWorkScopeKey(first);
+    expect(databaseWorkScopeKey(second)).not.toBe(key);
+    expect(databaseWorkScopeKey(child)).toBe(key);
+    await child.transaction(async tx => {
+      expect(databaseWorkScopeKey(tx)).toBe(key);
+      await tx.transaction(async nested => { expect(databaseWorkScopeKey(nested)).toBe(key); });
+    });
   });
 });

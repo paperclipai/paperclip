@@ -987,7 +987,10 @@ export function canonicalProviderEventsFromCodex(
               ? "environment"
               : "turn",
           recoverable: method !== "error",
-          userActionable: method === "error" || method === "warning",
+          // Provider severity does not establish a decision the task user can
+          // make. Authentication, approval and model-choice actions have typed
+          // admission paths; generic runtime notices remain diagnostics.
+          userActionable: false,
           summary: [params.summary, params.message, params.details]
             .map((value) => text(value).trim())
             .find(Boolean)?.slice(0, 4000) || "Provider notice",
@@ -997,6 +1000,19 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   return [];
+}
+
+function openCodeToolExitCode(
+  part: Record<string, unknown>,
+  state: Record<string, unknown>,
+): number | null {
+  const legacy = integer(state.exit);
+  if (part.type !== "tool" || part.tool !== "bash" || state.status !== "completed") {
+    return legacy;
+  }
+  const exit = integer(record(state.metadata).exit);
+  if (exit === null) return legacy;
+  return state.exit != null && legacy !== exit ? null : exit;
 }
 
 /** Maps documented OpenCode structured message parts. Unrecognized parts are deliberately unsupported. */
@@ -1048,7 +1064,7 @@ export function canonicalProviderEventsFromOpenCodePart(
       readOnly: /read|search|grep|find|list|glob/i.test(tool),
       status,
       durationMs: integer(state.time),
-      exitCode: integer(state.exit),
+      exitCode: openCodeToolExitCode(part, state),
       progress:
         status === "running" ? text(state.title).slice(0, 4000) || null : null,
       ...boundedOutput(

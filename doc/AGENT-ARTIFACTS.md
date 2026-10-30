@@ -27,6 +27,14 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
 
+Named JSON file outputs and explicit publication requests require the same
+verified delivery evidence as other file outputs. A saved summary document does
+not replace a requested downloadable JSON file. Reading JSON inputs or discussing
+their contents inline does not by itself require a file attachment.
+JSON output intent is recognized from a direct filename or an explicit output
+destination. Ambiguous descriptions of input files joined by `to` remain text
+requests; use `as`, `into`, or an explicit output file when an artifact is required.
+
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:
 `Write memory.txt. This is personal memory, not a task deliverable.` or
@@ -45,6 +53,12 @@ confirms storage and response binding in Paperclip; it does not confirm delivery
 to an external chat provider. If registration fails, use the returned error to
 resolve the failure or explain the limitation; do not describe a workspace path
 as an uploaded file.
+
+With workspace-relative file access, create or copy task deliverables into the
+directory returned by `get_workspace.cwd` before registration. `AGENT_HOME`
+holds personal instructions and memory. If registration reports a missing
+workspace file, copy the file to that task directory and retry with a relative
+`contentRef`.
 
 ## Legacy adapters
 

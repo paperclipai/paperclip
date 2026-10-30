@@ -12,7 +12,7 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
-  acpx: "claude-sonnet-5",
+  acpx: "claude-opus-5-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
@@ -205,7 +205,7 @@ export function paperclipRunnerTransitionConfig(
   providerOverride?: unknown,
 ): Record<string, unknown> {
   const previousProvider =
-    previousAdapterType === "claude_local"
+    (["claude_local", "pi_local", "grok_local"].includes(previousAdapterType))
       ? "acpx"
       : previousAdapterType === "opencode_local"
         ? "opencode"
@@ -218,11 +218,15 @@ export function paperclipRunnerTransitionConfig(
       : previousProvider;
   return {
     provider,
-    model: resolvePaperclipRunnerModel(
+    model: provider === "acpx" && previousAdapterType === "grok_local"
+      ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
+      : provider === "acpx" && previousAdapterType === "pi_local"
+      ? typeof previousModel === "string" ? previousModel.trim() : ""
+      : resolvePaperclipRunnerModel(
       provider,
       provider === previousProvider ? previousModel : undefined,
     ),
-    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+    ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "grok_local" ? "grok" : previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
     [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
       PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
     lifecycleMode: "per_turn",
@@ -247,8 +251,9 @@ export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
   { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
   { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
   { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
-  { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
   { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
+  { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
 ] as const);
 
 /** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */

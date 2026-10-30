@@ -53,10 +53,11 @@ Resource exhaustion must not be interpreted as a tested product failure or a
 passing control. Coordinate heavy runs and clean up only owned resources.
 
 Follow existing branch/worktree conventions and protect unrelated working-tree
-edits. New repository audit plans/receipts belong in
-`doc/plans/YYYY-MM-DD-<scope>-test-audit.md`. Prefer one concise receipt per
-coherent batch or campaign. For Paperclip issue work, follow the issue's artifact
-and work-product requirements rather than relying only on local paths.
+edits. Keep audit plans, decisions, and validation evidence in the Paperclip
+execution issue and a concise PR description. Do not add repository audit
+documents or `doc/plans/` receipts. Documentation changes require an explicit
+human request. When requested artifacts are deliverables, follow the issue's
+artifact and work-product requirements rather than relying only on local paths.
 
 When publishing is authorized, fill every section of
 `.github/PULL_REQUEST_TEMPLATE.md`, including exact model information that is

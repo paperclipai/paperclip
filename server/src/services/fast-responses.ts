@@ -1,3 +1,5 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { insertIssueComment } from "./issue-comment-writes.js";
 import { randomUUID } from "node:crypto";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import {
@@ -20,7 +22,6 @@ import {
   issueAttachments,
   projects,
   authUsers,
-  budgetPolicies,
   budgetReservations,
   companies,
   companyFastResponses,
@@ -60,11 +61,9 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
+import { withBudgetSpan } from "./budget-tracing.js";
 import {
-  budgetPoliciesForRun,
-  budgetService,
   budgetServiceInTransaction,
-  computeObservedSpend,
   type BudgetServiceHooks,
 } from "./budgets.js";
 import { createCostEventInTransaction } from "./costs.js";
@@ -197,6 +196,7 @@ export async function enqueueFastResponse(tx: Db, source: FastResponseSource) {
   if (source.acceptedAt.getTime() + FAST_RESPONSE_DEADLINE_MS <= Date.now())
     return;
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.fastResponse);
+  if (source.endpointId && source.deliveryId) await notifyChatResponseAvailability(tx, { companyId: source.companyId, deliveryId: source.deliveryId });
   await tx
     .insert(fastResponseRequests)
     .values({
@@ -551,23 +551,26 @@ export function fastResponseService(
     }
   }
   async function skip(request: Request, reason: string) {
-    await db
-      .update(fastResponseRequests)
-      .set({
-        status: "skipped",
-        publicationStatus: "suppressed",
-        errorCode: reason,
-        finishedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(fastResponseRequests.id, request.id),
-          eq(fastResponseRequests.status, "pending"),
-        ),
-      );
+    await db.transaction(async tx => {
+      if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
+      await tx
+        .update(fastResponseRequests)
+        .set({
+          status: "skipped",
+          publicationStatus: "suppressed",
+          errorCode: reason,
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(fastResponseRequests.id, request.id),
+            eq(fastResponseRequests.status, "pending"),
+          ),
+        );
+    });
   }
   async function settle(request: Request, outcome: FastResponseOutcome) {
-    await withAccountingTransaction(
+    await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(
       db,
       request.companyId,
       async (tx, publications) => {
@@ -627,6 +630,7 @@ export function fastResponseService(
           },
         );
         const finishedAt = new Date();
+        if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
         await tx
           .update(fastResponseRequests)
           .set({
@@ -660,10 +664,8 @@ export function fastResponseService(
               ),
             );
       },
-    );
-    await budgetService(db, options.budgetHooks).deliverPendingEnforcement(
-      request.companyId,
-    );
+    ));
+
   }
   async function process(
     request: Request,
@@ -853,60 +855,15 @@ export function fastResponseService(
               (!agent || ["paused", "terminated"].includes(agent.status)))
           )
             return null;
-          if (
-            await budgetServiceInTransaction(tx, []).getInvocationBlock(
-              request.companyId,
-              request.agentId,
-              { projectId: current.issue?.projectId },
-            )
-          )
-            return null;
-          const policies = await tx
-            .select()
-            .from(budgetPolicies)
-            .where(
-              and(
-                eq(budgetPolicies.companyId, request.companyId),
-                eq(budgetPolicies.isActive, true),
-                eq(budgetPolicies.hardStopEnabled, true),
-                eq(budgetPolicies.metric, "billed_cents"),
-                sql`${budgetPolicies.amount} > 0`,
-                budgetPoliciesForRun(
-                  request.companyId,
-                  request.agentId,
-                  current.issue?.projectId ?? null,
-                ),
-              ),
-            );
+          const { block, policies, observations } = await budgetServiceInTransaction(tx, []).evaluateAdmission(
+            request.companyId, request.agentId, { projectId: current.issue?.projectId });
+          if (block) return null;
           const amount = policies.reduce((max, p) => {
             const n = centsToUnits(p.reservationCents);
             return n > max ? n : max;
           }, 0n);
-          for (const policy of policies) {
-            const [held] = await tx
-              .select({
-                total: sql<string>`coalesce(sum(${budgetReservations.amountCents}),0)::text`,
-              })
-              .from(budgetReservations)
-              .where(
-                and(
-                  eq(budgetReservations.companyId, request.companyId),
-                  eq(budgetReservations.state, "held"),
-                  policy.scopeType === "agent"
-                    ? eq(budgetReservations.agentId, request.agentId!)
-                    : undefined,
-                  policy.scopeType === "project"
-                    ? eq(
-                        budgetReservations.projectId,
-                        current.issue!.projectId!,
-                      )
-                    : undefined,
-                ),
-              );
-            const committed =
-              centsToUnits(
-                (await computeObservedSpend(tx, policy)).totalExact,
-              ) + centsToUnits(held.total);
+          for (const [index, policy] of policies.entries()) {
+            const committed = centsToUnits(observations[index].ledgerCents) + centsToUnits(observations[index].effectiveHeldCents);
             if (
               committed >= centsToUnits(policy.amount) ||
               committed + amount > centsToUnits(policy.amount)
@@ -1011,21 +968,18 @@ export function fastResponseService(
                   ),
                 )
             : [];
-          const [comment] = await tx
-            .insert(issueComments)
-            .values({
-              companyId: request.companyId,
-              issueId: request.issueId!,
-              authorAgentId: request.agentId,
-              authorUserId: request.agentId ? null : "board-concierge",
-              authorType: request.agentId ? "agent" : "system",
-              body: safe.text,
-              sourceTrust: source?.sourceTrust ?? null,
-              conversationSessionGeneration: request.sessionGeneration,
-              origin: "fast_response",
-              fastResponseRequestId: request.id,
-            })
-            .returning();
+          const [comment] = await insertIssueComment(tx, {
+            companyId: request.companyId,
+            issueId: request.issueId!,
+            authorAgentId: request.agentId,
+            authorUserId: request.agentId ? null : "board-concierge",
+            authorType: request.agentId ? "agent" : "system",
+            body: safe.text,
+            sourceTrust: source?.sourceTrust ?? null,
+            conversationSessionGeneration: request.sessionGeneration,
+            origin: "fast_response",
+            fastResponseRequestId: request.id,
+          });
           if (
             request.endpointId &&
             request.conversationId &&
@@ -1045,6 +999,7 @@ export function fastResponseService(
               idempotencyKey: `fast-response:${request.id}`,
               payload: safe,
             });
+          if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
           await tx
             .update(fastResponseRequests)
             .set({

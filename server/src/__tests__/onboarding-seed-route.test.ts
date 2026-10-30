@@ -93,13 +93,9 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     // The seed's free-text role is a job title; the structural role stays `ceo`.
     expect(companyAgents[0]?.title).toBe("Chief of Staff");
     expect(companyAgents[0]?.role).toBe("ceo");
-    // A seeded CEO arrives with the core paperclip skills enabled. Skills only
-    // reach an agent's runtime through its own desired set, and the default
-    // CEO instructions assume this toolkit.
     expect(companyAgents[0]?.adapterConfig).toMatchObject({
       paperclipSkillSync: {
         desiredSkills: expect.arrayContaining([
-          "paperclipai/paperclip/paperclip",
           "paperclipai/paperclip/paperclip-board",
           "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
           "paperclipai/paperclip/paperclip-create-agent",
@@ -130,7 +126,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(record[0]?.issueId).toBe(companyIssues[0]?.id);
   });
 
-  it("keeps server-seeded onboarding on a legacy adapter when native runner is requested", async () => {
+  it("uses the qualified Claude default for an unsupported seed adapter override", async () => {
     const previous = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
     process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = "paperclip_runner";
     try {
@@ -141,7 +137,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
       expect(response.status).toBe(200);
       const companyAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
       expect(companyAgents).toHaveLength(1);
-      expect(companyAgents[0]?.adapterType).toBe("claude_local");
+      expect(companyAgents[0]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" } });
     } finally {
       if (previous === undefined) {
         delete process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
@@ -151,7 +147,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     }
   });
 
-  it("uses the creation default for server-seeded Codex without changing the Claude fallback", async () => {
+  it("uses the creation default for server-seeded Codex", async () => {
     const previous = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
     process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = "codex_local";
     try {

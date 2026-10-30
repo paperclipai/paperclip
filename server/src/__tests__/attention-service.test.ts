@@ -1,11 +1,12 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  activityLog,
   agents,
   approvals,
   assets,
@@ -15,11 +16,8 @@ import {
   createDb,
   decisionQueueItems,
   decisionQueues,
-  decisionArchiveNotificationOutbox,
-  decisionRetention,
   decisions,
   decisionTriage,
-  decisionTriageEvents,
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -43,11 +41,13 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -61,43 +61,18 @@ describeEmbeddedPostgres("attention service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 30_000);
 
   afterEach(async () => {
-    await db.delete(inboxDismissals);
-    await db.delete(decisionArchiveNotificationOutbox);
-    await db.delete(decisionRetention);
-    await db.delete(decisionTriageEvents);
-    await db.delete(decisionTriage);
-    await db.delete(decisionQueueItems);
-    await db.delete(decisionQueues);
-    await db.delete(decisions);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueApprovals);
-    await db.delete(issueAttachments);
-    await db.delete(issueDocuments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(budgetIncidents);
-    await db.delete(budgetPolicies);
-    await db.delete(joinRequests);
-    await db.delete(invites);
-    await db.delete(issueRecoveryActions);
-    await db.delete(issueRelations);
-    await db.delete(activityLog);
-    await db.delete(approvals);
-    await db.delete(issues);
-    await db.delete(assets);
-    await db.delete(documents);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
+
+
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -265,6 +240,84 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("includes existing pending chat questions and confirmations, then retains answered questions in history", async () => {
+    const { companyId, workerId } = await seedCompany("CHQ");
+    const issueId = randomUUID(), questionId = randomUUID(), confirmationId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, identifier: "CHQ-1", title: "Chat with Worker", status: "in_review",
+      conversationAgentId: workerId, conversationUserId: "board-user", conversationState: "waiting", assigneeAgentId: workerId,
+    });
+    await db.insert(issueThreadInteractions).values([
+      { id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending", title: "Choose the screen",
+        createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+        payload: { version: 1, questions: [{ id: "screen", prompt: "Which screen should we redesign?", options: [], selectionMode: "single", required: true, allowOther: true }] } },
+      { id: confirmationId, companyId, issueId, kind: "request_confirmation", status: "pending", title: "Approve the plan",
+        createdByAgentId: workerId, addresseeUserId: "board-user", payload: { version: 1, prompt: "Approve this plan?" } },
+    ]);
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId] };
+    const options = { userId: actor.userId, actor };
+    const service = attentionService(db);
+    const feed = await service.list(companyId, options);
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id).sort())
+      .toEqual([questionId, confirmationId].sort());
+    expect(feed.items.find((item) => item.subject.id === questionId)).toMatchObject({
+      inlineResolvable: true,
+      relatedIssue: { id: issueId, identifier: "CHQ-1", href: "/CHQ/issues/CHQ-1" },
+      subject: { href: `/CHQ/issues/CHQ-1#interaction-${questionId}`, metadata: { kind: "ask_user_questions", issueId } },
+      detail: { kind: "questions", questionCount: 1, firstQuestionText: "Which screen should we redesign?" },
+      resolverAudience: { effectiveResolverPolicy: "human_only" },
+    });
+    expect(feed.countsBySourceKind.issue_thread_interaction).toBe(2);
+    expect(feed.countsBySourceKind.review).toBe(0);
+
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date(), resolvedByUserId: actor.userId,
+      result: { version: 1, answers: [{ questionId: "screen", optionIds: [], otherText: "Agent detail" }] } }).where(eq(issueThreadInteractions.id, questionId));
+    const after = await service.list(companyId, options);
+    expect(after.items.some((item) => item.subject.id === questionId)).toBe(false);
+    expect(after.countsBySourceKind.issue_thread_interaction).toBe(1);
+    const history = await decisionHistoryService(db).list(companyId, options);
+    expect(history.items).toEqual([expect.objectContaining({ sourceId: questionId, issueId, outcome: "answered", label: "Answers recorded" })]);
+  });
+
+  it("keeps chat attention company, issue visibility, and addressee filters while ignoring idle chats without requests", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("CHA");
+    const other = await seedCompany("CHB");
+    const scenarios = [
+      { user: "board-user", allowed: true },
+      { user: "other-user", addresseeUserId: "other-user" },
+      { user: "private-owner", visibility: "private", createdByUserId: "private-owner" },
+      { user: "hidden-owner", hiddenAt: new Date() },
+      { user: "harness-owner", harnessKind: "skill_test" },
+      { user: "agent-addressee", addresseeAgentId: reviewerId },
+      { user: "idle-owner", idle: true },
+      { user: "other-company", companyId: other.companyId, agentId: other.workerId },
+    ];
+    const expected: string[] = [];
+    for (const [index, scenario] of scenarios.entries()) {
+      const issueId = randomUUID(), interactionId = randomUUID();
+      const scopedCompanyId = scenario.companyId ?? companyId, agentId = scenario.agentId ?? workerId;
+      await db.insert(issues).values({
+        id: issueId, companyId: scopedCompanyId, identifier: `CH-${index}`, title: `Chat ${scenario.user}`, status: "in_review",
+        conversationAgentId: agentId, conversationUserId: scenario.user, conversationState: "waiting", assigneeAgentId: agentId,
+        visibility: scenario.visibility ?? "open", createdByUserId: scenario.createdByUserId,
+        hiddenAt: scenario.hiddenAt, harnessKind: scenario.harnessKind,
+      });
+      if (scenario.idle) continue;
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: scopedCompanyId, issueId, kind: "ask_user_questions", status: "pending",
+        title: `Question ${scenario.user}`, createdByAgentId: agentId,
+        addresseeUserId: scenario.addresseeUserId ?? (scenario.addresseeAgentId ? null : "board-user"),
+        addresseeAgentId: scenario.addresseeAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      if (scenario.allowed) expected.push(interactionId);
+    }
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId], ignoreInstanceAdmin: true };
+    const feed = await attentionService(db).list(companyId, { actor, userId: actor.userId });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual(expected);
+    expect(feed.countsBySourceKind.review).toBe(0);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -1034,6 +1087,177 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
 
+  it("hides a failed run only after a newer run of the same agent on the same issue or task", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATK");
+    const taskIssueId = await insertIssue({ companyId, identifier: "ATK-1", title: "Task-keyed", status: "in_progress" });
+    const issueKeyedId = await insertIssue({ companyId, identifier: "ATK-2", title: "Issue-keyed", status: "in_progress" });
+    const otherIssueId = await insertIssue({ companyId, identifier: "ATK-3", title: "Other work", status: "in_progress" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const taskKeyedFailureId = randomUUID();
+    const issueKeyedFailureId = randomUUID();
+    const unkeyedHiddenFailureId = randomUUID();
+    const unkeyedKeptFailureId = randomUUID();
+    const failureIds = [taskKeyedFailureId, issueKeyedFailureId, unkeyedHiddenFailureId, unkeyedKeptFailureId];
+    const sameMillisecondRunId = randomUUID();
+    const run = (id: string, agentId: string, status: string, contextSnapshot: Record<string, unknown>, at: Date) => ({
+      id, companyId, agentId, invocationSource: "automation", status, contextSnapshot,
+      createdAt: at, updatedAt: at, finishedAt: at, ...(status === "failed" ? { error: "adapter failed" } : {}),
+    });
+
+    await db.insert(heartbeatRuns).values([
+      run(taskKeyedFailureId, workerId, "failed", { taskId: taskIssueId }, failedAt),
+      run(issueKeyedFailureId, workerId, "failed", { issueId: issueKeyedId }, failedAt),
+      run(unkeyedHiddenFailureId, workerId, "failed", {}, failedAt),
+      run(unkeyedKeptFailureId, reviewerId, "failed", {}, failedAt),
+      run(randomUUID(), workerId, "succeeded", { taskId: taskIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { wakeReason: "timer" }, laterAt),
+      run(randomUUID(), reviewerId, "succeeded", { issueId: issueKeyedId }, laterAt),
+      run(randomUUID(), reviewerId, "succeeded", { issueId: otherIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: otherIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: otherIssueId, taskId: issueKeyedId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: "", taskId: issueKeyedId }, laterAt),
+      run(sameMillisecondRunId, workerId, "succeeded", { issueId: issueKeyedId }, failedAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: issueKeyedId }, new Date("2026-07-09T11:59:00.000Z")),
+    ]);
+    await db.execute(sql`update heartbeat_runs set created_at = created_at + interval '400 microseconds'
+      where id in (${sql.join(failureIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    await db.execute(sql`update heartbeat_runs set created_at = created_at + interval '600 microseconds'
+      where id = ${sameMillisecondRunId}::uuid`);
+    await db.insert(heartbeatRunEvents).values(
+      failureIds.map((runId) => ({
+        companyId,
+        runId,
+        agentId: runId === unkeyedKeptFailureId ? reviewerId : workerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })),
+    );
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+      .toEqual([issueKeyedFailureId, unkeyedKeptFailureId].sort());
+  });
+
+  it("keeps newer-run response size bounded despite unrelated retained history", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+    const issueId = await insertIssue({ companyId, identifier: "ATW-1", title: "Exhausted task", status: "in_progress" });
+    const otherIssueId = await insertIssue({ companyId, identifier: "ATW-2", title: "Other task", status: "done" });
+    const failedId = randomUUID(), failedAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: failedId, companyId, agentId: workerId, status: "failed", contextSnapshot: { issueId },
+      createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId, agentId: workerId, runId: failedId, seq: 1, eventType: "lifecycle",
+      message: "Bounded retry exhausted after scheduled attempts",
+    });
+    for (let batch = 0; batch < 4; batch += 1) {
+      await db.insert(heartbeatRuns).values(Array.from({ length: 500 }, (_, index) => ({
+        id: randomUUID(), companyId, agentId: workerId, status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId, prompt: "x".repeat(8_000) },
+        createdAt: new Date(failedAt.getTime() + batch * 500 + index + 1),
+        updatedAt: failedAt, finishedAt: failedAt,
+      })));
+    }
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+      expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
+    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+    expect(reads.filter(event => event.operation === "execute")
+      .reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(remaining?.count).toBe(2001);
+  });
+
+  it("reads keyless history once per agent despite thousands of failures", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATB");
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const hiddenIds = Array.from({ length: 16_390 }, () => randomUUID());
+    const keptIds = Array.from({ length: 10 }, () => randomUUID());
+    const failure = (id: string, agentId: string) => ({
+      id, companyId, agentId, invocationSource: "automation", status: "failed", error: "adapter failed",
+      contextSnapshot: {}, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    const failures = hiddenIds.map((id) => failure(id, workerId));
+    keptIds.forEach((id, index) => failures.splice(index * 1_700, 0, failure(id, reviewerId)));
+    for (let start = 0; start < failures.length; start += 1_000) {
+      const chunk = failures.slice(start, start + 1_000);
+      await db.insert(heartbeatRuns).values(chunk);
+      await db.insert(heartbeatRunEvents).values(chunk.map((run) => ({
+        companyId, runId: run.id, agentId: run.agentId, seq: 1, eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })));
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
+      contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
+    });
+
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, {
+        includeDismissed: true, all: true, allowUnscopedAll: true,
+      });
+      expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+        .toEqual([...keptIds].sort());
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeLessThan(4);
+  }, 180_000);
+
+  it("checks more failed runs for a newer run than one statement can bind", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Keyed retained failures", status: "in_progress" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const hiddenIds = Array.from({ length: 16_390 }, () => randomUUID());
+    const keptIds = Array.from({ length: 10 }, () => randomUUID());
+    const failure = (id: string, agentId: string) => ({
+      id, companyId, agentId, invocationSource: "automation", status: "failed", error: "adapter failed",
+      contextSnapshot: { issueId }, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    const failures = hiddenIds.map((id) => failure(id, workerId));
+    keptIds.forEach((id, index) => failures.splice(index * 1_700, 0, failure(id, reviewerId)));
+    for (let start = 0; start < failures.length; start += 1_000) {
+      const chunk = failures.slice(start, start + 1_000);
+      await db.insert(heartbeatRuns).values(chunk);
+      await db.insert(heartbeatRunEvents).values(chunk.map((run) => ({
+        companyId, runId: run.id, agentId: run.agentId, seq: 1, eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })));
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
+      contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, {
+      includeDismissed: true, all: true, allowUnscopedAll: true,
+    });
+    expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id).sort())
+      .toEqual([...keptIds].sort());
+  }, 180_000);
+
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
     const { companyId, workerId } = await seedCompany("ATE");
     const projectId = randomUUID();
@@ -1289,6 +1513,25 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it("retains every independently bound quality approval alongside the newest ordinary confirmation", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
+    const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
+      id, companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: workerId,
+      payload: { version: 1, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
+    })));
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactions = feed.items.filter(item => item.sourceKind === "issue_thread_interaction");
+    expect(interactions.map(item => item.subject.id).sort()).toEqual([ids[0], ids[1], ids[3]].sort());
+    // Resolving one output removes only that decision, leaving the other output
+    // and the ordinary confirmation independently actionable.
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, ids[0]));
+    const remaining = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(remaining.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual([ids[1], ids[3]].sort());
   });
 
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {

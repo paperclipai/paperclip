@@ -27,8 +27,6 @@ async function commit(cwd: string, file: string, message: string) {
   await write(path.join(cwd, file), `${message}\n`);
   await git(cwd, "add", file);
   await git(cwd, "commit", "-q", "-m", message);
-  // Committing leaves COMMIT_EDITMSG, which the storage check rejects on its
-  // own; remove it so these tests reach the history checks.
   await fs.rm(path.join(cwd, ".git", "COMMIT_EDITMSG"), { force: true });
   return (await git(cwd, "rev-parse", "HEAD")).trim();
 }
@@ -40,7 +38,6 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
   let projectRemote: string;
   let prove: ManagedCheckoutProver;
 
-  // A bare upstream with one commit, plus the seed it was pushed from.
   async function upstream(name: string, files: Record<string, string>) {
     const seed = path.join(root, `${name}-seed`);
     await fs.mkdir(seed, { recursive: true });
@@ -63,7 +60,6 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
     ({ seed: projectSeed, bare: projectRemote } = await upstream("project", { "README.md": "project\n", ".gitignore": "node_modules/\n" }));
     work = path.join(root, "work");
     await execFile("git", ["clone", "-q", main.bare, work]);
-    // Workspace preparation excludes the managed namespace through info/exclude.
     await fs.appendFile(path.join(work, ".git", "info", "exclude"), "\n/.paperclip-repositories/\n");
     prove = (checkout, _name, signal) => assertReproducibleManagedCheckout(checkout, {
       repoUrl: projectRemote, resolveGitAuth: async () => null, signal,
@@ -85,9 +81,9 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
   const expectAccepted = () => expect(check()).resolves.toBeDefined();
   const expectRejected = (reason: string | RegExp) => expect(check()).rejects.toThrow(reason);
 
-  it("accepts Paperclip's Claude settings file", async () => {
+  it("preserves Claude settings without a restoration capture", async () => {
     await write(path.join(work, ".claude", "settings.local.json"), "{}\n");
-    await expectAccepted();
+    await expectRejected("unique_ignored_files");
   });
 
   it("accepts a clean managed checkout, including its regenerable directories", async () => {
@@ -115,7 +111,6 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
     await write(path.join(checkout, "notes.txt"));
     await expectRejected("dirty_or_untracked_files");
     await fs.rm(path.join(checkout, "notes.txt"));
-    // skip-worktree hides this edit from `git status`.
     await git(checkout, "update-index", "--skip-worktree", "README.md");
     await write(path.join(checkout, "README.md"), "hidden edit\n");
     await expectRejected("unsupported_index_flags");
@@ -126,17 +121,14 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
     await commit(checkout, "branch.txt", "branch work");
     await expectRejected("unpushed_managed_checkout");
     await git(checkout, "tag", "kept");
-    // Loose tag refs fail the storage check on their own; packed ones reach the history check.
     await git(checkout, "pack-refs", "--all");
     await git(checkout, "reset", "-q", "--hard", "origin/main");
-    // ORIG_HEAD alone would already reject; drop it to reach the history check.
     await fs.rm(path.join(checkout, ".git", "ORIG_HEAD"), { force: true });
     await git(checkout, "reflog", "expire", "--expire=now", "--all");
     await expectRejected("unpushed_managed_checkout");
     await git(checkout, "tag", "-d", "kept");
     await commit(checkout, "amended.txt", "amended work");
     await git(checkout, "reset", "-q", "--hard", "origin/main");
-    // ORIG_HEAD alone would already reject; drop it to reach the history checks.
     await fs.rm(path.join(checkout, ".git", "ORIG_HEAD"), { force: true });
     await expectRejected(/unique_reflog_commits|unpushed_managed_checkout/);
   });
@@ -151,7 +143,6 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
 
   it("accepts pushed history after upstream advances", async () => {
     await managedCheckout();
-    // Upstream moves on after the clone; the checkout never fetches it.
     await commit(projectSeed, "later.txt", "later upstream work");
     await git(projectSeed, "push", "-q", "origin", "main");
     await expectAccepted();
@@ -188,7 +179,6 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
     await commit(projectSeed, "feature.txt", "feature work");
     await git(projectSeed, "push", "-q", "origin", "feature");
     await managedCheckout();
-    // The branch disappears upstream; the checkout's origin/feature is now the last copy.
     await git(projectRemote, "branch", "-q", "-D", "feature");
     await expectRejected("unpushed_managed_checkout");
   });

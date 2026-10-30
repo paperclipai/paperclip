@@ -110,14 +110,30 @@ describe("lifecycle failure diagnostics", () => {
     await worker.stop();
   });
 
-  it("reports periodic policy scan failures", async () => {
-    vi.useFakeTimers();
+  it("bounds retries for due work while plugins are unavailable and stops reading after shutdown", async () => {
+    const where = vi.fn().mockResolvedValue([{ due: 0 }]);
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const db = { select } as unknown as Db;
+    const work = startAgentLifecycle(db, createAgentLifecycleEffects(), fixture().driver, () => false);
+    try {
+      expect(await work.hasPending()).toBe(true);
+      expect(work.nextRunAt()).toBeNull();
+      await work.sweep();
+      expect(select).toHaveBeenCalledTimes(1);
+      await work.stop();
+      expect(await work.hasPending()).toBe(false);
+      expect(work.nextRunAt()).toBeNull();
+      expect(select).toHaveBeenCalledTimes(1);
+    } finally { await work.stop(); }
+  });
+
+  it("reports inherited company projection failures", async () => {
     const error = new Error("private database detail");
     const db = { select: () => { throw error; } } as unknown as Db;
     const effects = { ...createAgentLifecycleEffects(), reportFailure: vi.fn() };
     const work = startAgentLifecycle(db, effects, fixture().driver, () => true);
     try {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(work.sweep()).rejects.toThrow(error);
       expect(effects.reportFailure).toHaveBeenCalledWith({ stage: "policy_scan" }, error);
     } finally { await work.stop(); }
   });

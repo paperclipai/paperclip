@@ -1,14 +1,26 @@
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createScheduledRetryCancellationRecovery } from "../services/heartbeat/scheduled-retry-cancellation.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { notifyScheduledRetryCancellation } from "../services/scheduled-retry-cancellation-notifications.js";
+import { requestedRunCancellation } from "../services/run-cancellation.js";
+import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import express from "express";
 import request from "supertest";
-import { and, eq, inArray } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
   agentWakeupRequests,
   companies,
+  companyMemberships,
   createDb,
+  applyPendingMigrations,
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -23,8 +35,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { runningProcesses } from "../adapters/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RETRY_CANCELLATION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -40,8 +55,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-scheduled-retry-routes-");
-    db = createDb(tempDb.connectionString);
+    if (externalTestDatabaseUrl) {
+      await applyPendingMigrations(externalTestDatabaseUrl);
+      db = createDb(externalTestDatabaseUrl);
+    }
+    else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-scheduled-retry-routes-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 20_000);
 
   afterEach(async () => {
@@ -55,10 +76,12 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -206,6 +229,464 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     return { companyId, agentId, issueId, sourceRunId, retryRunId, scheduledRetryAt };
   }
+
+  describe("scheduled retry cancellation worker", () => {
+    afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+    async function runRow(id: string) {
+      return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]);
+    }
+    function intent(reason = "Interrupted operator stop") {
+      return { cancellation: requestedRunCancellation({}, reason), startupCancellation: { requestedAt: new Date().toISOString() } };
+    }
+    async function writeIntent(f: { companyId: string; retryRunId: string }, owner = db) {
+      await owner.transaction(async tx => {
+        await notifyScheduledRetryCancellation(tx, { companyId: f.companyId, runId: f.retryRunId });
+        await tx.update(heartbeatRuns).set({ resultJson: intent() }).where(eq(heartbeatRuns.id, f.retryRunId));
+      });
+    }
+    async function waitCancelled(id: string) {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await runRow(id))?.status).toBe("cancelled");
+      }, { timeout: 5000 });
+    }
+    function clock() { vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true }); }
+
+    it("stays quiet with retries lacking cancellation and retained completed history", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      const historical = await seedIssueWithRetry({ agentStatus: "paused" });
+      await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: intent() }).where(eq(heartbeatRuns.id, historical.retryRunId));
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(reads).not.toHaveBeenCalled();
+        reads.mockRestore();
+        expect((await runRow(f.retryRunId)).status).toBe("scheduled_retry");
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a real cancellation's failed final write from its committed signal and retry", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      const unrelated = await seedIssueWithRetry({ agentStatus: "paused" });
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      const errors: unknown[] = [];
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await service.registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await db.execute(sql`ALTER TABLE heartbeat_runs ADD CONSTRAINT reject_worker_cancellation CHECK (status <> 'cancelled') NOT VALID`);
+        try {
+          await expect(service.cancelRun(f.retryRunId, "Human cancelled retry", { expectedStatus: "scheduled_retry" })).rejects.toThrow();
+          await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); });
+          expect((await runRow(f.retryRunId)).resultJson?.cancellation).toMatchObject({ reason: "Human cancelled retry" });
+        } finally { await db.execute(sql`ALTER TABLE heartbeat_runs DROP CONSTRAINT reject_worker_cancellation`); }
+        await vi.advanceTimersByTimeAsync(31_000);
+        await waitCancelled(f.retryRunId);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect((await runRow(f.retryRunId)).error).toBe("Human cancelled retry");
+        expect((await runRow(unrelated.retryRunId)).status).toBe("scheduled_retry");
+        expect(await db.select().from(issues).where(eq(issues.id, f.issueId)))
+          .toEqual([expect.objectContaining({ executionRunId: null })]);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, f.retryRunId)))
+          .toEqual([expect.objectContaining({ status: "cancelled" })]);
+        const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId));
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId))).toEqual(events);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers when the caller loses the committed cancellation-fence response", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      await service.registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+      let injected = false;
+      const transaction = db.transaction.bind(db);
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        const result = await transaction(callback, options);
+        if (!injected && result && typeof result === "object" && "id" in result && result.id === f.retryRunId) {
+          injected = true;
+          throw new Error("Lost cancellation-fence response");
+        }
+        return result;
+      }) as typeof db.transaction);
+      try {
+        await expect(service.cancelRun(f.retryRunId, "Stop before settlement", { expectedStatus: "scheduled_retry" }))
+          .rejects.toThrow("Lost cancellation-fence response");
+        expect(injected).toBe(true);
+        transactions.mockRestore();
+        await waitCancelled(f.retryRunId);
+        expect((await runRow(f.retryRunId)).error).toBe("Stop before settlement");
+      } finally { transactions.mockRestore(); await coordinator.stop(); }
+    });
+
+    it("reactivates when dispatch parks a queued retry with an existing cancellation", async () => {
+      const f = await seedIssueWithRetry({ retryStatus: "queued" });
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", resultJson: {
+        conversationContinuation: "continue_conversation_v1", workspaceRestoreFailure: "restore_failed",
+      } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", resultJson: {
+        ...intent(), conversationContinuation: "continue_conversation_v1",
+      } }).where(eq(heartbeatRuns.id, f.retryRunId));
+      await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: f.sourceRunId, status: "pending_cleanup", cleanupStatus: "failed",
+      });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId,
+          runId: f.retryRunId, expectedStatus: "queued", now: new Date(),
+        })).toMatchObject({ outcome: "deferred" });
+        await waitCancelled(f.retryRunId);
+        expect((await runRow(f.retryRunId)).error).toBe("Interrupted operator stop");
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      } finally { await coordinator.stop(); }
+    });
+
+    it("preserves existing cancellation metadata through recovery", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      const budgetEnforcement = { companyId: f.companyId, scopeType: "agent", scopeId: f.agentId };
+      const saved = intent();
+      await db.update(heartbeatRuns).set({ resultJson: { ...saved,
+        startupCancellation: { ...saved.startupCancellation, budgetEnforcement },
+        cancelledByUserId: "original-operator", recoveryEvidence: "retain-me",
+      } }).where(eq(heartbeatRuns.id, f.retryRunId));
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        await waitCancelled(f.retryRunId);
+        expect((await runRow(f.retryRunId)).resultJson).toMatchObject({
+          cancellation: saved.cancellation, startupCancellation: { budgetEnforcement },
+          cancelledByUserId: "original-operator", recoveryEvidence: "retain-me",
+        });
+      } finally { await coordinator.stop(); }
+    });
+
+    it("waits for the outer transaction and ignores a rolled-back intent", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => {
+          await writeIntent(f, tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await runRow(f.retryRunId)).resultJson).toBeNull();
+          throw new Error("outer rollback");
+        })).rejects.toThrow("outer rollback");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect((await runRow(f.retryRunId)).status).toBe("scheduled_retry");
+        await db.transaction(async tx => {
+          await writeIntent(f, tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await runRow(f.retryRunId)).resultJson).toBeNull();
+        });
+        await waitCancelled(f.retryRunId);
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("retains a pending cancellation through %s", async mode => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      if (mode === "restart") await writeIntent(f);
+      let canRun = mode === "restart";
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby", onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => canRun).ready;
+        if (mode !== "restart") {
+          await writeIntent(f);
+          await vi.advanceTimersByTimeAsync(30_000);
+          if (mode !== "standby") await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+          const reads = vi.spyOn(db, "select");
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+          expect((await runRow(f.retryRunId)).status).toBe("scheduled_retry");
+          canRun = true;
+          await vi.advanceTimersByTimeAsync(30_000);
+        }
+        await waitCancelled(f.retryRunId);
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["manual", "expiry"] as const)("resumes a real task drain after %s release without passive SQL", async mode => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        startTaskDrain(mode === "expiry" ? { ttlMs: 60_000 } : {});
+        await writeIntent(f);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        expect((await runRow(f.retryRunId)).status).toBe("scheduled_retry");
+        if (mode === "manual") stopTaskDrain();
+        await vi.advanceTimersByTimeAsync(31_000);
+        await waitCancelled(f.retryRunId);
+      } finally { stopTaskDrain(); await coordinator.stop(); }
+    });
+
+    it("observes a real worktree activation without polling disabled settings", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      await writeIntent(f);
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "sleep39-activation" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const service = heartbeatService(db, { runtimeEnv });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await service.registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        await service.resolveSchedulingSuppression();
+        await settings.updateExperimental({ enableWorktreeRunExecution: true });
+        await waitCancelled(f.retryRunId);
+      } finally { await coordinator.stop(); await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
+    });
+
+    it("retains a second committed intent while the first cancellation is running", async () => {
+      const first = await seedIssueWithRetry({ agentStatus: "paused" });
+      const second = await seedIssueWithRetry({ agentStatus: "paused" });
+      await writeIntent(first);
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>(resolve => { enter = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const cancel = vi.fn(async (...args: Parameters<typeof service.cancelRun>) => {
+        if (args[0] === first.retryRunId) { enter(); await held; }
+        return service.cancelRun(...args);
+      });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = createScheduledRetryCancellationRecovery(db, cancel).register(coordinator, () => true, async () => true);
+      try {
+        await entered;
+        await writeIntent(second);
+        release(); await worker.ready;
+        await waitCancelled(first.retryRunId); await waitCancelled(second.retryRunId);
+        expect(cancel.mock.calls.filter(args => args[0] === first.retryRunId)).toHaveLength(1);
+        expect(cancel.mock.calls.filter(args => args[0] === second.retryRunId)).toHaveLength(1);
+      } finally { release(); await coordinator.stop(); }
+    });
+
+    it("does not repeat settlement when a foreground cancellation wins", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      await writeIntent(f);
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>(resolve => { enter = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = createScheduledRetryCancellationRecovery(db, async (...args) => {
+        enter(); await held; return service.cancelRun(...args);
+      }).register(coordinator, () => true, async () => true);
+      try {
+        await entered;
+        await service.cancelRun(f.retryRunId, "Foreground stop", { expectedStatus: "scheduled_retry" });
+        const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId));
+        release(); await worker.ready;
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId))).toEqual(events);
+        expect((await runRow(f.retryRunId)).error).toBe("Foreground stop");
+      } finally { release(); await coordinator.stop(); }
+    });
+
+    it("joins an in-flight authority read at shutdown without starting cancellation", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      await writeIntent(f);
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      let enter!: () => void, release!: () => void, checks = 0;
+      const entered = new Promise<void>(resolve => { enter = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const cancel = vi.fn(service.cancelRun);
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = createScheduledRetryCancellationRecovery(db, cancel).register(coordinator, () => true, async () => {
+        if (++checks === 2) { enter(); await held; }
+        return true;
+      });
+      let stopping: Promise<void> | undefined;
+      try {
+        await entered;
+        let stopped = false;
+        stopping = coordinator.stop().then(() => { stopped = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(stopped).toBe(false);
+        release(); await worker.ready; await stopping;
+        expect(cancel).not.toHaveBeenCalled();
+        expect((await runRow(f.retryRunId)).status).toBe("scheduled_retry");
+      } finally { release(); await (stopping ?? coordinator.stop()); }
+      const restarted = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(restarted, () => true).ready;
+        expect((await runRow(f.retryRunId)).status).toBe("cancelled");
+      } finally { await restarted.stop(); }
+    });
+
+    it("manual recovery starts cancellation without loading the full backlog", async () => {
+      const f = await seedIssueWithRetry({ agentStatus: "paused" });
+      const work = await db.insert(heartbeatRuns).values(Array.from({ length: 120 }, () => ({
+        companyId: f.companyId, agentId: f.agentId, status: "scheduled_retry", resultJson: intent(),
+      }))).returning({ id: heartbeatRuns.id });
+      const service = heartbeatService(db, { runtimeEnv: {} });
+      const reads = vi.spyOn(db, "select");
+      let readsBeforeFirstCancellation: number | undefined;
+      try {
+        await createScheduledRetryCancellationRecovery(db, async (...args) => {
+          readsBeforeFirstCancellation ??= reads.mock.calls.filter(([fields]) => fields &&
+            "result" in fields && "errorCode" in fields).length;
+          return service.cancelRun(...args);
+        }).sweep();
+        expect(readsBeforeFirstCancellation).toBe(2);
+        const states = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(inArray(heartbeatRuns.id, work.map(row => row.id)));
+        expect(states.filter(row => row.status === "cancelled")).toHaveLength(20);
+        expect(states.filter(row => row.status === "scheduled_retry")).toHaveLength(100);
+      } finally { reads.mockRestore(); }
+    });
+
+    it("pages past malformed intents and drains fair batches without revisiting completed history", async () => {
+      const a = await seedIssueWithRetry({ agentStatus: "paused" });
+      const b = await seedIssueWithRetry({ agentStatus: "paused" });
+      await db.insert(heartbeatRuns).values(Array.from({ length: 103 }, (_, i) => ({
+        id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, companyId: a.companyId, agentId: a.agentId,
+        status: "scheduled_retry", resultJson: { startupCancellation: {}, cancellation: { expected: true } },
+      })));
+      const work = await db.insert(heartbeatRuns).values([...[a, b].flatMap((f, index) =>
+        Array.from({ length: index === 0 ? 25 : 3 }, () => ({ companyId: f.companyId, agentId: f.agentId,
+          status: "scheduled_retry", resultJson: intent() }))),
+      ]).returning({ id: heartbeatRuns.id });
+      const states = () => db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, work.map(row => row.id)));
+      clock();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await heartbeatService(db, { runtimeEnv: {} }).registerScheduledRetryCancellationWork(coordinator, () => true).ready;
+        expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(0);
+        const earlierId = "00000000-0000-4000-8000-000000000000";
+        await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
+        work.push({ id: earlierId });
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(async () => (await states()).filter(row => row.status === "cancelled").length).toBe(20);
+        const initial = (await states()).filter(row => row.status === "cancelled");
+        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await states()).filter(row => row.status === "cancelled")).toHaveLength(29);
+        }, { timeout: 10_000 });
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => coordinator.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      } finally { await coordinator.stop(); }
+    });
+  });
+
+  it("finishes a parked retry cancellation after its owner loses the final database write", async () => {
+    const f = await seedIssueWithRetry({ agentStatus: "paused" });
+    const unrelated = await seedIssueWithRetry({ agentStatus: "paused" });
+    await db.execute(sql`ALTER TABLE heartbeat_runs ADD CONSTRAINT reject_retry_cancellation CHECK (status <> 'cancelled') NOT VALID`);
+    try {
+      await expect(heartbeatService(db).cancelRun(f.retryRunId, "Superseded by a human comment", {
+        expectedStatus: "scheduled_retry",
+      })).rejects.toThrow();
+      // A failed sweep leaves the same durable intent available for a later one.
+      await heartbeatService(db).reapOrphanedRuns();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))
+        .toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+    } finally {
+      await db.execute(sql`ALTER TABLE heartbeat_runs DROP CONSTRAINT reject_retry_cancellation`);
+    }
+    const [interrupted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(interrupted).toMatchObject({ status: "scheduled_retry", resultJson: {
+      startupCancellation: expect.any(Object), cancellation: { reason: "Superseded by a human comment" },
+    } });
+
+    // A fresh service has no process-local cancellation owner or settlement promise.
+    await heartbeatService(db).reapOrphanedRuns();
+    const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(cancelled).toMatchObject({ status: "cancelled", error: "Superseded by a human comment" });
+    expect(cancelled!.resultJson!.cancellation).toEqual(interrupted!.resultJson!.cancellation);
+    expect(await db.select().from(issues).where(eq(issues.id, f.issueId)))
+      .toEqual([expect.objectContaining({ executionRunId: null, assigneeAgentId: f.agentId })]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, f.retryRunId)))
+      .toEqual([expect.objectContaining({ status: "cancelled" })]);
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId));
+    await heartbeatService(db).reapOrphanedRuns();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.retryRunId))).toEqual(events);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.retryRunId)))
+      .toEqual([expect.objectContaining({ status: "scheduled_retry", resultJson: null })]);
+  });
+
+  it.each(["post", "patch"] as const)("keeps a retry's live process and saved work owner when a %s comment arrives", async method => {
+    const f = await seedIssueWithRetry({ retryStatus: "running" });
+    await db.insert(companyMemberships).values({
+      companyId: f.companyId, principalType: "user", principalId: "board-user",
+      membershipRole: "admin", status: "active",
+    });
+    const child = spawn(process.execPath, ["-e", `
+      process.on('message', message => {
+        if (message === 'continue-work') process.send('work-continues');
+      });
+      process.send('ready');
+    `], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    const exited = once(child, "exit");
+    const heartbeat = heartbeatService(db);
+    try {
+      await once(child, "message", { signal: AbortSignal.timeout(5_000) });
+      runningProcesses.set(f.retryRunId, { child, graceSec: 1, processGroupId: null });
+      await db.update(heartbeatRuns).set({
+        startedAt: new Date(), runtimeModeResolvedAt: new Date(), processPid: child.pid,
+      }).where(eq(heartbeatRuns.id, f.retryRunId));
+      const app = createApp(boardActor(f.companyId));
+
+      const res = method === "post"
+        ? await request(app).post(`/api/issues/${f.issueId}/comments`).send({ body: "Verified source recovery; continue the original work." })
+        : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: "Verified source recovery; continue the original work." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(method === "post" ? 201 : 200);
+      await heartbeat.drainActiveRunExecutions();
+      const progress = once(child, "message", { signal: AbortSignal.timeout(5_000) });
+      child.send("continue-work");
+      expect((await progress)[0]).toBe("work-continues");
+      const [savedIssue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [savedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+      expect(savedIssue).toMatchObject({ status: "in_progress", executionRunId: f.retryRunId });
+      expect(savedRun).toMatchObject({ status: "running", processPid: child.pid });
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId)))
+        .toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "running"),
+      ))).toHaveLength(1);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      runningProcesses.delete(f.retryRunId);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await exited;
+    }
+  });
 
   it("surfaces the current scheduled retry in the issue read model", async () => {
     const { companyId, issueId, agentId, sourceRunId, retryRunId, scheduledRetryAt } = await seedIssueWithRetry();

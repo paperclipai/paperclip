@@ -184,6 +184,11 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /** Host-bound plugin task RPC. Both sides validate the wire contract. */
+  runnerTask?: (operation: unknown) => Promise<unknown>;
+  runnerTaskProjectIds?: readonly string[];
+  /** Private Core-issued identity for a bounded, tool-free setup probe. */
+  runnerTaskProbe?: { runId: string; sessionId: string };
   /**
    * Read-only effective capability snapshot for this sandbox target. The host
    * resolves it from the provider declaration ∩ the verified worker methods ∩
@@ -1441,11 +1446,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   workspaceSeedCacheDirectory?: string;
   workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
@@ -1536,11 +1543,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceCheckpoint: input.workspaceCheckpoint,
     onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
     workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceRepositories: input.workspaceRepositories,
@@ -1662,7 +1671,10 @@ process.stdout.write("\0" + JSON.stringify(env) + "\0");
   const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
   const remote = input.target?.kind === "remote" ? input.target : null;
   let discovered: Record<string, string>;
-  if (remote) {
+  if (remote?.transport === "sandbox" && remote.runnerTask) {
+    if (input.hostCredentials) throw new Error("Task-only Runner environments cannot import host GitHub credentials");
+    discovered = {};
+  } else if (remote) {
     // A legacy SSH host may run a standalone agent binary without Node. Use
     // only the shell and Git, and emit bounded, NUL-framed environment records.
     const probe = String.raw`
@@ -2884,33 +2896,6 @@ function nextProbeFileName() {
 // have this call follow it, because "wx" fails closed on an existing path
 // instead of following a link to it.
 //
-// Cleanup checks identity, not only ownership of the initial create. This
-// wrapper reads the probe file's identity, (dev, ino, ctimeMs), off the open
-// file descriptor itself (fstat), not off the path, so a peer that swaps the
-// path in the short gap after create cannot poison the identity this
-// wrapper trusts as its own. Right before removal, this wrapper reads the
-// path's identity again and removes it only when that identity still
-// matches. A same-sandbox peer that deletes the probe file and creates its
-// own entry at the same path in between leaves a different identity behind,
-// so this wrapper leaves that entry untouched instead of removing it. This
-// covers a peer's replacement file, a peer's replacement directory, and a
-// peer's replacement symbolic link alike, because all three change the
-// identity this wrapper reads back. The identity check includes ctimeMs,
-// not only (dev, ino): a filesystem can hand this call's freed inode number
-// straight back out to a peer's very next create at the same path, so
-// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
-// on every create, so a peer's replacement carries a different one even when
-// the inode number repeats. Node's filesystem API has no call that removes a
-// path only when its identity still matches an earlier read as one atomic
-// step, so a gap remains between this wrapper's final identity read and the
-// removal call itself. A peer that wins this gap can put any entry at the
-// probe path before the removal call runs. This can include a pre-existing
-// file the peer renames into place, not only a file the peer creates fresh.
-// The removal call then removes whatever entry sits at the probe path at
-// that moment. Two bounds still hold on that removal. The path always
-// stays under dirPath. If the entry is a symbolic link, the removal call
-// removes the link itself instead of following it to a different target.
-// A non-recursive removal call also fails if the entry is a directory.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
@@ -2933,12 +2918,9 @@ async function birthtimeSurvivesProbe(dirPath) {
   let ownedIdentity = null;
   try {
     const createdStats = await handle.stat();
-    // ctimeMs guards against inode reuse; see the function comment above.
     ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
   } catch {
     ownedIdentity = null;
-  } finally {
-    await handle.close().catch(() => undefined);
   }
   if (!ownedIdentity) {
     // fstat on this call's own just-opened descriptor failed. This call then
@@ -2948,6 +2930,7 @@ async function birthtimeSurvivesProbe(dirPath) {
     // entry instead of this call's own file. Fail closed right here instead
     // of falling through to the birthtime comparison below, so a failed
     // identity read can never let this probe report success.
+    await handle.close().catch(() => undefined);
     return "its own probe file's identity could not be read from the open file descriptor";
   }
   // The one gap the fs API cannot close: this lstat and the removal below
@@ -2956,14 +2939,18 @@ async function birthtimeSurvivesProbe(dirPath) {
   // the probe path, including a pre-existing file it renames into place,
   // and the removal call below removes whatever entry is there when it
   // runs.
-  const currentStats = await fs.lstat(probePath).catch(() => null);
-  const stillOwned =
-    currentStats !== null &&
-    currentStats.dev === ownedIdentity.dev &&
-    currentStats.ino === ownedIdentity.ino &&
-    currentStats.ctimeMs === ownedIdentity.ctimeMs;
-  if (stillOwned) {
-    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  try {
+    const currentStats = await fs.lstat(probePath).catch(() => null);
+    const stillOwned =
+      currentStats !== null &&
+      currentStats.dev === ownedIdentity.dev &&
+      currentStats.ino === ownedIdentity.ino &&
+      currentStats.ctimeMs === ownedIdentity.ctimeMs;
+    if (stillOwned) {
+      await fs.rm(probePath, { force: true }).catch(() => undefined);
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
   }
   let after;
   try {

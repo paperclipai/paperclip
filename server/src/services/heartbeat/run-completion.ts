@@ -1,4 +1,7 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
+import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
+import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspaceGitScanCode } from "./retries.js";
@@ -19,13 +22,15 @@ import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
 import { parseObject } from "../../adapters/utils.js";
-import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
+import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
 import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { logActivity } from "../activity-log.js";
 import { isUnresolvedWorkspaceBaseRefError, readUnresolvedWorkspaceBaseRefDiagnostic, type UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { runnerGoalService } from "../runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
+import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
+import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
@@ -142,6 +147,7 @@ export interface FailHeartbeatRunSetupInput {
 }
 
 function nonRetryablePreflightFailureCode(error: unknown): string | null {
+  if (error instanceof ProjectAccessDeniedError) return PROJECT_ACCESS_DENIED;
   if (error instanceof ChatControlRecoveryUnresolvedError)
     return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
   if (
@@ -340,6 +346,19 @@ function controllerLeaseLossResultJson(signal: AbortSignal) {
     : {};
 }
 
+/** Persist the resolved presentation and wake dependents in its committing transaction. */
+export async function recordRunPresentationDecision(db: Db, input: {
+  companyId: string; runId: string; issueId?: string; decision: RunPresentationDecision;
+}) {
+  await db.transaction(async tx => {
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.runId, issueId: input.issueId });
+    await tx.update(heartbeatRuns).set({
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb`,
+      updatedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, input.runId));
+  });
+}
+
 export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunCompletionDependencies) {
   const {
     getRun,
@@ -459,6 +478,42 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               recordedResponsibleUserDenialCode ??
               "adapter_failed")
             : null;
+
+    async function persistSessionState(finalizedRun: Run) {
+      await updateRuntimeState(
+        agent,
+        finalizedRun,
+        adapterResult,
+        { legacySessionId: nextSessionState.legacySessionId },
+        normalizedUsage,
+      );
+      if (!taskKey) return;
+      if (
+        adapterResult.clearSession ||
+        (!nextSessionState.params && !nextSessionState.displayId)
+      ) {
+        await clearTaskSessions(agent.companyId, agent.id, {
+          taskKey,
+          adapterType: agent.adapterType,
+          expectedRunId: finalizedRun.id,
+        });
+      } else {
+        await upsertTaskSession({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          taskKey,
+          sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+            nextSessionState.params,
+            configuredModel,
+            sessionConfigMetadata,
+          ),
+          sessionDisplayId: nextSessionState.displayId,
+          lastRunId: finalizedRun.id,
+          lastError: runErrorMessage,
+        });
+      }
+    }
 
     let logSummary: {
       bytes: number | null;
@@ -682,6 +737,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     );
 
     const finalizedRun = persistedRun ?? (await getRun(run.id));
+    const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
+      keepIdleOnFailure:
+        outcome === "failed" &&
+        ((finalizedRun
+          ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+          : runErrorCode === "provider_quota") ||
+          isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    });
     if (finalizedRun) {
       await appendRunEvent(finalizedRun, {
         eventType: "lifecycle",
@@ -714,6 +778,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       }
       const livenessRun = finalizedRun;
       await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
+        // The returning agent must resume its own settled session with the
+        // configuration metadata used for this run. Persist before release,
+        // which can make a same-agent successor eligible immediately.
+        await persistSessionState(livenessRun);
+        await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
+        await settleAgent();
+        return;
+      }
       const skipRunIssueComment =
         parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
       let resolvedPresentationDecision: RunPresentationDecision | null =
@@ -732,11 +805,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             livenessRun.id,
             livenessRun.companyId,
           ));
-        const externalChatPresentationCandidate =
-          isExternalChatPresentationContext(livenessRun.contextSnapshot) ||
-          parseObject(livenessRun.contextSnapshot).source === "tool_action_review" ||
-          String(parseObject(livenessRun.contextSnapshot).source ?? "").startsWith("issue.comment") ||
-          parseObject(livenessRun.contextSnapshot).source === "issue.update";
+        const externalChatPresentationCandidate = isChatOriginPublicationCandidate(livenessRun.contextSnapshot);
         const externalChatPresentationAuthorization =
           issueId && externalChatPresentationCandidate
             ? await measureRunPhase("response.authorize", () => resolveChatRunPresentationAuthorizationReason(db, {
@@ -751,6 +820,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
         const resolved = resolveHeartbeatRunResponse({
           resultJson: persistedResultJson,
+          interactionOwnsResponse: Boolean(issueId && readAcceptedTaskContinuationSummary(persistedResultJson) &&
+            await hasChatRunOwnedProviderInteraction(db, { companyId: livenessRun.companyId, issueId, runId: livenessRun.id })),
           conversationTurnFinished: isConversation(issueContext) && livenessRun.status === "succeeded"
             && persistedResultJson?.finalizationReasonCode === "conversation_turn_finished",
           existingComment: existingRunComment,
@@ -834,13 +905,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           };
         }
 
-        await db
-          .update(heartbeatRuns)
-          .set({
-            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, livenessRun.id));
+        await recordRunPresentationDecision(db, { companyId: livenessRun.companyId,
+          runId: livenessRun.id, issueId: issueId ?? undefined, decision: presentationDecision });
         await appendRunEvent(livenessRun, {
           eventType: "run.presentation.resolved",
           stream: "system",
@@ -983,53 +1049,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     if (finalizedRun) {
-      await updateRuntimeState(
-        agent,
-        finalizedRun,
-        adapterResult,
-        {
-          legacySessionId: nextSessionState.legacySessionId,
-        },
-        normalizedUsage,
-      );
-      if (taskKey) {
-        if (
-          adapterResult.clearSession ||
-          (!nextSessionState.params && !nextSessionState.displayId)
-        ) {
-          await clearTaskSessions(agent.companyId, agent.id, {
-            taskKey,
-            adapterType: agent.adapterType,
-            expectedRunId: finalizedRun.id,
-          });
-        } else {
-          await upsertTaskSession({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
-            taskKey,
-            sessionParamsJson:
-              attachPaperclipSessionMetadataToSessionParams(
-                nextSessionState.params,
-                configuredModel,
-                sessionConfigMetadata,
-              ),
-            sessionDisplayId: nextSessionState.displayId,
-            lastRunId: finalizedRun.id,
-            lastError: runErrorMessage,
-          });
-        }
-      }
+      await persistSessionState(finalizedRun);
     }
-    await finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
-      keepIdleOnFailure:
-        outcome === "failed" &&
-        ((finalizedRun
-          ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
-          : runErrorCode === "provider_quota") ||
-          isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    });
+    await settleAgent();
   }
 
   async function failRun(input: FailHeartbeatRunInput) {
@@ -1163,6 +1185,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     const failedRun = failedRunWrite.run;
+    const settleAgent = () => finalizeAgentStatus(agent.id, "failed", message, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      keepIdleOnFailure:
+        Boolean(nonRetryablePreflightFailureCode(err)) ||
+        isWorkspaceSyncConflictFailure(message),
+    });
     await setWakeupStatus(run.wakeupRequestId, "failed", {
       finishedAt: new Date(),
       error: message,
@@ -1192,6 +1220,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
       }
       await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
+        await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
+        await settleAgent();
+        return;
+      }
       if (
         !isWorkspaceValidationFailedRun(livenessRun) &&
         !isConfigurationIncompleteFailedRun(livenessRun)
@@ -1253,12 +1286,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       }
     }
 
-    await finalizeAgentStatus(agent.id, "failed", message, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-      keepIdleOnFailure:
-        Boolean(nonRetryablePreflightFailureCode(err)) ||
-        isWorkspaceSyncConflictFailure(message),
-    });
+    await settleAgent();
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1327,6 +1355,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // action, so it is persisted even when the agent lookup failed and the
     // agent-scoped stop metadata cannot be merged in.
     const setupFailureDetails =
+      (outerErr instanceof ProjectAccessDeniedError
+        ? { projectAccessDenied: { projectId: outerErr.projectId } } : null) ??
       (workspaceGitScanFailure ? {
         workspaceGitScan: {
           code: workspaceGitScanFailure.code,
@@ -1436,7 +1466,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ).catch(() => undefined);
         if (
           !isWorkspaceValidationFailedRun(livenessRun) &&
-          !isConfigurationIncompleteFailedRun(livenessRun)
+          !isConfigurationIncompleteFailedRun(livenessRun) &&
+          livenessRun.errorCode !== PROJECT_ACCESS_DENIED
         ) {
           await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(
             () => undefined,
@@ -1445,15 +1476,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // No provider work began. Retry temporary host scan failures with
         // the existing durable failure budget, before releasing execution.
         // Generic recovery must not grant a second budget on exhaustion.
-        await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
-          ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
-          : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
-        ).catch((retryError) => {
-          logger.warn(
-            { err: retryError, runId: livenessRun.id },
-            "failed to schedule interaction continuation retry after setup failure",
-          );
-        });
+        if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
+          await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
+            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+            : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
+          ).catch((retryError) => {
+            logger.warn(
+              { err: retryError, runId: livenessRun.id },
+              "failed to schedule interaction continuation retry after setup failure",
+            );
+          });
+        }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {
         suppressImmediateRecovery:

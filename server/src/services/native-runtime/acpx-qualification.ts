@@ -1,4 +1,27 @@
-import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
+import { parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+
+/** Trusted operator startup authority, separate from saved agent configuration. */
+export const ANTIGRAVITY_CANDIDATE_ADMISSION_ENV = "PAPERCLIP_ACPX_CANDIDATE_ADMISSION";
+
+export function resolveAntigravityCandidateAdmission(
+  input: { companyId?: string; model?: string },
+  hostEnvironment: NodeJS.ProcessEnv = process.env,
+): AcpxCandidateAdmission | undefined {
+  const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
+  if (!encoded || !input.companyId || process.platform !== "darwin" || process.arch !== "arm64") return undefined;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { throw new Error("Invalid Antigravity candidate admission"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Antigravity candidate admission");
+  const record = value as Record<string, unknown>;
+  // Other companies receive no candidate surface or execution authority.
+  if (record.companyId !== input.companyId) return undefined;
+  return parseAcpxCandidateAdmission(value, {
+    companyId: input.companyId,
+    agent: "antigravity",
+    model: input.model ?? (typeof record.model === "string" ? record.model : ""),
+  });
+}
 
 /** Operator-only admission for an exact candidate/model during qualification. */
 export const ACPX_QUALIFICATION_ENV = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
@@ -9,6 +32,15 @@ export function resolveAcpxQualification(
   hostEnvironment: NodeJS.ProcessEnv,
 ): AcpxQualificationCandidate | undefined {
   if (provider.kind !== "acpx" || !["copilot", "pi"].includes(provider.agent)) return undefined;
+  // The server release declaration admits qualified Copilot into the frozen
+  // SDK's explicit native transport slot. No operator environment is required.
+  // Pi retains the mainline transport and qualification behavior below.
+  if (provider.agent === "copilot" && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified)) {
+    if (!provider.model || provider.model !== provider.model.trim() || ["auto", "default"].includes(provider.model.toLowerCase())) {
+      throw new Error("GitHub Copilot requires an explicit available model ID");
+    }
+    return "copilot";
+  }
   const encoded = hostEnvironment[ACPX_QUALIFICATION_ENV];
   if (!encoded) return undefined;
   let entries: unknown;

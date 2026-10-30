@@ -2,14 +2,48 @@
 
 Select **Grok Build** in the native runner provider selector. The stored contract is
 `adapterType: "paperclip_runner"` with `provider: "acpx"`, `acpxAgent: "grok"`,
-and `model: "grok-4.7"`. Existing `grok_local` agents keep their legacy adapter.
+and `model: "grok-4.7"`. Existing `grok_local` agents keep their legacy adapter
+until an explicit upgrade. On a qualified macOS ARM64 or Linux x64 computer,
+**Harness / Runtime → Upgrade runner** preserves the agent, model, account,
+instructions, and history. It starts fresh execution sessions. Advanced also
+offers an explicit Runner choice. Unsupported legacy settings are rejected
+before saving; select compatible settings or keep Legacy.
 New Grok runner agents default to **Full auto (approve all)**
 (`acpxPermissionMode: "approve-all"`) in setup and the configuration form.
 API configurations that omit the permission mode use the same default. No
 additional permission setting is needed for unattended execution. Explicitly
 saved restrictions remain unchanged.
-On Cloud, an operator must enable `enableNativeRunner` for the instance before
-the new-agent picker or direct setup page offers the native runner.
+Grok Build's qualified harness does not require the `enableNativeRunner` flag.
+
+Explicit thinking effort uses `reasoningEffort` (`minimal`, `low`, `medium`,
+`high`, or `xhigh`). The immutable v10 execution input, provider descriptor,
+and recovery identity bind this value as `grokEffort`. The Grok provider boundary
+adds native `_meta.modelId` and `_meta.reasoningEffort` to session create, load,
+and resume requests before transport writes and observation. Grok 1.0.13 reports
+the selected effort in `_meta["x.ai/sessionConfig"].options`; it does not support
+the standard `session/set_config_option` effort API. The Runner checks that native
+acknowledgement and the effective model before a prompt. A lazy restored handle
+must connect through read-only native session inspection first. Reapplying the
+bound metadata on restore prevents Grok from resetting effort to its default.
+Missing configuration, a rejected value, or effort drift stops admission.
+Admission failures keep a closed Grok reason code through the sidecar boundary.
+Other startup failures retain their closed admission stage when no more specific
+known error code is available. These diagnostics contain no native payload,
+credential, arbitrary provider message, or workspace path. They do not change
+admission or retry policy.
+Omitting effort retains Grok's provider default. This setting remains outside
+the model-visible task prompt. Historical execution inputs retain their schemas.
+
+The upgrade resolves an unset model or the legacy `grok-build` default to the
+native `grok-4.7` default. Task-level model and effort overrides use the Grok
+catalog and keep the account and tool policy unchanged.
+
+Migration also preserves the effective `disableWebSearch` setting, whose legacy
+default is `true`. Native input v10 carries it as `grokDisableWebSearch` through
+startup and recovery. Grok's private `requirements.toml` enforces disabled search
+above compatible project settings. Explicit `false` retains enabled search;
+unset native configurations retain their provider default. See Grok's
+[configuration reference](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md).
 
 Grok Build speaks [ACP over stdio](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md).
 The runner owns `grok agent --no-leader stdio` through ACPX, including session
@@ -32,6 +66,20 @@ download. The built-in launcher is identified as `builtin:grok-acp` version 1;
 its native runtime identity is `native:grok` version 1.0.13. The historical
 `agentServerPackage`/`agentRuntimePackage` wire fields carry these identities,
 not npm dependencies. Existing npm-backed ACP bridges retain their package pins.
+
+Grok launch profile 7 binds the native effort, search, credential, sidecar, and
+Runner admission source, including Rust backend descriptor writes. An older
+installed pack with the same ACPX interface version cannot satisfy this profile.
+The controller stages its current verified
+pack instead. A generated source-identity comment in the launcher preserves the
+existing command byte-digest check; no installation guard is relaxed.
+App source changes alone still permit reuse when the selected
+Grok profile matches. Historical profile versions remain decodable, but they do
+not authorize a fresh launch. After changing a bound source, advance the profile
+and run `node packages/paperclip-runner/scripts/grok-profile-identity.mjs`.
+The normal `check:acpx-profiles` build gate verifies this source identity.
+The generator refuses to replace an existing versioned identity with different
+source. Advance the version and retain the previous version's recovery decoder.
 
 Provision Grok Build 1.0.13 at
 `/opt/paperclip/providers/grok/1.0.13/grok` in the selected execution environment.

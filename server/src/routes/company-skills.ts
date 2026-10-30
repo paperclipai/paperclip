@@ -1221,7 +1221,7 @@ export function companySkillRoutes(db: Db) {
           eq(activityLog.companyId, companyId), eq(activityLog.action, "company.skill_created"),
           sql`${activityLog.details}->>'idempotencyKey' = ${receiptKey}`,
         ));
-        const service = companySkillService(tx as unknown as Db);
+        const service = companySkillService(tx as unknown as Db, { packageDb: db });
         if (prior) {
           if (prior.details?.fingerprint !== fingerprint) throw conflict("Skill idempotency key was used with different inputs");
           const skill = await service.getById(companyId, prior.entityId);
@@ -1298,7 +1298,7 @@ export function companySkillRoutes(db: Db) {
           }
           let publication: ActivityPublication | null = null;
           let receipt: { skillId: string; path: string; versionId: string | null; studioPath: string } | null = null;
-          await companySkillService(tx as unknown as Db).updateFile(companyId, skillId, input.path, input.content, skillActor(req), {
+          await companySkillService(tx as unknown as Db, { packageDb: db }).updateFile(companyId, skillId, input.path, input.content, skillActor(req), {
             encoding: input.encoding, executable: input.executable, expectedVersionId,
             onRollback: (restore, versionId) => { rollbackState.current = { restore, versionId }; },
             afterUpdate: async (versionId) => {

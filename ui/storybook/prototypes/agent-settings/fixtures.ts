@@ -86,6 +86,8 @@ export function createSettingsFixtures(
   outcome: TestOutcome = "pass",
   saveFails = false,
 ) {
+  let configurationVersion = 0;
+  const configurationRevision = () => configurationVersion.toString(16).padStart(64, "0");
   let agent: AgentDetail = {
     ...storybookHiredAgent,
     id: ID,
@@ -117,6 +119,7 @@ export function createSettingsFixtures(
     },
   };
   let desiredSkills = ["paperclip", "design-guide"];
+  let desiredSkillEntries = desiredSkills.map(key => ({ key, versionId: null as string | null }));
   const files: Record<string, string> = {
     "AGENTS.md":
       "# Nova\n\nYou are a product engineer. Build interfaces that are clear, useful, and reliable.\n\n## Working style\n\n- Read the task and relevant code before making changes.\n- Keep changes focused and preserve existing behavior.\n- Test the experience in the browser before handing it back.\n\nRead [workflow.md](workflow.md) for your delivery checklist.\n",
@@ -155,6 +158,7 @@ export function createSettingsFixtures(
     supported: true,
     mode: "ephemeral",
     desiredSkills,
+    desiredSkillEntries,
     warnings: [],
     entries: desiredSkills.map((key) => ({
       key,
@@ -331,6 +335,12 @@ export function createSettingsFixtures(
         }
         if (url.pathname === `/api/companies/${COMPANY}/tools/connections`)
           return json({ connections: [connection()] });
+        if (url.pathname === `/api/companies/${COMPANY}/tools/profiles`)
+          return json({ profiles: [] });
+        if (url.pathname === `/api/companies/${COMPANY}/chat-endpoints`)
+          return json([]);
+        if (url.pathname === `/api/companies/${COMPANY}/secret-proposals`)
+          return json([]);
         if (url.pathname === `/api/companies/${COMPANY}/tools/policies`)
           return json({ policies: [] });
         if (url.pathname.includes("/tools/profiles/effective/agents/"))
@@ -377,6 +387,11 @@ export function createSettingsFixtures(
                 { status: 503 },
               );
             const patch = await payload();
+            if (patch.expectedConfigurationRevision && patch.expectedConfigurationRevision !== configurationRevision()) {
+              return Response.json({ error: "Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again." }, { status: 409 });
+            }
+            delete patch.expectedConfigurationRevision;
+            delete patch.replaceAdapterConfig;
             const before = agent;
             agent =
               path === "/permissions"
@@ -391,11 +406,14 @@ export function createSettingsFixtures(
                   }
                 : { ...agent, ...patch };
             recordRevision(before, patch);
-            return json(agent);
+            configurationVersion++;
+            return json({ ...agent, configurationRevision: configurationRevision() });
           }
           if (!path) return json(agent);
+          if (path === "/configuration") return json({ ...agent, configurationRevision: configurationRevision() });
           if (path === "/skills/sync") {
             const data = await payload();
+            desiredSkillEntries = data.desiredSkills.map((skill: string | { key: string; versionId?: string }) => typeof skill === "string" ? { key: skill, versionId: null } : { ...skill, versionId: skill.versionId ?? null });
             desiredSkills = data.desiredSkills.map(
               (s: string | { key: string }) =>
                 typeof s === "string" ? s : s.key,

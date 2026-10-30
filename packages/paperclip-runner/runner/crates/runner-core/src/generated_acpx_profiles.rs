@@ -10,18 +10,30 @@ pub(crate) struct AcpxReleaseProfile {
     pub agent_runtime_version: Option<&'static str>,
     pub command_digest: &'static str,
     pub requires_provider_policy: bool,
+    pub qualification_pending: bool,
 }
 
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
     Some(match agent {
+        "antigravity" => AcpxReleaseProfile {
+            agent_server_package: "native:antigravity-acp",
+            agent_server_version: "1.4.3",
+            agent_runtime_package: Some("native:antigravity-localharness"),
+            agent_runtime_version: Some("1.4.3"),
+            command_digest:
+                "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+            requires_provider_policy: true,
+            qualification_pending: true,
+        },
         "grok" => AcpxReleaseProfile {
             agent_server_package: "builtin:grok-acp",
             agent_server_version: "1",
             agent_runtime_package: Some("native:grok"),
             agent_runtime_version: Some("1.0.13"),
             command_digest:
-                "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+                "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         "pi" => AcpxReleaseProfile {
             agent_server_package: "pi-acp",
@@ -29,8 +41,9 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: Some("@earendil-works/pi-coding-agent"),
             agent_runtime_version: Some("1.0.0"),
             command_digest:
-                "sha256:18f0f91f179745db6f63aa0d2c710018b884759fa78440d7b0d3cd18b785b4d9",
+                "sha256:9473de6ef4baf2bd82fe8b6757239bdc160960b0a78ae6f47fa9e0996544226c",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "cursor" => AcpxReleaseProfile {
             agent_server_package: "cursor-agent",
@@ -38,8 +51,9 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:ac8092119542c8fbe95dae18ba5ef4d3689803fec56b7d2735fa193eea42f59b",
+                "sha256:759e7415fea8ed2b6b0e6f362b57652b8768835f9d1fdae4a94c1b5eb3669301",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "copilot" => AcpxReleaseProfile {
             agent_server_package: "@github/copilot",
@@ -47,8 +61,9 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:7fa710c697582b1b4d85cdf833178b1940656cb6efb44ac4d356b2f27e6b3d4b",
+                "sha256:b9c13b83628be07086a88394ae671997291b77bbdbf45b0bd1c4e91b7121bc9d",
             requires_provider_policy: true,
+            qualification_pending: false,
         },
         "claude" => AcpxReleaseProfile {
             agent_server_package: "@agentclientprotocol/claude-agent-acp",
@@ -58,6 +73,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         "codex" => AcpxReleaseProfile {
             agent_server_package: "@agentclientprotocol/codex-acp",
@@ -67,6 +83,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
             requires_provider_policy: false,
+            qualification_pending: false,
         },
         _ => return None,
     })

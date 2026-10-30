@@ -7,7 +7,7 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 61,
+    "actions": 69,
     "legacyRequirements": 106
   },
   "actions": [
@@ -521,6 +521,158 @@
       ],
       "deterministicOwners": [
         "src/catalog/protocol-action-contracts.test.ts::create_task has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "handoff_case",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:handoff_case",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::handoff_case has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:handoff_case"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::handoff_case has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "read_case",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:read_case",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::read_case has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:read_case"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::read_case has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "update_case",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:update_case",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::update_case has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:update_case"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::update_case has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "create_case",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:create_case",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_case has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:create_case"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::create_case has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_workflows",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_workflows",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_workflows has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:list_workflows"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_workflows has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "read_workflow",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:read_workflow",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::read_workflow has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:read_workflow"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::read_workflow has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "create_workflow",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:create_workflow",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_workflow has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:create_workflow"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::create_workflow has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "update_workflow",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:update_workflow",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::update_workflow has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:update_workflow"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::update_workflow has a schema-valid canonical example and every declared projection",
         "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
       ]
     },

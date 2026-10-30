@@ -2,6 +2,8 @@
 
 Product map: [Inbox, decisions, and search](../feature-map/inbox-search.md).
 
+Feature ID: `inbox-search`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -11,6 +13,8 @@ for format, permission checks, evidence and maintenance.
 
 ## `views`
 
+Capability ID: `inbox-search/views`.
+
 The issue-list API accepts optional `includeAgentCreatedTasks`; false restricts
 independent results to human creation before search/pagination. Omission retains
 existing agent/API behavior. `includeParticipatedTasks=true` requires a board user
@@ -18,6 +22,13 @@ and retains only that authenticated user's existing participation as a creation
 visibility exception. Company/private-task access checks still apply. Collection
 preferences and hierarchy presentation are browser state, not additional authority.
 Source-reviewed behavior; live agent access verification remains separate.
+
+Collection projections `view=index` and `view=rows` use the same issue-list
+company/private-task checks. Optional `ids` and `parentIds` batches accept at most
+100 UUIDs and cannot be combined with blocked attention. They grant no new access.
+`listProjection` marks omitted task bodies so clients do not reuse them as detail.
+The sidebar count endpoint returns only readable unread Mine task IDs; failed-run
+counts apply the run read decision. No new agent execution or mutation path is added.
 
 Review: `baseline`.
 
@@ -32,7 +43,12 @@ Agent access: `partial` — REST / native call_api; MCP inbox/task search.
 Policy: Own agent context; responsible-user inbox policy and explicit opt-in/grants for
 cross-user archive; decision policy separately. Automatic read cleanup does not
 count as user participation, including historical reader-attributed rows.
-Explicit user recovery decisions still count.
+Explicit user recovery decisions still count. Automatic creator attribution,
+synchronized comments, and manual routine runs do not count. Direct board/API
+comments, human assignment, and open addressed requests qualify. These admission
+rules do not grant task access.
+Historical questions and requests on closed tasks do not qualify. Request unread
+state uses the person's read or reply time, independent of automatic task updates.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L3952) at
 the reviewed commit above. The cleanup exclusion in
@@ -53,6 +69,8 @@ Gaps: Agent inbox and Mine support exist; board attention/unread/dismissal aggre
 is a separate user-only surface.
 
 ## `triage`
+
+Capability ID: `inbox-search/triage`.
 
 Review: `baseline`.
 
@@ -79,12 +97,35 @@ does not have equivalent agent semantics everywhere.
 
 ## `decisions`
 
+Capability ID: `inbox-search/decisions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
 - `GET /api/companies/{companyId}/decision-queues`.
 - `GET /api/companies/{companyId}/decision-queues/{key}/items`.
+- `GET /api/companies/{companyId}/attention/history` — read-only canonical
+  interaction/Decisions-v1 projection with cursor, search, outcome, agent, project,
+  date, and chronological sort filters. Each source and v1 target must pass task
+  privacy checks. Bounded to 100 records per page; no second decision write store.
+
+The history route is **operator-only**: a board user with company access is
+required. It does not grant an agent resolver authority. Existing task interaction
+and decision routes remain the mutation owners. Source evidence:
+[history service](../../server/src/services/decision-history.ts) and
+[route](../../server/src/routes/attention.ts). Real temporary PostgreSQL regression
+coverage is in [decision-history.test.ts](../../server/src/__tests__/decision-history.test.ts);
+this is not a deployed user/agent credential test.
+
+`GET /api/companies/{companyId}/attention` also projects existing pending
+interactions from persistent agent chats, including `ask_user_questions`, under
+the same board, company, task-read, and addressee rules. The execution-container
+exclusion does not suppress an explicit human request. Resolution still uses
+the owning interaction API and its resolver policy; ordinary chat prose and idle
+review status do not become decision records. Source and isolated PostgreSQL
+coverage: [attention service](../../server/src/services/attention.ts) and
+[regressions](../../server/src/__tests__/attention-service.test.ts).
 
 Agent access: `partial` — REST / native call_api under decision queue authorization.
 
@@ -103,6 +144,8 @@ Gaps: Queue browsing/managing may be allowed; governed approval decisions still 
 separate board/resolver boundaries.
 
 ## `search`
+
+Capability ID: `inbox-search/search`.
 
 Review: `baseline`.
 
@@ -130,6 +173,8 @@ the appropriate one.
 
 
 ## `toasts`
+
+Capability ID: `inbox-search/toasts`.
 
 Review: `baseline`.
 

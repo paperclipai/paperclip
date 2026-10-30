@@ -7,9 +7,10 @@ import { useNativeRunTranscripts } from "./useNativeRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
 const eventsMock = vi.hoisted(() => vi.fn());
+const conversationEventsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/heartbeats", () => ({
-  heartbeatsApi: { events: eventsMock },
+  heartbeatsApi: { events: eventsMock, conversationEvents: conversationEventsMock },
 }));
 
 function Probe() {
@@ -47,6 +48,29 @@ describe("useNativeRunTranscripts", () => {
     act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
+  });
+
+  it("expands from sequence zero without duplicating the preview or withholding new runs", async () => {
+    let state: ReturnType<typeof useNativeRunTranscripts>;
+    const event = (seq: number, text: string) => ({
+      id: `event-${seq}`, runId: "old", companyId: "company", seq, eventType: "item.completed", createdAt: new Date().toISOString(),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType: "item.completed", runId: "old", schemaVersion: 1, emittedAt: new Date().toISOString(), itemId: `item-${seq}`, payload: { kind: "agentMessage", text } } },
+    });
+    conversationEventsMock.mockResolvedValue([event(3, "Latest answer")]);
+    eventsMock.mockImplementation((id) => Promise.resolve(id === "old" ? [event(1, "Earlier answer"), event(3, "Latest answer")] : []));
+    function Window({ compact }: { compact: boolean }) {
+      state = useNativeRunTranscripts([
+        { id: "old", runtimeMode: "native", status: "succeeded", conversationOnly: compact },
+        { id: "new", runtimeMode: "native", status: "succeeded" },
+      ]);
+      return null;
+    }
+    await act(async () => { root.render(<Window compact />); });
+    expect(conversationEventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(eventsMock).toHaveBeenCalledWith("new", 0, 1000, expect.any(Object));
+    await act(async () => { root.render(<Window compact={false} />); });
+    expect(eventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(state!.transcriptByRun.get("old")?.filter((entry) => entry.kind === "assistant").map((entry) => entry.text)).toEqual(["Earlier answer", "Latest answer"]);
   });
 
   it("exposes event transport failures and retries terminal runs until recovery", async () => {
@@ -134,6 +158,38 @@ describe("native history readiness and stable projection", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     expect(latest.transcriptByRun).toBe(projection);
     expect(latest.transcriptByRun.get("one")).toBe(rows);
+  });
+
+  it("waits for every page of a successful terminal refresh before allowing a fallback", async () => {
+    eventsMock.mockResolvedValueOnce([{ seq: 1, payload: {}, eventType: "log" }]);
+    await act(async () => { root.render(<StateProbe />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+
+    let resolvePage!: (rows: unknown[]) => void;
+    eventsMock.mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
+    await act(async () => { root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+
+    let resolveLastPage!: (rows: unknown[]) => void;
+    eventsMock.mockImplementationOnce(() => new Promise(resolve => { resolveLastPage = resolve; }));
+    await act(async () => {
+      resolvePage(Array.from({ length: 1_000 }, (_, index) => ({ seq: index + 2, payload: {}, eventType: "log" })));
+    });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+    expect(eventsMock.mock.calls.at(-1)?.[1]).toBe(1_001);
+    await act(async () => { resolveLastPage([]); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(true);
+  });
+
+  it("keeps the fallback pending after a failed terminal refresh until retry succeeds", async () => {
+    eventsMock.mockResolvedValueOnce([]);
+    await act(async () => { root.render(<StateProbe />); });
+    eventsMock.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => { root.render(<StateProbe runs={[{ id: "one", status: "succeeded", runtimeMode: "native" }]} />); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(false);
+    eventsMock.mockResolvedValueOnce([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(latest.terminalHydratedRunIds.has("one")).toBe(true);
   });
 
   it("times out stalled history, aborts its request, and ignores a late response before retry", async () => {

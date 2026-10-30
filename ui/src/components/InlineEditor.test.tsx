@@ -2,7 +2,14 @@
 
 import { act, forwardRef, useImperativeHandle, useRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
+
+const mockSession = vi.hoisted(() => ({ userId: "user-1", pending: null as Promise<{ user: { id: string } } | null> | null }));
+vi.mock("../api/auth", () => ({
+  authApi: { getSession: () => mockSession.pending ?? Promise.resolve({ user: { id: mockSession.userId } }) },
+}));
 
 vi.mock("./MarkdownEditor", () => ({
   MarkdownEditor: forwardRef<
@@ -31,6 +38,14 @@ vi.mock("./MarkdownBody", () => ({
 }));
 
 import { InlineEditor, queueContainedBlurCommit } from "./InlineEditor";
+
+/** Render as a signed-in user: stored drafts belong to one account. */
+function signedIn(userId: string, node: ReactNode) {
+  mockSession.userId = userId;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.auth.session, { user: { id: userId } });
+  return <QueryClientProvider client={client}>{node}</QueryClientProvider>;
+}
 
 /** Enter multiline edit mode by clicking the preview surface. */
 function enterMultilineEdit(container: HTMLDivElement) {
@@ -109,6 +124,203 @@ describe("InlineEditor", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps a single-line edit open with no unhandled rejection when the save fails", async () => {
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+    process.on("unhandledRejection", unhandled);
+    const onSave = vi.fn().mockRejectedValue(new Error("Title is too long"));
+    const root = createRoot(container);
+    act(() => {
+      root.render(<InlineEditor value="hello" onSave={onSave} />);
+    });
+    act(() => {
+      container.querySelector("span")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const textarea = container.querySelector("textarea")!;
+    act(() => setNativeTextareaValue(textarea, "hello world"));
+    await act(async () => {
+      textarea.blur();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onSave).toHaveBeenCalledWith("hello world");
+    // The text stays in the editor instead of snapping back to the old value.
+    expect(container.querySelector("textarea")?.value).toBe("hello world");
+    expect(unhandled).not.toHaveBeenCalled();
+    window.removeEventListener("unhandledrejection", unhandled);
+    process.off("unhandledRejection", unhandled);
+    act(() => root.unmount());
+  });
+
+  it("restores an unsaved edit and saves it when the server value has not moved", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-1:description", JSON.stringify({ version: 1, draft: "Typed before reload", base: "Original" }));
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(signedIn("user-1", <InlineEditor value="Original" multiline draftKey="issue-1:description" onSave={onSave} />));
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')?.value).toBe("Typed before reload");
+    expect(onSave).toHaveBeenCalledWith("Typed before reload");
+    act(() => root.unmount());
+    localStorage.clear();
+  });
+
+  it("restores the next task's stored edit without remounting the editor", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-b:description", JSON.stringify({ version: 1, draft: "Recovered B", base: "Original B" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const renderTask = (id: string, onSave: typeof saveA) => root.render(
+      <QueryClientProvider client={client}>
+        <InlineEditor value={`Original ${id.toUpperCase()}`} multiline draftKey={`issue-${id}:description`} onSave={onSave} />
+      </QueryClientProvider>,
+    );
+    try {
+      await act(async () => renderTask("a", saveA));
+      await act(async () => renderTask("b", saveB));
+      expect(container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')?.value).toBe("Recovered B");
+      expect(saveB).toHaveBeenCalledWith("Recovered B");
+      expect(saveA).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      localStorage.clear();
+      client.clear();
+    }
+  });
+
+  it("restores an unsaved edit without overwriting a newer server value", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-2:description", JSON.stringify({ version: 1, draft: "My old edit", base: "Original" }));
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(signedIn("user-1", <InlineEditor value="Changed by an agent" multiline draftKey="issue-2:description" onSave={onSave} />));
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')?.value).toBe("My old edit");
+    expect(onSave).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    localStorage.clear();
+  });
+
+  it("neither shows nor saves another account's unsaved edit", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:issue-3:description", JSON.stringify({ version: 1, draft: "Unpublished by user 1", base: "Original" }));
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(signedIn("user-2", <InlineEditor value="Original" multiline draftKey="issue-3:description" onSave={onSave} />));
+    });
+    expect(container.textContent).not.toContain("Unpublished by user 1");
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]')?.value ?? "").not.toBe("Unpublished by user 1");
+    expect(onSave).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    localStorage.clear();
+  });
+
+  it.each(["user-1", "signed-out"])("keeps typing through the first session lookup (%s)", async (owner) => {
+    localStorage.clear();
+    localStorage.setItem(`paperclip:inline-draft:v2:${owner}:initial-session`, JSON.stringify({ version: 1, draft: "Earlier saved draft", base: "Original" }));
+    let finish!: (session: { user: { id: string } } | null) => void;
+    mockSession.pending = new Promise(resolve => { finish = resolve; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" draftKey="initial-session" onSave={onSave} />
+        </QueryClientProvider>,
+      ));
+      act(() => container.querySelector("span")!.click());
+      const input = container.querySelector("textarea")!;
+      act(() => setNativeTextareaValue(input, "Typing while session loads"));
+      await act(async () => {
+        finish(owner === "signed-out" ? null : { user: { id: owner } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector("textarea")).toBe(input);
+      expect(input.value).toBe("Typing while session loads");
+      await vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(localStorage.getItem(`paperclip:inline-draft:v2:${owner}:initial-session`)).toContain("Typing while session loads");
+      });
+      expect(onSave).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      client.clear();
+      localStorage.clear();
+      mockSession.pending = null;
+    }
+  });
+
+  it("does not restore typing cancelled before the first session lookup", async () => {
+    localStorage.clear();
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:cancel-before-session", JSON.stringify({ version: 1, draft: "Original", base: "Original" }));
+    let finish!: (session: { user: { id: string } }) => void;
+    mockSession.pending = new Promise(resolve => { finish = resolve; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" draftKey="cancel-before-session" onSave={vi.fn()} />
+        </QueryClientProvider>,
+      ));
+      act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Cancelled private text"));
+      act(() => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      await act(async () => {
+        finish({ user: { id: "user-1" } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.textContent).not.toContain("Cancelled private text");
+      await vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:cancel-before-session")).toBeNull();
+      });
+    } finally {
+      act(() => root.unmount()); client.clear(); localStorage.clear(); mockSession.pending = null;
+    }
+  });
+
+  it.each([false, true])("isolates a mounted private edit after an account change (multiline=%s)", async (multiline) => {
+    mockSession.userId = "user-1";
+    localStorage.clear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <InlineEditor value="Original" multiline={multiline} defaultEditing={multiline} draftKey="private-switch" onSave={onSave} />
+        </QueryClientProvider>,
+      ));
+      if (!multiline) act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Private account A draft"));
+      const storedA = localStorage.getItem("paperclip:inline-draft:v2:user-1:private-switch");
+      expect(storedA).toContain("Private account A draft");
+      mockSession.userId = "user-2";
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector("textarea")?.value ?? "").not.toContain("Private account A draft");
+      expect(container.textContent).not.toContain("Private account A draft");
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-1:private-switch")).toBe(storedA);
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).toBeNull();
+      expect(onSave).not.toHaveBeenCalled();
+      if (!multiline) act(() => container.querySelector("span")!.click());
+      act(() => setNativeTextareaValue(container.querySelector("textarea")!, "Account B edit"));
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).toContain("Account B edit");
+      expect(localStorage.getItem("paperclip:inline-draft:v2:user-2:private-switch")).not.toContain("Private account A draft");
+    } finally {
+      act(() => root.unmount());
+      client.clear();
+      localStorage.clear();
+      mockSession.userId = "user-1";
+    }
   });
 
   it("does not call onSave when nullable is false/omitted and the field is cleared", () => {
