@@ -21,6 +21,22 @@ import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+const cloudRuntimeStartupMocks = vi.hoisted(() => ({
+  initialize: vi.fn(async () => null),
+  bootstrap: vi.fn(),
+  telemetry: vi.fn(),
+}));
+
+vi.mock("../services/adapter-settings.js", async () => ({
+  ...await vi.importActual<typeof import("../services/adapter-settings.js")>("../services/adapter-settings.js"),
+  initializeAdapterSettings: vi.fn(async () => null),
+}));
+vi.mock("../services/cloud-runtime-config.js", () => ({ initializeCloudRuntimeConfig: cloudRuntimeStartupMocks.initialize }));
+const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null), qualify: vi.fn(async () => null) }));
+vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
+vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
+vi.mock("../telemetry.js", () => ({ initTelemetry: cloudRuntimeStartupMocks.telemetry, getTelemetryClient: vi.fn(() => null) }));
+
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
@@ -364,6 +380,7 @@ vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
 
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
+  loadCloudBootstrapConfig: cloudRuntimeStartupMocks.bootstrap,
 }));
 
 vi.mock("../middleware/logger.js", () => ({
@@ -609,6 +626,8 @@ describe("startServer feedback export wiring", () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
       suppressed: false,
       reason: null,
@@ -616,6 +635,64 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("awaits saved Cloud configuration before telemetry, authentication and app construction", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
+    vi.stubEnv("HOST", "0.0.0.0");
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", undefined);
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
+    let release: (() => void) | undefined;
+    cloudRuntimeStartupMocks.initialize.mockImplementationOnce(() => new Promise<null>(resolve => {
+      release = () => {
+        loadConfigMock.mockReturnValue(buildTestConfig({ telemetryEnabled: false, authDisableSignUp: true, port: 4321, host: "0.0.0.0", bind: "all" }));
+        resolve(null);
+      };
+    }));
+    try {
+      const starting = startServer();
+      for (let index = 0; index < 30 && !release; index += 1) await new Promise<void>(resolve => setImmediate(resolve));
+      expect(release).toBeTypeOf("function");
+      expect(cloudMigrationMocks.migrate.mock.invocationCallOrder[0]).toBeLessThan(cloudRuntimeStartupMocks.initialize.mock.invocationCallOrder[0]!);
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createBetterAuthInstanceMock).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(loadConfigMock).not.toHaveBeenCalled();
+      release!();
+      const started = await starting;
+      await settleStartupHousekeeping();
+      expect(cloudRuntimeStartupMocks.telemetry).toHaveBeenCalledExactlyOnceWith({ enabled: false });
+      expect(createBetterAuthInstanceMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ authDisableSignUp: true, port: 4321 }), expect.anything());
+      expect(started.listenPort).toBe(4321);
+      expect(cloudMigrationMocks.qualify.mock.invocationCallOrder[0]).toBeLessThan(createAppMock.mock.invocationCallOrder[0]!);
+    } finally {
+      release?.();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not create telemetry or the app when saved Cloud configuration fails", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
+    cloudRuntimeStartupMocks.initialize.mockRejectedValueOnce(new Error("persisted config unavailable"));
+    try {
+      await expect(startServer()).rejects.toThrow("persisted config unavailable");
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createBetterAuthInstanceMock).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("stops before configuration consumers when the atomic Cloud migration fails", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
+    cloudMigrationMocks.migrate.mockRejectedValueOnce(new Error("migration did not commit"));
+    try {
+      await expect(startServer()).rejects.toThrow("migration did not commit");
+      expect(cloudRuntimeStartupMocks.initialize).not.toHaveBeenCalled();
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
@@ -1535,6 +1612,8 @@ describe("startServer authenticated auth origin setup", () => {
     vi.clearAllMocks();
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
@@ -1596,6 +1675,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     vi.clearAllMocks();
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
   });

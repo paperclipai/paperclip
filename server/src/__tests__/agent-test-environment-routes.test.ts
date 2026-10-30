@@ -103,6 +103,11 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/adapter-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/adapter-settings.js")>()),
+  adapterSettingsService: () => ({ getDisabledTypes: async () => [] }),
+}));
+
 vi.mock("../services/dot-runner-broker.js", () => ({
   dotRunnerBroker: () => ({ enabled: async () => true, bindingForAgent: async () => null }),
 }));

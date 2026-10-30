@@ -6,6 +6,9 @@ import { resolveClaudeModel } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_GROK_LOCAL_MODEL } from "@paperclipai/adapter-grok-local";
 import { findActiveServerAdapter, hasActiveAdapterOverride, waitForExternalAdapters } from "../adapters/registry.js";
 import { getDisabledAdapterTypes } from "./adapter-plugin-store.js";
+import { adapterSettingsService, effectiveDisabledAdapterTypes } from "./adapter-settings.js";
+import { listServerAdapters } from "../adapters/registry.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import { claudeRunnerUnsupportedSettings, PaperclipRunnerProviderProfileError, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { forbidden, unprocessable } from "../errors.js";
 import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
@@ -27,6 +30,7 @@ export type RunnerTarget = {
 export const AGENT_RUNNER_SSH_PLATFORM_COMMAND = "uname -s; uname -m; if paperclip_glibc_version=$(getconf GNU_LIBC_VERSION 2>/dev/null) && [ -n \"$paperclip_glibc_version\" ]; then printf 'glibc\\n%s\\n' \"$paperclip_glibc_version\"; else case \"$(ldd --version 2>&1)\" in *musl*) printf 'musl\\n' ;; *) printf 'unknown\\n' ;; esac; fi";
 export interface AgentRunnerSelection {
   adapterType?: string | null;
+  disabledTypes?: string[];
   adapterConfig?: Record<string, unknown>;
   runner?: AgentRunnerChoice;
   target?: RunnerTarget;
@@ -35,8 +39,13 @@ export interface AgentRunnerSelection {
   onConfigurationWarnings?: (warnings: AgentConfigurationWarning[]) => void;
 }
 
-function runnerAdaptersAvailable(harness: string, driver: string): boolean {
-  const disabled = new Set(getDisabledAdapterTypes());
+function localDisabledTypes(): string[] {
+  if (isCloudManagedInstance()) throw new Error("Managed runner selection requires a fresh adapter settings snapshot");
+  return effectiveDisabledAdapterTypes(getDisabledAdapterTypes(), () => listServerAdapters().map((adapter) => adapter.type));
+}
+
+function runnerAdaptersAvailable(harness: string, driver: string, disabledTypes: string[]): boolean {
+  const disabled = new Set(disabledTypes);
   return !!paperclipRunnerProfileForHarness(harness)
     && !disabled.has(harness) && !disabled.has("paperclip_runner")
     && !!findActiveServerAdapter(harness) && !!findActiveServerAdapter("paperclip_runner")
@@ -44,11 +53,11 @@ function runnerAdaptersAvailable(harness: string, driver: string): boolean {
     && isEnvironmentDriverSupportedForAdapter("paperclip_runner", driver);
 }
 
-export function agentRunnerAvailability(harness: string, target: RunnerTarget = localAgentRunnerTarget()): AgentRunnerAvailability {
+export function agentRunnerAvailability(harness: string, target: RunnerTarget = localAgentRunnerTarget(), disabledTypes: string[] = localDisabledTypes()): AgentRunnerAvailability {
   if (harness === "cursor_cloud") {
     if (target.executionMode === "kubernetes") return { supportedRunners: [], defaultRunner: "legacy" };
     const controller = localAgentRunnerTarget();
-    const supported = runnerAdaptersAvailable(harness, "local")
+    const supported = runnerAdaptersAvailable(harness, "local", disabledTypes)
       && paperclipRunnerSupportsPlatform(harness, controller.platform, controller.architecture, controller.libc, controller.glibcVersion);
     const legacy = isEnvironmentDriverSupportedForAdapter(harness, target.driver);
     return { supportedRunners: [...(supported ? ["paperclip" as const] : []), ...(legacy ? ["legacy" as const] : [])],
@@ -56,11 +65,11 @@ export function agentRunnerAvailability(harness: string, target: RunnerTarget = 
   }
   if (target.driver === "unavailable") return { supportedRunners: [], defaultRunner: "legacy" };
   if (target.runnerTasks || target.managedCloudImage) {
-    return runnerAdaptersAvailable(harness, target.driver)
+    return runnerAdaptersAvailable(harness, target.driver, disabledTypes)
       ? { supportedRunners: target.runnerTasks ? ["paperclip"] : ["paperclip", "legacy"], defaultRunner: "paperclip" }
       : { supportedRunners: ["legacy"], defaultRunner: "legacy" };
   }
-  const supported = runnerAdaptersAvailable(harness, target.driver)
+  const supported = runnerAdaptersAvailable(harness, target.driver, disabledTypes)
     && (target.driver !== "sandbox" || Boolean(target.platform && target.architecture
       && (target.platform !== "linux" || (target.libc === "glibc" && target.glibcVersion))))
     && (["claude_local", "grok_local"].includes(harness)
@@ -179,11 +188,12 @@ export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterTyp
 function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
   const adapterType = input.adapterType ?? "process";
   let config = { ...input.adapterConfig };
+  const disabledTypes = input.disabledTypes ?? localDisabledTypes();
   const harness = agentHarnessType(adapterType, config);
   const native = adapterType === "paperclip_runner";
-  if (paperclipRunnerProfileForHarness(adapterType) && getDisabledAdapterTypes().includes(adapterType)) throw unprocessable(`${adapterType === "grok_local" ? "Grok Build" : adapterType === "pi_local" ? "Pi" : adapterType === "opencode_local" ? "OpenCode" : adapterType === "claude_local" ? "Claude" : "Codex"} is disabled on this instance. Enable its adapter or choose another harness.`, { code: "agent_runner_unavailable" });
+  if (paperclipRunnerProfileForHarness(adapterType) && disabledTypes.includes(adapterType)) throw unprocessable(`${adapterType === "grok_local" ? "Grok Build" : adapterType === "pi_local" ? "Pi" : adapterType === "opencode_local" ? "OpenCode" : adapterType === "claude_local" ? "Claude" : "Codex"} is disabled on this instance. Enable its adapter or choose another harness.`, { code: "agent_runner_unavailable" });
   if (native && (input.runner === undefined || input.runner === "paperclip" || (harness !== "codex_local" && input.runner !== "legacy"))) return { adapterType, adapterConfig: normalizeLegacyRunnerProvider(config) };
-  const availability = agentRunnerAvailability(harness, input.target);
+  const availability = agentRunnerAvailability(harness, input.target, disabledTypes);
   const choice = input.runner ?? "auto";
   const useNative = choice === "paperclip" || (choice === "auto" && harness !== "cursor_cloud" && availability.defaultRunner === "paperclip");
   if (!useNative) {
@@ -367,6 +377,7 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
 }
 
 export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
+  input = { ...input, disabledTypes: await adapterSettingsService(db).getDisabledTypes() };
   const cursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud";
   const nativeCursor = cursor && input.runner !== "legacy"
     && (input.adapterType === "paperclip_runner" || input.runner === "paperclip");
@@ -379,6 +390,9 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
     // legacy agents still require an explicit conversion decision.
     const useSetupDefault = cursorSetupDefault && managedCursorApiDefaultEnabled(settings.experimental);
     if (nativeCursor || useSetupDefault) {
+      if (input.disabledTypes.includes("cursor_cloud") || input.disabledTypes.includes("paperclip_runner")) {
+        throw unprocessable("Cursor Cloud is disabled on this instance. Enable its adapter or choose another harness.", { code: "agent_runner_unavailable" });
+      }
       assertProviderApiPlacementPolicy(settings.general ?? {});
       const selected = resolveNewAgentRunner({ ...input, ...(useSetupDefault ? { runner: "paperclip" as const } : {}), target: localAgentRunnerTarget() });
       try { if (!input.setupOnly) resolveProviderApiPlacement({ agent: selected }); }
@@ -391,11 +405,11 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
   }
   if (!paperclipRunnerProfileForHarness(agentHarnessType(input.adapterType ?? "process", input.adapterConfig))
     || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) return resolveNewAgentRunner(input);
-  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId);
+  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes);
   return resolveNewAgentRunner({ ...input, target });
 }
 
-export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null): Promise<RunnerTarget> {
+export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[]): Promise<RunnerTarget> {
   await waitForExternalAdapters();
   const { environment, driver, executionMode } = await resolveAgentRunnerEnvironmentForCompany(db, companyId, defaultEnvironmentId);
   const withPolicy = (value: RunnerTarget): RunnerTarget => ({ ...value, ...(executionMode ? { executionMode } : {}) });
@@ -428,7 +442,9 @@ export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: stri
     const qualified = await readSandboxPlatformQualification(db, environment, companyId);
     if (qualified) target = { driver, ...qualified };
   }
-  if (driver === "ssh" && environment && ["codex_local", "claude_local", "opencode_local", "pi_local", "grok_local"].some(harness => runnerAdaptersAvailable(harness, driver))) {
+  const disabledForSsh = driver === "ssh" && environment
+    ? disabledTypes ?? await adapterSettingsService(db).getDisabledTypes() : [];
+  if (driver === "ssh" && environment && ["codex_local", "claude_local", "opencode_local", "pi_local", "grok_local"].some(harness => runnerAdaptersAvailable(harness, driver, disabledForSsh))) {
     const parsed = await resolveEnvironmentDriverConfigForRuntime(db, companyId, environment);
     if (parsed.driver !== "ssh") throw unprocessable("The selected SSH environment is unavailable.");
     let output: string;
