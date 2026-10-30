@@ -84,6 +84,8 @@ Background refreshes and history expansion keep the conversation and composer
 mounted. A failed history request shows an inline retry without hiding readable
 content. Full-history and classic views retain the bounded 15-second initial wait.
 
+Standing agent chats open with the latest 20 contiguous messages and hydrate only their runs. Upward scrolling requests earlier pages; a fixed-height status slot says “Loading earlier messages…” while the page is pending. Preserve the logical row anchor and mounted composer through prepends and background refresh. Retry failed history inline without automatic retry loops. Answer receipts and created-task history use the same scrolling affordance.
+
 Only the viewer's own human comments sit on the right in blue bubbles. Agents
 and other humans sit on the left on the page surface, with their own name and
 avatar above the message. Human identity comes from the company directory;

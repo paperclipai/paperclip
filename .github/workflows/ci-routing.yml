@@ -350,24 +350,27 @@ jobs:
           FORCE_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
           CI_INCREMENTAL_MODE: ${{ vars.CI_INCREMENTAL_MODE || 'enabled' }}
           STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           fallback() { echo 'plan=' >> "$GITHUB_OUTPUT"; exit 0; }
           [[ "$FULL_CI" == 'true' ]] || fallback
-          [[ "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
+          [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
           trusted="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" || fallback
           [[ "$trusted" =~ ^[0-9a-f]{40}$ ]] || fallback
           directory="$(mktemp -d)"
           trap 'rm -rf "$directory"' EXIT
-          for file in .github/scripts/ci-plan.mjs .github/ci-task-matrix.json turbo.json; do
+          for file in .github/scripts/ci-plan.mjs .github/scripts/ci-inputs.mjs .github/scripts/ci-diff.mjs .github/ci-task-matrix.json turbo.json; do
             gh api -H 'Accept: application/vnd.github.raw+json' \
               "/repos/paperclipai/paperclip/contents/$file?ref=$trusted" \
               > "$directory/${file##*/}" || fallback
           done
-          gh api "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$EVENT_MERGE_SHA" \
-            > "$directory/comparison.json" || fallback
+          # Read the exact tested merge and both parents. The event's base SHA can
+          # lag behind its actual first parent. A bare tree diff has no API file cap.
+          git init --bare "$directory/repository.git" >/dev/null || fallback
+          git -C "$directory/repository.git" fetch --quiet --no-tags --filter=blob:none --depth=2 \
+            https://github.com/paperclipai/paperclip.git "$EVENT_MERGE_SHA" || fallback
           if [[ "$PROFILE_CI" == 'true' || "$FORCE_FULL_CI" == 'true' ]]; then
             export CI_FORCE_REASON='Full suite requested by label'
           elif [[ "$STACK_JSON" != 'null' && -n "$STACK_JSON" ]]; then
@@ -375,5 +378,5 @@ jobs:
           fi
           export CI_TASK_CONFIG="$directory/turbo.json"
           export CI_TASK_MATRIX="$directory/ci-task-matrix.json"
-          export CI_COMPARISON="$directory/comparison.json"
+          export CI_DIFF_REPOSITORY="$directory/repository.git"
           node "$directory/ci-plan.mjs" || fallback

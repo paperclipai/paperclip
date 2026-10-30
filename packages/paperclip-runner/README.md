@@ -552,6 +552,13 @@ pnpm --filter @paperclipai/paperclip-runner verify
 The verification command requires a stable Rust toolchain with `cargo` on
 `PATH`, in addition to Node.js 24.11+ and pnpm 9+.
 
+Rust development builds use `debug = "line-tables-only"` to reduce build storage
+while retaining file names and line numbers in backtraces. The default test
+profile inherits this setting. Incremental compilation remains enabled, and
+release profiles keep their existing settings. For full debugger support,
+including local variables and types, set `CARGO_PROFILE_DEV_DEBUG=2` and
+`CARGO_PROFILE_TEST_DEBUG=2` for the build or test command.
+
 Minimal Debian/Ubuntu hosts without root access can extract the required
 Playwright browser libraries into a user-owned cache and run the same acceptance
 sequence with:

@@ -27,6 +27,12 @@ checks only assignment to the signed-in user and persistence after reload. Its
 source is reusable across self-hosted and Cloud; Cloud live qualification is
 separate. It does not cover other property operations or agent authorization.
 
+The [Product task-search-filter journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
+checks `tasks/organize` with owned matching and nonmatching controls, exact task
+identities, saved task content, and search/status persistence after reload and
+detail/back navigation. It is model-free and reusable across deployment targets.
+Live Cloud qualification is separate from the journey's assertion unit tests.
+
 ## How to get to it (user POV)
 
 Cold collection loads use a lightweight index and batched hierarchy context,
