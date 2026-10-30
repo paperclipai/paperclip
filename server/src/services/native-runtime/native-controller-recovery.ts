@@ -1,7 +1,9 @@
-import { and, eq, ne } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq, ne, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { DurablePrpCheckpoint, PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
+import { readRunCancellation } from "../run-cancellation.js";
 import { nativeSha256 } from "./canonical.js";
 import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBootstrap, nativeSessionProviderEvidence } from "./native-session-resume.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -63,6 +65,61 @@ export type NativeControllerRecoveryOutcome =
   | { kind: "missing_evidence" | "unsupported" | "dependency_unavailable"; reason: string; cause?: unknown }
   | { kind: "no_prior_execution" };
 
+export const NATIVE_RETAINED_OWNER_WAIT = "native_controller_recovery_waiting_for_owner";
+
+export class NativeControllerRecoveryWaitingError extends Error {
+  constructor(readonly retryAt: Date) {
+    super(NATIVE_RETAINED_OWNER_WAIT);
+    this.name = "NativeControllerRecoveryWaitingError";
+  }
+}
+
+/** Admission has not crossed the provider boundary. Retain this same business
+ * run on the existing retry owner; never turn an ownership wait into a failure
+ * or invent a new provider attempt. The usual resumption gates recheck Stop,
+ * permissions and task ownership when this deadline arrives. */
+export async function deferNativeControllerRecovery(db: Db, input: {
+  companyId: string; agentId: string; issueId: string; runId: string;
+  leaseOwner?: string; retryAt: Date;
+}): Promise<void> {
+  await db.transaction(async tx => {
+    const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    const [owner] = await tx.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+      eq(nativeRunFinalizations.runId, input.runId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId))).for("update");
+    const [authority] = await tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints)
+      .where(and(eq(nativeRunnerCheckpoints.companyId, input.companyId), eq(nativeRunnerCheckpoints.runId, input.runId))).limit(1);
+    const progress = await nativeSessionProviderEvidence(tx as unknown as Db, [input.runId]);
+    const cancellation = record(run?.resultJson?.nativeCancellation);
+    const stop = readRunCancellation(run?.resultJson);
+    const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+    if (!run || run.runtimeMode !== "native" || run.status !== "running" || task?.executionRunId !== input.runId
+      || !owner || owner.phase !== "observed" || owner.resultId || owner.attempt !== 0
+      || owner.controllerGeneration !== 0 || owner.leaseOwner !== (input.leaseOwner ?? null)
+      || (input.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt <= new Date(clock.now)))
+      || run.processPid || run.processGroupId || run.processStartedAt || authority || progress.size
+      || !record(run.runnerProfileJson).nativeExecutionInput || run.resultJson?.startupCancellation
+      || (stop?.source === "operator" && stop.expected)
+      || (["run", "issue"].includes(String(cancellation.scope)) && ["pending", "acknowledged"].includes(String(cancellation.dispatchState)))) {
+      throw new Error("native_controller_recovery_wait_authority_changed");
+    }
+    await notifyNativeFinalizationWork(tx, input);
+    await tx.update(nativeRunFinalizations).set({
+      phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null,
+      nextAttemptAt: input.retryAt, recoveryState: "resuming_session", failureCode: NATIVE_RETAINED_OWNER_WAIT,
+      failureDetail: { originalFailureCode: NATIVE_RETAINED_OWNER_WAIT,
+        message: "Waiting for the retained native controller owner to release its lease.",
+        recoveryMode: record(run.runnerProfileJson).sessionCheckpoint ? "same_session_resume" : "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false },
+      updatedAt: new Date(),
+    }).where(eq(nativeRunFinalizations.runId, input.runId));
+  });
+}
+
 /** Bind a read of retained Runner lifecycle to the surviving sandbox. The
  * ordinary admission owner still checks current permissions before execution. */
 export async function assertNativeRetainedSandboxBinding(db: Db, input: {
@@ -118,10 +175,10 @@ export async function resolveNativeControllerRecovery(db: Db, input: {
     // The normal admission and remote untouched-session claim still execute.
     return { kind: "no_prior_execution" };
   }
-  const [owner] = await db.select({ leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
+  const [owner] = await db.select({ leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
     .where(and(eq(nativeRunFinalizations.runId, source.id), eq(nativeRunFinalizations.companyId, input.companyId),
       eq(nativeRunFinalizations.issueId, input.issueId)));
-  if (owner?.leaseExpiresAt && owner.leaseExpiresAt.getTime() > Date.now()) {
+  if (owner?.leaseOwner && owner.leaseExpiresAt && owner.leaseExpiresAt.getTime() > Date.now()) {
     return { kind: "waiting_for_owner", deadline: owner.leaseExpiresAt };
   }
   if (source.runtimeMode !== "native" || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(source.status)

@@ -383,11 +383,11 @@ SQL/transactions/rows during the text interval and zero idle SQL. The long sampl
 included normal lease renewals. Its cluster-wide WAL values include simultaneous
 test migrations and are diagnostic only, not a load acceptance measurement.
 
-Workspace typecheck, build, and map structural checks passed. The full repository
-test command and additional warm compatibility cases are running. The paired
+Workspace typecheck, build, and map structural checks passed on the earlier
+candidate; the later check dispositions are recorded below. The paired
 300-controller/10,000-task workload now includes actual snapshot persistence.
-Its initial host pilot missed throughput gates; an isolated Linux client/database
-pilot is underway. Database cost acceptance, distinct-release application startup,
+Its initial host pilot missed throughput gates; the subsequent isolated Linux
+measurements are recorded below. Database cost acceptance, distinct-release application startup,
 compatible rollback, and native Daytona qualification remain open. The published Daytona qualification image was independently resolved from successful
 workflow 40709784515 to `sha256:b38ed051d00fed409092d354eea9ae1b01fb232bcb7d5a187ed763382dda2d0b`
 (source `8fe5d5defcdfb55a1b9049a801cfa5498629cebc`). The exact Linux Runner was
@@ -413,8 +413,8 @@ dependency. No database-load acceptance claim has been made from failed attempts
 There is no Paperclip issue bound to this local chat; this versioned source plan
 is the handoff, rather than an upload to an unrelated company or issue.
 
-Next action: complete the remaining native qualification and compatibility cells,
-retain reproducible measurements, and prepare the reviewed PR. Full-home application
+The remaining native qualification and compatibility cells require reproducible
+measurements and a reviewed PR. Full-home application
 acceptance remains dependent on workspace/backup durability; no controller-only
 test can waive that gate.
 
@@ -463,7 +463,7 @@ and relative gates and marks unequal-operation comparisons ineligible.
 Remaining critical path: finish the protected Daytona attempt and cleanup;
 complete full repository checks on the final rebased revision; finish the quiet
 steady/burst/replacement load gates and explicit lock-wait latency measurement;
-qualify distinct installed A/B/A artifacts; then resolve review and prepare the
+qualify distinct installed A/B/A artifacts; then resolve review on the draft
 PR. Current server startup smoke and three-controller component tests are useful
 layer-specific evidence, not substitutes for those remaining gates.
 
@@ -475,3 +475,43 @@ checks will run on hosted Linux for the rebased candidate. The broad E2E support
 rerun with two workers was also stopped before rebasing; focused support checks
 remain the completed evidence. A separate `server-config.test.ts` diagnostic
 confirmed the original restricted run's `listen EPERM` cause.
+
+
+### Rebased review and qualification follow-up
+
+Draft implementation: https://github.com/paperclipai/paperclip/pull/18343.
+At rebased head `3aa90fbf0b5553ffa66a9cdc0fb153f348b56d75`, all 66 focused
+persistence/discovery cases and full `pnpm -r typecheck` passed. The PR's general
+server shard found 190 executor unit failures where synthetic IDs and a partial
+Db double reached the new real discovery boundary. That fixture boundary is
+being corrected; no production validation is relaxed. Greptile scored 3/5 and
+identified missing prepared-task lifecycle reconstruction and retry after a
+failed lifecycle read. Corrections and regression cases are under verification.
+A separately identified retained-owner admission wait now uses the existing
+same-run retry record/deadline, with unstarted-run and current-authority fences.
+
+Protected Daytona workflow `41094539946` failed before any test cell ran: the
+image publisher exhausted disk (`No space left on device`, exit 102), including
+its cleanup/log writes. It is not live recovery evidence, and repeating the
+same build without a capacity fix is not justified. The default-branch workflow
+has no per-run disk-capacity or upgrade-manifest override. CI infrastructure owns
+that dependency. The invalid local credential attempt remains unresolved evidence.
+
+Local review-check attempts also encountered exhausted macOS Postgres semaphores;
+only these owned test processes were stopped and moved to dedicated Docker
+Postgres fixtures. One additional direct-read retry scenario timed out during
+its source-controller fixture startup before a Runner appeared. Fixture import
+readiness is now measured separately from the unchanged 60-second admission
+limit. These failed/incomplete attempts remain distinct from subsequent passes.
+
+Review-fix verification: all 1,066 cases across native executor, durable
+discovery, startup recovery and heartbeat runtime execution passed against owned
+Docker Postgres. After the final database-clock and operator-Stop fences, all
+nine durable discovery/import/wait tests passed and server typecheck passed.
+The direct per-turn failed-read regression passed through normal admission with
+three real controller processes: the failed read leaves the reconstructed PRP
+projection, the next admission reconstructs the missing lifecycle receipt, and
+the next replacement still continues the same provider history. Prepared-task
+resumed and failed-read/retry cases also pass for Codex and Claude fixtures.
+These are scripted-provider component results with remote workspace storage
+available, not live Daytona or distinct-release acceptance.

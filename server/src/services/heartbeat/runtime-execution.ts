@@ -1,3 +1,4 @@
+import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
@@ -1012,6 +1013,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       input.effects.onNativeSessionResumeScheduled();
       preserveRunGatewayTokens = true;
       throw adapterErr;
+    }
+    if (adapterErr instanceof NativeControllerRecoveryWaitingError) {
+      input.effects.onNativeSessionResumeScheduled();
+      throw new NativeSessionResumeScheduledError(adapterErr);
     }
     if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
       input.effects.onNativeOwnershipHeld();

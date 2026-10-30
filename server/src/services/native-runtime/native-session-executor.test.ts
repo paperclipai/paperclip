@@ -1,6 +1,7 @@
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
+import * as controllerRecovery from "./native-controller-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
@@ -410,6 +411,10 @@ import {
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
 beforeEach(() => {
+  // These transport-wiring fixtures use a partial Db double and synthetic IDs.
+  // The real selector/bootstrap proof is exercised with Postgres by the durable
+  // discovery and diskless admission suites, not by this backend unit boundary.
+  vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery").mockResolvedValue({ kind: "no_prior_execution" });
   state.drainMaintenance.mockReset().mockResolvedValue(undefined);
   usageRecorder.capture.mockReset().mockImplementation(async receipt => receipt);
   usageRecorder.create.mockReset().mockResolvedValue({ capture: usageRecorder.capture,
@@ -12063,6 +12068,27 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
+  it.each(["warm", "per_turn"] as const)("defers a %s retained-owner wait before claiming a provider attempt", async mode => {
+    const fresh = scopedNativeExecution(`retained-owner-${mode}`);
+    fresh.session.lifecyclePolicy = mode === "warm"
+      ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn" };
+    const deadline = new Date(Date.now() + 60_000);
+    vi.mocked(controllerRecovery.resolveNativeControllerRecovery).mockResolvedValueOnce({ kind: "waiting_for_owner", deadline });
+    const defer = vi.spyOn(controllerRecovery, "deferNativeControllerRecovery").mockResolvedValueOnce();
+    const onExecutionLeaseAcquired = vi.fn();
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const db = leaseDb(fresh, {}, {}, updates);
+    await expect(executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "waiting-controller",
+      useRunnerd: true, onExecutionLeaseAcquired,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+        environmentId: "retained-environment", leaseId: "retained-lease" },
+    })).rejects.toMatchObject({ name: "NativeControllerRecoveryWaitingError", retryAt: deadline });
+    expect(defer).toHaveBeenCalledWith(db, expect.objectContaining({ ...fresh.binding, retryAt: deadline }));
+    expect(onExecutionLeaseAcquired).not.toHaveBeenCalled();
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.attempt !== undefined)).toBe(false);
+    expect(state.createBackend).not.toHaveBeenCalled();
+  });
+
   it("rejects overlapping runs for the same runnerd provider session scope", async () => {
     const first = {
       ...execution,
@@ -12448,7 +12474,7 @@ describe("runnerd provider runtime wiring", () => {
     expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch") || request.args.includes("--build-metadata"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].map(mode => [provider, policy, mode] as const))))(
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -12496,8 +12522,13 @@ describe("runnerd provider runtime wiring", () => {
         if (mode === "no-stop-proof") throw new Error("Plugin Runner retained session is not authorized");
         return "old-task";
       });
+      let timedOut = false;
       const task = vi.fn(async (operation: any) => {
         environmentTaskOperationSchema.parse(operation);
+        if (mode === "resumed-timeout" && operation.kind === "read_state" && !timedOut) {
+          timedOut = true;
+          throw new Error("fixture_remote_state_timeout");
+        }
         if (operation.kind === "read_state") return { kind: "state", taskId: "replacement-task", state: {
           ...durableRunnerState(identity, mode === "not-suspended" ? "ready" : "suspended"),
           outbox: mode === "pending-outbox" ? [{}] : [], pendingTerminalDelivery: null,
@@ -12516,7 +12547,7 @@ describe("runnerd provider runtime wiring", () => {
           managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account",
           runnerEnvironment: { ANTHROPIC_API_KEY: "synthetic-fixture" },
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
-            sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "replacement-task" } } as never };
+            sandboxLeaseAcquisition: { outcome: mode.startsWith("resumed") ? "resumed" : "replacement", providerLeaseId: "replacement-task" } } as never };
         if (throughExecutor) {
           const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "done",
             completionClaim: { contractRevision: next.completionContract.contract.revision, objectiveSatisfied: true, criteria: [], remainingWork: [] },
@@ -12526,12 +12557,19 @@ describe("runnerd provider runtime wiring", () => {
             normalizedSessionId: next.session.normalizedSessionId, providerSessionId: "original-provider-history", driverKind: next.session.driverKind,
             driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null });
         }
+        if (mode === "resumed-timeout") {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("fixture_remote_state_timeout");
+          expect(existsSync(join(scoped, "plugin-runner-state.json"))).toBe(false);
+          expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
+        }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
-          expect(owner).toHaveBeenCalledWith(expect.objectContaining({ resumeFrom: "old-task", priorIdentity: identity }));
-          expect(resume).toHaveBeenCalledWith(db, expect.objectContaining({ leaseId: "replacement-lease", priorIdentity: identity, inspectCheckpoint: true }));
+          expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
+            ...(!mode.startsWith("resumed") ? { resumeFrom: "old-task" } : {}) }));
+          if (!mode.startsWith("resumed")) expect(resume).toHaveBeenCalledWith(db, expect.objectContaining({ leaseId: "replacement-lease", priorIdentity: identity, inspectCheckpoint: true }));
+          else expect(task).toHaveBeenCalledWith({ kind: "read_state", identity });
           expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {

@@ -2660,6 +2660,16 @@ mixed evidence holds the continuation; it does not authorize fresh execution.
 The 32-candidate boundary and newer-progress barriers remain in force. Exhausted
 history and current-run progress cannot establish fresh-bootstrap proof.
 
+If admission finds a live retained controller owner, it preserves the unstarted
+business run and records the owner's actual deadline through the existing native
+resumption path. This does not consume a provider attempt or stop the retained
+sandbox. A locked run/coordinator check rejects Stop, changed ownership or any
+provider progress. Startup restores even an overdue wait to the same scheduler;
+ordinary resumption rechecks current permissions and task authority. No idle
+scan is added. Per-turn continuation reconstructs a missing suspended-state
+receipt from the admitted sandbox or prepared-task owner, including after a
+previous read failed with only a PRP projection written.
+
 The version-one metadata contains a digest of the exact redacted stored snapshot,
 configuration digests and the PRP checkpoint binding. It is bounded to 4 KiB,
 excluded from public run projections, and saved by `checkpointSession` in its

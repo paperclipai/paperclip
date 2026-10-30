@@ -322,10 +322,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     };
   }
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
-    const perTurn = scenario === "diskless-per-turn";
+    const perTurn = scenario.startsWith("diskless-per-turn");
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;
     const tunnel = await createRunnerTestTlsTunnel({ port: Number(process.env.PAPERCLIP_TEST_RUNNER_PORT),
       key: process.env.PAPERCLIP_TEST_RUNNER_TLS_KEY!, cert: process.env.NODE_EXTRA_CA_CERTS! });
@@ -392,18 +392,22 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     const executeInController = (executionOptions: Parameters<typeof executePaperclipNativeSession>[0]) => new Promise<{ exitCode: number | null }>((resolveResult, reject) => {
         controller = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), resolve("server/src/__tests__/helpers/remote-warm-controller.test-worker.ts")],
           { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
-        const timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error("Warm controller startup exceeded 60 seconds")); }, 60_000);
+        let timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error("Controller fixture imports exceeded 120 seconds")); }, 120_000);
         controller.stdout?.on("data", data => logs.push(String(data)));
         controller.stderr?.on("data", data => logs.push(String(data)));
         controller.on("error", error => { clearTimeout(timer); reject(error); });
         controller.on("exit", (code, signal) => { clearTimeout(timer); reject(new Error(`Warm controller exited: ${code}/${signal}: ${logs.join("").slice(-3_000)}`)); });
-        controller.on("message", (message: { log?: { text: string }; result?: { exitCode: number | null }; error?: string }) => {
+        controller.on("message", (message: { ready?: boolean; log?: { text: string }; result?: { exitCode: number | null }; error?: string }) => {
+          if (message.ready) {
+            clearTimeout(timer);
+            timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error(`Warm controller admission exceeded 60 seconds: ${logs.join("").slice(-3_000)}`)); }, 60_000);
+            controller!.send?.({ connectionString: temporary.connectionString, container, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
+              options: { ...executionOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...executionOptions.runnerExecutionTarget, runner: undefined } } });
+          }
           if (message.log) logs.push(message.log.text);
           if (message.error) { clearTimeout(timer); reject(new Error(message.error)); }
           if (message.result) { clearTimeout(timer); resolveResult(message.result); }
         });
-        controller.send?.({ connectionString: temporary.connectionString, container, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
-          options: { ...executionOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...executionOptions.runnerExecutionTarget, runner: undefined } } });
       });
     try {
       const firstOptions = { ...options, execution, runnerExecutionTarget: target };
@@ -549,6 +553,23 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           ...(perTurn ? { sessionCheckpoint: admission.checkpoint } : {}) } }).where(eq(heartbeatRuns.id, row.id));
       };
       await admitContinuation(nextOptions.execution);
+      if (scenario === "diskless-per-turn-read-retry") {
+        let rejectedReads = 0;
+        await expect(executePaperclipNativeSession({ ...nextOptions,
+          runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget, runner: { ...runner,
+            execute: async request => {
+              if (request.args?.some(arg => arg.includes("base64 <") && arg.includes("runner-state.json"))) {
+                rejectedReads++;
+                throw new Error("fixture_remote_state_timeout");
+              }
+              return runner.execute(request);
+            },
+          } },
+        })).rejects.toThrow("fixture_remote_state_timeout");
+        expect(rejectedReads).toBe(1);
+        // Retry with the partial PRP projection left by the failed read. No
+        // fixture writes a suspended receipt or changes the surviving Runner.
+      }
       const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession(nextOptions);
       expect(second.exitCode).toBe(0);
       const historyAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
@@ -618,7 +639,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       await closeIdleWarmNativeSessionsForRestart();
       await tunnel.close();
     }
-  }, 180_000);
+  }, 360_000);
 
   async function persistRestartEvidence(input: {
     fixture: Awaited<ReturnType<typeof seedRun>>;

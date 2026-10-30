@@ -10,7 +10,9 @@ import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { createNativeControllerRecovery, importNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
 
 describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable discovery and import", () => {
@@ -100,6 +102,54 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId }))
         .toMatchObject({ kind: "missing_evidence", reason: "snapshot_digest_or_checkpoint_binding" });
     }
+  });
+
+  it("keeps an unstarted follow-up on the same run until the retained owner's deadline", async () => {
+    const fixture = await seed(), runId = randomUUID();
+    const scope = { ...fixture.scope, runId };
+    const deadline = new Date(Date.now() + 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
+      nativeSessionId: scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      // The admission boundary has already stored its input; the deferral
+      // and resumption owners never execute this transport-independent fixture.
+      runnerProfileJson: { nativeExecutionInput: { binding: scope } } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed" });
+    await deferNativeControllerRecovery(db, { ...scope, retryAt: deadline });
+    const read = () => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect((await read())[0]).toMatchObject({ phase: "retryable_failure", attempt: 0, leaseOwner: null,
+      nextAttemptAt: deadline, failureCode: NATIVE_RETAINED_OWNER_WAIT });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
+    // Even after expiry, restart adoption cannot reinterpret this pre-provider
+    // wait as a crashed provider. The ordinary resumption owner consumes it.
+    expect(await claimNativeRestartRecoveries({ db, runIds: [runId], restartKind: "hard", now: deadline })).toEqual([]);
+    const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
+    expect(claims).toHaveLength(1);
+    const nextDeadline = new Date(deadline.getTime() + 60_000);
+    await deferNativeControllerRecovery(db, { ...scope, leaseOwner: claims[0].leaseOwner, retryAt: nextDeadline });
+    expect((await read())[0]).toMatchObject({ attempt: 0, leaseOwner: null, nextAttemptAt: nextDeadline });
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: nextDeadline })).toEqual([]);
+  });
+
+  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop"])("does not publish an admission wait after authority changes: %s", async scenario => {
+    const fixture = await seed(), runId = randomUUID();
+    const scope = { ...fixture.scope, runId };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
+      status: scenario === "stopped" ? "cancelled" : "running", runtimeMode: "native",
+      resultJson: scenario === "operator-stop" ? { cancellation: { source: "operator", expected: true,
+        initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() } } : null,
+      runnerProfileJson: { nativeExecutionInput: { binding: scope } } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed",
+      attempt: scenario === "provider-attempt" ? 1 : 0,
+      leaseOwner: scenario.endsWith("-owner") ? "other-controller" : null,
+      leaseExpiresAt: scenario === "expired-owner" ? new Date(Date.now() - 1_000) : null });
+    await expect(deferNativeControllerRecovery(db, { ...scope,
+      leaseOwner: scenario === "expired-owner" ? "other-controller" : undefined,
+      retryAt: new Date(Date.now() + 60_000) }))
+      .rejects.toThrow("wait_authority_changed");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("observed");
   });
 
   it("reports bounded retained-pointer coverage without loading historical payloads", async () => {
