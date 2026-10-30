@@ -423,6 +423,38 @@ describe("IssueDocumentsSection", () => {
     client.clear();
   });
 
+  it.each([
+    ["continuation-summary", "This document key is reserved for task state."],
+    ["pipeline-case-body", "This document key is reserved for task state."],
+    ["artifact-review-output", "Review this document through its work product."],
+  ])("refuses reserved general-document key %s and preserves the draft", async (key, message) => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    mockIssuesApi.upsertDocument.mockResolvedValue(createIssueDocument({ key, body: "Keep my document draft" }));
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>));
+    await flush();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("New document"))!.click());
+    const keyInput = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(keyInput, key);
+      keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+      markdownEditorMockState.changeBody?.("Keep my document draft");
+    });
+    expect(container.textContent).toContain(message);
+    const create = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create document"))!;
+    await act(async () => create.click());
+    await flush();
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(message);
+    expect(keyInput.value).toBe(key);
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("Keep my document draft");
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
   it("unfolds a Classic confirmation link and loads its bound revision rather than the latest text", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

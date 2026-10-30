@@ -135,6 +135,13 @@ function isPlanKey(key: string) {
   return key.trim().toLowerCase() === "plan";
 }
 
+function generalDocumentKeyError(key: string): string | null {
+  if (isGeneralTaskDocumentKey(key)) return null;
+  if (isPlanKey(key)) return "Create and revise Plans in the task conversation.";
+  if (isArtifactReviewDocumentKey(key)) return "Review this document through its work product.";
+  return "This document key is reserved for task state.";
+}
+
 function titlesMatchKey(title: string | null | undefined, key: string) {
   return (title ?? "").trim().toLowerCase() === key.trim().toLowerCase();
 }
@@ -540,12 +547,11 @@ function AccountIssueDocumentsSection({
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const legacyPlanDocument = generalDocumentsOnly ? null : documentSubject.legacyPlanDocument;
   const isEmpty = sortedDocuments.length === 0 && !legacyPlanDocument;
-  const newDocumentKeyError =
-    draft?.isNew && generalDocumentsOnly && isPlanKey(draft.key.trim())
-      ? "Create and revise Plans in the task conversation."
-      : draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
+  const newGeneralDocumentKeyError = draft?.isNew && generalDocumentsOnly ? generalDocumentKeyError(draft.key) : null;
+  const newDocumentKeyError = newGeneralDocumentKeyError
+    ?? (draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
       ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
-      : null;
+      : null);
 
   const resetAutosaveState = useCallback(() => {
     setAutosaveDocumentKey(null);
@@ -625,12 +631,9 @@ function AccountIssueDocumentsSection({
     const normalizedTitle = currentDraft.title.trim();
     const activeConflict = documentConflict?.key === normalizedKey ? documentConflict : null;
 
-    if (generalDocumentsOnly && isPlanKey(normalizedKey)) {
-      setError("Create and revise Plans in the task conversation.");
-      return false;
-    }
-    if (generalDocumentsOnly && isArtifactReviewDocumentKey(normalizedKey)) {
-      setError("Review this document through its work product.");
+    const generalKeyError = generalDocumentsOnly ? generalDocumentKeyError(normalizedKey) : null;
+    if (generalKeyError) {
+      setError(generalKeyError);
       return false;
     }
 
