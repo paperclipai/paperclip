@@ -1,5 +1,6 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -19,7 +20,13 @@ const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + new U
   redirect_uri: "http://127.0.0.1:18973/", scope: scopes.join(" "), state: "fixture_state_0123456789", code_challenge: "a".repeat(43),
   code_challenge_method: "S256", access_type: "offline", prompt: "consent" });
 const roots: string[] = [];
+const physicalChildren: ChildProcess[] = [];
 afterEach(async () => {
+  for (const child of physicalChildren.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+    }
+  }
   vi.unstubAllGlobals(); vi.clearAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
@@ -94,4 +101,72 @@ describe("Antigravity login cross-stream completion", () => {
     expect(fetch).toHaveBeenCalledTimes(mode === "credential-failure" ? 1 : 0);
     if (mode === "wrong-url" || mode === "late-wrong-url") expect(login.authorizationUrl).toBeUndefined();
   });
+
+  it.each(["valid", "invalid", "duplicate"] as const)("handles a %s URL from a real child after authenticate completion and stdin EOF", async mode => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "paperclip-antigravity-real-stream-"))); roots.push(home);
+    const peer = join(home, "peer.cjs");
+    await writeFile(peer, `
+const fs = require('node:fs');
+const path = require('node:path');
+const readline = require('node:readline');
+const home = process.argv[2], mode = process.argv[3], requests = [], events = [];
+const reader = readline.createInterface({input:process.stdin});
+reader.on('line', line => {
+ const request = JSON.parse(line); requests.push(request.method);
+ fs.writeFileSync(path.join(home,'requests.json'),JSON.stringify(requests));
+ if(request.method==='initialize') {
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,
+   agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},
+   authMethods:[{id:'oauth-personal'}]}})+'\\n');
+ } else if(request.method==='authenticate') {
+  fs.mkdirSync(path.join(home,'antigravity-acp'),{mode:0o700});
+  fs.writeFileSync(path.join(home,'antigravity-acp/acp_token.json'),${JSON.stringify(JSON.stringify({ client_id: clientId,
+      client_secret: "synthetic-client-secret", refresh_token: "synthetic-refresh-token", token_uri: "https://oauth2.googleapis.com/token", scopes }))},{mode:0o600});
+  events.push('authenticate-result');
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{}})+'\\n');
+ } else throw new Error('Unexpected session/model request');
+});
+reader.on('close',()=>{
+ events.push('stdin-eof');
+ const url = mode==='invalid' ? 'https://example.invalid/synthetic-private-marker' : ${JSON.stringify(authorizationUrl)};
+ const message = 'Open the following link to authenticate the ACP server: '+url+'\\n';
+ process.stderr.write(mode==='duplicate' ? message+message : message,()=>{
+  events.push('url-flushed');fs.writeFileSync(path.join(home,'events.json'),JSON.stringify(events));process.exit(0);
+ });
+});
+`);
+    setup.spawn.mockImplementation((_args, options) => {
+      const child = spawn(process.execPath, [peer, home, mode], { ...options, detached: true });
+      physicalChildren.push(child); return child;
+    });
+    setup.close.mockResolvedValue(undefined);
+    setup.verify.mockResolvedValue({ openCommand: async () => ({ spawn: setup.spawn, close: setup.close }) });
+    const realProcess = await vi.importActual<typeof import("./antigravity-process.js")>("./antigravity-process.js");
+    setup.retire.mockImplementation(realProcess.retireAntigravityProcess);
+    const fetch = vi.fn(async (url: string) => {
+      if (url === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "synthetic-access-token",
+        refresh_token: "synthetic-rotated-refresh", token_type: "Bearer" });
+      if (url === "https://www.googleapis.com/oauth2/v3/userinfo") return Response.json({ email: "person@example.test", email_verified: true });
+      throw new Error("Unexpected network request");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 5_000 });
+    expect(login.outcome).toBe(mode === "valid" ? "success" : "failure");
+    expect(JSON.parse(await readFile(join(home, "events.json"), "utf8"))).toEqual(["authenticate-result", "stdin-eof", "url-flushed"]);
+    expect(JSON.parse(await readFile(join(home, "requests.json"), "utf8"))).toEqual(["initialize", "authenticate"]);
+    expect(physicalChildren.at(-1)!.exitCode).toBe(0);
+    expect(setup.retire).toHaveBeenCalledOnce(); expect(setup.close).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(mode === "valid" ? 2 : 0);
+    if (mode === "valid") {
+      expect(login.authorizationUrl).toBe(authorizationUrl);
+      expect(JSON.parse(await readFile(join(home, "antigravity-acp", "acp_token.json"), "utf8")).refresh_token).toBe("synthetic-rotated-refresh");
+    } else {
+      expect(login.error).toBe("Google sign-in did not complete. Start sign-in again.");
+      expect(login.error).not.toContain("synthetic-private-marker");
+      if (mode === "invalid") expect(login.authorizationUrl).toBeUndefined();
+    }
+    await login.abort();
+    expect(setup.close).toHaveBeenCalledOnce();
+  }, 15_000);
 });
