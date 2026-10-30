@@ -34,6 +34,7 @@ never start a server or depend on a tenant filesystem.
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
 | `create-skill-studio` | Native agent with skill-write permission; one work run | Create a uniquely named company skill, open its activity card, edit in Studio, reload and verify task-card readback |
 | `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, Stop an active revision, require native cancellation acknowledgement, submit a new direction once and verify completion without original-run activity |
+| `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
 The question-resumption journey uses the same natural-language scenario, browser
@@ -227,6 +228,37 @@ When the QA adapter explicitly selects terminal-history retention, it terminates
 its disposable agent, makes owned tasks terminal, verifies no active runs, retains
 the records for decision-history integrity, and releases both QA leases. This is
 reported as retained data, rather than confirmed deletion.
+
+## Active follow-up
+
+The `followup-while-running` story uses the same ordinary task composer and saved
+reply observer on managed self-hosted and attached Cloud targets. The initial
+request includes one bounded `sleep 90` command. It supplies no changed launch
+day or final marker. The observer requires a valid running native turn and a
+pending named builtin command or process execution before sending the follow-up.
+Paperclip semantic tools, including completion/block/progress calls, cannot
+satisfy this boundary even if a provider labels them builtin execute or wraps
+their names with a native prefix. Unnamed or ambiguous builtin calls fail closed.
+The observed older PRP v1 builtin `bash` shape is also supported when its
+operation is `unknown` and `readOnly` is explicitly false; other unknown
+operations cannot satisfy the boundary. If all owned work settles before an
+active boundary is observed, the journey fails immediately rather than polling
+until the campaign deadline.
+The same command must remain active after exactly one user message is saved.
+The task page and composer are ready before observing the boundary, so navigation is outside the
+submission window. The longer bounded command leaves room for remote persistence.
+Merely observing a running heartbeat or waiting for a fixed interval cannot satisfy the boundary.
+
+The late message changes the launch day and supplies a unique final marker.
+The independent oracle requires the expected reply from one bound native run,
+one or two successful work runs in total, an empty saved-message queue, Done,
+and visible readback after reload. A provider can steer the original turn or
+queue one normal successor; retries, duplicate replies and unrelated work fail.
+Source/model/environment checks and full usage collection remain required.
+Only the closed boundary receipt and attributed final reply are retained in the
+private story directory. No local workspace path or provider-side fixture hook
+is required. The registered source and unit calibration do not qualify a live
+Cloud target; admission to scheduled testing requires its own fresh pass.
 
 ## Evidence and lifecycle
 
