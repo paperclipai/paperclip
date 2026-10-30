@@ -5662,6 +5662,47 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("preserves blocked-state metadata when checkout adopts in-progress work", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const unblockDescriptor = { owner: "board", action: "Approve access" };
+    const blockedTransitionAt = new Date("2026-10-30T10:00:00.000Z");
+    const blockedOwnerNotifiedAt = new Date("2026-10-30T10:05:00.000Z");
+
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, agentId);
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-10-30T10:10:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Adopt in-progress work",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      unblockDescriptor,
+      blockedTransitionAt,
+      blockedOwnerNotifiedAt,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["in_progress"], checkoutRunId)).resolves.toMatchObject({
+      status: "in_progress",
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      unblockDescriptor,
+      blockedTransitionAt,
+      blockedOwnerNotifiedAt,
+    });
+  });
+
   it("does not let stale release clobber a successor checkout lock", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
