@@ -13,6 +13,8 @@ export interface AgentLifecycleOperation {
   leaseOwner?: string;
   leaseUntil?: string;
   retryAt?: string;
+  /** A failed configuration check waits for configuration repair or an explicit retry. */
+  retryRequired?: boolean;
   attempts: number;
   responsibleUserId?: string | null;
 }

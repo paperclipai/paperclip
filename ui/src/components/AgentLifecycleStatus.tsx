@@ -64,6 +64,8 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
         {retryPending ? "Retrying…" : "Retry now"}
       </Button>
     </div>}
-    {phase && agent.lifecycleError && <p className="text-muted-foreground">Paperclip retries automatically; Retry now checks again immediately.</p>}
+    {phase && agent.lifecycleError && <p className="text-muted-foreground">{agent.lifecycleState === "verifying"
+      ? "Retry now checks the saved configuration again immediately."
+      : "Paperclip retries automatically; Retry now checks again immediately."}</p>}
   </div>;
 }
