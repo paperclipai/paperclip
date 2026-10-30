@@ -41,7 +41,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
-import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
+import { IssuePropertiesArtifactsTab, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
 import { ArtifactUploadButton } from "@/components/artifacts/ArtifactUploadControls";
 import { useIssueArtifactUploads } from "@/hooks/useIssueArtifactUploads";
@@ -101,6 +101,7 @@ import { TaskSkillPanel } from "./TaskSkillPanel";
 
 export interface TaskSidePanelProps {
   issue: Issue;
+  documentEditor?: TaskDocumentEditorOptions;
   pluginPanels?: TaskPluginPanel[];
   openedPluginPanelKeys?: Set<string>;
   dismissedPluginPanelKeys?: Set<string>;
@@ -263,6 +264,7 @@ function TaskSidePanelForScope({
   openBrowserId,
   onBrowserOpened,
   issue,
+  documentEditor,
   accountScope,
   childIssues = [],
   issueLinkState,
@@ -841,7 +843,7 @@ function TaskSidePanelForScope({
       markInteracted();
       controller.openTab(taskPanelAttachmentTab(id, title));
       if (viewer.state || viewer.browse) viewer.close();
-    }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
+    }}><IssuePropertiesArtifactsTab issue={issue} documentEditor={documentEditor ?? {}} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
     content = activeTab.payload.documentKey === "plan" && !activeTab.payload.revisionId && !activeTab.payload.documentIssueId ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />

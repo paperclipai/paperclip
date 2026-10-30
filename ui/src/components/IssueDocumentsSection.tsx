@@ -22,6 +22,7 @@ import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "../lib/document-annotation-hash";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
+import { isGeneralTaskDocumentKey } from "../lib/issue-artifacts";
 import { useDraftOwner } from "../hooks/useDraftOwner";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
@@ -176,6 +177,26 @@ function clearStoredDocumentDraft(scope: string | null, key: string) {
   } catch {
     // Unavailable storage holds nothing to clear.
   }
+}
+
+function newDocumentDraftStorageKey(scope: string) {
+  return `paperclip:new-document-draft:v1:${scope}`;
+}
+
+function loadStoredNewDocumentDraft(scope: string | null): DraftState | null {
+  if (!scope) return null;
+  const stored = loadStructuredDraft<Partial<DraftState> | null>(newDocumentDraftStorageKey(scope), null);
+  if (!stored || stored.isNew !== true || typeof stored.key !== "string" || typeof stored.title !== "string"
+    || typeof stored.body !== "string" || stored.baseRevisionId !== null) return null;
+  return { key: stored.key, title: stored.title, body: stored.body, baseRevisionId: null, isNew: true };
+}
+
+function clearStoredNewDocumentDraft(scope: string | null, saved?: DraftState) {
+  if (!scope) return;
+  const stored = loadStoredNewDocumentDraft(scope);
+  // A save may finish after more text was typed or after the pane unmounted.
+  if (saved && stored && (stored.key !== saved.key || stored.title !== saved.title || stored.body !== saved.body)) return;
+  try { localStorage.removeItem(newDocumentDraftStorageKey(scope)); } catch { /* Storage may be unavailable. */ }
 }
 
 function downloadDocumentFile(key: string, body: string) {
@@ -357,6 +378,7 @@ function AccountIssueDocumentsSection({
   const [documentConflict, setDocumentConflict] = useState<DocumentConflictState | null>(null);
   const draftOwner = useDraftOwner();
   const draftScope = draftOwner !== undefined ? `${draftOwner}:${documentSubject.id}` : null;
+  const newDraftScope = draftScope ? `${draftScope}:${generalDocumentsOnly ? "general" : "all"}` : null;
   const [foldedDocumentKeys, setFoldedDocumentKeys] = useState<string[]>(() => loadFoldedDocumentKeys(documentSubject.id));
   const [annotationPanelOpenKeys, setAnnotationPanelOpenKeys] = useState<string[]>(
     () => (defaultAnnotationPanelOpenKeys ?? []),
@@ -497,7 +519,7 @@ function AccountIssueDocumentsSection({
 
   const sortedDocuments = useMemo(() => {
     return (documents ?? []).filter((doc) =>
-      (!generalDocumentsOnly || (!isPlanKey(doc.key) && !isArtifactReviewDocumentKey(doc.key)))
+      (!generalDocumentsOnly || isGeneralTaskDocumentKey(doc.key))
       && (!documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key)),
     ).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;
@@ -538,7 +560,7 @@ function AccountIssueDocumentsSection({
   const beginNewDocument = () => {
     resetAutosaveState();
     setDocumentConflict(null);
-    setDraft({
+    setDraft(loadStoredNewDocumentDraft(newDraftScope) ?? {
       key: "",
       title: "",
       body: "",
@@ -586,6 +608,7 @@ function AccountIssueDocumentsSection({
       clearTimeout(autosaveDebounceRef.current);
     }
     if (draft && !draft.isNew) clearStoredDocumentDraft(draftScope, draft.key);
+    if (draft?.isNew) clearStoredNewDocumentDraft(newDraftScope);
     resetAutosaveState();
     setDocumentConflict(null);
     setDraft(null);
@@ -665,6 +688,7 @@ function AccountIssueDocumentsSection({
     };
     const applySaved = (saved: IssueDocument) => {
       clearStoredDocumentDraft(draftScope, normalizedKey);
+      clearStoredNewDocumentDraft(newDraftScope, currentDraft);
       setError(null);
       setDocumentConflict((current) => current?.key === normalizedKey ? null : current);
       setDraft((value) => {
@@ -743,7 +767,7 @@ function AccountIssueDocumentsSection({
     // Kept on this device; it saves when the connection allows.
     if (result.kind === "waiting") return false;
     return handleSaveFailure(result.error);
-  }, [documentConflict, documentSubject, draftScope, generalDocumentsOnly, invalidateIssueDocuments, resetAutosaveState, runAutosave, sortedDocuments, syncDocumentCaches, upsertDocument]);
+  }, [documentConflict, documentSubject, draftScope, generalDocumentsOnly, invalidateIssueDocuments, newDraftScope, resetAutosaveState, runAutosave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -955,7 +979,14 @@ function AccountIssueDocumentsSection({
 
   // Persist every unsaved edit so a reload or an outage cannot lose it.
   useEffect(() => {
-    if (!draft || draft.isNew) return;
+    if (!draft) return;
+    if (draft.isNew) {
+      if (newDraftScope) {
+        if (draft.key || draft.title || draft.body) saveStructuredDraft(newDocumentDraftStorageKey(newDraftScope), draft);
+        else clearStoredNewDocumentDraft(newDraftScope);
+      }
+      return;
+    }
     const existing = sortedDocuments.find((doc) => doc.key === draft.key);
     if (!existing) return;
     if (existing.body === draft.body && (existing.title ?? "") === draft.title) {
@@ -963,7 +994,7 @@ function AccountIssueDocumentsSection({
     } else if (draftScope) {
       saveStructuredDraft(documentDraftStorageKey(draftScope, draft.key), draft);
     }
-  }, [draftScope, draft, sortedDocuments]);
+  }, [draftScope, draft, newDraftScope, sortedDocuments]);
 
   // After a reload, reopen the first document with an unsaved edit; the
   // autosave below then saves it.
@@ -973,6 +1004,11 @@ function AccountIssueDocumentsSection({
     if (restoredStoredDraftRef.current || !documents || !draftScope) return;
     restoredStoredDraftRef.current = true;
     if (draft) return;
+    const newDocument = loadStoredNewDocumentDraft(newDraftScope);
+    if (newDocument) {
+      setDraft(newDocument);
+      return;
+    }
     for (const doc of sortedDocuments) {
       const stored = loadStoredDocumentDraft(draftScope, doc.key);
       if (!stored) continue;
@@ -984,7 +1020,7 @@ function AccountIssueDocumentsSection({
       return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documents, draftScope]);
+  }, [documents, draftScope, newDraftScope]);
 
   useEffect(() => {
     if (!draft || draft.isNew) return;

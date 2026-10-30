@@ -16,6 +16,14 @@ async function openDocumentAuthoring({ page }: JourneyContext) {
   await expect(create).toBeVisible();
 }
 
+export async function reopenTaskDocument(context: JourneyContext, issue: { title: string }) {
+  const { page, api, company } = context;
+  await page.goto(`${api.origin}/${company.issuePrefix}/issues?view=backlog&q=${encodeURIComponent(issue.title)}`);
+  await page.getByRole("link").filter({ hasText: issue.title }).first().click();
+  await page.reload();
+  await openDocumentAuthoring(context);
+}
+
 export async function taskDocumentPersistence(context: JourneyContext, _session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
   const { page, api, company, user } = context;
   const issue = context.fixtures?.backlogTask;
@@ -70,10 +78,7 @@ export async function taskDocumentPersistence(context: JourneyContext, _session:
   }
   evidence.checks.push({ id: "document-revision-history-preserved", passed: true });
 
-  await page.goto(`${api.origin}/${company.issuePrefix}/issues`);
-  await page.getByRole("link").filter({ hasText: issue.title }).first().click();
-  await page.reload();
-  await openDocumentAuthoring(context);
+  await reopenTaskDocument(context, issue);
   await expect(document.getByText(revised.title, { exact: true })).toBeVisible();
   await expect(document.getByText(revised.body, { exact: true })).toBeVisible();
   const reopened = await api.get<TaskDocumentSnapshot>(documentRoute);

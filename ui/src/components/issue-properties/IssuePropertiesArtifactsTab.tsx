@@ -1,5 +1,5 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { ArtifactUploadContent, type ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -26,6 +26,7 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
+  isGeneralTaskDocumentKey,
   selectArtifactAttachments,
   workProductHref,
 } from "@/lib/issue-artifacts";
@@ -46,12 +47,17 @@ import {
 import { formatDateTime } from "@/lib/utils";
 import { useLocation } from "@/lib/router";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
-import { useClassicTaskInterfaceEnabled } from "@/hooks/useClassicTaskInterfaceEnabled";
 import { ArtifactFileRow, ArtifactRow, ROW_ACTION_CLASS, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromIssueDocument, subjectFromWorkProduct, workProductStateBadge, type ArtifactSubject } from "@/components/artifacts/v1";
 import { artifactUrl } from "@/lib/artifact-card-data";
 
+export type TaskDocumentEditorOptions = Pick<ComponentProps<typeof IssueDocumentsSection>,
+  "mentions" | "imageUploadHandler" | "externalReferences" | "feedbackVotes" | "feedbackDataSharingPreference"
+  | "feedbackTermsUrl" | "onVote" | "agentMap" | "userProfileMap">;
+
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  /** Present only when this host owns the chat shell's document editor. */
+  documentEditor?: TaskDocumentEditorOptions;
   uploadState?: { entries: ArtifactUploadEntry[]; retry: (id: string) => void; dismiss: (id: string) => void };
   onOpenDocument?: (document: IssueDocument) => void;
   documentDeepLink?: {
@@ -410,16 +416,17 @@ function DocumentRow({
  */
 export function IssuePropertiesArtifactsTab({
   issue,
+  documentEditor,
   documentDeepLink,
   onOpenDocument,
   uploadState,
 }: IssuePropertiesArtifactsTabProps) {
   const { enabled: v1 } = useArtifactsV1Enabled();
-  const classicInterface = useClassicTaskInterfaceEnabled();
-  const documentAuthoring = classicInterface.loaded && !classicInterface.enabled;
+  const documentAuthoring = documentEditor !== undefined;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
+    enabled: documentAuthoring,
   });
   const {
     data: attachments,
@@ -579,6 +586,7 @@ export function IssuePropertiesArtifactsTab({
           canDeleteDocuments={Boolean(session?.user?.id)}
           canManageDocumentLocks={Boolean(session?.user?.id)}
           agentMap={agentsById}
+          {...documentEditor}
         />
         {artifacts}
       </div>
@@ -591,7 +599,7 @@ export function IssuePropertiesArtifactsTab({
     fileRows.length === 0
   ) {
     if (feedback) return withUploads(feedback);
-    if (documentAuthoring && (documents ?? []).some((doc) => doc.key !== "plan" && !isArtifactReviewDocumentKey(doc.key))) {
+    if (documentAuthoring && (documents ?? []).some((doc) => isGeneralTaskDocumentKey(doc.key))) {
       return withUploads(null);
     }
     return withUploads(

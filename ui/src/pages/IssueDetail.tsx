@@ -3707,7 +3707,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   // Bounded pool of recently-updated issues to back the `@task` reference picker.
   // The picker filters this list client-side by identifier/title.
-  const { data: mentionIssues = [] } = useQuery({
+  const { data: mentionIssues = EMPTY_ISSUES } = useQuery({
     queryKey: resolvedCompanyId
       ? queryKeys.issues.mentionPool(resolvedCompanyId)
       : ["issues", "mention-pool", "pending"],
@@ -6143,6 +6143,25 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [openIssueGallery],
   );
 
+  const taskDocumentEditor = useMemo<NonNullable<TaskSidePanelProps["documentEditor"]>>(() => ({
+    feedbackVotes,
+    feedbackDataSharingPreference,
+    feedbackTermsUrl: FEEDBACK_TERMS_URL,
+    mentions: mentionOptions,
+    externalReferences: externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined,
+    imageUploadHandler: async (file) => (await uploadAttachment.mutateAsync(file)).contentPath,
+    onVote: async (revisionId, vote, options) => {
+      await feedbackVoteMutation.mutateAsync({
+        targetType: "issue_document_revision", targetId: revisionId, vote,
+        reason: options?.reason, allowSharing: options?.allowSharing,
+        sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+      });
+    },
+    agentMap,
+    userProfileMap,
+  }), [feedbackVotes, feedbackDataSharingPreference, mentionOptions, externalObjectsState.isEnabled,
+    externalObjectsState.markdownReferences, uploadAttachment.mutateAsync, feedbackVoteMutation.mutateAsync, agentMap, userProfileMap]);
+
   useLayoutEffect(() => {
     if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
       closePanel();
@@ -6183,6 +6202,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       openPanel(
         <IssueGalleryContext.Provider value={openIssueGallery}>
           <TaskSidePanel
+            documentEditor={taskDocumentEditor}
             pluginPanels={pluginPanels}
             openedPluginPanelKeys={openedPluginPanelKeys.current}
             dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
@@ -6239,6 +6259,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     externalObjectsState.refetch,
     documentDeepLink,
     taskChatShellEnabled,
+    taskDocumentEditor,
     currentUserId,
     coordinatorWorkspaceEnabled,
     fileViewerEnabled,
@@ -8170,35 +8191,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           pane (Artifacts tab) — the center column belongs to the thread. */}
           {taskChatShellEnabled ? null : (
             <IssueDocumentsSection
+              {...taskDocumentEditor}
               issue={issue}
               canDeleteDocuments={Boolean(session?.user?.id)}
               canManageDocumentLocks={Boolean(session?.user?.id)}
-              feedbackVotes={feedbackVotes}
-              feedbackDataSharingPreference={feedbackDataSharingPreference}
-              feedbackTermsUrl={FEEDBACK_TERMS_URL}
-              mentions={mentionOptions}
-              externalReferences={
-                externalObjectsState.isEnabled
-                  ? externalObjectsState.markdownReferences
-                  : undefined
-              }
-              imageUploadHandler={async (file) => {
-                const attachment = await uploadAttachment.mutateAsync(file);
-                return attachment.contentPath;
-              }}
-              onVote={async (revisionId, vote, options) => {
-                await feedbackVoteMutation.mutateAsync({
-                  targetType: "issue_document_revision",
-                  targetId: revisionId,
-                  vote,
-                  reason: options?.reason,
-                  allowSharing: options?.allowSharing,
-                  sharingPreferenceAtSubmit: feedbackDataSharingPreference,
-                });
-              }}
               extraActions={!hasAttachments ? attachmentUploadButton : null}
-              agentMap={agentMap}
-              userProfileMap={userProfileMap}
             />
           )}
 
@@ -8799,6 +8796,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     <SheetTitle>Task side panel</SheetTitle>
                   </SheetHeader>
                   <TaskSidePanel
+                    documentEditor={taskDocumentEditor}
                     pluginPanels={pluginPanels}
                     openedPluginPanelKeys={openedPluginPanelKeys.current}
                     dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}

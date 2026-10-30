@@ -69,8 +69,12 @@ vi.mock("@/components/IssueProperties", () => ({
   IssueProperties: () => <div>Properties content</div>,
 }));
 
+const artifactsTabRender = vi.hoisted(() => vi.fn());
 vi.mock("@/components/issue-properties/IssuePropertiesArtifactsTab", () => ({
-  IssuePropertiesArtifactsTab: () => <div>Artifacts content</div>,
+  IssuePropertiesArtifactsTab: (props: unknown) => {
+    artifactsTabRender(props);
+    return <div>Artifacts content</div>;
+  },
 }));
 
 vi.mock("@/components/issue-properties/IssuePropertiesPlansTab", () => ({
@@ -142,6 +146,7 @@ describe("TaskSidePanel", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    artifactsTabRender.mockClear();
     coordinator.enabled = false;
     window.localStorage.clear();
     browserFixture.data = [];
@@ -193,6 +198,18 @@ describe("TaskSidePanel", () => {
       />
     );
   }
+
+  it.each([false, true])("owns document authoring in the resolved chat shell (coordinator: %s)", async coordinatorEnabled => {
+    coordinator.enabled = coordinatorEnabled;
+    const documentEditor = { imageUploadHandler: vi.fn(async () => "/api/attachments/image/content"), externalReferences: {} };
+    await render(panel({ documentEditor }));
+    const open = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
+    if (open) await act(async () => open.click());
+    const artifacts = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent?.includes("Artifacts"));
+    expect(artifacts).toBeTruthy();
+    await act(async () => artifacts!.click());
+    expect(artifactsTabRender).toHaveBeenCalledWith(expect.objectContaining({ documentEditor }));
+  });
 
   it("adds the active plugin panel, preserves manual dismissal, and removes inactive plugin panels", async () => {
     await render(panel({ pluginPanels: [pluginPanel] }));

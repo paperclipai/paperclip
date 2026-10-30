@@ -45,6 +45,8 @@ flow. Setup creates only an owned backlog task, never the document or its
 revisions. The oracle accepts additional autosave revisions, but requires both
 measured versions to remain exact and independently readable. Shared coverage
 does not establish a live pass or admit the journey to a target's daily plan.
+The reopen step selects Backlog explicitly and searches the owned title. A
+user's saved task view cannot route that check to Done or a personal inbox.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
 Cloud (`local` or `daytona` when present), and new Cloud. New Cloud must start

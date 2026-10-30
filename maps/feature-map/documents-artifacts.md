@@ -31,6 +31,9 @@ in the task side panel, then **New document** or **Document actions → Edit
 document**. Edits use the shared versioned editor and autosave. Classic mode
 keeps that editor in the task body. Plans retain their conversation and approval
 flow and cannot be created through the general document editor.
+Unfinished new documents, including a body typed before its key, survive a tab
+switch or reload within the same account and task. Cancel removes the backup;
+a confirmed creation clears it.
 
 Select an inline image to open the document's image gallery. Use the left and
 right arrow keys or the Previous and Next buttons to move through images in
