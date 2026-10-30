@@ -35,7 +35,7 @@ function TaskFeed({ multiple = false }: { multiple?: boolean }) {
     return cache;
   });
   return <QueryClientProvider client={client}>
-    <div className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col bg-background text-foreground">
+    <div className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col overflow-hidden bg-background px-4 text-foreground">
       <TaskChatThread
         issueId={parent.id} companyId={parent.companyId} issueStatus="done" conversationMode={false}
         comments={comments} documents={[report]}
