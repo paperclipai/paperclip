@@ -1261,7 +1261,7 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = createPluginDevWatcher(
+  const devWatcher = managedAutoInstallKeys !== null ? null : createPluginDevWatcher(
     lifecycle,
     async (pluginId) =>
       (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
