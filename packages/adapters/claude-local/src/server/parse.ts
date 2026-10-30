@@ -28,6 +28,12 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+// The extra-usage spend limit ("monthly", "org's monthly", "individual", ...).
+// It is a provider quota, but it clears when the owner raises it, not at a
+// reset time. The CLI appends another limit's reset to the same message
+// ("· your weekly limit resets ..."), and that time is not the spend limit's.
+const CLAUDE_SPEND_LIMIT_RE =
+  /you(?:'|’)ve\s+hit\s+your\s+(?:[\w'’]+\s+){0,2}spend\s+limit/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -543,6 +549,7 @@ export function extractClaudeRetryNotBefore(
   },
   now = new Date(),
 ): Date | null {
+  if (isClaudeSpendLimitError(input)) return null;
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
@@ -592,5 +599,31 @@ export function isClaudeProviderQuotaError(input: {
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
-  return CLAUDE_PROVIDER_QUOTA_RE.test(haystack);
+  return CLAUDE_PROVIDER_QUOTA_RE.test(haystack) || isClaudeSpendLimitError(input);
+}
+
+// Stream-json events on stdout carry the agent's own output, which can quote a
+// spend-limit message while the run fails on a different limit. Only the
+// failure fields and the CLI's plain-text stdout lines count.
+export function isClaudeSpendLimitError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const cliStdout = (input.stdout ?? "")
+    .split(/\r?\n/)
+    .filter((line) => !parseJson(line.trim()))
+    .join("\n");
+  return CLAUDE_SPEND_LIMIT_RE.test(buildClaudeTransientHaystack({ ...input, stdout: cliStdout }));
+}
+
+// Run-result field that tells recovery this quota has no reset time of its own.
+export function claudeProviderQuotaResetFields(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): { providerQuotaResetUnknown?: true } {
+  return isClaudeSpendLimitError(input) ? { providerQuotaResetUnknown: true } : {};
 }
