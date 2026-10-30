@@ -41,7 +41,6 @@ export async function inventoryRecoveryFiles({ instanceRoot, orphanDirectory, ma
     const summary = { kind: recoveryKinds[index], presence: "unknown", observedEntries: 0,
       unverifiedFiles: 0, unknownEntries: 0, readFailures: 0, complete: true, status: "unknown" };
     if (rootState !== "directory") {
-      summary.readFailures++;
       summary.complete = false;
     } else {
       const state = await directoryState(directory, io);
@@ -96,5 +95,5 @@ export async function inventoryRecoveryFiles({ instanceRoot, orphanDirectory, ma
   }
   return { schema: "paperclip/recovery-cutover-inventory/v1", status:
     summaries.some(s => s.status === "unknown") ? "unknown" : summaries.some(s => s.status === "blocked") ? "blocked" : "clear",
-    contentInspection: "none", counts: "observed-lower-bounds", maxEntries, directories: summaries };
+    instanceStatus: rootState, contentInspection: "none", counts: "observed-lower-bounds", maxEntries, directories: summaries };
 }
