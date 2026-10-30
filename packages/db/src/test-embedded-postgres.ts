@@ -11,6 +11,7 @@ import {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+import { captureMacPostgresDiagnostics, type PostgresTestProcess } from "./test-postgres-diagnostics.js";
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -136,18 +137,69 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
   // The `start()` rejection carries an empty message, so we capture the output
   // in a bounded buffer and surface it in the thrown error.
   const logBuffer = createEmbeddedPostgresLogBuffer();
-  const instance = new EmbeddedPostgres({
+  const recordedProcess: PostgresTestProcess = {
+    harnessPid: process.pid,
+    harnessParentPid: process.ppid,
+    harnessUid: process.getuid?.() ?? null,
+    postgresPid: null,
+    exitCode: null,
+    signalCode: null,
+  };
+  let instance: EmbeddedPostgresInstance | undefined;
+  const recordProcess = () => {
+    const child = instance && Reflect.get(instance, "process");
+    if (!child || !Number.isSafeInteger(child.pid) || child.pid <= 0) return;
+    recordedProcess.postgresPid = child.pid;
+    recordedProcess.exitCode = typeof child.exitCode === "number" ? child.exitCode : null;
+    recordedProcess.signalCode = typeof child.signalCode === "string" ? child.signalCode : null;
+  };
+  const appendLog = (message: unknown) => {
+    logBuffer.append(message);
+    recordProcess();
+  };
+  instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: EMBEDDED_POSTGRES_USER,
     password: EMBEDDED_POSTGRES_PASSWORD,
     port,
     persistent: true,
     initdbFlags: EMBEDDED_POSTGRES_INITDB_FLAGS,
-    onLog: (message) => logBuffer.append(message),
-    onError: (message) => logBuffer.append(message),
+    onLog: appendLog,
+    onError: appendLog,
   });
 
-  return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
+  return {
+    dataDir, port, instance,
+    getRecentLogs: () => logBuffer.getRecentLogs(),
+    getRecordedProcess: () => {
+      recordProcess();
+      return { ...recordedProcess };
+    },
+  };
+}
+
+async function describeStartupFailure(
+  error: unknown,
+  created: Awaited<ReturnType<typeof createEmbeddedPostgresTestInstanceAt>> | null,
+  attempt: number,
+  phase: "initialise" | "start",
+  fallbackMessage: string,
+): Promise<Error> {
+  const recentLogs = created?.getRecentLogs() ?? [];
+  const formatted = formatEmbeddedPostgresError(error, { fallbackMessage, recentLogs });
+  if (!created) return formatted;
+  const diagnostics = await captureMacPostgresDiagnostics({
+    error,
+    recentLogs,
+    dataDir: created.dataDir,
+    port: created.port,
+    attempt,
+    phase,
+    recordedProcess: created.getRecordedProcess(),
+  });
+  return diagnostics
+    ? new Error(`${formatted.message} [${diagnostics}]`, { cause: error })
+    : formatted;
 }
 
 function adminConnectionStringFor(port: number): string {
@@ -237,15 +289,14 @@ async function startEmbeddedPostgresWithRetry(tempDirPrefix: string): Promise<{
 
   for (let attempt = 1; attempt <= EMBEDDED_POSTGRES_START_MAX_ATTEMPTS; attempt += 1) {
     const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+    let phase: "initialise" | "start" = "initialise";
     try {
       await created.instance.initialise();
+      phase = "start";
       await created.instance.start();
       return { port: created.port, dataDir: created.dataDir, instance: created.instance };
     } catch (error) {
-      lastError = formatEmbeddedPostgresError(error, {
-        fallbackMessage: "embedded Postgres startup failed",
-        recentLogs: created.getRecentLogs(),
-      });
+      lastError = await describeStartupFailure(error, created, attempt, phase, "embedded Postgres startup failed");
       // Stop the failed cluster and remove its data directory. The next attempt
       // allocates a fresh port and a fresh data directory.
       await stopEmbeddedPostgresBounded(created.instance, () =>
@@ -597,10 +648,7 @@ async function startEmbeddedPostgresFromTemplateWithRetry(
       await created.instance.start();
       return { port: created.port, dataDir: rootDir, instance: created.instance };
     } catch (error) {
-      lastError = formatEmbeddedPostgresError(error, {
-        fallbackMessage: "embedded Postgres startup from template failed",
-        recentLogs: created?.getRecentLogs(),
-      });
+      lastError = await describeStartupFailure(error, created, attempt, "start", "embedded Postgres startup from template failed");
       await stopEmbeddedPostgresBounded(created?.instance ?? null, () =>
         cleanupEmbeddedPostgresTestDirs(rootDir),
       );
@@ -619,6 +667,7 @@ let lastStartMode: EmbeddedPostgresStartMode | null = null;
 // or `getEmbeddedPostgresTestSupport`. A test drives the bounded retry directly
 // so it does not need a real Postgres connection.
 export const __startEmbeddedPostgresWithRetryForTests = startEmbeddedPostgresWithRetry;
+export const __startEmbeddedPostgresFromTemplateWithRetryForTests = startEmbeddedPostgresFromTemplateWithRetry;
 export const __embeddedPostgresStartMaxAttemptsForTests = EMBEDDED_POSTGRES_START_MAX_ATTEMPTS;
 export const __embeddedPostgresTemplateRootDirForTests = templateRootDir;
 export const __isUsableEmbeddedPostgresTemplateForTests = isUsableTemplate;

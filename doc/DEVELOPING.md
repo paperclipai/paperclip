@@ -931,6 +931,75 @@ falls back to the fresh path automatically, so the cache can make a suite
 slower but never fail it or skip it: a migration that cannot apply still fails
 the suite on the fresh path.
 
+#### macOS embedded PostgreSQL failure diagnostics
+
+The shared `@paperclipai/db` test fixture collects diagnostics only when an
+`initialise()` or `start()` failure on macOS includes a PostgreSQL shared-memory
+allocation/attachment error. Successful starts, other failures, and other
+platforms do not run the probes. This covers support probes, template builds,
+template copies, and fresh clusters used by the server and CLI tests.
+
+Before existing cleanup, each matching attempt writes a private
+`$TMPDIR/paperclip-postgres-diagnostics-*/receipt.json` and prints its path in
+the test output. Receipts remain outside the disposable cluster directory, even
+if an existing startup retry or template fallback later succeeds. Retain the
+original test output and all printed receipt files when reporting a failure.
+
+Each receipt includes the original rejection and recent PostgreSQL logs, the
+attempt and startup phase, the harness and recorded child process identities,
+and bounded read-only command results:
+
+- `/usr/bin/ipcs -m -a`: segment allocations, OS owners/creators, attachment
+  counts, sizes, creator PIDs, and last-operation PIDs.
+- `/usr/sbin/sysctl kern.sysv.shmmni kern.sysv.shmseg kern.sysv.shmmax kern.sysv.shmmin kern.sysv.shmall`:
+  allocation limits.
+- `/bin/ps -axo pid=,ppid=,uid=,lstart=,comm=`: process state without full command
+  arguments or environment values.
+
+The three probes run concurrently, each with a one-second timeout and a 1 MiB
+output limit. Missing utilities, permissions, truncated/malformed output,
+unknown ownership, and unavailable process state produce **incomplete**
+evidence with explicit reasons. Raw command receipts remain available. If a
+receipt file cannot be written, its full contents are printed as incomplete
+evidence. The provider's child handle is optional diagnostic evidence; when it
+is unavailable (including early initdb failures), the fixture records an unknown
+identity. Matching OS users or PIDs alone do not establish test ownership.
+An older segment can retain a creator PID that the OS later assigns to a live
+test child. The collector therefore keeps segment test ownership unknown even
+when the creator PID matches that child; these snapshots cannot bind a segment
+to the current startup attempt.
+Zero attachments do not establish that a segment can be removed. The snapshots
+are not atomic; a complete receipt does not establish a product failure or
+authorize cleanup.
+
+The failure output offers **one optional serial reproduction** using the same
+test files and filters. For example, from the repository root:
+
+```sh
+pnpm exec vitest run --no-file-parallelism --maxWorkers=1 --maxConcurrency=1 --retry=0 server/src/__tests__/company-search-service.test.ts
+```
+
+Run it once and save its output separately. Keep all existing test and hook
+deadlines and the original template-cache setting. A passing reproduction does
+not erase the original failure. Diagnostics do not run this reproduction,
+remove shared-memory segments, change PostgreSQL settings, or stop discovered
+database processes. Existing fixture startup retries and cleanup stay in place.
+Only diagnostic utilities can be stopped at their probe timeout.
+
+The IPC columns follow [Apple's ipcs source](https://github.com/apple-oss-distributions/file_cmds/blob/main/ipcs/ipcs.c).
+See [PostgreSQL kernel resource guidance](https://www.postgresql.org/docs/18/kernel-resources.html)
+for the meaning of the limits. Lifecycle cleanup work such as
+[issue #7756](https://github.com/paperclipai/paperclip/issues/7756) is separate.
+
+The `PostgreSQL macOS diagnostics` CI workflow runs the fixture tests on a hosted
+Mac. One Mac-only test supplies a controlled startup failure and executes the
+actual `ipcs`, `sysctl`, and `ps` probes. It does not exhaust host resources.
+The job retains the live utility receipt and test log as an artifact. Linux
+fixture results and this controlled live-Mac probe result are separate evidence;
+neither establishes that a real Mac experienced resource exhaustion. To retain
+that probe receipt during a local Mac test run, set
+`PAPERCLIP_TEST_POSTGRES_DIAGNOSTIC_EVIDENCE_DIR` to an output directory.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its

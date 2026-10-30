@@ -1,0 +1,45 @@
+name: PostgreSQL macOS diagnostics
+
+on:
+  pull_request:
+    paths:
+      - packages/db/src/test-embedded-postgres.ts
+      - packages/db/src/test-postgres-diagnostics*.ts
+      - .github/workflows/postgres-macos-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-diagnostics:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      PAPERCLIP_TEST_POSTGRES_DIAGNOSTIC_EVIDENCE_DIR: ${{ github.workspace }}/test-results/postgres-macos-diagnostics
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install test dependencies
+        run: pnpm install --filter @paperclipai/db... --frozen-lockfile
+      - name: Verify fixture behavior and actual macOS utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PAPERCLIP_TEST_POSTGRES_DIAGNOSTIC_EVIDENCE_DIR"
+          pnpm --filter @paperclipai/db exec vitest run src/test-postgres-diagnostics.test.ts src/test-postgres-diagnostics-fixture.test.ts src/test-embedded-postgres.test.ts --no-file-parallelism --reporter=verbose 2>&1 | tee "$PAPERCLIP_TEST_POSTGRES_DIAGNOSTIC_EVIDENCE_DIR/vitest.log"
+      - name: Retain live macOS diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: postgres-macos-diagnostics-${{ github.sha }}
+          path: test-results/postgres-macos-diagnostics
+          if-no-files-found: warn
