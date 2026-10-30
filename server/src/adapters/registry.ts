@@ -136,7 +136,8 @@ import {
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
-import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
@@ -997,11 +998,6 @@ registerBuiltInAdapters();
 // applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
-/** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
-function getDisabledAdapterTypesFromStore(): string[] {
-  return getDisabledAdapterTypes();
-}
-
 /**
  * Merge an external adapter module with host-provided session management.
  *
@@ -1034,6 +1030,7 @@ export function resolveExternalAdapterRegistration(
  * and avoid racing against the loading window.
  */
 const externalAdaptersReady: Promise<void> = (async () => {
+  if (isCloudManagedInstance()) return;
   try {
     const externalAdapters = await buildExternalAdapters();
     for (const externalAdapter of externalAdapters) {
@@ -1069,6 +1066,7 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  assertExternalAdapterCodeAllowed();
   if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
@@ -1079,6 +1077,7 @@ export function registerServerAdapter(adapter: ServerAdapterModule): void {
 }
 
 export function unregisterServerAdapter(type: string): void {
+  assertExternalAdapterCodeAllowed();
   if (type === processAdapter.type || type === httpAdapter.type) return;
   if (builtinFallbacks.has(type)) {
     pausedOverrides.delete(type);
@@ -1186,8 +1185,7 @@ export function listServerAdapters(): ServerAdapterModule[] {
  * Used for menus and agent creation flows — disabled adapters remain
  * functional for existing agents but hidden from selection.
  */
-export function listEnabledServerAdapters(): ServerAdapterModule[] {
-  const disabled = getDisabledAdapterTypesFromStore();
+export function listEnabledServerAdapters(disabled: string[]): ServerAdapterModule[] {
   const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
   return disabledSet
     ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
@@ -1227,6 +1225,7 @@ export async function detectAdapterModel(
  * an override or was already in the requested state.
  */
 export function setOverridePaused(type: string, paused: boolean): boolean {
+  assertExternalAdapterCodeAllowed();
   if (!builtinFallbacks.has(type)) return false;
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
