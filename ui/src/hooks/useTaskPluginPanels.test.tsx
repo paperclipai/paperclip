@@ -13,20 +13,27 @@ import type { ResolvedPluginSlot } from "@/plugins/slots";
 import { useTaskPluginPanels, type TaskPluginPanel } from "./useTaskPluginPanels";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const plugin = vi.hoisted(() => ({ connected: true, slots: [] as ResolvedPluginSlot[], healthy: true, epoch: 0, handler: null as ((event: LiveEvent) => void) | null, errorMessage: null as string | null }));
+const plugin = vi.hoisted(() => ({ connected: true, slots: [] as ResolvedPluginSlot[], healthy: true, epoch: 0, handler: null as ((event: LiveEvent) => void) | null, errorMessage: null as string | null, isLoading: false }));
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => plugin }));
 vi.mock("@/context/LiveUpdatesProvider", () => ({ useTaskRunLiveUpdates: vi.fn(() => plugin.connected), useTranscriptLiveStream: (_ids: string[], _options: unknown, handler: (event: LiveEvent) => void) => { plugin.handler = handler; return { healthy: plugin.healthy, epoch: plugin.epoch }; } }));
 const slot = { pluginId: "example-plugin", pluginKey: "example.live-view", id: "screen", pluginVersion: "1.0.0", taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } } as ResolvedPluginSlot;
 const issue = { id: "task", companyId: "company", executionRunId: "run", assigneeAgentId: "agent" } as Issue;
 const run = { id: "run", agentId: "agent", status: "running" } as LiveRunForIssue;
 let root: Root, container: HTMLDivElement, client: QueryClient;
-let current: TaskPluginPanel[];
+let panels: TaskPluginPanel[];
+let loading: boolean;
+let current: Omit<TaskPluginPanel, "autoOpen">[];
 let task: Issue | null;
 let enabled: boolean;
 let get: MockInstance<typeof api.get>;
 let list: MockInstance<typeof heartbeatsApi.liveRunsForIssue>;
 let history: MockInstance<typeof heartbeatsApi.taskPanelActivations>;
-function Harness() { current = useTaskPluginPanels(task, enabled); return null; }
+function Harness() {
+  const discovery = useTaskPluginPanels(task, enabled);
+  panels = discovery.panels; loading = discovery.isLoading;
+  current = panels.filter(panel => panel.autoOpen).map(({ autoOpen: _autoOpen, ...panel }) => panel);
+  return null;
+}
 async function render(next: Issue | null = issue, active = true) {
   task = next; enabled = active;
   await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
@@ -37,7 +44,7 @@ async function refresh() {
   await act(async () => { if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30); else await new Promise(resolve => setTimeout(resolve, 30)); });
 }
 beforeEach(() => {
-  plugin.slots = [slot]; plugin.errorMessage = null; plugin.connected = true; plugin.healthy = false; plugin.epoch = 0; plugin.handler = null;
+  plugin.slots = [slot]; plugin.isLoading = false; plugin.errorMessage = null; plugin.connected = true; plugin.healthy = false; plugin.epoch = 0; plugin.handler = null;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   get = vi.spyOn(api, "get").mockResolvedValue({ available: true });
@@ -47,6 +54,70 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount()); client.clear(); container.remove(); vi.restoreAllMocks(); vi.useRealTimers();
 });
+it("keeps restored views pending until plugin discovery settles", async () => {
+  plugin.slots = []; plugin.isLoading = true;
+  await render(); expect(loading).toBe(true); expect(panels).toEqual([]);
+  plugin.slots = [slot]; plugin.isLoading = false; list.mockResolvedValue([]);
+  await render(); expect(loading).toBe(false);
+  expect(panels).toEqual([{ entityId: "agent", autoOpen: false, slot }]);
+});
+
+it.each(["assigned-agent", null])("waits for the running agent before settling saved views (assignee=%s)", async assigneeAgentId => {
+  const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
+  plugin.slots = [manual];
+  let resolve!: (value: LiveRunForIssue[]) => void;
+  list.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  await render({ ...issue, assigneeAgentId });
+  expect(loading).toBe(true);
+  await act(async () => { resolve([{ ...run, agentId: "running-agent" }]); });
+  await render({ ...issue, assigneeAgentId });
+  expect(loading).toBe(false);
+  expect(panels).toEqual([{ entityId: "running-agent", runId: "run", autoOpen: false, slot: manual }]);
+});
+
+it("offers manual access while idle without reading activation history or readiness", async () => {
+  list.mockResolvedValue([]);
+  history.mockResolvedValue([]);
+  await render();
+  expect(panels).toEqual([{ entityId: "agent", autoOpen: false, slot }]);
+  expect(history).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled();
+});
+
+it("offers the assigned agent's view before activity and after run completion", async () => {
+  history.mockResolvedValue([]);
+  await render();
+  expect(panels).toEqual([{ entityId: "agent", runId: "run", autoOpen: false, slot }]);
+  expect(get).not.toHaveBeenCalled();
+  await act(async () => { client.setQueryData(queryKeys.issues.liveRuns("task"), []); });
+  await render();
+  expect(panels).toEqual([{ entityId: "agent", autoOpen: false, slot }]);
+});
+
+it("offers declared manual views without an activation mapping", async () => {
+  const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
+  plugin.slots = [manual];
+  await render();
+  expect(panels).toEqual([{ entityId: "agent", runId: "run", autoOpen: false, slot: manual }]);
+  expect(list).toHaveBeenCalledWith("task");
+  expect(history).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled();
+});
+
+it("uses the running agent for manual views without an activity mapping", async () => {
+  const manual = { ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } };
+  plugin.slots = [manual]; list.mockResolvedValue([{ ...run, agentId: "running-agent" }]);
+  await render();
+  expect(panels).toEqual([{ entityId: "running-agent", runId: "run", autoOpen: false, slot: manual }]);
+  expect(history).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+});
+
+it("has no manual agent view for an unassigned idle task", async () => {
+  list.mockResolvedValue([]);
+  await render({ ...issue, assigneeAgentId: null });
+  expect(panels).toEqual([]);
+});
+
 it("uses the running agent's authorized status and existing plugin slot", async () => {
   await render();
   expect(list).toHaveBeenCalledWith("task");
@@ -60,7 +131,7 @@ it.each(["absent", "disabled", "draft", "no-task", "plugin-error"])("does no pan
   if (kind === "absent") plugin.slots = [];
   if (kind === "plugin-error") plugin.errorMessage = "Unavailable";
   await render(kind === "no-task" ? null : kind === "draft" ? { ...issue, id: "chat:draft" } : issue, kind !== "disabled");
-  expect(current).toEqual([]); expect(get).not.toHaveBeenCalled(); expect(list).not.toHaveBeenCalled();
+  expect(current).toEqual([]); expect(panels).toEqual([]); expect(get).not.toHaveBeenCalled(); expect(list).not.toHaveBeenCalled();
 });
 it.each(["queued", "succeeded", "another-run"])("ignores a %s run", async kind => {
   list.mockResolvedValue([{ ...run, status: kind === "another-run" ? "running" : kind, id: kind === "another-run" ? "other" : "run" }]);
@@ -71,7 +142,7 @@ it("discovers a panel started after the task is already open, then hides it on s
   get.mockResolvedValue({ available: true }); await refresh(); expect(current[0]?.entityId).toBe("agent");
   get.mockRejectedValue(new Error("Access denied")); await refresh(); expect(current).toEqual([]);
 });
-it("removes the panel when the run ends even if its view is still ready", async () => {
+it("clears automatic activation when the run ends even if its view is still ready", async () => {
   await render(); expect(current).not.toEqual([]);
   await act(async () => { client.setQueryData(queryKeys.issues.liveRuns("task"), []); });
   await render(); expect(current).toEqual([]);
@@ -236,10 +307,10 @@ it.each([500, 403])("bounds failed discovery reads for HTTP %s", async status =>
   expect(current).toEqual([]);
 });
 
-it("does not discover a task view without a declared activity mapping", async () => {
+it("does not automatically open a task view without a declared activity mapping", async () => {
   plugin.slots = [{ ...slot, taskSidePanel: { availabilityPath: slot.taskSidePanel!.availabilityPath } }];
   await render();
-  expect(list).not.toHaveBeenCalled(); expect(history).not.toHaveBeenCalled();
+  expect(list).toHaveBeenCalledWith("task"); expect(history).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled(); expect(current).toEqual([]);
 });
 

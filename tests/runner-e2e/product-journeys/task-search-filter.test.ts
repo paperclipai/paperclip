@@ -16,9 +16,9 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign(
 type Fault = "ignore-search" | "ignore-status" | "duplicate-result" | "unknown-result" | "reload-query"
   | "reload-status" | "back-query" | "back-status" | "wrong-route" | "reload-content"
   | "saved-company" | "saved-description" | "target-run" | "control-run" | "missing-run-evidence"
-  | "intent" | "receipt" | "missing-identifier" | "ignore-named-view";
+  | "intent" | "receipt" | "missing-identifier" | "ignore-named-view" | "detached-snapshot";
 type UiNode = { key: string; role?: string; name?: string; title?: string; text?: string; href?: string;
-  visible?: boolean; children?: UiNode[]; click?(): void; fill?(value: string): void; check?(): void;
+  visible?: boolean; connected?: boolean; children?: UiNode[]; click?(): void; fill?(value: string): void; check?(): void;
   value?(): string; checked?(): boolean };
 type CollectionState = { query: string; backlog: boolean };
 
@@ -59,6 +59,7 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
   };
   const links = (): UiNode[] => displayedId || !allTasks ? [] : visibleTasks().map((task, index) => ({
     key: `task-${task.id}-${index}`, role: "link", name: task.title, text: task.title,
+    connected: fault !== "detached-snapshot" || task.id !== "task-2",
     href: `/QA/issues/${task.identifier}`, click: () => openTask(task),
   }));
   const nodes = (): UiNode[] => {
@@ -107,7 +108,10 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
       resolve,
       or(other: { resolve(): UiNode[] }) { return locator(() => [...new Map([...resolve(), ...other.resolve()].map(node => [node.key, node])).values()]); },
       first() { return locator(() => resolve().slice(0, 1)); },
-      filter({ hasText }: { hasText: string }) { return locator(() => resolve().filter(node => node.text?.includes(hasText))); },
+      filter({ hasText, visible }: { hasText?: string; visible?: boolean }) {
+        return locator(() => resolve().filter(node => (hasText === undefined || node.text?.includes(hasText))
+          && (visible !== true || node.visible !== false)));
+      },
       locator(selector: string) {
         if (selector !== "..") throw Error(`Unsupported control-relative selector: ${selector}`);
         return locator(() => {
@@ -122,6 +126,10 @@ function fixture(fault?: Fault, shell: "coordinator" | "streamlined" | "legacy" 
         return locator(() => flatten(resolve().flatMap(node => node.children ?? [])).filter(node => node.role === role && matches(node.name, name)));
       },
       async all() { return resolve().map(node => locator(() => [node])); },
+      async evaluateAll<R>(read: (nodes: Array<{ isConnected: boolean; getAttribute(name: string): string | null }>) => R) {
+        return read(resolve().map(node => ({ isConnected: node.connected !== false,
+          getAttribute(name: string) { expect(name).toBe("href"); return node.href ?? null; } })));
+      },
       async isVisible() { return resolve().length > 0; },
       async getAttribute(name: string) { expect(name).toBe("href"); return unique().href ?? null; },
       async inputValue() { const read = unique().value; if (!read) throw Error("Not an input"); return read(); },
@@ -229,7 +237,7 @@ describe("taskSearchFilter browser journey", () => {
     expect(test.evidence.checks).toEqual([]);
   });
   it.each<Fault>(["ignore-search", "ignore-status", "duplicate-result", "unknown-result", "reload-query", "reload-status",
-    "back-query", "back-status", "reload-content"])("does not report success when the UI has %s", async fault => {
+    "back-query", "back-status", "reload-content", "detached-snapshot"])("does not report success when the UI has %s", async fault => {
     const test = fixture(fault);
     await expect(test.run()).rejects.toThrow();
     expect(test.evidence.checks.some(check => check.passed)).toBe(false);
