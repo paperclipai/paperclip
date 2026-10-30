@@ -254,21 +254,24 @@ test("successive older pages hydrate each message and run id only once", async (
     for (const field of ["commentIds", "runIds"]) seen[field].push(...(url.searchParams.get(field)?.split(",") ?? []));
   });
   await page.goto(chatPath); await ready(page);
-  const initial = Object.fromEntries(Object.entries(seen).map(([key, ids]) => [key, new Set(ids)]));
+  await page.waitForLoadState("networkidle");
   const initialNative = new Set(nativeIds);
   await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(70);
   await expect.poll(() => new Set(nativeIds.filter(id => !initialNative.has(id))).size).toBe(25);
-  await page.waitForTimeout(200);
+  await page.waitForLoadState("networkidle");
+  const secondPageStart = Object.fromEntries(Object.entries(seen).map(([key, ids]) => [key, ids.length]));
   const firstPageNative = new Set(nativeIds);
   const firstPageReads = nativeIds.length;
   await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(120);
-  await expect.poll(() => seen.commentIds.filter(id => !initial.commentIds.has(id)).length).toBe(100);
+  await expect.poll(() => seen.commentIds.length - secondPageStart.commentIds).toBe(50);
   await expect.poll(() => new Set(nativeIds.filter(id => !firstPageNative.has(id))).size).toBe(25);
-  await page.waitForTimeout(200);
+  await page.waitForLoadState("networkidle");
   expect(nativeIds.slice(firstPageReads).filter(id => firstPageNative.has(id))).toEqual([]);
   for (const [key, ids] of Object.entries(seen)) {
-    const historical = ids.filter(id => !initial[key].has(id));
-    expect(new Set(historical).size).toBe(historical.length);
+    const secondPage = ids.slice(secondPageStart[key]);
+    const previous = new Set(ids.slice(0, secondPageStart[key]));
+    expect(new Set(secondPage).size).toBe(secondPage.length);
+    expect(secondPage.filter(id => previous.has(id))).toEqual([]);
   }
 });
 
