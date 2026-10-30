@@ -2679,6 +2679,39 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
   });
 
+  it("reactivates archived routines and resumes their scheduled triggers", async () => {
+    const { routine, svc, wakeups } = await seedFixture({ runtimeEnv: {} });
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 9 * * *",
+      timezone: "UTC",
+    }, {});
+    const due = new Date("2026-09-19T09:00:00.000Z");
+    const resumedAt = new Date("2026-09-21T12:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.id, trigger.id));
+
+    await svc.update(routine.id, { status: "archived" }, {});
+    await expect(svc.get(routine.id)).resolves.toMatchObject({ status: "archived" });
+    expect(await svc.tickScheduledTriggers(resumedAt)).toEqual({ triggered: 0 });
+    expect(wakeups).toHaveLength(0);
+    expect(await svc.listRuns(routine.id)).toEqual([]);
+
+    await svc.update(routine.id, { status: "active" }, {});
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      status: "active",
+      assigneeAgentId: routine.assigneeAgentId,
+      catchUpPolicy: "skip_missed",
+    });
+    await expect(svc.getTrigger(trigger.id)).resolves.toMatchObject({ nextRunAt: due });
+
+    expect(await svc.tickScheduledTriggers(resumedAt)).toEqual({ triggered: 1 });
+    expect(wakeups).toHaveLength(1);
+    expect(await svc.listRuns(routine.id)).toMatchObject([{ source: "schedule", status: "issue_created" }]);
+    const resumedTrigger = await svc.getTrigger(trigger.id);
+    expect(resumedTrigger?.nextRunAt).toEqual(new Date("2026-09-22T09:00:00.000Z"));
+    expect(resumedTrigger!.nextRunAt!.getTime()).toBeGreaterThan(resumedAt.getTime());
+  });
+
   it("excludes removed schedules from dispatch and resumes them after Undo", async () => {
     const { routine, svc, wakeups } = await seedFixture({ runtimeEnv: {} });
     const { trigger } = await svc.createTrigger(routine.id, { kind: "schedule", cronExpression: "0 9 * * *", timezone: "UTC" }, {});
