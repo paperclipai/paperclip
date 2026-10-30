@@ -35,7 +35,11 @@ import {
 import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
 import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
-import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
+import {
+  ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  issueTreeControlService,
+  isVerifiedIssueTreeControlInteractionWake,
+} from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { issueService } from "../../../services/issues.js";
@@ -43,11 +47,18 @@ import { issueRecoveryActionService } from "../../../services/issue-recovery-act
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
-import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds } from "../../run-dispatch/index.js";
+import {
+  allowsIssueInteractionWake,
+  CHAT_CONVERSATION_ID_KEY,
+  extractWakeCommentIds,
+  isNonAssigneeWorkspaceBusyRetry,
+  queuedRunStillOwnsIssue,
+} from "../../run-dispatch/index.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
 import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
@@ -1199,7 +1210,19 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // queued successor still owns the next turn, including during a late
         // finalization/stranded-queue retry under this issue lock. Another
         // agent's review participation retains its separate recovery path.
-        const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        // A queued successor whose agent has handed the issue over is not one:
+        // the queued-run staleness gate cancels it with issue_assignee_changed
+        // before it starts, so it must not strand the new owner's deferred wake.
+        // Ownership is checked the way the dispatch gate checks it, including
+        // the live native completion review assignment (assigned through its
+        // interaction, not the issue's participant) and the live source-scoped
+        // recovery action, so saved ids alone never hold the issue.
+        const successors = await tx.select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
           input.resumeStrandedQueue ? undefined : eq(heartbeatRuns.agentId, run.agentId),
           input.resumeStrandedQueue ? undefined : sql`${heartbeatRuns.id} <> ${run.id}`,
@@ -1209,7 +1232,54 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             input.resumeStrandedQueue ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (
               SELECT source.created_at, source.id FROM heartbeat_runs source
               WHERE source.company_id = ${input.companyId} AND source.id = ${run.id})` : undefined),
-        )).limit(1);
+        ));
+        const reviewParticipant = parseIssueExecutionState(issueRow.executionState)?.currentParticipant ?? null;
+        let successor: (typeof successors)[number] | undefined;
+        for (const candidate of successors) {
+          // A stranded-queue resume reads every agent's later runs, so the
+          // releasing agent's ownership rule does not apply to them.
+          if (input.resumeStrandedQueue || candidate.status !== "queued") {
+            successor = candidate;
+            break;
+          }
+          const context = candidate.contextSnapshot ?? {};
+          const retryReason = typeof context.retryReason === "string" && context.retryReason.length > 0
+            ? context.retryReason
+            : candidate.scheduledRetryReason ?? null;
+          const recoveryActionId = typeof context.recoveryActionId === "string" && context.recoveryActionId.length > 0
+            ? context.recoveryActionId
+            : null;
+          const isAuthorizedSourceScopedRecovery = context.wakeReason === "source_scoped_recovery_action" && recoveryActionId
+            ? (await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+              eq(issueRecoveryActions.id, recoveryActionId),
+              eq(issueRecoveryActions.companyId, input.companyId),
+              eq(issueRecoveryActions.sourceIssueId, issueRow.id),
+              eq(issueRecoveryActions.ownerAgentId, run.agentId),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            )).limit(1)).length > 0
+            : false;
+          const isCurrentReviewParticipant =
+            (issueRow.status === "in_review" &&
+              reviewParticipant?.type === "agent" &&
+              reviewParticipant.agentId === run.agentId) ||
+            (await getNativeReviewAssignment(tx as unknown as Db, {
+              companyId: input.companyId,
+              issueId: issueRow.id,
+              agentId: run.agentId,
+              contextSnapshot: context,
+            })) !== null;
+          if (queuedRunStillOwnsIssue({
+            runAgentId: run.agentId,
+            issueAssigneeAgentId: issueRow.assigneeAgentId ?? null,
+            isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
+            isInteractionWake: allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS),
+            isCurrentReviewParticipant,
+            isAuthorizedSourceScopedRecovery,
+          })) {
+            successor = candidate;
+            break;
+          }
+        }
         if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
 
         if (preDrain.kind === "blocked") {
