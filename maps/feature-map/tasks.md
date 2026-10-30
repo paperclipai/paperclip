@@ -35,6 +35,11 @@ visible-row details independently when verifying `tasks/organize`: row heights,
 title bounds, and the first-row origin should remain stable. Test nested expansion,
 scrolling to more rows, and detail/back navigation; a collection projection must
 never suppress the full task instruction fetch.
+Coordinator Tasks uses the same index and visible-row enrichment. Needs attention
+resolves pending task IDs in batches of at most 100; it does not fetch enriched
+task detail for every decision. Search and participant filters stay on the server.
+Cold Coordinator detail must stay compact when Classic settings arrive before
+the personal workspace preference. Verify explicit history expansion afterward.
 
 ### `new-task`
 
