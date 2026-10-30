@@ -1,6 +1,6 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDatabaseWorkSignals } from "../../../../packages/db/src/work-signals.js";
+import { installDatabaseWorkSignals } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { registerRunDispatchWork } from "./dispatch-work.js";
@@ -18,7 +18,7 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
     if (dialect.sqlToQuery(query).sql.includes("pg_current_xact_id")) return [{ xid: "42" }];
     throw new Error("unexpected database query");
   });
-  const db = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>) {
+  const db: { execute: typeof execute; transaction: (callback: (tx: any) => Promise<any>) => Promise<any> } = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>): Promise<any> {
     return callback({ execute, transaction: db.transaction });
   } });
   const state = { due: input.due ?? null as number | null, suppressed: input.suppressed ?? false,

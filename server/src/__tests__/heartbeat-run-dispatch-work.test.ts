@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, databaseWorkPending, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { agentService } from "../services/agents.js";
+import { budgetService } from "../services/budgets.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_DISPATCH_TEST_DATABASE_URL");
@@ -23,12 +26,12 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("run-dispatch-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`TRUNCATE companies CASCADE`);
     heartbeat = heartbeatService(db); draining = false; errors.length = 0;
     reads = vi.spyOn(db, "select");
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
     await worker?.stop(); await coordinator?.stop();
@@ -61,11 +64,13 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   }
   async function quiet() {
     await heartbeat.drainActiveRunExecutions();
-    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull(), { timeout: 5_000 });
     const count = reads.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(20 * 60_000);
-    expect(reads).toHaveBeenCalledTimes(count);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(reads).toHaveBeenCalledTimes(count);
+    } finally { vi.useRealTimers(); }
   }
   async function status(id: string) {
     return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]);
@@ -81,15 +86,14 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   });
   it("ordinary retry creation wakes the worker, respects the exact deadline, dispatches and settles", async () => {
     const f = await fixture(); await start(); await quiet();
-    const result = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 60_000, random: () => 0 });
+    const result = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 2_000, random: () => 0 });
     expect(result.outcome).toBe("scheduled");
     if (result.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(result.dueAt.getTime()));
     expect((await status(result.run.id)).status).toBe("scheduled_retry");
-    await vi.advanceTimersByTimeAsync(result.dueAt.getTime() - Date.now() - 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(Date.now()).toBeLessThan(result.dueAt.getTime());
     expect((await status(result.run.id)).status).toBe("scheduled_retry");
-    await vi.advanceTimersByTimeAsync(1);
     await completed(result.run.id);
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.retryOfRunId, f.runId)))).toHaveLength(1);
     await quiet();
@@ -105,19 +109,70 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     const f = await fixture(); await start();
     const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 600_000 });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime()));
     await heartbeat.cancelRun(scheduled.run.id, "operator stop", { suppressImmediateRecovery: true });
     await quiet(); expect((await status(scheduled.run.id)).status).toBe("cancelled");
   });
   it("retains the first retry written during drain and catches it up after resume", async () => {
     const f = await fixture(); await start(); await quiet(); draining = true;
-    const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 10_000 });
+    const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 200 });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await vi.advanceTimersByTimeAsync(60_000);
+    await new Promise(resolve => setTimeout(resolve, 400));
     expect((await status(scheduled.run.id)).status).toBe("scheduled_retry");
-    draining = false; worker!.wake(); await vi.advanceTimersByTimeAsync(1);
+    draining = false; worker!.wake();
     await completed(scheduled.run.id); await quiet();
+  });
+  it("uses a committed budget raise to resume a queued run in the company it paused", async () => {
+    const f = await fixture();
+    const budgets = budgetService(db);
+    await budgets.upsertPolicy(f.companyId, { scopeType: "company", scopeId: f.companyId, amount: 100,
+      metric: "billed_cents", windowKind: "lifetime", hardStopEnabled: true }, "dispatch-user");
+    const [cost] = await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      provider: "fixture", biller: "fixture", model: "controlled", inputTokens: 0, outputTokens: 0,
+      costCents: 125, occurredAt: new Date() }).returning();
+    await budgets.evaluateCostEvent(cost);
+    expect((await db.select().from(companies).where(eq(companies.id, f.companyId)))[0].status).toBe("paused");
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "queued", responsibleUserId: "dispatch-user", invocationSource: "automation", contextSnapshot: {} }).returning();
+    await start(); await quiet(); expect((await status(queued.id)).status).toBe("queued");
+    await budgets.upsertPolicy(f.companyId, { scopeType: "company", scopeId: f.companyId, amount: 10_000,
+      metric: "billed_cents", windowKind: "lifetime", hardStopEnabled: true }, "dispatch-user");
+    await completed(queued.id); await quiet();
+  });
+  it("clearing an agent error wakes saved queue work only after its own transaction commits", async () => {
+    const f = await fixture(); await start(); await quiet();
+    await db.update(agents).set({ status: "error" }).where(eq(agents.id, f.agentId));
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "queued", responsibleUserId: "dispatch-user", invocationSource: "automation", contextSnapshot: {} }).returning();
+    let writing: ReturnType<ReturnType<typeof agentService>["clearError"]> | undefined;
+    try {
+      await db.transaction(async blocker => {
+        await blocker.select().from(agents).where(eq(agents.id, f.agentId)).for("update");
+        writing = agentService(db).clearError(f.agentId);
+        void writing.catch(() => {});
+        await vi.waitFor(() => expect(databaseWorkPending(db, DELIVERY_QUEUES.queuedRunDispatch)).toBe(true));
+        expect((await status(queued.id)).status).toBe("queued");
+        expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("error");
+      });
+    } finally { await writing; }
+    await completed(queued.id); await quiet();
+  });
+  it("keeps a foreign company's future retry intact while concurrent workers claim one due retry", async () => {
+    const selected = await fixture(), foreign = await fixture(); await start();
+    const later = await heartbeat.scheduleBoundedRetry(foreign.runId, { delayMs: 600_000 });
+    const due = await heartbeat.scheduleBoundedRetry(selected.runId, { delayMs: 500 });
+    if (later.outcome !== "scheduled" || due.outcome !== "scheduled") throw new Error("Expected retries");
+    const other = heartbeatService(db);
+    const competing = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const competingWorker = other.registerRunDispatchWork(competing, () => true);
+    try {
+      await competingWorker.ready; await completed(due.run.id); await other.drainActiveRunExecutions();
+      expect((await status(later.run.id)).status).toBe("scheduled_retry");
+      expect((await status(later.run.id)).scheduledRetryAt).toEqual(later.dueAt);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, selected.runId))).toHaveLength(1);
+      await heartbeat.cancelRun(later.run.id, "fixture teardown", { suppressImmediateRecovery: true });
+      await quiet();
+    } finally { await competingWorker.stop(); await competing.stop(); await other.drainActiveRunExecutions(); }
   });
   it("holds nested producer work until outer commit and rolls back without a successor", async () => {
     const f = await fixture(); await start(); await quiet();
@@ -133,14 +188,14 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
       await held;
     });
     await vi.waitFor(() => expect(queuedId).not.toBe(""));
-    await vi.advanceTimersByTimeAsync(1_000);
+    await new Promise(resolve => setTimeout(resolve, 100));
     expect(await status(queuedId)).toBeUndefined();
-    release(); await writing; await vi.advanceTimersByTimeAsync(1); await completed(queuedId); await quiet();
+    release(); await writing; await completed(queuedId); await quiet();
     await expect(db.transaction(async tx => {
       await tx.transaction(async nested => { await notifyRunDispatch(nested); await nested.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued" }); });
       throw new Error("rollback outer");
     })).rejects.toThrow("rollback outer");
-    await vi.advanceTimersByTimeAsync(1); await quiet();
+    await quiet();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
   });
 });

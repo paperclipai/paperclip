@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
@@ -287,6 +288,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      await notifyRunDispatch(db);
       await db
         .update(projects)
         .set({
@@ -300,6 +302,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
+    await notifyRunDispatch(db);
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
@@ -346,6 +349,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      await notifyRunDispatch(db);
       await db
         .update(projects)
         .set({
@@ -360,6 +364,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
+    await notifyRunDispatch(db);
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
