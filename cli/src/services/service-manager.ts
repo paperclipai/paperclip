@@ -26,7 +26,7 @@ export interface ServiceManager {
   readonly instanceId: string;
   readonly serviceName: string;
   readonly definitionPath: string;
-  renderDefinition(): string;
+  renderDefinition(existingDefinition?: string): string;
   install(options: ServiceInstallOptions): Promise<{ changed: boolean }>;
   uninstall(): Promise<void>;
   start(): Promise<void>;
@@ -87,9 +87,11 @@ function unescapeSystemd(value: string): string {
 }
 
 function unescapeXml(value: string): string {
-  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) =>
-    name === "amp" ? "&" : name === "lt" ? "<" : name === "gt" ? ">" : name === "quot" ? '"' : "'",
-  );
+  return value.replace(/&(?:(amp|lt|gt|quot|apos)|#x([0-9a-fA-F]+)|#([0-9]+));/g, (entity, name: string | undefined, hex: string | undefined, decimal: string | undefined) => {
+    if (name !== undefined) return name === "amp" ? "&" : name === "lt" ? "<" : name === "gt" ? ">" : name === "quot" ? '"' : "'";
+    const codePoint = Number.parseInt(hex ?? decimal ?? "", hex !== undefined ? 16 : 10);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+  });
 }
 
 export function extractExecutableFromSystemdUnit(content: string): string | null {
@@ -124,7 +126,69 @@ export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
-export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
+const MANAGED_ENVIRONMENT_KEYS = new Set(["PAPERCLIP_SERVICE_MANAGED", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_HOME"]);
+
+export type ServiceEnvironment = Record<string, string>;
+
+function operatorEnvironment(entries: Iterable<[string, string]>): ServiceEnvironment {
+  const environment: ServiceEnvironment = {};
+  for (const [key, value] of entries) {
+    if (!MANAGED_ENVIRONMENT_KEYS.has(key)) environment[key] = value;
+  }
+  return environment;
+}
+
+function splitSystemdAssignments(value: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let quote: string | null = null;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (char === "\\" && index + 1 < value.length) {
+      word += char + value[++index];
+    } else if (quote !== null) {
+      word += char;
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") {
+      word += char;
+      quote = char;
+    } else if (/\s/.test(char)) {
+      if (word) words.push(word);
+      word = "";
+    } else {
+      word += char;
+    }
+  }
+  if (word) words.push(word);
+  return words;
+}
+
+export function extractExtraEnvironmentFromSystemdUnit(content: string): string[] {
+  const lines: string[] = [];
+  for (const match of content.matchAll(/^Environment=(.*)$/gm)) {
+    const assignments = splitSystemdAssignments(match[1]);
+    const kept = assignments.filter((assignment) => {
+      const key = assignment.replace(/^["']/, "").split("=", 1)[0];
+      return !MANAGED_ENVIRONMENT_KEYS.has(key);
+    });
+    if (kept.length === 0) continue;
+    lines.push(kept.length === assignments.length ? match[0] : `Environment=${kept.join(" ")}`);
+  }
+  return lines;
+}
+
+export function extractExtraEnvironmentFromLaunchdPlist(content: string): ServiceEnvironment {
+  const block = content.match(/<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/);
+  if (!block) return {};
+  const entries: [string, string][] = [];
+  for (const match of block[1].matchAll(/<key>([^<]*)<\/key>\s*(?:<string>([^<]*)<\/string>|<string\/>)/g)) {
+    entries.push([unescapeXml(match[1]), unescapeXml(match[2] ?? "")]);
+  }
+  return operatorEnvironment(entries);
+}
+
+export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string; extraEnvironment?: readonly string[] }): string {
+  const extra = (input.extraEnvironment ?? []).map((line) => `${line}\n`).join("");
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
 After=network.target
@@ -138,7 +202,7 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
-WorkingDirectory=%h
+${extra}WorkingDirectory=%h
 Restart=always
 RestartSec=5
 TimeoutStopSec=300
@@ -148,8 +212,11 @@ WantedBy=default.target
 `;
 }
 
-export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
+export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string; extraEnvironment?: ServiceEnvironment }): string {
   const label = launchdServiceName(input.instanceId);
+  const extra = Object.entries(input.extraEnvironment ?? {})
+    .map(([key, value]) => `    <key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>\n`)
+    .join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -164,7 +231,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
-  </dict>
+${extra}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
@@ -174,6 +241,14 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
 </dict>
 </plist>
 `;
+}
+
+async function readExistingDefinition(filePath: string): Promise<string> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 async function writeIfChanged(filePath: string, contents: string): Promise<boolean> {
@@ -211,8 +286,12 @@ export class SystemdServiceManager implements ServiceManager {
     this.definitionPath = path.join(userHomeDir, ".config", "systemd", "user", this.serviceName);
   }
 
-  renderDefinition(): string {
-    return renderSystemdUnit({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir });
+  renderDefinition(existingDefinition = ""): string {
+    return renderSystemdUnit({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, extraEnvironment: extractExtraEnvironmentFromSystemdUnit(existingDefinition) });
+  }
+
+  private async renderCurrentDefinition(): Promise<string> {
+    return this.renderDefinition(await readExistingDefinition(this.definitionPath));
   }
 
   async installedExecutablePath(): Promise<string | null> {
@@ -224,7 +303,7 @@ export class SystemdServiceManager implements ServiceManager {
   }
 
   private async ensureCurrent(): Promise<boolean> {
-    const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
+    const changed = await writeIfChanged(this.definitionPath, await this.renderCurrentDefinition());
     if (changed) await this.runner("systemctl", ["--user", "daemon-reload"]);
     return changed;
   }
@@ -289,7 +368,11 @@ export class LaunchdServiceManager implements ServiceManager {
     this.stderrPath = path.join(logDir, "service.err.log");
   }
 
-  renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
+  renderDefinition(existingDefinition = ""): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath, extraEnvironment: extractExtraEnvironmentFromLaunchdPlist(existingDefinition) }); }
+
+  private async renderCurrentDefinition(): Promise<string> {
+    return this.renderDefinition(await readExistingDefinition(this.definitionPath));
+  }
 
   async installedExecutablePath(): Promise<string | null> {
     try {
@@ -301,7 +384,7 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
     await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });
-    const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
+    const changed = await writeIfChanged(this.definitionPath, await this.renderCurrentDefinition());
     if (changed) await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await this.runner("launchctl", [options.startOnLogin ? "enable" : "disable", `${this.domain}/${this.serviceName}`]);
     if (options.startOnLogin || options.startNow) {
@@ -318,7 +401,7 @@ export class LaunchdServiceManager implements ServiceManager {
   }
   async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: await this.isEnabled() }); }
   async stop(): Promise<void> { await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]); }
-  async restart(): Promise<void> { await writeIfChanged(this.definitionPath, this.renderDefinition()); await this.runner("launchctl", ["kickstart", "-k", `${this.domain}/${this.serviceName}`]); }
+  async restart(): Promise<void> { await writeIfChanged(this.definitionPath, await this.renderCurrentDefinition()); await this.runner("launchctl", ["kickstart", "-k", `${this.domain}/${this.serviceName}`]); }
 
   async status(): Promise<ServiceStatus> {
     try {

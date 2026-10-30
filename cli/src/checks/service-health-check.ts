@@ -73,7 +73,8 @@ export async function serviceHealthChecks(
   const results: CheckResult[] = [];
   let definitionCurrent = false;
   try {
-    definitionCurrent = (await fs.readFile(manager.definitionPath, "utf8")) === manager.renderDefinition();
+    const installedDefinition = await fs.readFile(manager.definitionPath, "utf8");
+    definitionCurrent = installedDefinition === manager.renderDefinition(installedDefinition);
   } catch {
     definitionCurrent = false;
   }
