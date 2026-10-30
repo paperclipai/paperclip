@@ -55,6 +55,7 @@ import {
 } from "./terminal-session-failure.js";
 export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreTeardownStep } from "../workspace-restore-teardown.js";
 import type { WorkspaceRestoreDiagnostic } from "../workspace-restore-diagnostics.js";
 import {
   classifyWorkspaceRestoreFailure,
@@ -255,7 +256,7 @@ export interface StagedRuntimeCacheEntry {
    * in-sandbox credential, not a stale snapshot. It never removes the staged
    * in-sandbox home, so re-running it on each reuse can't invalidate this entry.
    */
-  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
+  teardown: WorkspaceRestoreTeardownStep | null;
   /**
    * The seam's one-time host-side staged-resource cleanup (e.g. remove the
    * staged home temp dir), or null. Fired ONLY when this entry is dropped —
@@ -327,6 +328,12 @@ export interface AcpxRemoteManagedHomeContext {
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
   /**
+   * Run-scoped operator cancellation. The seam forwards it into the
+   * teardown's staged restore so an operator Stop raised while the sandbox
+   * copy-back is pending yields promptly instead of holding the run.
+   */
+  signal?: AbortSignal | null;
+  /**
    * The host directory that holds this run's skill bundle. This field is
    * `null` when the agent does not support on-demand skills, when no skill
    * is selected, and when every selected skill fails to materialize.
@@ -365,7 +372,7 @@ export interface AcpxRemoteManagedHomeResult {
    * cached staged runtime across resumes never destroys resources a later run
    * still needs.
    */
-  teardown?: () => Promise<WorkspaceRestoreOutcome>;
+  teardown?: WorkspaceRestoreTeardownStep;
   /**
    * One-time cleanup of host-side staged resources (e.g. the curated staged
    * home temp dir). Split out from {@link teardown} so it fires ONLY when the
@@ -495,7 +502,7 @@ interface AcpxPreparedRuntime {
   // exit path by the settlement `syncBack` step; it never removes staged temp, so
   // it is safe on every compatible resume. Null for local runs, the runner-less
   // fallback, and adapters with no seam.
-  remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
+  remoteManagedHomeTeardown: WorkspaceRestoreTeardownStep | null;
   // One-time host-side staged-resource cleanup from the seam (remove staged temp
   // dirs). Fired ONLY when the staged runtime is dropped (failed/cancelled/timed
   // -out turn, incompatible re-stage, idle eviction), not on a clean turn that
@@ -2384,7 +2391,7 @@ async function buildRuntime(input: {
     remoteExecutionIdentity,
   });
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
-  let remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null = null;
+  let remoteManagedHomeTeardown: WorkspaceRestoreTeardownStep | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   let sessionStagingLeaseRelease: (() => void) | null = null;
@@ -2436,6 +2443,7 @@ async function buildRuntime(input: {
               env,
               onLog: input.ctx.onLog,
               onRuntimeProgress: input.ctx.onRuntimeProgress,
+              signal: input.ctx.signal ?? null,
               skillsBundleDir: claudeSkillsBundleDir,
               stage,
             });
@@ -2516,7 +2524,7 @@ async function buildRuntime(input: {
       stopBridges: async ({ controlBridge, agentBridge }) => {
         await Promise.allSettled([agentBridge?.stop(), controlBridge?.stop()]);
         if (remoteManagedHomeTeardown) {
-          await remoteManagedHomeTeardown().catch(() => {});
+          await remoteManagedHomeTeardown(input.ctx.signal ?? null).catch(() => {});
         }
       },
     });
@@ -2620,7 +2628,7 @@ async function buildRuntime(input: {
     // temp is already gone. The identity guard removes the entry only when the map
     // still holds this exact staged runtime, so a fresh stage (no cache entry) and
     // a concurrent run's entry are both left untouched.
-    await remoteManagedHomeTeardown?.().catch(() => {});
+    await remoteManagedHomeTeardown?.(input.ctx.signal ?? null).catch(() => {});
     await releaseStagedRuntimeEntry({
       handles: stagedRuntimes,
       sessionKey,
@@ -2876,7 +2884,10 @@ async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
 // The per-session staging lease does NOT release here. The settlement releases
 // it last, in its own `finally`, so a same-session second run cannot re-stage
 // until this run fully settles and the caller observes the result.
-async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<WorkspaceRestoreOutcome> {
+async function syncBackManagedHome(
+  prepared: AcpxPreparedRuntime,
+  signal: AbortSignal | null,
+): Promise<WorkspaceRestoreOutcome> {
   if (!prepared.remoteManagedHomeTeardown) {
     return { ok: true };
   }
@@ -2884,7 +2895,7 @@ async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<Works
   // this `.catch` is defense in depth for the case where it rejects anyway, so
   // a teardown fault can never propagate out of settlement.
   return await prepared
-    .remoteManagedHomeTeardown()
+    .remoteManagedHomeTeardown(signal)
     .catch((): WorkspaceRestoreOutcome => ({ ok: false, code: "restore_failed" }));
 }
 
@@ -5773,7 +5784,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             await recordTeardownError("instruction-collection", new Error("Instruction collection failed after provider stop. No instruction save is claimed."));
           } finally {
             await withAdapterExecutionPhase(ctx, "workspace_restore", () => runRuntimeSpan("sandbox.syncBack", async () => {
-              const restoreOutcome = await syncBackManagedHome(prepared);
+              const restoreOutcome = await syncBackManagedHome(prepared, ctx.signal ?? null);
               if (!restoreOutcome.ok) {
                 workspaceRestoreFailureField = {
                   workspaceRestoreFailure: restoreOutcome.code,

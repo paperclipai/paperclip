@@ -224,6 +224,7 @@ async function prepareClaudeRemoteManagedHome(
       onLog,
       startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
       failurePrefix: "[paperclip] Claude ACP teardown workspace restore failed",
+      signal: input.signal ?? null,
     });
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =

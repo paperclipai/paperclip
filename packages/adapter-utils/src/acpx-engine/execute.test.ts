@@ -189,6 +189,7 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    signal?: AbortSignal;
   } = {},
 ) {
   // Skill reconciliation must never inspect or modify the developer's real
@@ -236,6 +237,7 @@ async function runExecutor(
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
       startupTraceContext: options.startupTraceContext,
+      ...(options.signal ? { signal: options.signal } : {}),
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -4598,6 +4600,32 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       "[paperclip] Referenced project proj-x failed to stage; the run continues without it: extract failed: boom\n",
     );
   });
+
+  it("test_remote_seam_receives_run_cancellation_signal", async () => {
+    // The engine forwards ctx.signal into the managed-home seam context so
+    // the per-adapter teardown can pass it to the staged restore: an
+    // operator Stop raised while the sandbox copy-back is pending yields
+    // promptly instead of holding the run (TOG-25014).
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    let captured: Record<string, unknown> | null = null;
+    const controller = new AbortController();
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        signal: controller.signal,
+        prepareRemoteManagedHome: async (input) => {
+          captured = input as unknown as Record<string, unknown>;
+          const stagedRuntime = await input.stage([]);
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    expect(captured).not.toBeNull();
+    expect((captured as unknown as Record<string, unknown>).signal).toBe(controller.signal);
+  });
 });
 
 describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
@@ -5236,6 +5264,44 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     // B binds a fresh session/new (no resumeSessionId), it does not resume A.
     expect(ensureInputs[1]?.cwd).toBe(remoteCwd);
     expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
+  });
+
+  // Greptile P1 "Resumed runs ignore Stop": the teardown step is cached with the
+  // staged runtime, so a compatible resume must hand it ITS OWN run's signal.
+  it("test_reused_resume_teardown_receives_the_current_run_signal", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const teardownSignals: Array<AbortSignal | null | undefined> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        const stagedRuntime = await input.stage([]);
+        return {
+          stagedRuntime,
+          teardown: async (signal) => {
+            teardownSignals.push(signal);
+            return { ok: true };
+          },
+        };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+    const firstRun = new AbortController();
+    const secondRun = new AbortController();
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base, signal: firstRun.signal } as never);
+    await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+      signal: secondRun.signal,
+    } as never);
+
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    expect(teardownSignals).toEqual([firstRun.signal, secondRun.signal]);
+    expect(teardownSignals[1]).not.toBe(firstRun.signal);
   });
 
   // Greptile P1 "Teardown Invalidates Cached Runtime": the per-run copy-back must

@@ -42,6 +42,7 @@ import type {
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
 import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreTeardownStep } from "../workspace-restore-teardown.js";
 
 /**
  * One staged in-sandbox runtime the store keeps for the next compatible resume.
@@ -54,7 +55,7 @@ export interface StagedRuntimeStoreEntry {
   observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   envDelta: Record<string, string>;
-  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
+  teardown: WorkspaceRestoreTeardownStep | null;
   dispose: (() => Promise<void>) | null;
   lastUsedAt: number;
 }
@@ -65,7 +66,7 @@ export interface StagedRuntimeStoreEntry {
  */
 export interface StagedWorkspace {
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
+  readonly teardown: WorkspaceRestoreTeardownStep | null;
   readonly dispose: (() => Promise<void>) | null;
   readonly envDelta: Record<string, string>;
   /** True when the run reused an already-staged runtime rather than staging fresh. */
@@ -81,7 +82,7 @@ export type StageWorkspace = (assets: AdapterManagedRuntimeAsset[]) => Promise<P
  */
 export interface ManagedHomeSeamResult {
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
+  readonly teardown: WorkspaceRestoreTeardownStep | null;
   readonly dispose: (() => Promise<void>) | null;
 }
 

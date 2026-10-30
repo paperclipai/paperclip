@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { isWorkspaceRestoreCancelled } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -919,8 +920,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+    // Let a run-scoped Stop interrupt SSH copy-back while preserving the full
+    // restore grace for live runs.
+    const restoreSignal = ctx.signal ?? null;
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
-      ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
+      ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line), restoreSignal)
       : null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     const remoteCodexHome = executionTargetIsRemote
@@ -1685,18 +1689,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             );
             await restoreRemoteWorkspace();
           } catch (error) {
+            const restoreCancelled = isWorkspaceRestoreCancelled(error) || restoreSignal?.aborted === true;
             await Promise.resolve(
               onLog(
-                "stderr",
-                `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
-                  executionTarget,
-                )}: ${error instanceof Error ? error.message : String(error)}\n`,
+                restoreCancelled ? "stdout" : "stderr",
+                restoreCancelled
+                  ? "[paperclip] Skipping workspace restore: run was cancelled.\n"
+                  : `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                    executionTarget,
+                  )}: ${error instanceof Error ? error.message : String(error)}\n`,
               ),
             ).catch(() => undefined);
-            // A provider failure remains the primary outcome. When provider work
-            // succeeded, however, silently accepting a failed copy-back can lose
-            // the only workspace edits before a replacement sandbox starts.
-            if (executionError === null) throw error;
+            // Cancellation belongs to the existing operator-stop path, not
+            // provider failure classification: a cancelled restore always
+            // reaches the heartbeat's error path so a successful provider
+            // result can never be recorded (and workspace_finalize marked
+            // succeeded) against an incomplete checkout. Other restore errors
+            // remain fatal after otherwise successful provider work.
+            if (restoreCancelled || executionError === null) throw error;
           }
         }
       }

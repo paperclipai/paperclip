@@ -53,7 +53,7 @@ export interface PreparedRemoteManagedRuntime {
    * absent (per-project failure isolation).
    */
   additionalSourceDirs: Record<string, string>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink, signal?: AbortSignal | null): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -250,7 +250,7 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
-    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink, signal?: AbortSignal | null) => {
       if (preparedWorkspace && baselineSnapshot) {
         await restoreWorkspaceFromSshExecution({
           spec: input.spec,
@@ -260,6 +260,7 @@ export async function prepareRemoteManagedRuntime(input: {
           restoreGitHistory: preparedWorkspace.gitBacked,
           onProgress,
           repositories: repositoryBaselines,
+          signal,
         });
       }
       for (const asset of input.assets ?? []) {
