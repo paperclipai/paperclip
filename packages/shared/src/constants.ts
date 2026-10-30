@@ -218,6 +218,11 @@ export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
 export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
+// See doc/execution-semantics.md, "Terminal transition contract". A `done`
+// transition on a `workspace_delivery` issue requires a matching delivery
+// attestation; omitted/null leaves the transition ungated (today's default).
+export const ISSUE_COMPLETION_REQUIREMENTS = ["workspace_delivery"] as const;
+export type IssueCompletionRequirement = (typeof ISSUE_COMPLETION_REQUIREMENTS)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
