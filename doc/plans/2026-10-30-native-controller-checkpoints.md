@@ -391,7 +391,7 @@ pilot is underway. Database cost acceptance, distinct-release application startu
 compatible rollback, and native Daytona qualification remain open. The published Daytona qualification image was independently resolved from successful
 workflow 40709784515 to `sha256:b38ed051d00fed409092d354eea9ae1b01fb232bcb7d5a187ed763382dda2d0b`
 (source `8fe5d5defcdfb55a1b9049a801cfa5498629cebc`). The exact Linux Runner was
-extracted from that image. A single five-minute outage Product E2E attempt is running.
+extracted from that image. The local attempt failed during the environment probe before agent creation. A read-only lookup independently returned `DaytonaAuthenticationError: Invalid credentials`. The private database and cleanup obligation remain preserved. The protected single-cell workflow [41093316372](https://github.com/paperclipai/paperclip/actions/runs/41093316372), targeting `512cc6d6dc`, was cancelled during image/artifact builds before provider allocation so acceptance can use the rebased candidate. Its protected secret is separate from the invalid local fixture.
 No production deployment or complete zero-downtime acceptance is claimed.
 
 Failures retained in the implementation record: sandbox listener denial and host
@@ -428,3 +428,50 @@ columns it actually needs. The initial paired 300-controller ABBA comparison
 completed every offered operation with no ownership losses, but candidate latency
 and CPU increased above the investigation threshold. It is not performance
 acceptance. A new paired run will measure the narrower snapshot projection.
+
+
+Qualification update at `512cc6d6dc`: the snapshot port now combines coordinator
+and run locks into one statement, with a database-clock check after both waits.
+All 59 real-Postgres port tests pass. Snapshot and PRP transaction counts remain
+unchanged; the first completed 300-controller baseline/candidate pair each issued
+74,790 total statements and 7,800 control transactions across all pools. The
+candidate adds the metadata bytes but no SQL per streamed chunk.
+
+The dedicated Daytona suite now fixes the active outage at 300 seconds and adds
+normal UI follow-up after a second replacement following completion. Its oracle
+requires a new successful native run, retained native/provider session identity,
+a completed tool receipt and correct saved-project output. Focused E2E support
+checks passed (56 tests, one optional external-database case skipped), plus all
+137 Node support tests and E2E typecheck. The explicit external-database fixture
+was separately exercised against owned Postgres earlier. The broad E2E unit
+attempt lacked local listener permissions and was stopped; that failure remains
+in `/tmp/native-controller-e2e-unit.log`, and broad qualification is still open.
+
+Database load remains **unqualified**. The narrowed-read and combined-query ABBA
+runs became heavily contended as other local checks ran, including our E2E support
+suite during the final pair. Both baseline and candidate lost absolute gates;
+dropped operations invalidate relative comparisons. The combined-query first
+pair completed all work, but its candidate p99 was 303 ms versus 131 ms and PG CPU
+35.69 s versus 25.89 s. Unchanged business queries also slowed. These observations
+require a quiet-host paired rerun; they are neither a performance pass nor proof
+that the implementation caused all observed regression. The connection limit
+remains unchanged. Summarized counters are retained in the adjacent
+`2026-10-30-native-controller-load-evidence.json`; raw measurements remain under
+`/tmp/native-controller-load/`. The reproducible script records failed absolute
+and relative gates and marks unequal-operation comparisons ineligible.
+
+Remaining critical path: finish the protected Daytona attempt and cleanup;
+complete full repository checks on the final rebased revision; finish the quiet
+steady/burst/replacement load gates and explicit lock-wait latency measurement;
+qualify distinct installed A/B/A artifacts; then resolve review and prepare the
+PR. Current server startup smoke and three-controller component tests are useful
+layer-specific evidence, not substitutes for those remaining gates.
+
+
+The full local `pnpm test:run` attempt was stopped after roughly 45 minutes while
+still progressing through the general chat suite. Its output is retained at
+`/tmp/native-controller-full-tests.log`; it is incomplete, not a pass. Broad
+checks will run on hosted Linux for the rebased candidate. The broad E2E support
+rerun with two workers was also stopped before rebasing; focused support checks
+remain the completed evidence. A separate `server-config.test.ts` diagnostic
+confirmed the original restricted run's `listen EPERM` cause.

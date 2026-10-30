@@ -349,7 +349,7 @@ separate. Postgres execution time includes lock waits. This does **not** yet
 provide a lock-wait latency distribution or HTTP latency. Report those limits;
 do not call this whole-application load qualification.
 
-Correctness and absolute gates must pass before interpreting relative costs.
+Correctness and absolute gates must pass for acceptance.
 Dropped operations invalidate paired comparisons. The report retains failures
 and refuses an overall pass if p99, drain, throughput, memory, CPU or the 10%
 relative regression gate fails. Do not change pool limits to conceal a failure.
