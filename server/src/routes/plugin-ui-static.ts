@@ -36,6 +36,7 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
 import { badRequest } from "../errors.js";
+import { isInvalidTextRepresentation } from "../db-errors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -248,11 +249,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
+      if (!isInvalidTextRepresentation(error)) {
         throw error;
       }
     }

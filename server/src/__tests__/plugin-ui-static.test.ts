@@ -19,6 +19,7 @@ vi.mock("../services/plugin-registry.js", () => ({
 const companyA = "22222222-2222-4222-8222-222222222222";
 const companyB = "33333333-3333-4333-8333-333333333333";
 const pluginId = "11111111-1111-4111-8111-111111111111";
+const pluginKey = "paperclip.example";
 const tempDirs: string[] = [];
 let originalNodeEnv: string | undefined;
 
@@ -50,6 +51,32 @@ function readyPlugin(packageRoot: string) {
     },
   });
   mockRegistry.getByKey.mockResolvedValue(null);
+}
+
+function readyPluginByKeyOnly(packageRoot: string) {
+  const wrapped = new Error("Failed query: select \"id\" from \"plugins\" where \"id\" = $1");
+  (wrapped as { cause?: unknown }).cause = {
+    code: "22P02",
+    message: `invalid input syntax for type uuid: "${pluginKey}"`,
+  };
+  mockRegistry.getById.mockRejectedValue(wrapped);
+  mockRegistry.getByKey.mockImplementation(async (key: string) =>
+    key === pluginKey
+      ? {
+        id: pluginId,
+        pluginKey,
+        packageName: "paperclip-plugin-example",
+        packagePath: packageRoot,
+        version: "1.0.0",
+        status: "ready",
+        manifestJson: {
+          id: pluginKey,
+          entrypoints: {
+            ui: "./dist/ui",
+          },
+        },
+      }
+      : null);
 }
 
 function boardActor(companyIds: string[]) {
@@ -107,6 +134,30 @@ describe("plugin UI static route", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain("static-bundle");
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
+  });
+
+  it("serves UI assets addressed by plugin key, not just by UUID", async () => {
+    readyPluginByKeyOnly(createPluginPackage("export const marker = 'key-form-bundle';\n"));
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get(`/_plugins/${pluginKey}/ui/index.js`);
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("key-form-bundle");
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith(pluginKey);
+  });
+
+  it("still surfaces a database failure that is not an invalid UUID", async () => {
+    const failure = new Error("Failed query: select \"id\" from \"plugins\" where \"id\" = $1");
+    (failure as { cause?: unknown }).cause = { code: "57P01", message: "terminating connection" };
+    mockRegistry.getById.mockRejectedValue(failure);
+    mockRegistry.getByKey.mockResolvedValue(null);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get(`/_plugins/${pluginId}/ui/index.js`);
+
+    expect(res.status).toBe(500);
+    expect(mockRegistry.getByKey).not.toHaveBeenCalled();
   });
 
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
