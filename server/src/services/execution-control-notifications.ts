@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -7,6 +8,7 @@ export type ExecutionWorkScope = { companyId: string; agentId?: string; runId?: 
 
 export async function notifyExecutionRunWork(transaction: object, scope?: ExecutionWorkScope) {
   if (scope) {
+    await notifyAttentionRetentionWork(transaction, scope);
     await notifyRunDispatch(transaction, scope);
     await notifyStatusCardIssueChange(transaction, scope.companyId);
   }
@@ -25,6 +27,7 @@ export function writeExecutionControl<T>(
   return db.transaction(async transaction => {
     await notifyRunDispatch(transaction, scope);
     if (scope) await notifyStatusCardIssueChange(transaction, scope.companyId);
+    if (scope) await notifyAttentionRetentionWork(transaction, scope);
     await notifyDeliveryWork(transaction, DELIVERY_QUEUES.issueMonitors);
     for (const topic of typeof queue === "string" ? [queue] : queue) await notifyDeliveryWork(transaction, topic);
     return write(transaction as unknown as Db);
