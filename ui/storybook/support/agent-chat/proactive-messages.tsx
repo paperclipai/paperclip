@@ -84,7 +84,7 @@ export function ProactiveMessageReview() {
         <h1 className="text-2xl font-semibold">Kodi’s morning digest is waiting in chat</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">Both Chat navigation variants count unread chats. Each agent has its own unread dot. Open Kodi at the latest message to clear its dot and reduce the count; Mira stays unread.</p>
       </header>
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-3">
         <section aria-label="Classic navigation" className="paperclip-story__frame overflow-hidden">
           <h2 className="border-b border-border px-4 py-3 text-sm font-medium">Classic navigation</h2>
           <div className="h-80 overflow-auto"><PluginLauncherProvider><Sidebar /></PluginLauncherProvider></div>

@@ -27,7 +27,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const AllChangedUx: Story = {
   name: "01 · All changed UX",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", options: { showPanel: false } },
   render: () => <ProactiveMessageReview />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -40,6 +40,7 @@ export const AllChangedUx: Story = {
 export const ReadOnOpen: Story = {
   ...AllChangedUx,
   name: "02 · Open chat marks the rendered message read",
+  parameters: { layout: "fullscreen", options: { showPanel: true } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole("img", { name: "Unread messages from Kodi" });
@@ -52,7 +53,7 @@ export const ReadOnOpen: Story = {
 export const ReadReceiptFailure: Story = {
   ...AllChangedUx,
   name: "03 · Read receipt failed",
-  parameters: { layout: "fullscreen", readFailure: true },
+  parameters: { layout: "fullscreen", options: { showPanel: true }, readFailure: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole("img", { name: "Unread messages from Kodi" });
