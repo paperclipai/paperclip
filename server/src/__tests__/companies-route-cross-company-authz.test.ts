@@ -420,4 +420,63 @@ describe("company route cross-company authorization", () => {
     expect(adminWrite.body.error).toContain("access to this company");
     assertNoTargetMutationSideEffects();
   });
+
+  describe("GET /stats company scope", () => {
+    const statsFixture = {
+      [companyAId]: { agentCount: 7, issueCount: 42 },
+      [companyBId]: { agentCount: 3, issueCount: 9 },
+    };
+
+    it("returns no counts to a member whose only membership is a client membership", async () => {
+      mockCompanyService.stats.mockResolvedValue(statsFixture);
+      const app = await createApp(boardActor({
+        userId: "client-user",
+        companyIds: [companyAId],
+        memberships: [{ companyId: companyAId, membershipRole: "client", status: "active" }],
+      }));
+
+      const res = await request(app).get("/api/companies/stats").expect(200);
+      // Counts describe the company's work. A client has no default access to
+      // it, so the response must not name the company at all.
+      expect(res.body).toEqual({});
+    });
+
+    it.each(["owner", "admin", "operator", "viewer"])(
+      "still returns counts to a %s staff member",
+      async (membershipRole) => {
+        mockCompanyService.stats.mockResolvedValue(statsFixture);
+        const app = await createApp(boardActor({
+          userId: `${membershipRole}-user`,
+          companyIds: [companyAId],
+          memberships: [{ companyId: companyAId, membershipRole, status: "active" }],
+        }));
+
+        const res = await request(app).get("/api/companies/stats").expect(200);
+        expect(res.body).toEqual({ [companyAId]: statsFixture[companyAId] });
+      },
+    );
+
+    it("drops only the client company when the member is staff elsewhere", async () => {
+      mockCompanyService.stats.mockResolvedValue(statsFixture);
+      const app = await createApp(boardActor({
+        userId: "client-here-staff-there",
+        companyIds: [companyAId, companyBId],
+        memberships: [
+          { companyId: companyAId, membershipRole: "client", status: "active" },
+          { companyId: companyBId, membershipRole: "operator", status: "active" },
+        ],
+      }));
+
+      const res = await request(app).get("/api/companies/stats").expect(200);
+      expect(res.body).toEqual({ [companyBId]: statsFixture[companyBId] });
+    });
+
+    it("keeps the whole directory for the local trusted board", async () => {
+      mockCompanyService.stats.mockResolvedValue(statsFixture);
+      const app = await createApp(boardActor({ userId: "local-board", source: "local_implicit" }));
+
+      const res = await request(app).get("/api/companies/stats").expect(200);
+      expect(res.body).toEqual(statsFixture);
+    });
+  });
 });

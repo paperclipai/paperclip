@@ -10,6 +10,7 @@ import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { hasClientMembershipFor } from "./company-member-roles.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -45,8 +46,13 @@ function identity(actor: AuthorizationActor) {
 }
 
 function companyAllowed(actor: AuthorizationActor, companyId: string) {
-  return actor.type === "agent" ? actor.companyId === companyId
-    : actor.type === "board" && (actor.source === "local_implicit" || actor.companyIds?.includes(companyId));
+  if (actor.type === "agent") return actor.companyId === companyId;
+  if (actor.type !== "board") return false;
+  if (actor.source === "local_implicit") return true;
+  // Company-scoped check made outside `assertCompanyAccess`, so it repeats
+  // the client deny.
+  if (hasClientMembershipFor(actor.memberships, companyId)) return false;
+  return actor.companyIds?.includes(companyId) === true;
 }
 
 async function assertEnabled(db: Db) {

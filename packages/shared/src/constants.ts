@@ -968,6 +968,7 @@ export const COMPANY_MEMBERSHIP_ROLES = [
   "operator",
   "viewer",
   "member",
+  "client",
 ] as const;
 export type CompanyMembershipRole = (typeof COMPANY_MEMBERSHIP_ROLES)[number];
 
@@ -976,14 +977,38 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLES = [
   "admin",
   "operator",
   "viewer",
+  "client",
 ] as const;
 export type HumanCompanyMembershipRole = (typeof HUMAN_COMPANY_MEMBERSHIP_ROLES)[number];
+
+/**
+ * Staff roles: the four roles that are assumed to be allowed to see a
+ * company's work by default. `client` is deliberately excluded — it is a
+ * distinct principal class with an empty default surface, not a weaker staff
+ * role. Use this (not `HUMAN_COMPANY_MEMBERSHIP_ROLES`) wherever the question
+ * is "which roles may run the company", such as staff-facing role pickers.
+ */
+export const STAFF_COMPANY_MEMBERSHIP_ROLES = [
+  "owner",
+  "admin",
+  "operator",
+  "viewer",
+] as const;
+export type StaffCompanyMembershipRole = (typeof STAFF_COMPANY_MEMBERSHIP_ROLES)[number];
+
+/**
+ * The human role with no default authority at all. An unrecognized role must
+ * normalize to this rather than to a staff role, so that a malformed or
+ * partially-rolled-out role value fails closed.
+ */
+export const LEAST_PRIVILEGED_HUMAN_COMPANY_MEMBERSHIP_ROLE = "client" as const;
 
 export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<HumanCompanyMembershipRole, string> = {
   owner: "Owner",
   admin: "Admin",
   operator: "Operator",
   viewer: "Viewer",
+  client: "Client",
 };
 
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;

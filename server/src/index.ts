@@ -1088,7 +1088,9 @@ async function startServerWithDatabaseTeardown(
         cloudActorHeaderSourceFromHeaders(req.headers),
       );
       if (!actor?.userId || !actor.companyIds) return null;
-      return { userId: actor.userId, companyIds: actor.companyIds };
+      // Pass memberships through: the upgrade path needs the roles to keep a
+      // `client` membership from subscribing to a company's live events.
+      return { userId: actor.userId, companyIds: actor.companyIds, memberships: actor.memberships };
     },
   });
 

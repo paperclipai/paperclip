@@ -7,6 +7,7 @@ import { ATTENTION_SOURCE_KINDS, decisionEffectTargetIssueIds } from "@paperclip
 import type { AttentionArchiveManifestEntry, DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { hasClientMembershipFor } from "./company-member-roles.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import {
@@ -122,6 +123,9 @@ function parseAttentionArchiveManifest(
 function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
   if (actor.type !== "board") return false;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
+  // Acting on a decision is a company-scoped write decided outside
+  // `assertCompanyAccess`, so it repeats the client deny.
+  if (hasClientMembershipFor(actor.memberships, companyId)) return false;
   return actor.companyIds?.includes(companyId) === true ||
     actor.memberships?.some((membership) => membership.companyId === companyId && membership.status === "active") === true;
 }

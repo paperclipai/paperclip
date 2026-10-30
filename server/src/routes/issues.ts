@@ -265,6 +265,7 @@ import {
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
+import { hasClientMembershipFor } from "../services/company-member-roles.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -4890,7 +4891,10 @@ export function issueRoutes(
     if (req.actor.type === "agent") return req.actor.companyId === companyId;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
       return true;
-    return (req.actor.companyIds ?? []).includes(companyId);
+    if (!(req.actor.companyIds ?? []).includes(companyId)) return false;
+    // Company-scoped check that does not run through `assertCompanyAccess`,
+    // so the client deny is repeated here.
+    return !hasClientMembershipFor(req.actor.memberships, companyId);
   }
 
   type TaskAssignmentAuthorizationScope = {
