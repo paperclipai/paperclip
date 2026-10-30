@@ -48,6 +48,7 @@ import {
   readIssueCommentRunLogText,
 } from "../services/issues.ts";
 import { getRunLogStore } from "../services/run-log-store.js";
+import * as nativeRunLogRecovery from "../services/native-runtime/native-run-log-recovery.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import {
@@ -192,6 +193,35 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
 });
 
 describe("readIssueCommentRunLogText", () => {
+  it("does not read after a timed-out native repair", async () => {
+    const repair = vi.spyOn(nativeRunLogRecovery, "recoverSettledNativeRunLog").mockImplementationOnce((_db, _store, _ref, _redaction, signal) => new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+    }));
+    const read = vi.spyOn(getRunLogStore(), "read").mockResolvedValue({ content: "too late" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = readIssueCommentRunLogText({ logStore: "s3_segments", logRef: "company/agent/run", logBytes: null }, {} as ReturnType<typeof createDb>);
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(pending).resolves.toBe("");
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      await pending;
+      vi.useRealTimers();
+      repair.mockRestore();
+      read.mockRestore();
+    }
+  });
+  it("keeps published evidence when a concurrent native repair wins ownership", async () => {
+    const repair = vi.spyOn(nativeRunLogRecovery, "recoverSettledNativeRunLog").mockRejectedValueOnce(new Error("The output journal is owned by another writer"));
+    const read = vi.spyOn(getRunLogStore(), "read").mockResolvedValueOnce({ content: "published evidence" });
+    try {
+      await expect(readIssueCommentRunLogText({ logStore: "s3_segments", logRef: "company/agent/run", logBytes: null }, {} as ReturnType<typeof createDb>)).resolves.toBe("published evidence");
+      expect(read).toHaveBeenCalledOnce();
+    } finally {
+      repair.mockRestore();
+      read.mockRestore();
+    }
+  });
   it("cancels timed-out storage reads so later listings can recover", async () => {
     let active = 0;
     const cleanups: Array<() => void> = [];

@@ -10,7 +10,7 @@ import { discoverReportCatalog } from "./report-catalog.js";
 import { buildRunnerCampaign } from "./history.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
-import { journeyCapabilities } from "./journey-features.js";
+import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const temporary: string[] = [];
@@ -89,6 +89,14 @@ describe("trusted report catalog discovery", () => {
     expect(journeyCapabilities(product).map(capability => capability.id)).toEqual(["questions-and-approvals/questions"]);
     expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-create" } }).map(capability => capability.id)).toEqual(["tasks/create"]);
     expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-search-filter" } }).map(capability => capability.id)).toEqual(["tasks/organize"]);
+  });
+
+  it("counts the project/task deployment journey toward projects and task creation coverage", () => {
+    const known = runnerMatrix.find(execution => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
+    const project = { ...known, suite: { ...known.suite, id: "product-journeys" }, task: { ...known.task, id: "project-task-context" } };
+    expect(journeyCapabilities(project).map(capability => capability.id)).toEqual(["projects/lifecycle", "projects/task-context", "tasks/create"]);
+    expect(journeyFeatureIds(project)).toEqual(["projects", "tasks"]);
+    expect(journeyCapabilities({ ...project, suite: { ...project.suite, id: "unrecognized-suite" } })).toEqual([]);
   });
 
   it("aggregates unknown suites and renders their cases, missing results, and screenshot gallery", () => {

@@ -428,7 +428,8 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
@@ -479,6 +480,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (
