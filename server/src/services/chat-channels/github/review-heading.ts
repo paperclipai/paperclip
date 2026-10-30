@@ -16,7 +16,9 @@ export function githubReviewSummary(input: Parameters<typeof githubReviewHeading
   rationale: string;
 }) {
   const heading = githubReviewHeading(input);
-  const labels = new Set([heading.slice(0, heading.lastIndexOf(" — ")), "## Paperclip Review"]);
+  const escapedLabel = heading.slice(0, heading.lastIndexOf(" — "));
+  const plainLabel = escapedLabel.replace(/\\(.)/g, "$1");
+  const labels = new Set([escapedLabel, plainLabel, "## Paperclip Review"]);
   const bodies = [input.summary, input.rationale].map(text => {
     let body = text.replace(/^(?:[ \t]*\r?\n)+/, "");
     while (body) {

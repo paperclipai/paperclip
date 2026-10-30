@@ -34,6 +34,17 @@ describe("GitHub review summary", () => {
     })).toBe("## New Review Bot — Incomplete\n\nPartial review.\n\nMissing context.");
   });
 
+  it.each([
+    ["Review_Bot", "Review\\_Bot"],
+    ["[Review]", "\\[Review\\]"],
+    ["Review\\Bot", "Review\\\\Bot"],
+  ])("accepts plain and escaped copied names for %s", (botDisplayName, escapedName) => {
+    expect(githubReviewSummary({ ...identity, botDisplayName,
+      summary: `## ${botDisplayName} — 2/5\n\n## ${escapedName} — 3/5\n\nReview body.`,
+      rationale: `## ${botDisplayName} — 4/5\n\nScore evidence.`,
+    })).toBe(`## ${escapedName} — 4/5\n\nReview body.\n\nScore evidence.`);
+  });
+
   it("preserves other headings and quoted score lines inside the review body", () => {
     const summary = "## Findings\n\nReview body.\n\n```markdown\n## New Review Bot — 2/5\n```";
     const rationale = "## Other Bot — 3/5\n\nComparison evidence.";
