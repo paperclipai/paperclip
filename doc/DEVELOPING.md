@@ -918,6 +918,13 @@ Timeouts, unavailable test environments, plugin outages and unclassified runtime
 failures retain automatic retry. Pause, termination, resource cleanup and idle
 sleep checks keep their existing safety gates.
 
+Remote directory and command checks preserve timeout, interruption and transport
+failures as typed execution-target failures. Adapters carry that signal in the
+optional `AdapterEnvironmentCheck.retryable` field. A retryable error becomes
+`test_environment_unavailable` before configuration classification, so it neither
+parks verification nor consumes the generic failed-test budget. A completed check
+that confirms a missing directory or command still waits for configuration repair.
+
 The retry persistence tests can use a dedicated local PostgreSQL database ending
 in `_test` through `PAPERCLIP_LIFECYCLE_VERIFICATION_RETRY_TEST_DATABASE_URL` when
 embedded PostgreSQL is unavailable. The test validates that URL before use.
