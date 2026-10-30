@@ -188,6 +188,24 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
+  it("spins the in-progress column glyph only while the column holds issues", () => {
+    const { container, render } = renderBoard({
+      issues: createIssues(1, "todo"),
+    });
+    const headerGlyph = () => container.querySelector('svg[aria-label="In Progress"]');
+
+    expect(headerGlyph()).toBeTruthy();
+    expect(headerGlyph()?.getAttribute("class")).not.toContain("motion-safe:animate-spin");
+
+    render({ issues: [createIssue(1, "todo"), createIssue(2, "in_progress")] });
+
+    expect(headerGlyph()?.getAttribute("class")).toContain("motion-safe:animate-spin");
+
+    render({ issues: createIssues(1, "todo"), collapsedStatuses: ["in_progress"] });
+
+    expect(headerGlyph()?.getAttribute("class")).not.toContain("motion-safe:animate-spin");
+  });
+
   it("gives every column a status-hued tone", () => {
     expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
     expect(getKanbanColumnTone("todo").body).toContain("amber");
