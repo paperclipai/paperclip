@@ -57,3 +57,17 @@ it("bounds streaming latency, UTF-8 buffer size and shutdown retention", () => {
   vi.runAllTimers();
   expect(write).toHaveBeenCalledTimes(3);
 });
+
+it("flushes preceding text before an oversized original delta without retaining a timer", () => {
+  vi.useFakeTimers();
+  const write = vi.fn();
+  const output = createOpenCodeProxyOutput(write);
+  const small = delta("First.");
+  const large = delta("x".repeat(4001));
+  output.send(small);
+  output.send(large);
+  expect(write.mock.calls.map(([value]) => value)).toEqual([small, large]);
+  vi.runAllTimers();
+  output.flush();
+  expect(write).toHaveBeenCalledTimes(2);
+});
