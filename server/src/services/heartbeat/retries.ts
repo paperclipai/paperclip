@@ -417,6 +417,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         reason: "Repair the invalid tool definitions before starting a new attempt.",
         issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
+    if (run.errorCode === "timeout") {
+      return { outcome: "not_scheduled" as const,
+        reason: "Raise adapter_config.timeoutSec or change the approach before starting a new attempt; the same wall-clock budget reproduces the timeout.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
     if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",

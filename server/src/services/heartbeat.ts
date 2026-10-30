@@ -985,6 +985,10 @@ export function heartbeatService(
     transientRetryBudgetSpent: (run) =>
       executionFailureRetryCount(run) >=
       BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+    // Mirrors scheduleBoundedRetryForRun's wall-clock timeout guard: that run is
+    // never retried, so recovery cannot wait for a successor that a later sweep
+    // would queue. Keep this predicate next to the guard it mirrors.
+    interventionRequiredNoRetry: (run) => run.errorCode === "timeout",
   });
   const runDispatch = createRunDispatch(db);
   const {

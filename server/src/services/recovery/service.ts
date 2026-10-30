@@ -967,6 +967,18 @@ export function recoveryService(
     transientRetryBudgetSpent?: (
       run: typeof heartbeatRuns.$inferSelect,
     ) => boolean;
+    /**
+     * Whether this run is deliberately never retried by policy even though the
+     * bounded transient budget is unspent, so `scheduleRecoveryRetry` cannot
+     * produce a successor for it. A wall-clock budget timeout is the current
+     * case: the same `adapter_config.timeoutSec` reproduces the same timeout, so
+     * repeating it is pointless. Nothing else queues a successor either, so the
+     * sweeper must report the exhaustion instead of waiting for a retry that
+     * will never come.
+     */
+    interventionRequiredNoRetry?: (
+      run: typeof heartbeatRuns.$inferSelect,
+    ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
   },
@@ -2057,7 +2069,16 @@ export function recoveryService(
           // it reports the exhaustion instead of leaving the issue with no
           // live path (2026-09-25: three deploy restarts in a row spent the
           // budget and the issue sat in_progress with no run, unescalated).
-          if (input.outcome && deps.transientRetryBudgetSpent?.(predecessor)) {
+          // A policy no-retry such as a wall-clock budget timeout has the same
+          // shape while the budget is still unspent: the guard keeps declining
+          // a retry, so the count never advances and every later sweep skips the
+          // issue. Treat it as exhausted too, or the issue stays `in_progress`
+          // with no run and no path until a person notices.
+          if (
+            input.outcome &&
+            (deps.transientRetryBudgetSpent?.(predecessor) ||
+              deps.interventionRequiredNoRetry?.(predecessor))
+          ) {
             input.outcome.retryExhausted = true;
           }
           return null;
@@ -5752,8 +5773,8 @@ export function recoveryService(
           latestRun,
           notice: {
             body:
-              "Paperclip retried this issue's run after it ended without finishing, but the bounded retry budget " +
-              "is spent and it still has no live execution path. " +
+              "Paperclip could not queue a further run for this issue after it ended without finishing, " +
+              "and it has no live execution path. " +
               "Moving it to `blocked` so it is visible for intervention.",
             title: "No live execution path",
             tone: "danger",
