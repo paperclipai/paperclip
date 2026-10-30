@@ -181,6 +181,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   requiresAgent: z.boolean().optional(),
   supportsTasks: z.boolean().optional(),
   freshWorkspaceVersion: z.literal(1).optional(),
+  creationOperationVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,

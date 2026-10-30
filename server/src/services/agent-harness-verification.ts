@@ -23,7 +23,8 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
-    const code = authenticationFailed ? "harness_auth_failed"
+    const code = result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
+      : authenticationFailed ? "harness_auth_failed"
       : has("_hello_probe_model_unavailable") || has("_model_invalid") ? "harness_model_unavailable"
       : has("_command_unresolvable") ? "harness_command_unavailable"
       : has("_cwd_invalid") ? "harness_cwd_invalid"
