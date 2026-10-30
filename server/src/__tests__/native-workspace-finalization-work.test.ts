@@ -13,6 +13,7 @@ import { agents, companies, completionContracts, createDb, heartbeatRuns, issues
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { issueService } from "../services/issues.js";
 import { nativeWorkspaceFinalizationWork } from "../services/native-runtime/native-workspace-finalization-work.js";
+import { getRunExecutionTraceContext, measureRunPhase } from "../services/execution-preparation-timing.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import * as platformProof from "../services/native-runtime/native-workspace-platform-proof.js";
@@ -112,6 +113,25 @@ describe("workspace finalization scheduled lifecycle", () => {
     return db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, runId),
       eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")));
   }
+  it.each([true, false])("binds deferred workspace tracing only when the endpoint is enabled: %s", async enabled => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", enabled ? "http://collector.test" : "");
+    try {
+      const binding = await seed(); await complete(binding);
+      let observed = false;
+      const attempt = vi.fn(async () => {
+        observed = getRunExecutionTraceContext(binding.runId) !== undefined;
+        await measureRunPhase("workspace_sync.restore", async () => {});
+        return { kind: "inactive" } as const;
+      });
+      const service = nativeWorkspaceFinalizationWork(db, { attempt, onWorkspaceSettled: settled });
+      const entries = await service.load({ companyId, runId: binding.runId });
+      expect(entries).toHaveLength(1);
+      await expect(service.check(entries[0])).resolves.toBeNull();
+      expect(attempt).toHaveBeenCalledOnce();
+      expect(observed).toBe(enabled);
+      expect(getRunExecutionTraceContext(binding.runId)).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
+  });
   it.each(["restore", "worktree"])("honors %s suppression through the public heartbeat registration", async mode => {
     const binding = await seed(); await complete(binding);
     const runtimeEnv = mode === "restore" ? { PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "true" }

@@ -29,7 +29,7 @@ import {
 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
@@ -651,6 +651,7 @@ export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
 ): Promise<VerifiedAcpxInstallation> {
+  assertAcpxProfileReleased(profile.agent);
   // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
   if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {

@@ -6,6 +6,28 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("rejects task shell selectors without a controller-owned helper projection", () => {
+    const selectors = { BASH_ENV: "/workspace/hook.sh", ZDOTDIR: "/workspace", GH_CONFIG_DIR: "/workspace/gh" };
+    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual({});
+    for (const [key, value] of Object.entries(selectors)) {
+      expect(configuredEnvironmentProjection({[key]: value})).not.toHaveProperty(key);
+      expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
+    }
+  });
+  it("keeps explicit Claude managed-command selectors without forwarding GitHub credentials", () => {
+    const helpers = { PATH: "/managed:/usr/bin", BASH_ENV: "/managed/.bashrc", ZDOTDIR: "/managed",
+      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed" };
+    const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "host-capability", NODE_OPTIONS: "--require=untrusted" };
+    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
+    for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
+    const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
+    const sibling = createSanitizedAcpxSpawnInput(source, "cursor").env;
+    for (const key of Object.keys(helpers).filter(key => key !== "PATH")) {
+      expect(ambient).not.toHaveProperty(key);
+      expect(sibling).not.toHaveProperty(key);
+    }
+  });
   it("does not inherit ambient prepared storage", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME", "/ambient/claude");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/ambient/claude");
@@ -21,6 +43,12 @@ describe("ACPX launch environment", () => {
     expect(launch.PAPERCLIP_RUNNER_HOME_MODE).toBeUndefined();
     expect(launch.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBeUndefined();
     expect(environment.CLAUDE_CONFIG_DIR).toBe(configured);
+  });
+  it("retains Runner notification discovery while denying task-supplied overrides", () => {
+    for (const key of ["PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER"]) {
+      expect(createSanitizedAcpxSpawnInput({ [key]: "/private/runner/context" }, "claude").env[key]).toBe("/private/runner/context");
+      expect(configuredEnvironmentProjection({ [key]: "/caller/override" })).not.toHaveProperty(key);
+    }
   });
   it("retains an explicit Claude MCP timeout without inheriting an ambient or sibling setting", () => {
     vi.stubEnv("MCP_TOOL_TIMEOUT", "999999");
@@ -109,7 +137,7 @@ describe("ACPX launch environment", () => {
 
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
   ] as const)("requires an explicit %s credential binding for %s", (agent, name) => {
     vi.stubEnv(name, "ambient-secret");
     expect(createSanitizedAcpxSpawnInput(undefined, agent).env[name]).toBeUndefined();
@@ -131,7 +159,7 @@ describe("ACPX launch environment", () => {
 
   it.each([
     ["pi", "OPENROUTER_API_KEY"], ["cursor", "CURSOR_API_KEY"],
-    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"],
+    ["cursor", "CURSOR_AUTH_TOKEN"], ["copilot", "COPILOT_GITHUB_TOKEN"], ["antigravity", "GEMINI_API_KEY"],
   ] as const)("admits only session-bound %s sidecar credentials for %s", (agent, name) => {
     const source = { [name]: "task-secret" };
     const binding = createAcpxCredentialBinding(source, agent, "session-1");

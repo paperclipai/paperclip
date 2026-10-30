@@ -1,3 +1,4 @@
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -18,6 +19,14 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 import { issues } from "./issues.js";
+
+// Literal allowlist shared by bounded projections and the matching partial index.
+// Constants are quoted here so PostgreSQL can prove the index predicate even
+// when callers use prepared statements.
+export const workspaceRestoreFailureCodesSql = sql.join(
+  WORKSPACE_RESTORE_FAILURE_CODES.map(code => sql.raw(`'${code.replaceAll("'", "''")}'`)),
+  sql`, `,
+);
 
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
@@ -119,7 +128,7 @@ export const heartbeatRuns = pgTable(
         AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
         AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
         AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
-          AND ${table.resultJson}->>'workspaceRestoreFailure' IN ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')) IS NOT TRUE`),
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`),
     retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
       .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
         and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')

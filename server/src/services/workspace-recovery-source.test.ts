@@ -1,10 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
+import { createHeartbeatRunState } from "./heartbeat/run-state.js";
+import { activityService } from "./activity.js";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments,
-  heartbeatRuns, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
+  heartbeatRuns, issueRecoveryActions, issues, workspaceOperations, completionContracts, nativeRunResults, nativeRunFinalizations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { inspectWorkspaceRecoverySource } from "./workspace-recovery-source.js";
@@ -76,6 +79,38 @@ describe("workspace source verification diagnostics", () => {
     };
   }
 
+  it.each(WORKSPACE_RESTORE_FAILURE_CODES)("preserves %s through both run API projections", async code => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: code, opaque: randomBytes(100_000).toString("hex"),
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [runs, activity] = await Promise.all([
+      createHeartbeatRunState(db).getRun(f.runId),
+      activityService(db).runsForIssue(f.companyId, f.issueId),
+    ]);
+    expect(runs?.resultJson?.opaque).toBeUndefined();
+    const activityResult = activity[0].resultJson;
+    expect({ run: runs?.resultJson?.workspaceRestoreFailure,
+      activity: activityResult && "workspaceRestoreFailure" in activityResult ? activityResult.workspaceRestoreFailure : undefined })
+      .toEqual({ run: code, activity: code });
+  });
+
+  it("keeps a cancelled metadata-repair hold out of the preservation index while retaining ordinary work", async () => {
+    const f = await seed();
+    const [index] = await db.execute(sql`select pg_get_expr(indpred, indrelid) as predicate
+      from pg_index where indexrelid = 'heartbeat_runs_cancelled_workspace_preservation_idx'::regclass`);
+    await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+      nativeCancellation: { dispatchState: "acknowledged" }, workspaceRestoreFailure: "restore_invalid_metadata",
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const candidates = () => db.execute(sql`select id from heartbeat_runs where id = ${f.runId}
+      and ${sql.raw(String(index.predicate))}`);
+    expect(await candidates()).toHaveLength(0);
+    await db.update(heartbeatRuns).set({ resultJson: { nativeCancellation: { dispatchState: "acknowledged" } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await candidates()).toHaveLength(1);
+  });
+
   it.each(["lease_policy_not_retained", "source_lease_not_bound"])("identifies the rejected contract: %s", async reason => {
     const f = await seed();
     if (reason === "lease_policy_not_retained") {
@@ -89,6 +124,34 @@ describe("workspace source verification diagnostics", () => {
     await expect(inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({
       code: "source_binding_invalid", retryClass: "service_required", sourceVerification: { reason },
     });
+  });
+
+  it.each(["rejected", "failed_result", "unselected", "shared_allocation", "active_writer"])("keeps reusable export guards: %s", async kind => {
+    const f = await seed();
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+      revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {}, canonicalSha256: "contract", createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ completionContractId: contractId }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contractId, schemaStatus: kind === "rejected" ? "rejected" : "accepted",
+      serverFingerprint: "result", canonicalSha256: "result", resultJson: {
+        terminal: { runTerminalState: kind === "failed_result" ? "failed" : "succeeded" } } });
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      phase: "terminal_failure", resultId: kind === "unselected" ? null : resultId });
+    await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" }).where(eq(environmentLeases.id, f.lease.id));
+    if (kind === "shared_allocation") await db.insert(environmentLeases).values({ companyId: f.companyId,
+      environmentId: f.environment.id, provider: "daytona", providerLeaseId: f.lease.providerLeaseId,
+      leasePolicy: "reuse_by_environment", status: "released" });
+    if (kind === "active_writer") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, status: "running" });
+    const before = await snapshot(f);
+    await expect(inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({
+      code: kind === "shared_allocation" ? "allocation_ownership_ambiguous"
+        : kind === "active_writer" ? "workspace_writer_active" : "source_binding_invalid",
+    });
+    expect(await snapshot(f)).toEqual(before);
   });
 
   it("inspects a resolved retained source through HTTP without revalidating or changing recorded recovery", async () => {

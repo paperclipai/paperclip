@@ -651,8 +651,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/verdicts`,
       { verdicts },
     ),
-  getComment: (id: string, commentId: string) =>
-    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  getComment: (id: string, commentId: string, options?: RequestOptions) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${encodeURIComponent(commentId)}`, options),
   listFeedbackVotes: (id: string) =>
     api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {

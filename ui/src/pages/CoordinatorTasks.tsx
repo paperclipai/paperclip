@@ -19,6 +19,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
+import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
@@ -29,6 +30,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { taskListViewStorageKey } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, taskView } from "@/lib/task-views";
+import type { Issue } from "@paperclipai/shared";
 
 const pageSize = 200;
 const views = [{ value: "all", label: "All tasks" }, { value: "blocked", label: "Needs attention" }] as const;
@@ -41,6 +43,7 @@ export function CoordinatorTasks() {
   const { openNewIssue } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const client = useQueryClient();
+  const listRef = useRef<HTMLElement>(null);
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
@@ -69,10 +72,10 @@ export function CoordinatorTasks() {
   useEffect(() => { setBreadcrumbs([{ label: "Tasks" }]); }, [setBreadcrumbs]);
 
   const tasks = useInfiniteQuery({
-    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", userId, deferredQuery, participantAgentId, workspaceIds],
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds],
     queryFn: async ({ pageParam, signal }) => {
-      const pages = await Promise.all((workspaceIds.length ? workspaceIds : [undefined]).map(workspaceId => issuesApi.list(companyId!, {
-      limit: pageSize, offset: pageParam, includeAgentCreatedTasks: true, includeRoutineExecutions: true,
+      const pages = await Promise.all((workspaceIds.length ? workspaceIds : [undefined]).map(workspaceId => issuesApi.listCompact(companyId!, {
+      projection: "index", limit: pageSize, offset: pageParam, includeAgentCreatedTasks: true, includeRoutineExecutions: true,
       sortField: "updated", sortDir: "desc", q: deferredQuery || undefined, participantAgentId, workspaceId,
       }, { signal })));
       return { items: pages.flat(), hasNextPage: pages.some(page => page.length === pageSize) };
@@ -83,14 +86,22 @@ export function CoordinatorTasks() {
   });
   const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!),
     queryFn: () => attentionApi.list(companyId!, { all: true }), enabled: !!companyId && needsAttention });
-  // Hydrate every pending task, including those outside the first list page.
-  // Do not substitute blocked/in-review status for an actual pending decision.
+  // Resolve every pending task in bounded index batches, including tasks outside
+  // the first list page. Keep full task enrichment out of the collection read.
   const attentionIds = needsAttention ? [...pendingDecisionTaskIds(attention.data?.items ?? [])] : [];
-  const attentionTasks = useQueries({ queries: attentionIds.map(id => ({
-    queryKey: participantAgentId ? [...queryKeys.issues.list(companyId!), "coordinator-attention-participant", userId, participantAgentId, id] : queryKeys.issues.detail(id),
-    queryFn: async ({ signal }: { signal: AbortSignal }) => participantAgentId
-      ? (await issuesApi.list(companyId!, { ids: [id], participantAgentId, includeAgentCreatedTasks: true, includeRoutineExecutions: true }, { signal }))[0] ?? null
-      : issuesApi.get(id, { signal }),
+  const attentionBatches = Array.from({ length: Math.ceil(attentionIds.length / 100) }, (_, index) => attentionIds.slice(index * 100, (index + 1) * 100));
+  const attentionTasks = useQueries({ queries: attentionBatches.map(ids => ({
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, ids],
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const rows = await issuesApi.listCompact(companyId!, {
+        ids, projection: "index", limit: 100, q: deferredQuery || undefined, participantAgentId,
+        includeAgentCreatedTasks: true, includeRoutineExecutions: true,
+      }, { signal });
+      if (!deferredQuery && !participantAgentId && ids.some(id => !rows.some(row => row.id === id))) {
+        throw new Error("Some tasks with pending decisions couldn’t load.");
+      }
+      return rows;
+    },
     enabled: !!companyId,
   })) });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
@@ -103,7 +114,7 @@ export function CoordinatorTasks() {
   const users = buildCompanyUserLabelMap(directory.data?.users);
   const agentNames = new Map(agents.data?.map(agent => [agent.id, agent.name]));
   const projectById = new Map(projects.data?.map(project => [project.id, project]));
-  const records = needsAttention ? attentionTasks.flatMap(task => task.data ? [task.data] : []) : tasks.data?.pages.flatMap(page => page.items) ?? [];
+  const records = (needsAttention ? attentionTasks.flatMap(task => task.data ?? []) : tasks.data?.pages.flatMap(page => page.items) ?? []) as Issue[];
   const scopedRecords = needsAttention && workspaceIds.length ? records.filter(issue =>
     workspaceIds.includes(issue.executionWorkspaceId ?? "") || workspaceIds.includes(issue.projectWorkspaceId ?? "")) : records;
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
@@ -112,7 +123,7 @@ export function CoordinatorTasks() {
     assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: "all",
-    searchMode: needsAttention ? "local" : "server",
+    searchMode: "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey: taskListViewStorageKey("coordinator", userId ?? "local-board"),
     initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses },
@@ -162,6 +173,13 @@ export function CoordinatorTasks() {
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
   const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
     || (collection.filters.liveOnly && liveRuns.isPending);
+  const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
+    companyId, listRef,
+    `${collection.visibleItems.map(item => item.issue.id).join(",")}:${[...collection.collapsedIds].join(",")}:${collection.layout}`,
+    !pending && !error,
+    records,
+  );
+  const enrichItem = (item: TaskListItem): TaskListItem => ({ ...item, issue: enrichIssueRow(item.issue) });
   const empty = <EmptyState icon={query || collection.activeFilterCount ? SearchX : ListChecks}
     message={query || collection.activeFilterCount ? "No tasks match this view" : needsAttention ? "No tasks need a decision." : "No tasks in this organization"}
     action={query || collection.activeFilterCount ? "Clear filters" : needsAttention ? undefined : "New Task"}
@@ -176,19 +194,20 @@ export function CoordinatorTasks() {
   };
 
   if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
-  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
+  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
     <TaskListToolbar view={needsAttention ? "blocked" : "all"} viewOptions={views} onViewChange={view => setView(view === "blocked")}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
       filters={{ state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
         agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
     {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={retry}>Retry</Button></div> : null}
+    {rowDetailsError ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><span>Task details couldn’t load.</span><Button variant="ghost" size="sm" onClick={() => void retryRowDetails()}>Retry</Button></div> : null}
     {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
-        items={needsAttention ? collection.matchingItems : collection.visibleItems} allItems={collection.companyItems}
+        items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
-        ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => item.issue)} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
+        ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
       {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{items.length} tasks loaded. Load more to include them in filters.</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button></div> : null}
     </>}
   </section></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;

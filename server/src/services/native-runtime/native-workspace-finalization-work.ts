@@ -4,6 +4,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { onNativeWorkspaceFinalizationRelease, type NativeWorkspaceFinalizationScope } from "../native-workspace-finalization-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { measureRunPhase, withRunWorkspaceFinalizationTiming } from "../execution-preparation-timing.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { attemptNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
 
@@ -58,7 +59,10 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     }
     throw new Error("Native workspace finalization discovery stopped");
   }
-  async function check(current: Entry, signal?: AbortSignal): Promise<Entry | null> {
+  function check(current: Entry, signal?: AbortSignal): Promise<Entry | null> {
+    return withRunWorkspaceFinalizationTiming(current.id, () => checkWithinTrace(current, signal));
+  }
+  async function checkWithinTrace(current: Entry, signal?: AbortSignal): Promise<Entry | null> {
     if (signal?.aborted) throw new Error("Native workspace finalization stopped");
     const scope = { companyId: current.companyId, runId: current.id };
     const [row] = await candidates(scope);
@@ -66,9 +70,9 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     const due = entry(row);
     if (due.dueAt > Date.now()) return due;
     if (signal?.aborted) throw new Error("Native workspace finalization stopped");
-    const outcome = await (options.attempt ?? attemptNativeWorkspaceFinalization)({
+    const outcome = await measureRunPhase("execution.workspace_finalize", () => (options.attempt ?? attemptNativeWorkspaceFinalization)({
       db, runId: current.id, environmentRuntime: options.environmentRuntime, pluginWorkerManager: options.pluginWorkerManager,
-    });
+    }));
     if (outcome.kind === "retry") return { ...due, dueAt: outcome.retryAt.getTime() };
     if (outcome.kind === "waiting") {
       return outcome.reason === "busy" || outcome.reason === "platform_stop_pending"

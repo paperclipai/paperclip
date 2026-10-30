@@ -31,6 +31,8 @@ import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWor
 import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
+import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
 import {
   deleteWorkspaceCompactionTrash,
@@ -1401,9 +1403,22 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   for (const operation of operations) {
     if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
   }
+  const bootstrapRunIds = rows.filter(({ finalization, run }) => {
+    const recovery = parseObject(run.resultJson?.executionRecovery);
+    return run.runtimeMode === "native" && run.status === "failed" && run.finishedAt !== null
+      && finalization.phase === "terminal_failure" && finalization.resultId === null
+      && run.processPid === null && run.processGroupId === null
+      && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+      && !hasWorkspaceRestoreFailure(run.resultJson)
+      && run.runnerProfileJson?.nativeWorkspaceSync == null
+      && run.runnerProfileJson?.nativeWorkspaceFinalizationOwner == null
+      && latest.get(run.id) === "failed";
+  }).map(({ run }) => run.id);
+  const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
+  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
   return rows.some(({ finalization, run }) => {
     const status = latest.get(run.id);
-    if (status !== undefined) return status !== "succeeded";
+    if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
     return finalization.phase === "terminal_failure" && finalization.resultId !== null;
   });
 }

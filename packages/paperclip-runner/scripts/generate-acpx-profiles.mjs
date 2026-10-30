@@ -8,6 +8,7 @@ const root = new URL("../", import.meta.url);
 const readJson = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const manifest = await readJson("acpx-profiles.json");
 const distributions = await readJson("cursor-distributions.json");
+const antigravityDistributions = await readJson("antigravity-distributions.json");
 const contract = await readJson("cursor-contract.json");
 const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
@@ -41,6 +42,8 @@ const canonicalJson = value => value && typeof value === "object"
   ? Array.isArray(value) ? `[${value.map(canonicalJson).join(",")}]`
     : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`
   : JSON.stringify(value);
+assert.equal(manifest.profiles.antigravity.agentServerVersion, antigravityDistributions.version);
+assert.equal(manifest.profiles.antigravity.commandDigest, `sha256:${createHash("sha256").update(canonicalJson(antigravityDistributions)).digest("hex")}`, "Antigravity distribution identity is stale");
 const { commandDigest, ...attestation } = contract;
 assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
 assert.equal(contract.acpxPatchSha256, createHash("sha256")
@@ -74,6 +77,8 @@ export const ACPX_DRIVER_PROTOCOL_VERSION = ${manifest.protocolVersion} as const
 export const QUALIFIED_ACPX_PROFILE_DATA = ${JSON.stringify(profiles, null, 2)} as const;
 
 export const CURSOR_DISTRIBUTION_PINS = ${JSON.stringify(Object.fromEntries(Object.entries(distributions.platforms).map(([platform, { closureSha256, executable, entrypoint }]) => [platform, { closureSha256, executable, entrypoint }])), null, 2)} as const;
+
+export const ANTIGRAVITY_DISTRIBUTION_PINS = ${JSON.stringify(Object.fromEntries(Object.entries(antigravityDistributions.platforms).filter(([, pin]) => pin.provisioning === "verified-closure").map(([platform, { closureSha256, executable, args }]) => [platform, { closureSha256, executable, args }])), null, 2)} as const;
 `;
 const option = value => value === null ? "None" : `Some(${quote(value)})`;
 const rust = `// ${header}
@@ -88,6 +93,7 @@ pub(crate) struct AcpxReleaseProfile {
     pub agent_runtime_version: Option<&'static str>,
     pub command_digest: &'static str,
     pub requires_provider_policy: bool,
+    pub qualification_pending: bool,
 }
 
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
@@ -100,6 +106,7 @@ ${entries.map(([agent, p]) => `        ${quote(agent)} => AcpxReleaseProfile {
             command_digest:
                 ${quote(p.commandDigest)},
             requires_provider_policy: ${p.requiresProviderPolicy},
+            qualification_pending: ${p.qualificationStatus === "pending"},
         },`).join("\n")}
         _ => return None,
     })

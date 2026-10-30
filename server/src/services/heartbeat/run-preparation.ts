@@ -1,3 +1,4 @@
+import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
 import type { AuthorizationActor } from "../authorization.js";
@@ -226,6 +227,7 @@ const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
 // 3. Any other PAPERCLIP_*-named binding is user data and flows through to
 //    the run env like any non-prefixed binding.
 const FORBIDDEN_ENV_BINDING_KEYS = new Set([
+  "BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR",
   CONFIGURED_ENVIRONMENT_KEYS,
   "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
   "PAPERCLIP_RUNNER_NETWORK_ACCESS",
@@ -2960,7 +2962,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
-        fileInventory: companySkillVersions.fileInventory,
+        version: skillVersionMetadataColumns,
         revisionNumber: companySkillVersions.revisionNumber,
         label: companySkillVersions.label,
       })
@@ -2980,8 +2982,9 @@ export function createHeartbeatRunPreparation(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const fileInventory = Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
+    const savedFiles = await skillPackageStore(db).versionFiles(row.version);
+    const fileInventory = Array.isArray(savedFiles)
+      ? savedFiles.flatMap((entry) => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry))
             return [];
           const record = entry as unknown as Record<string, unknown>;

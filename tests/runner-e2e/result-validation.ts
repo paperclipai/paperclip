@@ -1,6 +1,8 @@
+import { agentJourneyRuns, journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";
+import { gradeAntigravityJourney, validateAntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 import { DEPENDABLE_CELLS } from "./dependable-qualification.js";
@@ -396,6 +398,7 @@ const fields = {
     scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),
     inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string),
   })),
+  antigravityJourney: optional((value, at) => { try { validateAntigravityJourneyEvidence(value); } catch { invalid(at); } }),
   githubReviewJourney: optional(closedShape({ version: integer, outcome: oneOf("running", "passed", "failed", "awaiting_user", "missing_credential", "blocked_target"),
     phase: string, setupId: string, hosting: oneOf("self-hosted", "paperclip-cloud"), targetCommit: nullable(string), assisted: boolean,
     dependencies: array(closedShape({ alias: string, consumer: oneOf("harness", "browser", "product-agent"), status: oneOf("ready", "unverified", "created-in-journey"), source: oneOf("onepassword", "environment", "browser-session", "product-connection") })),
@@ -429,11 +432,22 @@ export function validateRetainedRunnerResult(
   if (checked.suiteId === "product-journeys" && checked.status === "passed") {
     const evidence = checked.productJourney;
     if (!evidence) return invalid("result.productJourney");
-    const required = checked.caseId === "task-properties" ? ["assignment-persisted", "no-agent-work"] : ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"];
-    if (evidence.outcome !== "passed" || !evidence.deployment || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
-    if (checked.caseId === "task-properties" && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
+    const required = journeyRequiredChecks[checked.caseId];
+    if (evidence.outcome !== "passed" || !evidence.deployment || !required || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.checks.some(check => !check.passed) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
+    if (["task-properties", "task-create"].includes(checked.caseId) && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
+    if (Object.hasOwn(agentJourneyRuns, checked.caseId) && (checked.runIds?.length !== agentJourneyRuns[checked.caseId as keyof typeof agentJourneyRuns]
+      || !checked.model || !checked.provider || checked.runtimeMode !== "native")) invalid("result.agentJourneyRun");
     if (checked.caseId === "cloud-onboarding" && (!checked.runIds?.length || !evidence.operations || !evidence.operations.requestCount || !evidence.operations.traceIds.length || evidence.operations.campaignId !== evidence.campaignId || evidence.operations.attemptId !== evidence.attemptId)) invalid("result.paidJourneyReceipt");
   }
   if (checked.suiteId === "provider-connections" && checked.status === "passed" && (!checked.providerConnection || !connectionEvidencePasses(checked.providerConnection))) invalid("result.providerConnection");
   if (checked.suiteId === "github-review-journey" && checked.status === "passed" && (!checked.githubReviewJourney || checked.githubReviewJourney.outcome !== "passed" || !checked.githubReviewJourney.targetCommit || !gradeGitHubReviewJourney(checked.githubReviewJourney).every(check => check.passed))) invalid("result.githubReviewJourney");
+  if (checked.suiteId === "antigravity-agent-journey" && checked.status === "passed") {
+    const evidence = checked.antigravityJourney;
+    if (!evidence || evidence.outcome !== "passed" || evidence.assisted || !evidence.targetCommit || !gradeAntigravityJourney(evidence).every(check => check.passed)
+      || checked.cleanup !== "passed" || checked.runtimeMode !== "native" || checked.model !== evidence.model || checked.provider !== "acpx"
+      || checked.runIds?.length !== 2 || !evidence.turnEvidence.every(turn => checked.runIds!.includes(turn.runId))
+      || !evidence.companyId || !evidence.agentId || !evidence.connectionId || !checked.issueId
+      || !evidence.turnEvidence.every(turn => turn.companyId === evidence.companyId && turn.agentId === evidence.agentId && turn.connectionId === evidence.connectionId && turn.issueId === checked.issueId)
+      || !checked.screenshots?.some(shot => shot.id === "persisted" && /^[a-f0-9]{64}$/u.test(shot.sha256 ?? ""))) invalid("result.antigravityJourney");
+  }
 }

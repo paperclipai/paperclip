@@ -1,3 +1,4 @@
+import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -271,6 +272,8 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       }
       const classification = classifyNativeWorkspaceFailure(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
+          ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
           ? new SystemRecoveryFailure("archive_unsafe", "service_required")
           : classification.code === "workspace_sync_out_unrecoverable"

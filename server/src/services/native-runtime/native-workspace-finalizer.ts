@@ -1,3 +1,4 @@
+import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -18,6 +19,7 @@ import { inspectManagedGitWorktreeBranch } from "../workspace-runtime.js";
 import { environmentService } from "../environments.js";
 import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
+import { measureWorkspaceSyncPhase } from "../execution-preparation-timing.js";
 import {
   readNativeWorkspaceSyncReference,
   resumeNativeWorkspaceSync,
@@ -212,6 +214,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
             assertOwnership: ownership.assertHeld,
             restore: () => resumeNativeWorkspaceSync({
               db: input.db, runId: input.runId, target, assertOwnership: ownership.assertHeld,
+              onPhase: measureWorkspaceSyncPhase,
             }),
           });
           await ownership.assertHeld();
@@ -235,12 +238,8 @@ export async function attemptNativeWorkspaceFinalization(input: {
           };
         } catch (error) {
           await ownership.assertHeld();
-          const code =
-            error instanceof Error &&
-            (error.message === "workspace_sync_out_unrecoverable" ||
-              error.message.includes("daytona_sandbox_not_found"))
-              ? "workspace_sync_out_unrecoverable"
-              : "workspace_sync_out_failed";
+          const code = classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed";
           return workspaceSyncFailure(code);
         }
       }

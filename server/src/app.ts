@@ -74,10 +74,9 @@ import {
   parseTrustProxyEnv,
 } from "./middleware/trust-proxy.js";
 import {
-  IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
   resolveDefaultImportTransferSpoolRoot,
-  sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
+import { registerImportSpoolCleanupWork } from "./services/import-spool-cleanup-work.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
 import { livenessRoutes } from "./routes/liveness.js";
@@ -1235,38 +1234,11 @@ export async function createApp(
   );
   emailChannels.start();
   chatChannels.registerGitHubWebhookRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
-  // Abandoned chunked-import spool sweep: hourly (plus once at startup),
-  // deleting spool dirs whose transfer saw no activity for 24h and cancelling
-  // their still-open ledger runs. Same setInterval + unref + shutdown-clear
-  // shape as the feedback export flush above.
-  const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
-  const sweepImportTransferSpools = () => {
-    if (isWarmStandby() || isIdleTaskDrainActive()) return;
-    sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
-      .then((result) => {
-        if (result.swept > 0) {
-          logger.info(result, "swept abandoned company import transfer spools");
-        }
-      })
-      .catch((err) => {
-        logger.error(
-          { err },
-          "abandoned company import transfer spool sweep failed",
-        );
-      });
-  };
+  const importSpoolCleanup = registerImportSpoolCleanupWork(db, deliveryWork,
+    resolveDefaultImportTransferSpoolRoot(), () => !isWarmStandby() && !isIdleTaskDrainActive());
   registerBrowserUseCleanup(deliveryWork, browserUse, () => !isIdleTaskDrainActive());
-  let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
-    setInterval(
-      sweepImportTransferSpools,
-      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-    );
-  importTransferSweepTimer.unref?.();
-  // Startup only (never on the hourly interval — that would kill live
-  // applies): apply jobs are in-memory in this single process, so any run
-  // still "applying" now was interrupted by the previous shutdown and would
-  // otherwise 409 every retry forever. Fail those stranded runs — their
-  // spooled parts stay reusable — then run the normal sweep once.
+
+
   void companyTransferRunService
     .recoverStrandedApplyingRuns(db)
     .then((recovered) => {
@@ -1279,9 +1251,6 @@ export async function createApp(
     })
     .catch((err) => {
       logger.error({ err }, "stranded company transfer apply recovery failed");
-    })
-    .finally(() => {
-      sweepImportTransferSpools();
     });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
@@ -1360,11 +1329,8 @@ export async function createApp(
       await dotMcpEvents?.stop();
       jobCoordinator.stop();
       resourceLifecycleDelivery.dispose();
+      importSpoolCleanup.unsubscribe();
       await deliveryWork.stop();
-      if (importTransferSweepTimer) {
-        clearInterval(importTransferSweepTimer);
-        importTransferSweepTimer = null;
-      }
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);

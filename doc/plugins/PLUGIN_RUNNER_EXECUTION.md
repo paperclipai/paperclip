@@ -188,12 +188,18 @@ accounts continue per-turn until such an identity is available; the saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 
-Plugin task execution does not create a Core-managed GitHub broker. Warm reuse
-and restart recovery use the same broker-ownership rule as initial startup.
+Plugin task execution uses the public, run-scoped GitHub credential broker
+when the provider advertises its versioned contract. Warm preparation updates
+the command capability before admitting the new run. Restart recovery retains
+the original run binding; new work must not reactivate an older capability.
 Project authorization is still checked for each new run.
 
 A Launcher task owns one Runner process, independently of Core heartbeat runs.
 Successful warm run completion retains the task and its mounts. The reuse
+policy is saved with the selected native runtime, independently of workspace
+copy-back records. Recovery uses that policy when no workspace-sync record exists,
+so it does not stop a Runner that foreground completion retains. Failed and
+cancelled runs still stop instead of staying warm. The reuse
 fingerprint includes the authorized project set; changing it retires the previous
 task before checkpoint recovery. Adoption and each warm handoff require a current,
 configuration-bound project-auth check against the exact retained mount scope. Core atomically
@@ -204,6 +210,11 @@ project authentication, prepares the new run's resources, and uses PRP
 allowing the new authority. The original ingress address remains unchanged.
 Runner accepts `connection: { mode: "external" }` on warm attachment to preserve
 the process owner's listener and TLS settings while rotating the run identity.
+
+Core permits connection refresh for the saved successful run while its warm task
+lease is retained, unexpired, and not retiring or stopped. PRP authentication
+still applies. A superseded lease cannot acquire a connection. Retention does
+not authorize preparation or submission of new work through the completed lease.
 
 Idle retirement suspends and stops Runner, saves its exact checkpoint, writes
 credentials through the durable lease handoff, then completes the provider task.
@@ -226,3 +237,58 @@ checkpoint under its stable archive key and preserves provider session files.
 Warm status monitoring relies on PRP after startup and does not poll an idle
 Launcher. ACPX uses this task-provider contract; other execution transports retain
 their provider-specific lifecycle policies.
+
+### Operation-time GitHub credentials
+
+A task provider can advertise `githubCredentialBrokerVersion: 1` in its
+`describe` result. Core then supplies an optional `githubBroker: { url, token }`
+in each `prepare` operation. This is a runtime capability, not a GitHub token.
+No controller path, executable, script, or command implementation is part of
+this contract. Plugin authors own how their command environment uses it.
+
+At the start of each authenticated operation, send `POST` with body `{}` to
+`<url without trailing /api>/runtime-tools/github/credentials`, with
+`Authorization: Bearer <token>`. The response is either
+`{ status: "available", env: { ... } }` or
+`{ status: "unavailable", reason: "..." }`. Core rechecks the live run, accepted
+instruction identity, grants, and trust policy on each request. Use the returned
+environment only in the command and its descendants. Never retain raw GitHub
+credentials in plugin state, launch descriptors, logs, or files.
+
+A warm task must replace its broker capability before admitting the next run's
+commands. An absent broker clears the old capability and allows anonymous/local
+operations only. Isolate ambient host credentials and Git/GitHub configuration;
+an unavailable broker must never select a host account. Capture once per
+operation so steering does not split a command's Git descendants across people.
+The runtime capability may be staged privately for command-time access; it must
+not enter the returned launch descriptor or entity records. Core's managed
+launchers are an optional reference implementation. Compatible native helpers,
+credential helpers, or command proxies can implement the same semantics.
+
+Deploy the updated Core and plugin together. A configured
+GitHub connection on an older task provider returns an explicit upgrade error.
+Unconfigured providers continue ordinary work without authenticated GitHub access.
+
+Managed GitHub command providers must retain the qualified provider executable
+and arguments. Supply helper discovery through the task environment instead of
+wrapping that executable. Claude ACPX preserves explicit `BASH_ENV`, `ZDOTDIR`,
+`GH_CONFIG_DIR`, and `PAPERCLIP_GITHUB_LAUNCHER_DIR` selectors across the sidecar
+boundary. It does not forward GitHub tokens or broker capabilities to the provider.
+The helper reads the current task capability at invocation, including after warm
+reuse. These selectors must come from the trusted environment owner.
+Reference helpers mark only their child operation and reject re-entry before resolving
+another executable or capturing credentials. A PATH shim that calls a helper's
+absolute path fails with `launcher_recursion_rejected` (exit 126), preventing
+recursive process growth. Offline Git fixtures must resolve the native binary
+outside managed helper paths and exclude runtime shell startup hooks.
+
+
+The pure launch factory exports `RUNNER_GITHUB_LAUNCHER_VERSION = 1` for this
+contract. A provider must check it as well as the host broker schema and its
+Launcher capability before advertising managed GitHub commands. The installed
+Runner must match the factory's source revision.
+
+The helper projection is marked by the controller-owned
+`PAPERCLIP_GITHUB_LAUNCHER_DIR`. Task overrides cannot supply that marker or the
+shell selectors. Run preparation strips stored bindings before secret resolution,
+and configured task-environment projections reject the shell selectors too.

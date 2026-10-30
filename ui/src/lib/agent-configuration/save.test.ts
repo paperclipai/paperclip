@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { appearanceForPalette, type AgentConfigurationDocument } from "@paperclipai/shared";
+import { appearanceForPalette, type AgentConfigurationDocument, type AgentConfigurationInput } from "@paperclipai/shared";
 import { parseAgentConfigurationYaml, serializeAgentConfigurationDocument } from "../agent-configuration-yaml";
 import { loadAgentConfiguration } from "./load";
 import { ConfigurationSaveInterrupted, planAgentConfiguration, saveAgentConfiguration } from "./save";
+import { compactAgentConfiguration } from "./compact";
 
 const api = vi.hoisted(() => ({
   agents: Object.fromEntries(["getConfiguration", "get", "instructionsBundle", "instructionsFile", "skills", "listKeys", "listConfigRevisions", "update", "updateInstructionsBundle", "saveInstructionsFile", "deleteInstructionsFile", "syncSkills", "updatePermissions", "createKey", "revokeKey", "rollbackConfigRevision"].map(key => [key, vi.fn()])),
@@ -41,7 +42,7 @@ beforeEach(() => {
   api.agents.skills.mockResolvedValue({ desiredSkills: ["paperclip"], desiredSkillEntries: [{ key: "paperclip", versionId: resourceId }], warnings: [] });
   api.agents.listKeys.mockResolvedValue([{ id: "key", name: "Previous", scope: { kind: "standard" }, revokedAt: null }]);
   api.agents.listConfigRevisions.mockResolvedValue([{ id: "revision", source: "board", changedKeys: ["name"] }]);
-  api.tools.listConnections.mockResolvedValue({ connections: [connection] });
+  api.tools.listConnections.mockResolvedValue({ connections: [copy(connection)] });
   api.tools.listProfiles.mockResolvedValue({ profiles: [] }); api.tools.listPolicies.mockResolvedValue({ policies: [] });
   api.tools.getConnectionInstalls.mockResolvedValue({ installs });
   api.tools.createProfile.mockResolvedValue({ id: "new-profile" });
@@ -57,10 +58,10 @@ describe("complete agent configuration", () => {
   it("loads every resource section and round trips to a no-op without credential values", async () => {
     const saved = await snapshot();
     const doc = roundTrip(saved.document);
-    expect(doc.spec.instructions?.files["AGENTS.md"]).toBe(file.content);
+    expect(doc.spec.instructions?.files?.["AGENTS.md"]).toBe(file.content);
     expect(doc.spec.skills).toEqual([{ key: "paperclip", versionId: resourceId }]);
     expect(doc.spec.adapterConfig).toEqual({ command: "echo" });
-    expect(doc.observed?.secretProposals).toHaveLength(1);
+    expect(doc.observed).toBeUndefined();
     expect(planAgentConfiguration(saved, doc)).toEqual([]);
     await saveAgentConfiguration(saved, doc, receipt, progress);
     expect(api.agents.getConfiguration).toHaveBeenCalledTimes(1);
@@ -168,12 +169,13 @@ describe("complete agent configuration", () => {
     expect(receipt).toHaveBeenCalledWith({ label: "API key: Automation", id: "new-key", token: "one-time-token" });
   });
 
-  it("requires explicit clears for nested PATCH fields", async () => {
+  it("preserves omitted fields inside resource updates", async () => {
     const saved = await snapshot(); const doc = copy(saved.document);
     doc.spec.title = "Engineer";
     delete doc.spec.channels![0].resources[0].enabled;
-    await expect(saveAgentConfiguration(saved, doc, receipt, progress)).rejects.toThrow(".enabled explicit");
-    expect(api.agents.update).not.toHaveBeenCalled();
+    await saveAgentConfiguration(saved, doc, receipt, progress);
+    expect(api.channels.updateResources).not.toHaveBeenCalled();
+    expect(api.agents.update).toHaveBeenCalledWith(agentId, expect.objectContaining({ title: "Engineer" }), "company");
   });
 
   it("requires explicit consent for shared profile changes and still supports binding without changing them", async () => {
@@ -293,7 +295,7 @@ describe("complete agent configuration", () => {
 
   it("rejects edits to observed context and changes to organization-wide installs", async () => {
     const saved = await snapshot(); const doc = copy(saved.document);
-    doc.observed!.apiKeys = [];
+    doc.observed = { apiKeys: [] };
     expect(() => planAgentConfiguration(saved, doc)).toThrow("observed is read-only");
     doc.observed = saved.document.observed;
     saved.connections[0].installs = [{ targetType: "company", targetId: "company" }] as typeof saved.connections[0]["installs"];
@@ -311,5 +313,170 @@ describe("complete agent configuration", () => {
     expect(api.tools.bindProfile).toHaveBeenCalledWith("company", "new-profile", { targetType: "agent", targetId: agentId, priority: 10, metadata: null });
     expect(api.tools.createPolicy).toHaveBeenCalledWith("company", expect.objectContaining({ selectors: { agentIds: [agentId] } }));
     expect(api.channels.setup).toHaveBeenCalledWith("channel", { action: "pause" });
+  });
+});
+
+describe("compact agent configuration", () => {
+  const input = (spec: AgentConfigurationInput["spec"]): AgentConfigurationInput => ({ apiVersion: "paperclip/v1", kind: "Agent", spec });
+  const profile = (id = "profile", bound = true) => ({
+    id, profileKey: id, name: id, description: null, status: "active", defaultAction: "deny", metadata: null,
+    bindings: bound ? [{ targetType: "agent", targetId: agentId, priority: 100, metadata: null }] : [],
+    entries: [{ selectorType: "tool_name", effect: "include", toolName: "get_repository", applicationId: null,
+      connectionId: null, catalogEntryId: null, riskLevel: null, conditions: null }],
+  });
+
+  it("keeps a large company catalog and instruction contents out of the default YAML", async () => {
+    const profiles = Array.from({ length: 30 }, (_, i) => ({ ...profile(`profile-${i}`, i === 0),
+      entries: Array.from({ length: 50 }, (_, j) => ({ ...profile().entries[0], toolName: `tool_${j}` })),
+    }));
+    api.tools.listProfiles.mockResolvedValue({ profiles });
+    api.agents.instructionsFile.mockResolvedValue({ ...file, content: "Do not embed this instruction file.\n".repeat(1000) });
+    api.tools.listConnections.mockResolvedValue({ connections: [connection, { id: "unused", installs: [] }] });
+    const saved = await snapshot();
+    const compact = compactAgentConfiguration(saved.document);
+    const source = serializeAgentConfigurationDocument(compact);
+    const previous = serializeAgentConfigurationDocument({ ...saved.document, observed: { availableProfiles: profiles, inheritedProfiles: profiles } });
+    expect(source.length).toBeLessThan(previous.length / 20);
+    expect(source.split("\n").length).toBeLessThan(70);
+    expect(compact.spec.tools?.profiles).toEqual([{ profileKey: "profile-0" }]);
+    expect(compact.spec.tools?.connections).toEqual([{ connectionId: "connection" }]);
+    for (const text of ["observed:", "tool_49", "profile-29", "Do not embed", "unused", "rootPath:", "create:", "revoke:", "metadata: null", "title: null"]) expect(source).not.toContain(text);
+    expect(compact.spec.instructions).toEqual({ mode: "managed", entryFile: "AGENTS.md" });
+    expect(planAgentConfiguration(saved, parseAgentConfigurationYaml(source))).toEqual([]);
+  });
+
+  it("preserves all hidden values on sparse saves and accepts removing legacy observed metadata", async () => {
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ title: "Engineer" }), receipt, progress);
+    expect(api.agents.update).toHaveBeenCalledWith(agentId, { title: "Engineer", expectedConfigurationRevision: agent.configurationRevision }, "company");
+    for (const method of [api.agents.saveInstructionsFile, api.agents.deleteInstructionsFile, api.agents.syncSkills, api.tools.putConnectionInstalls, api.channels.updateResources, api.agents.updatePermissions]) expect(method).not.toHaveBeenCalled();
+    saved.document.observed = { oldReadOnlyCatalog: [] };
+    expect(planAgentConfiguration(saved, input({}))).toEqual([]);
+  });
+
+  it("round trips unpinned skill shorthand without synchronizing unchanged skills", async () => {
+    api.agents.skills.mockResolvedValue({ desiredSkills: ["paperclip"], desiredSkillEntries: [{ key: "paperclip", versionId: null }], warnings: [] });
+    const saved = await snapshot();
+    const compact = compactAgentConfiguration(saved.document);
+    expect(compact.spec.skills).toEqual(["paperclip"]);
+    expect(planAgentConfiguration(saved, compact)).toEqual([]);
+    compact.spec.title = "Engineer";
+    await saveAgentConfiguration(saved, compact, receipt, progress);
+    expect(api.agents.syncSkills).not.toHaveBeenCalled();
+  });
+
+  it("restores a revision with unpinned skills and mixed enabled/disabled channel resources", async () => {
+    api.agents.skills.mockResolvedValue({ desiredSkills: ["paperclip"], desiredSkillEntries: [{ key: "paperclip", versionId: null }], warnings: [] });
+    api.channels.listResources.mockResolvedValue([{ id: resourceId, enabled: true }, { id: agentId, enabled: false }]);
+    const saved = await snapshot();
+    const compact = compactAgentConfiguration(saved.document);
+    expect(compact.spec.channels![0].resources).toHaveLength(1);
+    expect(planAgentConfiguration(saved, compact)).toEqual([]);
+    compact.spec.revisions = { restore: "revision" };
+    await saveAgentConfiguration(saved, compact, receipt, progress);
+    expect(api.agents.rollbackConfigRevision).toHaveBeenCalledWith(agentId, "revision", "company");
+    expect(api.agents.syncSkills).not.toHaveBeenCalled();
+    expect(api.channels.updateResources).not.toHaveBeenCalled();
+  });
+
+  it("binds a profile by key without copying or rewriting its definition", async () => {
+    api.tools.listProfiles.mockResolvedValue({ profiles: [profile("read", false)] });
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ tools: { profiles: [{ profileKey: "read" }] } }), receipt, progress);
+    expect(api.tools.bindProfile).toHaveBeenCalledWith("company", "read", { targetType: "agent", targetId: agentId, priority: 100, metadata: null });
+    expect(api.tools.updateProfile).not.toHaveBeenCalled();
+    expect(api.tools.createProfile).not.toHaveBeenCalled();
+    expect(api.tools.putConnectionInstalls).not.toHaveBeenCalled();
+  });
+
+  it("changes binding priority independently of its shared definition", async () => {
+    api.tools.listProfiles.mockResolvedValue({ profiles: [profile()] });
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ tools: { profiles: [{ profileKey: "profile", priority: 50 }] } }), receipt, progress);
+    expect(api.tools.bindProfile).toHaveBeenCalledWith("company", "profile", expect.objectContaining({ priority: 50 }));
+    expect(api.tools.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("validates references before applying any core changes", async () => {
+    const saved = await snapshot();
+    await expect(saveAgentConfiguration(saved, input({ title: "Engineer", tools: { profiles: [{ profileKey: "unknown" }] } }), receipt, progress)).rejects.toThrow("Profile unknown");
+    expect(api.agents.update).not.toHaveBeenCalled();
+  });
+
+  it("installs an unselected connection without serializing the available catalog", async () => {
+    api.tools.listConnections.mockResolvedValue({ connections: [{ ...connection, installs: [] }] });
+    api.tools.getConnectionInstalls.mockResolvedValue({ installs: [] });
+    const saved = await snapshot();
+    expect(saved.document.spec.tools!.connections).toEqual([]);
+    await saveAgentConfiguration(saved, input({ tools: { connections: [{ connectionId: "connection" }] } }), receipt, progress);
+    expect(api.tools.putConnectionInstalls).toHaveBeenCalledWith("connection", [{ targetType: "agent", targetId: agentId }]);
+  });
+
+  it("ignores unrelated catalog additions during a profile binding edit", async () => {
+    api.tools.listProfiles.mockResolvedValue({ profiles: [profile("read", false)] });
+    const saved = await snapshot();
+    api.tools.listConnections.mockResolvedValue({ connections: [copy(connection), { id: "unrelated", installs: [] }] });
+    await saveAgentConfiguration(saved, input({ tools: { profiles: [{ profileKey: "read" }] } }), receipt, progress);
+    expect(api.tools.bindProfile).toHaveBeenCalled();
+    expect(api.tools.putConnectionInstalls).not.toHaveBeenCalled();
+  });
+
+  it("requires matching IDs and keys when both are supplied", async () => {
+    api.tools.listProfiles.mockResolvedValue({ profiles: [profile()] });
+    const saved = await snapshot();
+    expect(() => planAgentConfiguration(saved, input({ tools: { profiles: [{ profileId: "profile", profileKey: "other" }] } }))).toThrow("Profile other");
+    expect(() => planAgentConfiguration(saved, input({ tools: { profiles: [{ profileId: null, profileKey: "profile" }] } }))).toThrow("cannot also reference");
+  });
+
+  it("keeps explicit empty lists and nulls as real clears", async () => {
+    api.agents.getConfiguration.mockResolvedValue({ ...agent, title: "Engineer" });
+    api.tools.listProfiles.mockResolvedValue({ profiles: [profile()] });
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ title: null, skills: [], tools: { connections: [], profiles: [] } }), receipt, progress);
+    expect(api.agents.update).toHaveBeenCalledWith(agentId, expect.objectContaining({ title: null }), "company");
+    expect(api.agents.syncSkills).toHaveBeenCalledWith(agentId, [], "replace", "company");
+    expect(api.tools.unbindProfile).toHaveBeenCalledWith("company", "profile", { targetType: "agent", targetId: agentId });
+    expect(api.tools.putConnectionInstalls).toHaveBeenCalledWith("connection", [{ targetType: "agent", targetId: "another-agent" }]);
+    expect(api.agents.deleteInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("preserves unmentioned permission fields and channel resources", async () => {
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ permissions: { canCreateSkills: false }, channels: [{ id: "channel", settings: { allowUnlinkedPeople: true } }] }), receipt, progress);
+    expect(api.agents.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ canCreateAgents: false, canAssignTasks: false, canCreateSkills: false, trustPreset: "standard" }), "company");
+    expect(api.channels.update).toHaveBeenCalledWith("channel", { allowUnlinkedPeople: true });
+    expect(api.channels.updateResources).not.toHaveBeenCalled();
+  });
+
+  it("edits individual instruction files and deletes only explicit null entries", async () => {
+    api.agents.instructionsBundle.mockResolvedValue({ mode: "managed", rootPath: "/managed/codie", entryFile: "AGENTS.md", editable: true, files: [file, { ...file, path: "old.md" }], warnings: [] });
+    api.agents.instructionsFile.mockImplementation(async (_id, path) => ({ ...file, path }));
+    const saved = await snapshot();
+    await saveAgentConfiguration(saved, input({ instructions: { files: { "new.md": "New workflow", "old.md": null } } }), receipt, progress);
+    expect(api.agents.saveInstructionsFile).toHaveBeenCalledWith(agentId, { path: "new.md", content: "New workflow", baseHash: null, baseRevisionId: null }, "company");
+    expect(api.agents.deleteInstructionsFile).toHaveBeenCalledExactlyOnceWith(agentId, "old.md", "company", "hash");
+    expect(() => planAgentConfiguration(saved, input({ instructions: { files: { "AGENTS.md": null } } }))).toThrow("entry file cannot be removed");
+  });
+
+  it("hides legacy instruction text without deleting it during adapter edits", async () => {
+    const adapterConfig = { ...agent.adapterConfig, promptTemplate: "Long legacy instructions\n".repeat(1000) };
+    api.agents.getConfiguration.mockResolvedValue({ ...agent, adapterConfig });
+    const saved = await snapshot();
+    const compact = compactAgentConfiguration(saved.document);
+    expect(serializeAgentConfigurationDocument(compact)).not.toContain("Long legacy instructions");
+    expect(planAgentConfiguration(saved, compact)).toEqual([]);
+    await saveAgentConfiguration(saved, input({ adapterConfig: { command: "printf" } }), receipt, progress);
+    expect(api.agents.update).toHaveBeenCalledWith(agentId, expect.objectContaining({ adapterConfig: { ...adapterConfig, command: "printf" } }), "company");
+    await saveAgentConfiguration(saved, input({ adapterConfig: { command: "echo", promptTemplate: "" } }), receipt, progress);
+    expect(api.agents.update).toHaveBeenLastCalledWith(agentId, expect.objectContaining({ adapterConfig: { ...adapterConfig, promptTemplate: "" } }), "company");
+  });
+
+  it("rejects explicit deletion of read-only instruction files before any writes", async () => {
+    api.agents.instructionsBundle.mockResolvedValue({ mode: "managed", rootPath: "/managed/codie", entryFile: "AGENTS.md", editable: true,
+      files: [file, { ...file, path: "asset.png", editable: false, binary: true }], warnings: [],
+    });
+    const saved = await snapshot();
+    await expect(saveAgentConfiguration(saved, input({ title: "Engineer", instructions: { files: { "asset.png": null } } }), receipt, progress)).rejects.toThrow("cannot be edited as text");
+    expect(api.agents.update).not.toHaveBeenCalled();
   });
 });

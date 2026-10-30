@@ -1,7 +1,7 @@
 # Company agent observability
 
 Company Settings → General → Agent observability configures one company-owned
-OTLP destination for Paperclip-managed Codex and Claude Code executions. Export
+OTLP destination for Paperclip-managed Codex, Claude Code and native OpenCode executions. Export
 is disabled by default. Choose Braintrust (US) or a custom HTTP(S) OTLP base URL;
 use your own collector when you need fan-out. Braintrust EU and self-hosted
 installations can use Custom OTLP with their required routing/authentication
@@ -16,10 +16,27 @@ This is separate from Paperclip's first-party Telemetry and its content-free
 The qualified versions are Codex 0.160.0 and Claude Code through ACP bridge
 0.73.0 with Agent SDK 0.3.286. Both logs and traces use HTTP/protobuf. Prompts,
 assistant responses and tool content default on. Additional tool details are a
-Claude Code control; Codex has no equivalent switch. Codex requests up to 64 KiB
+Claude Code and native OpenCode control; Codex has no equivalent switch. Codex requests up to 64 KiB
 of tool output (or zero when disabled); native event availability, truncation
 and response caps still apply. Claude Code applies its own native limits.
 Metrics, raw API bodies and Codex Guardian assessments are disabled.
+
+Native OpenCode 1.18.34 uses a runner-owned HTTP/JSON exporter. Each completed,
+failed or cancelled turn produces a trace with Paperclip company, agent, run and
+turn IDs. Tool outcomes and message-level token/cost receipts are child spans;
+repeated usage updates replace the same message receipt. Missing prices remain
+unknown. This projection excludes hidden reasoning, raw provider payloads and
+system instructions. Prompt, response, tool-detail and tool-content switches
+apply before export. Content is bounded to 8 KiB per field and 64 tools plus 64
+usage records per turn; truncation is marked. Tool inputs and full model request
+bodies are not captured. OpenCode's performance-only OTLP sink stays separate.
+
+The exporter sends once at turn completion with a three-second deadline, at most
+four requests in flight and no idle polling or persistent queue. Closing drains
+pending requests and marks an unfinished turn failed. Export failures emit a
+sanitized diagnostic and do not change task outcomes. Abrupt process termination
+can lose an unexported turn. Recovered in-flight turns without a new submission
+are not replayed just to produce an observability record.
 
 The native runner and legacy local adapters receive transient launch material.
 Native Codex writes a private managed config.toml; legacy exec uses a unique
@@ -37,7 +54,7 @@ them once to preserve literal percent sequences. Credentials remain literal
 values in the company secret; config-file environment interpolation is not used.
 A caller-owned/preconfigured Codex home cannot be automatically configured in
 this version: its files remain untouched and execution emits a diagnostic.
-Other harnesses, personal Codex desktop sessions and hosted claude_managed are
+Legacy OpenCode, other harnesses, personal Codex desktop sessions and hosted claude_managed are
 outside this feature.
 
 ## Changes and process lifetime
@@ -53,8 +70,8 @@ never replays an uncertain turn merely to apply new export settings.
 Missing, disabled, invalid or unavailable configuration runs without company
 export and reports a sanitized availability diagnostic where relevant. Native
 export rejection/timeouts do not determine task success; exporter deadlines
-are three seconds. Destination calls do not occur in usage, event-append,
-tool-acknowledgment or settlement paths.
+are three seconds. OpenCode starts its bounded asynchronous request when the terminal event is
+observed; event delivery and task settlement do not wait for the receiver.
 
 ## Credentials and access
 
@@ -72,8 +89,8 @@ row removes that header. API-key replacement is explicit, and Cancel clears
 entered secrets. Revisions prevent another administrator's edit being silently
 overwritten. Credential values are excluded from task environment manifests,
 run/config snapshots, argv, activity records, recovery configuration and query
-cache data. Export credentials are necessarily accessible to the exporting
-harness itself. Both Codex and Claude Code receive these headers through their
+cache data. OpenCode keeps exporter credentials in the runner wrapper and excludes them
+from its child environment and config. Codex and Claude Code receive headers through their
 process environment, which their tools can inherit or inspect.
 This feature does not isolate export credentials from agent code. Use a credential
 limited to telemetry ingestion for the selected destination; do not supply a broad

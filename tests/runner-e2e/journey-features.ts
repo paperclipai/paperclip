@@ -18,7 +18,12 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
   }
 }
 
-associate(["product-journeys"], { "task-properties": ["tasks/properties"], "cloud-onboarding": ["onboarding/first-task"] });
+associate(["product-journeys"], { "task-create": ["tasks/create"], "ask-question": ["questions-and-approvals/questions"],
+  "task-properties": ["tasks/properties"], "cloud-onboarding": ["onboarding/first-task"] });
+associate(["antigravity-agent-journey"], {
+  "saved-subscription-two-turn": ["agents/hire", "agents/instructions", "runs-adapters/validation", "runs-adapters/session",
+    "tasks/create", "tasks/completion", "documents-artifacts/attachments", "documents-artifacts/work-products"],
+});
 associate(["core-compatibility", "openrouter-model-breadth", "extended-harnesses", "grok-qualification", "grok-subscription-qualification"], {
   "message-marker": ["runs-adapters/runs"],
   "hello-complete": ["runs-adapters/runs"],

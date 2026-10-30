@@ -85,7 +85,7 @@ import {
   projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, parseNativeExecutionInput, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -368,7 +368,7 @@ export class PaperclipRunnerToolAuthority {
                     ...(descriptor.inputSchema.properties?.contentRef ?? {}),
                     description: this.binding.readRemoteTaskFile
                       ? "Path to the file on the execution host: workspace-relative or absolute within a location granted to this task, including its agent home."
-                      : "Workspace-relative source path. Absolute paths, URLs, traversal, and symlinks are rejected.",
+                      : "Workspace-relative source path under get_workspace.cwd. Create or copy the file there before registering; AGENT_HOME is for personal instructions and memory. Absolute paths, URLs, traversal, and symlinks are rejected.",
                   },
                 },
               }
@@ -432,6 +432,7 @@ export class PaperclipRunnerToolAuthority {
     if (call.tool === "set_task_title") recovered = await this.#setTaskTitle(input, true);
     else if (call.tool === "submit_complaint" || call.tool === "submit_suggestion") recovered = await this.#submitCommentary(call.tool, input, true);
     else if (call.tool === "create_task") recovered = await this.#createTask(input, null, true);
+    else if (call.tool === "request_human_input") recovered = await this.#requestHumanInput(input, null, true);
     else if (call.tool === "reassign_task") recovered = await this.#reassignTask(input, true);
     else if (call.tool === "set_task_monitor") recovered = await this.#setTaskMonitor(input, true);
     else if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim()) {
@@ -884,8 +885,21 @@ export class PaperclipRunnerToolAuthority {
           && (!statuses || statuses.size === 0 || statuses.has(task.status))
         );
         const readable = this.binding.museRuntime ? await this.#readableMuseTaskIds(context.run, matching.map(task => task.id)) : null;
-        return { tasks: matching.filter(task => !readable || readable.has(task.id))
-          .slice(0, boundedLimit(input.limit)).map(redactedTask) };
+        const limit = boundedLimit(input.limit, 50, 200);
+        const cursor = input.cursor === undefined ? null : requiredUuid(input.cursor).toLowerCase();
+        // IDs keep page order stable when task activity or status changes. Every
+        // page still applies current company, privacy and Muse read authority.
+        const remaining = matching.filter(task => (!readable || readable.has(task.id)) && (!cursor || task.id > cursor))
+          .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        const page = remaining.slice(0, limit);
+        const hasMore = remaining.length > limit;
+        return {
+          tasks: page.map(redactedTask),
+          limit,
+          returnedCount: page.length,
+          hasMore,
+          nextCursor: hasMore ? page[page.length - 1]!.id : null,
+        };
       }
       case "list_documents":
         return { documents: await this.#visibleMuseDocuments(context.issue,
@@ -2086,6 +2100,7 @@ export class PaperclipRunnerToolAuthority {
       const updated = await issueService(tx).update(this.binding.issueId, {
         blockedByIssueIds,
         actorAgentId: this.binding.agentId,
+        actorRunId: this.binding.runId,
       }, tx);
       if (!updated) throw new Error("paperclip_runner_task_not_found");
       return {
@@ -2718,7 +2733,7 @@ export class PaperclipRunnerToolAuthority {
     return context;
   }
 
-  async #requestHumanInput(input: Record<string, unknown>, identityContextId: string | null): Promise<unknown> {
+  async #requestHumanInput(input: Record<string, unknown>, identityContextId: string | null, receiptOnly = false): Promise<unknown> {
     const interactionKind = requiredString(input.interactionKind);
     const interactionKinds = {
       confirmation: "request_confirmation",
@@ -2734,11 +2749,11 @@ export class PaperclipRunnerToolAuthority {
     const prompt = requiredString(input.prompt);
     const idempotencyKey = requiredString(input.idempotencyKey);
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
-    const result = await this.#withMutationReceipt(
-      "request_human_input",
-      idempotencyKey,
-      input,
-      async (tx, context) => {
+    const apply = async (tx: Db, context: {
+      run: typeof heartbeatRuns.$inferSelect;
+      issue: typeof issues.$inferSelect;
+      actor: typeof agents.$inferSelect;
+    }, requireAcceptedReplay = false) => {
         const suppliedPayload = record(input.payload);
         const targetRevisionId = nullableProviderId(input.targetRevisionId);
         const suppliedTarget = record(suppliedPayload.target);
@@ -2768,6 +2783,19 @@ export class PaperclipRunnerToolAuthority {
               },
             }
           : suppliedPayload;
+        let replayAcceptedInteractionIds: string[] = [];
+        try {
+          const execution = parseNativeExecutionInput(record(context.run.runnerProfileJson).nativeExecutionInput);
+          if (execution.binding.companyId === this.binding.companyId
+            && execution.binding.issueId === this.binding.issueId
+            && execution.binding.agentId === this.binding.agentId
+            && execution.binding.runId === this.binding.runId) {
+            replayAcceptedInteractionIds = execution.interactionResponses.filter(response =>
+              (response.kind === "request_confirmation" || response.kind === "request_checkbox_confirmation")
+              && response.response.status === "accepted" && record(response.response.result).outcome === "accepted",
+            ).map(response => response.interactionId);
+          }
+        } catch {}
         const interaction = await issueThreadInteractionService(tx).create(context.issue, {
           kind,
           idempotencyKey,
@@ -2788,7 +2816,9 @@ export class PaperclipRunnerToolAuthority {
               supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? false,
             } : {}),
           },
-        } as never, { agentId: this.binding.agentId, userId: null, identityContextId });
+        } as never, { agentId: this.binding.agentId, runId: this.binding.runId, userId: null, identityContextId },
+        { replayAcceptedInteractionIds, requireAcceptedReplay });
+        if (interaction.sourceRunId !== this.binding.runId) return { interaction, disposition: "duplicate" };
         const activity = await persistActivity(tx, {
           companyId: this.binding.companyId,
           actorType: "agent",
@@ -2809,7 +2839,16 @@ export class PaperclipRunnerToolAuthority {
         });
         publication = activity.publication;
         return { interaction, disposition: "applied" };
-      },
+      };
+    const result = await this.#withMutationReceipt(
+      "request_human_input", idempotencyKey, input, receiptOnly ? null : apply,
+      { beforeReceiptReplay: async (tx, context) => {
+        const receipt = record(record(record(context.run.resultJson).semanticToolReceipts)[idempotencyKey]);
+        const interaction = record(record(receipt.result).interaction);
+        if (interaction.status === "accepted" && interaction.sourceRunId !== this.binding.runId) {
+          await apply(tx, context, true);
+        }
+      } },
     );
     if (publication) publishActivity(publication);
     return result;

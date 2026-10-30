@@ -74,6 +74,9 @@ export async function deleteCompany(db: Db, id: string) {
         await notifyChatCompanyConfiguration(tx, id);
         await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
         await notifyToolReviewChange(tx, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);

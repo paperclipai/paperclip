@@ -35,6 +35,11 @@ visible-row details independently when verifying `tasks/organize`: row heights,
 title bounds, and the first-row origin should remain stable. Test nested expansion,
 scrolling to more rows, and detail/back navigation; a collection projection must
 never suppress the full task instruction fetch.
+Coordinator Tasks uses the same index and visible-row enrichment. Needs attention
+resolves pending task IDs in batches of at most 100; it does not fetch enriched
+task detail for every decision. Search and participant filters stay on the server.
+Cold Coordinator detail must stay compact when Classic settings arrive before
+the personal workspace preference. Verify explicit history expansion afterward.
 
 ### `new-task`
 
@@ -46,7 +51,7 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction and recent exchange first. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 

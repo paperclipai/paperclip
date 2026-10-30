@@ -32,6 +32,8 @@ async function prepare(owner: ReturnType<typeof createPluginRunnerTaskOwner>, cu
 function provider() {
   let stopped = false;
   const task = vi.fn(async (operation: any): Promise<unknown> => {
+    if (operation.kind === "describe") return { kind: "description", taskId: "task", githubCredentialBrokerVersion: 1,
+      runner: {version: "fixture", digest: `sha256:${"a".repeat(64)}`} };
     if (operation.kind === "check_project_auth") return { kind: "project_auth", taskId: "task", allowed: true,
       provider: operation.provider, configurationId: operation.configurationId };
     if (operation.kind === "prepare") return { kind: "prepared", taskId: "task", launch: {
@@ -415,7 +417,7 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
   const retained = vi.fn(async()=>{});
   const input = {task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
-    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained};
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained, githubBroker:{url:"https://core.example.test",token:"first-run-capability"}};
   const owner = createPluginRunnerTaskOwner(input);
   await prepare(owner, launchRequirements(harness));
   const registration = await owner.registration({} as never,"run");
@@ -429,12 +431,13 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
     const result=await originalTask(op) as Record<string,unknown>;
     return op.kind === "prepare" ? {...result,projectAuthCheckAtSubmit:true} : result;
   });
-  owner.rebind({...input,task:nextTask});
+  owner.rebind({...input,task:nextTask,githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
   const nextRegistration=await owner.registration({} as never,"next-run");
   const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
   await owner.driver.prepareLaunch!({...launchRequirements(harness),identity:nextIdentity});
-  expect(nextTask.mock.calls[0][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account"});
-  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["prepare","check_project_auth"]);
+  expect(nextTask.mock.calls[1][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account",githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
+  expect(task.mock.calls.find(([op])=>op.kind === "prepare")?.[0]).toMatchObject({githubBroker:input.githubBroker});
+  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["describe","prepare","check_project_auth"]);
   await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
   expect(nextTask.mock.calls.some(([op])=>op.kind==="submit" || op.kind==="stop" || op.kind==="complete")).toBe(false);
   await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
@@ -485,4 +488,16 @@ it.each(["codex", "claude"])("refuses warm %s account, harness, project, or cred
   expect(()=>owner.rebind({...input,projectIds:["foreign"]})).toThrow("cannot be rebound");
   const registration=await owner.registration({} as never,"run");
   await registration.checkpoint("unsettled"); await process.completion;
+});
+
+ it("rejects a missing broker capability before handing authority to a plugin", async () => {
+  const {task} = provider();
+  const implementation = task.getMockImplementation()!;
+  task.mockImplementation(async operation => operation.kind === "describe"
+    ? {kind:"description",taskId:"task",runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}}
+    : implementation(operation));
+  const owner = createPluginRunnerTaskOwner({task,projectIds:[],harness:"codex",
+    githubBroker:{url:"https://core.example.test",token:"runtime-capability"}});
+  await expect(prepare(owner)).rejects.toThrow("credential broker v1");
+  expect(task.mock.calls.map(([op])=>op.kind)).toEqual(["describe"]);
 });

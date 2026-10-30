@@ -1,3 +1,6 @@
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "../services/heartbeat/scheduling.js";
 import { createHeartbeatRunState } from "../services/heartbeat/run-state.js";
 import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
@@ -30,7 +33,7 @@ import {
   activityLog, agents, agentWakeupRequests, approvals, chatConversations, chatEndpoints,
   chatMessageLinks, chatPublications, companies, createDb, heartbeatRuns, issueApprovals,
   issueComments, issueRelations, issueThreadInteractions, issues, nativeRunFinalizations,
-  toolApplications, toolConnections,
+  toolApplications, toolConnections, subscribeDatabaseWork, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pendingExternalConversationSettlement, externalConversationSettlementCandidates, settleSlackConversation } from "../services/slack-conversation-lifecycle.js";
@@ -111,9 +114,31 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       toAgentOrgRow: preparation.toAgentOrgRow, groupAgentOrgRowsByCompany: preparation.groupAgentOrgRowsByCompany,
       issuesSvc: issueService(db), enqueueWakeup,
       getSchedulingSuppression: async () => ({ suppressed: false }), getWorktreeExecutionCutoff: async () => null,
-      scheduleBoundedRetryForRun: vi.fn(), claimDueTimerHeartbeat: vi.fn(), parseHeartbeatPolicy: vi.fn(),
+      scheduleBoundedRetryForRun: vi.fn(), claimDueTimerHeartbeat: vi.fn(), parseHeartbeatPolicy: vi.fn(), nextTimerHeartbeatAt: vi.fn(),
     });
   }
+
+  it("notifies timer eligibility at outer commit when a published conversation becomes idle", async () => {
+    const f = await fixture();
+    const [agent] = await db.update(agents).set({ runtimeConfig: { heartbeat: {
+      enabled: true, intervalSec: 600, skipTimerWhenNoActionableWork: true,
+    } } }).where(eq(agents.id, f.agentId)).returning();
+    const queue = createHeartbeatQueue(db, createHeartbeatQueueTestDependencies(db));
+    expect(await queue.nextTimerHeartbeatAt(agent)).toBe(agent.createdAt.getTime() + 600_000);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.agentTimers, event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        expect(await settleSlackConversation(tx as unknown as Db, f.companyId, f.issueId)).toBe(true);
+        expect(events).toContain("intent");
+        expect(events).not.toContain("settled");
+        expect((await state(f)).status).toBe("in_progress");
+      });
+      expect(events).toContain("settled");
+      expect((await state(f)).status).toBe("in_review");
+      expect(await queue.nextTimerHeartbeatAt(agent)).toBeNull();
+    } finally { unsubscribe(); }
+  });
 
   it("keeps monitor recovery pending until its wake handoff finishes", async () => {
     const f = await fixture();

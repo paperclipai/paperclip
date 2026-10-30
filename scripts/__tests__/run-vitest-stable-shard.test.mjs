@@ -163,7 +163,10 @@ test("workspaces-c runs the db project alone and workspaces-b no longer carries 
   assert.ok(!workspacesB.workspaceProjects.includes("@paperclipai/db"), "db must not run twice");
   assert.ok(workspacesB.workspaceProjects.length > 0, "workspaces-b must still run its other projects");
   for (const workflow of ["pr-trusted.yml", "release-verify.yml"]) {
-    const entries = matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
+    const entries = workflow === "pr-trusted.yml"
+      ? JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8")).general_tests
+        .map((entry) => ({ ...entry, keys: Object.keys(entry) }))
+      : matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
     // The parser must demonstrably see shard keys in this workflow, otherwise
     // the unsharded assertions below could pass for the wrong reason.
     const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
@@ -427,9 +430,10 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   assert.match(prWorkflow, /^name: PR$/m,
     "renaming pr.yml silently moves the native-runner suite back into the uncached server shards");
 
-  const trustedWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
-  const lanes = [...trustedWorkflow.matchAll(/command: test:typescript:vitest --shard=(\d+)\/(\d+)/g)]
-    .map((match) => [Number(match[1]), Number(match[2])]);
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"));
+  const lanes = matrix.verify_paperclip_runner
+    .map((entry) => /test:typescript:vitest --shard=(\d+)\/(\d+)/.exec(entry.command))
+    .filter(Boolean).map((match) => [Number(match[1]), Number(match[2])]);
   assert.ok(lanes.length > 0, "expected sharded test:typescript:vitest lanes in pr-trusted.yml");
   assert.equal(new Set(lanes.map(([, count]) => count)).size, 1, "vitest lanes must agree on the shard count");
   const shardCount = lanes[0][1];

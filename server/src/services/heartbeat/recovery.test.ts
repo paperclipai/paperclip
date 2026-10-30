@@ -11,7 +11,8 @@ import { createHeartbeatRunState } from "./run-state.js";
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
-import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { logger } from "../../middleware/logger.js";
@@ -681,6 +682,67 @@ describePostgres("heartbeat recovery module ownership", () => {
     await Promise.all([...deps.activeRunExecutionPromises]);
     await vi.waitFor(() => expect(deps.activeRunExecutionPromises.size).toBe(0));
   });
+
+  it.each(["completion", "failure_before_dispatch"] as const)("stops preparation renewal after recovered %s", async outcome => {
+    const run = await seedRun();
+    const deps = callbacks(db);
+    const controller = await currentNativeControllerIdentity();
+    const claim: NativeRestartRecoveryClaim = { kind: "reattach_remote_runner", runId: run.id,
+      leaseOwner: randomUUID(), controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+      remote: { providerLeaseId: randomUUID(), remoteCwd: "/workspace" } };
+    const scope = { companyId: run.companyId, issueId: run.issueId!, controller, remote: true };
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId }).where(eq(heartbeatRuns.id, run.id));
+    const expiresAt = new Date(Date.now() + 60_000);
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "observed", attempt: 1,
+      controllerBootId: controller.bootId, controllerPid: controller.pid,
+      controllerProcessStartedAt: controller.processStartedAt,
+      leaseOwner: claim.leaseOwner, leaseExpiresAt: expiresAt });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    native.claims.mockImplementationOnce(async input => {
+      await input.onClaim?.(claim, scope);
+      return [claim];
+    });
+    let released!: () => void, finish!: () => void;
+    const leaseReleased = new Promise<void>(resolve => { released = resolve; });
+    const finalization = new Promise<void>(resolve => { finish = resolve; });
+    deps.executeRun.mockImplementationOnce(async (_runId, options) => {
+      if (outcome === "failure_before_dispatch") {
+        released();
+        throw new Error("workspace preparation failed");
+      }
+      const execution = startNativeSessionExecutionLeaseRenewal({ db, ...scope, runId: run.id,
+        leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt,
+        onLost: () => native.detach() });
+      try {
+        // The executor takes its reference before preparation releases its own.
+        await options?.onNativeExecutionLeaseAcquired?.();
+        await execution.stop();
+        await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+          .where(eq(nativeRunFinalizations.runId, run.id));
+        released();
+        // Workspace/result settlement may still be pending after lease release.
+        await finalization;
+      } finally { await execution.stop(); }
+    });
+    try {
+      await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart(new Date(), [run.id]);
+      await leaseReleased;
+      if (outcome === "failure_before_dispatch") await Promise.all([...deps.activeRunExecutionPromises]);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(deps.activeRunExecutionPromises.size).toBe(outcome === "completion" ? 1 : 0);
+      expect(native.detach).not.toHaveBeenCalled();
+      expect(deps.executeRun).toHaveBeenCalledOnce();
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      expect(coordinator.leaseExpiresAt).toEqual(outcome === "completion" ? null : expiresAt);
+    } finally {
+      finish();
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      vi.useRealTimers();
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each(["bootstrap_incomplete", "blocked"] as const)("retries durable remote takeover and preserves its %s disposition", async kind => {
     const run = await seedRun();

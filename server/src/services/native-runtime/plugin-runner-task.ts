@@ -41,6 +41,7 @@ export function createPluginRunnerTaskOwner(input: {
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
   warmTaskVersion?: 1;
+  githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const pollMs = input.pollMs ?? 500;
@@ -97,7 +98,14 @@ export function createPluginRunnerTaskOwner(input: {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
+    if (input.githubBroker) {
+      const description = await call({ kind: "describe" });
+      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
+        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
+      }
+    }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
+      ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),

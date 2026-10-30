@@ -38,6 +38,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
     async beforeStatusChange(tx, companyId, agentId, before, after) {
+      if (before !== after) await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
         await notifyNativeResponsePresentation(tx, { companyId, agentId });
         await notifyNativeReviewResponse(tx, { companyId, agentId });

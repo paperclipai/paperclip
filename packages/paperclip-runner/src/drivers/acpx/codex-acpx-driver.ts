@@ -74,6 +74,7 @@ import {
   validateAcpxDriverConfig,
 } from "./driver-profile.js";
 import {
+  assertAcpxProfileReleased,
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
@@ -288,6 +289,7 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
+    assertAcpxProfileReleased(options.agent ?? "codex");
     if (["pi", "cursor", "copilot"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
       throw new Error("ACP candidate requires an explicit provider read-only policy");
     }

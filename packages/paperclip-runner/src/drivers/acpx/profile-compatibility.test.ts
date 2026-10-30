@@ -5,6 +5,9 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 
 describe("historical ACPX profile decoding", () => {
   it("retains each provider's existing revision boundary", () => {
+    expect(isSupportedAcpxProfileVersion("grok", 7)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("pi", 30)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 71)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 17)).toBe(true);
     expect(isSupportedAcpxProfileVersion("pi", 17)).toBe(true);
     expect(isSupportedAcpxProfileVersion("pi", 18)).toBe(true);

@@ -93,6 +93,43 @@ export async function setupCursorRuntime(): Promise<void> {
   } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
 }
 
+/** Resolve Antigravity setup without importing the server or starting a provider. */
+export async function resolveAntigravityProvisioner(serverUrl: string): Promise<string> {
+  const url = new URL(serverUrl);
+  if (url.protocol !== "file:" || url.search || url.hash) throw new Error("Antigravity setup requires an installed Paperclip server");
+  const entry = await realpath(fileURLToPath(url));
+  if (!entry.endsWith("/dist/index.js")) throw new Error("Antigravity setup requires the published server layout");
+  const root = resolve(dirname(entry), "..");
+  const manifest = join(root, "package.json");
+  const info = await lstat(manifest);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 65536 || JSON.parse(await readFile(manifest, "utf8")).name !== "@paperclipai/server") throw new Error("Antigravity setup server package identity is invalid");
+  const provisioner = join(root, "dist/vendor/paperclip-runner/cli/provision-antigravity.cjs");
+  if (await realpath(provisioner) !== provisioner || !(await lstat(provisioner)).isFile()) throw new Error("Antigravity setup entrypoint escapes its server package");
+  return provisioner;
+}
+
+export async function setupAntigravityRuntime(): Promise<void> {
+  const provisioner = await resolveAntigravityProvisioner(import.meta.resolve("@paperclipai/server"));
+  const child = spawn(process.execPath, ["--use-env-proxy", provisioner], {
+    // Setup only downloads public assets. Reuse the existing network allowlist;
+    // runtime credentials and process-loader settings never reach this child.
+    stdio: "inherit", env: buildPiSetupEnvironment(),
+  });
+  const cancel = () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); };
+  process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
+  try {
+    await new Promise<void>((accept, reject) => {
+      let spawnError: Error | undefined;
+      child.on("error", error => { spawnError = error; });
+      child.once("close", (code, signal) => {
+        if (spawnError) reject(spawnError);
+        else if (code !== 0 || signal) reject(new Error("Antigravity setup did not finish. Review its error; an invalid installation is never replaced automatically."));
+        else accept();
+      });
+    });
+  } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
+}
+
 
 export function registerRuntimeCommands(program: Command): void {
   const runtime = program.command("runtime").description("Manage explicitly installed agent runtimes");
@@ -112,10 +149,11 @@ export function registerRuntimeCommands(program: Command): void {
       } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
     });
   runtime.command("setup <provider>")
-    .description("Install and verify the pinned Pi or Cursor runtime for this host (public downloads; no model calls)")
+    .description("Install and verify a pinned Pi, Cursor, or Antigravity runtime (public downloads; no model calls)")
     .action(async (provider: string) => {
       if (provider === "pi") await setupPiRuntime();
       else if (provider === "cursor") await setupCursorRuntime();
-      else throw new Error("Supported runtime setup: paperclipai runtime setup pi or cursor");
+      else if (provider === "antigravity") await setupAntigravityRuntime();
+      else throw new Error("Supported runtime setup: paperclipai runtime setup pi, cursor, or antigravity");
     });
 }
