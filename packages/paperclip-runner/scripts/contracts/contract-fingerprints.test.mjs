@@ -52,6 +52,10 @@ test("contract edits change the digest", () => {
     // A property named `description` is a declaration, not an annotation.
     [`${R}/protocol/schemas/result.schema.json`, s => s.replace("\"description\": { \"type\": \"string\", \"minLength\": 1 }",
       "\"description\": { \"type\": \"string\", \"minLength\": 2 }")],
+    // A nested runtime context field, which the pack's strict parser rejects.
+    [`${R}/protocol/provider-schemas/runtime-context.schema.json`, s => s.replace("\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" }",
+      "\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" },\n        \"newContextField\": true")],
+    [SIDECAR_SCHEMA, s => s.replace("\"readOnly\": { \"type\": \"boolean\" }", "\"readOnly\": { \"type\": \"boolean\" },\n        \"newPolicyField\": { \"type\": \"boolean\" }")],
     [`${RUST}/configured_environment.rs`, s => s.replace("const RESERVED: &[&str] = &[", "const RESERVED: &[&str] = &[\"NEW_KEY\",")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    pub extra: Option<String>,")],

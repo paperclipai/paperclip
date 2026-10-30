@@ -109,13 +109,21 @@
         "grokEffort": true,
         "grokDisableWebSearch": true,
         "permissionModePinned": true,
-        "providerPolicy": true,
+        "providerPolicy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/providerPolicy" }] },
         "systemInstructions": true,
-        "runtimeContext": true,
+        "runtimeContext": { "description": "Validated against runtime-context.schema.json." },
         "tools": true,
         "providerSessionKey": true,
         "expectedIdentity": true,
         "candidateAdmission": true
+      },
+      "additionalProperties": false
+    },
+    "providerPolicy": {
+      "type": "object",
+      "required": ["readOnly"],
+      "properties": {
+        "readOnly": { "type": "boolean" }
       },
       "additionalProperties": false
     },

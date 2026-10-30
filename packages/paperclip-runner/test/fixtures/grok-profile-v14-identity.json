@@ -1,6 +1,6 @@
 {
-  "commandDigest": "sha256:4c2fd1171f0bdcda6b96a14e52ee28b4424fea1b76ab187997543f4375a8e78e",
-  "sourceDigest": "sha256:44990c16c10c2a42cb56933d9900197ca18d94e4cd19324a49425e9a34007e2a",
+  "commandDigest": "sha256:6e6af5b860470cabfa6f8b97755d395bc4914dac9951d3308c88f5e9775c57ea",
+  "sourceDigest": "sha256:f445df288157c63cdcd3e4645ca0917d9eacf197b6fc03c53d13a2de02cc3c8e",
   "declaration": {
     "schema": "paperclip.grok-profile-identity.v1",
     "agent": "grok",
@@ -13,7 +13,7 @@
     "acpxVersion": "0.13.1",
     "sources": {
       "patches/acpx@0.13.1.patch": "sha256:1e7dae8c83bf8620f53f2bea13c175eeff95e7e955783f6f529bb1dcbdcdb6d2",
-      "packages/paperclip-runner/src/cli/acpx-runtime-sidecar.ts": "sha256:32d1c57e72ac1b3867c3ace784658d13c82ae56653c145c2e368da6c96dcf183",
+      "packages/paperclip-runner/src/cli/acpx-runtime-sidecar.ts": "sha256:2773c44ce136bfca1a127adbc0f48958cdc44bac0052dda369f9863250edf9b4",
       "packages/paperclip-runner/src/cli/acpx-sidecar-input.ts": "sha256:17948ad74350dc487ab20d24a0fb89daf0b426b98396454fff0e3856e922d82c",
       "packages/paperclip-runner/src/drivers/acpx/admission-diagnostics.ts": "sha256:df8f1aa4f2d1bc63b2635bdd09cb8165c8b7681ddcc2618435c7c08ca90475af",
       "packages/paperclip-runner/src/drivers/acpx/grok-effort.ts": "sha256:f1e46cf2e1e36b7704bd797b678e3db8db2003f97bdb9d827cfa3d7662698777",
@@ -24,7 +24,7 @@
       "packages/paperclip-runner/src/drivers/preconfigured-home.ts": "sha256:bb286f7ddc6e9597c56d46bf7ff6e3b556c5b680d7e147fd46518724432b083e",
       "packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts": "sha256:b9f05e522f92b6bade51c7a17f8d28bf31ab9db26510b8d5ddce8519d563a875",
       "packages/paperclip-runner/src/drivers/acpx/sidecar-protocol.ts": "sha256:26b6b21dad582810d00f46e947e682a9615ee9761c487f6315970d6d014c05ab",
-      "packages/paperclip-runner/src/drivers/acpx/generated-sidecar-contract.ts": "sha256:83db581a513c9fa5f586f7dea044f921d240ea99595e1313ceca8af872aecc33",
+      "packages/paperclip-runner/src/drivers/acpx/generated-sidecar-contract.ts": "sha256:b60e4b924e827e122860d2a4cc13b465ba748ee521620887c88f3c58c0df6081",
       "packages/paperclip-runner/src/drivers/acpx/native-distribution-integrity.ts": "sha256:aed327c389e957483a503cb1bb8b247ee7cd7ff4b528fb4567c39bcb4577690b",
       "packages/paperclip-runner/src/providers/grok/launcher.cjs": "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
       "packages/paperclip-runner/src/providers/grok/platforms.json": "sha256:931eed3abbf2bf041e6c72e6e9486d976f4352613cf069b216ddf010c9a8e704",

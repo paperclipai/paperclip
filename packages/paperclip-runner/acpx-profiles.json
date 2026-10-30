@@ -20,7 +20,7 @@
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:4c2fd1171f0bdcda6b96a14e52ee28b4424fea1b76ab187997543f4375a8e78e",
+      "commandDigest": "sha256:6e6af5b860470cabfa6f8b97755d395bc4914dac9951d3308c88f5e9775c57ea",
       "requiresProviderPolicy": false
     },
     "pi": {
@@ -47,7 +47,7 @@
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:e27b3b63da6612b8d4fea6c8abab57317d88393189f799ad095386a06ec659a8",
+      "commandDigest": "sha256:9213c81a5690238cbd245efb50772c63fcd8e3d3fc64d2997b3825f1d9298258",
       "requiresProviderPolicy": true
     },
     "claude": {

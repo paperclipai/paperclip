@@ -23,6 +23,7 @@ const sources = {
   singleReadEvidenceSourceSha256: "src/drivers/acpx/single-read-evidence.ts",
   nativeSessionRuntimeSourceSha256: "src/native-session-runtime.ts",
   nativeRuntimeContextSourceSha256: "src/contracts/runtime-context.ts",
+  nativeRuntimeContextFieldsSourceSha256: "src/contracts/generated-runtime-context-contract.ts",
   nativeRuntimePromptsSourceSha256: "src/contracts/runtime-context-prompts.ts",
   nativeSessionContractSourceSha256: "src/contracts/native-session-backend.ts",
   harnessSessionContractSourceSha256: "src/contracts/harness-driver.ts",

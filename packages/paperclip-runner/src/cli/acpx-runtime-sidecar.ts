@@ -72,7 +72,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
-import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS } from "../drivers/acpx/generated-sidecar-contract.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -1309,7 +1309,8 @@ function parseOpenParams(
 
 function parseProviderPolicy(value: unknown): { readOnly: boolean } {
   const policy = record(value);
-  if (typeof policy.readOnly !== "boolean" || Object.keys(policy).some(key => key !== "readOnly")) {
+  if (typeof policy.readOnly !== "boolean"
+    || Object.keys(policy).some(key => !(GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS as readonly string[]).includes(key))) {
     throw new Error("providerPolicy requires only an explicit readOnly boolean");
   }
   return { readOnly: policy.readOnly };

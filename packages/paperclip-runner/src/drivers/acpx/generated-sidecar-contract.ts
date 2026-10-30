@@ -58,6 +58,10 @@ export const GENERATED_ACPX_SIDECAR_OPEN_PARAMS = [
   "candidateAdmission",
 ] as const;
 
+export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
+  "readOnly",
+] as const;
+
 export type GeneratedAcpxToolOperation =
   | "read"
   | "search"
