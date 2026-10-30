@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { preparePiRuntimeConfig } from "./runtime-config.js";
+import { piVersionSupportsMcp, preparePiMcpConfig, preparePiRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -243,5 +244,100 @@ describe("preparePiRuntimeConfig", () => {
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+});
+
+describe("preparePiMcpConfig", () => {
+  const servers = [
+    { name: "Cloudflare for the organization", url: "https://paperclip.example/mcp/gateways/gw1", token: "run-token-1", connectionId: "0127c7b8-aaaa" },
+    { name: "Cloudflare_for the organization", url: "https://paperclip.example/mcp/gateways/gw2", token: "run-token-2", connectionId: "c2e8faa7-bbbb" },
+  ];
+
+  async function tempDir(prefix: string) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    cleanupPaths.add(dir);
+    return dir;
+  }
+
+  async function readMcp(dir: string) {
+    return JSON.parse(await fs.readFile(path.join(dir, "mcp.json"), "utf8")) as { mcpServers: Record<string, Record<string, unknown>> };
+  }
+
+  it("does nothing without runtime MCP servers", async () => {
+    const prepared = await preparePiMcpConfig({ servers: [], env: {}, managedAgentConfigDir: null, cwd: "/" });
+    expect(prepared.agentConfigDir).toBeNull();
+    expect(prepared.notes).toEqual([]);
+  });
+
+  it("writes mcp.json into a managed agent-config dir", async () => {
+    const managed = await tempDir("pi-managed-");
+    const prepared = await preparePiMcpConfig({ servers, env: {}, managedAgentConfigDir: managed, cwd: "/" });
+    expect(prepared.agentConfigDir).toBe(managed);
+    const { mcpServers } = await readMcp(managed);
+    expect(Object.keys(mcpServers)).toEqual(["cloudflare-for-the-organization", "cloudflare_for-the-organization-c2e8faa7"]);
+    expect(mcpServers["cloudflare-for-the-organization"]).toMatchObject({
+      url: "https://paperclip.example/mcp/gateways/gw1",
+      headers: { Authorization: "Bearer run-token-1" },
+    });
+    expect((await fs.stat(path.join(managed, "mcp.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("overlays the agent dir from HOME without touching it", async () => {
+    const home = await tempDir("pi-home-");
+    const agentDir = path.join(home, ".pi", "agent");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(path.join(agentDir, "auth.json"), "{}");
+    const userMcp = { mcpServers: { docs: { url: "https://docs.example/mcp" }, "cloudflare-for-the-organization": { url: "https://stale.example" } } };
+    await fs.writeFile(path.join(agentDir, "mcp.json"), JSON.stringify(userMcp));
+
+    const prepared = await preparePiMcpConfig({ servers: servers.slice(0, 1), env: { HOME: home }, managedAgentConfigDir: null, cwd: "/" });
+    const overlay = prepared.agentConfigDir!;
+    expect(overlay).not.toBe(agentDir);
+    expect(await fs.readlink(path.join(overlay, "auth.json"))).toBe(path.join(agentDir, "auth.json"));
+    const { mcpServers } = await readMcp(overlay);
+    expect(mcpServers.docs).toEqual({ url: "https://docs.example/mcp" });
+    expect(mcpServers["cloudflare-for-the-organization"]?.url).toBe("https://paperclip.example/mcp/gateways/gw1");
+    expect(JSON.parse(await fs.readFile(path.join(agentDir, "mcp.json"), "utf8"))).toEqual(userMcp);
+
+    await prepared.cleanup();
+    await expect(fs.stat(overlay)).rejects.toThrow();
+    await expect(fs.stat(path.join(agentDir, "auth.json"))).resolves.toBeTruthy();
+  });
+
+  it("prefers PI_CODING_AGENT_DIR over HOME", async () => {
+    const agentDir = await tempDir("pi-agent-");
+    await fs.writeFile(path.join(agentDir, "settings.json"), "{}");
+    const prepared = await preparePiMcpConfig({ servers: servers.slice(0, 1), env: { PI_CODING_AGENT_DIR: agentDir, HOME: "/nonexistent" }, managedAgentConfigDir: null, cwd: "/" });
+    cleanupPaths.add(prepared.agentConfigDir!);
+    expect(await fs.readlink(path.join(prepared.agentConfigDir!, "settings.json"))).toBe(path.join(agentDir, "settings.json"));
+  });
+
+  it("resolves a relative PI_CODING_AGENT_DIR against the run cwd", async () => {
+    const cwd = await tempDir("pi-cwd-");
+    await fs.mkdir(path.join(cwd, ".pi", "agent"), { recursive: true });
+    await fs.writeFile(path.join(cwd, ".pi", "agent", "auth.json"), "{}");
+    const prepared = await preparePiMcpConfig({ servers: servers.slice(0, 1), env: { PI_CODING_AGENT_DIR: ".pi/agent" }, managedAgentConfigDir: null, cwd });
+    cleanupPaths.add(prepared.agentConfigDir!);
+    expect(await fs.readlink(path.join(prepared.agentConfigDir!, "auth.json"))).toBe(path.join(cwd, ".pi", "agent", "auth.json"));
+    expect(await fs.readFile(path.join(prepared.agentConfigDir!, "auth.json"), "utf8")).toBe("{}");
+  });
+
+  it("expands a ~ PI_CODING_AGENT_DIR with HOME", async () => {
+    const home = await tempDir("pi-home-");
+    await fs.mkdir(path.join(home, "pi-agent"), { recursive: true });
+    await fs.writeFile(path.join(home, "pi-agent", "settings.json"), "{}");
+    const prepared = await preparePiMcpConfig({ servers: servers.slice(0, 1), env: { PI_CODING_AGENT_DIR: "~/pi-agent", HOME: home }, managedAgentConfigDir: null, cwd: "/" });
+    cleanupPaths.add(prepared.agentConfigDir!);
+    expect(await fs.readlink(path.join(prepared.agentConfigDir!, "settings.json"))).toBe(path.join(home, "pi-agent", "settings.json"));
+  });
+});
+
+describe("piVersionSupportsMcp", () => {
+  it("requires Pi 0.99.0 or later", () => {
+    expect(piVersionSupportsMcp("0.74.0")).toBe(false);
+    expect(piVersionSupportsMcp("0.98.9")).toBe(false);
+    expect(piVersionSupportsMcp("0.99.0")).toBe(true);
+    expect(piVersionSupportsMcp("pi 1.4.0")).toBe(true);
+    expect(piVersionSupportsMcp("")).toBeNull();
   });
 });
