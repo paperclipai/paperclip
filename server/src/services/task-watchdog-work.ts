@@ -29,7 +29,7 @@ export function registerTaskWatchdogWork(
       let next: number | null = null;
       const result = await owner.reconcile({ companyId: entry.companyId, watchdogId: entry.id,
         onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-      if (result.incomplete > 0) throw new Error("Task watchdog subtree remains incomplete");
+      if (result.incomplete > 0) throw new Error(`Task watchdog ${entry.id} in company ${entry.companyId} has an incomplete subtree`);
       return next === null ? null : { ...entry, dueAt: next };
     },
   }, canRun);

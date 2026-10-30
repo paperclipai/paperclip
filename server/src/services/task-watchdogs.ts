@@ -848,6 +848,7 @@ async function upsertIssueWatchdogInTransaction(
     .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
     .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
 
+  await notifyIssueRecovery(dbOrTx, { companyId });
   if (existing) {
     const updated = await updateIssueWatchdogRow(dbOrTx, existing, input, now);
     return { watchdog: toIssueWatchdog(updated), created: false };
@@ -892,10 +893,7 @@ export function upsertIssueWatchdogForIssue(
   issueId: string,
   input: IssueWatchdogUpsertInput,
 ): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
-  return dbOrTx.transaction(async tx => {
-    await notifyIssueRecovery(tx, { companyId });
-    return upsertIssueWatchdogInTransaction(tx, companyId, issueId, input);
-  });
+  return dbOrTx.transaction(tx => upsertIssueWatchdogInTransaction(tx, companyId, issueId, input));
 }
 
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
