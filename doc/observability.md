@@ -1563,6 +1563,20 @@ These fields contain build identifiers; they add no tenant or user identity.
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
 
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
+
 Native runner identity and harness failures retain their existing error prefixes.
 Their terminal messages now include a bounded guard reason, such as
 `session_scope_mismatch`, `durable_identity_unreadable`, or

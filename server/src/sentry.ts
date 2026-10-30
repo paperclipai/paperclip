@@ -47,6 +47,9 @@
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
 //
+// `beforeSend` adds run navigation links, then bounded provenance for the
+// dynamic-import-callback error — see `sentry-dynamic-import-provenance.ts`.
+//
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
 // `peerDependencies` declares — the same audited version documented in
@@ -65,6 +68,7 @@ import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
 import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
+import { addDynamicImportProvenance, type ProvenanceHint } from "./sentry-dynamic-import-provenance.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -341,7 +345,14 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-  beforeSend: typeof addSentryRunLinks;
+  beforeSend: typeof enrichServerEvent;
+}
+
+type ServerEvent = Parameters<typeof addSentryRunLinks>[0] & Parameters<typeof addDynamicImportProvenance>[0];
+
+/** The server's `beforeSend`: run navigation links, then dynamic-import provenance. */
+export async function enrichServerEvent<T extends ServerEvent>(event: T, hint?: ProvenanceHint): Promise<T> {
+  return addDynamicImportProvenance(await addSentryRunLinks(event), hint);
 }
 
 /**
@@ -360,7 +371,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    beforeSend: addSentryRunLinks,
+    beforeSend: enrichServerEvent,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
