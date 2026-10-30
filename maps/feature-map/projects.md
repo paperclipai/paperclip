@@ -44,6 +44,14 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 Automated: [projects UI](../../ui/src/pages/Projects.test.tsx) and [project detail](../../ui/src/pages/ProjectDetail.test.tsx) are component tests.
 
+Automated: the explicit [`project-task-context` deployment journey](../../tests/runner-e2e/product-journeys/project-context-flow.ts)
+creates a project and a self-assigned task through the production dialogs. It
+reopens both, verifies the project task list and task properties after reload,
+and independently checks the saved company, project, prompt, assignment and
+standard work mode with zero agent runs. [Oracle tests](../../tests/runner-e2e/product-journeys/project-context-evidence.test.ts)
+reject lost links and mismatched records. This describes coverage; each target
+still needs its own live pass before daily promotion.
+
 Manual: Create a project, add a task from its view, and reload. Verify the task belongs to that project, list counts are plausible, and links preserve company scope. Archive only the disposable project and inspect list/task behavior.
 
 ### `repository-settings`

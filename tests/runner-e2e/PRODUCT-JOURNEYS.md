@@ -24,6 +24,7 @@ never start a server or depend on a tenant filesystem.
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
+| `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
@@ -36,6 +37,14 @@ never start a server or depend on a tenant filesystem.
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
 draft can otherwise lose the original content when the file arrives.
+
+The project/task journey records durable project and task ownership before each
+creation and immediately saves the response IDs. Its project must retain its
+planned state. Independent project-filtered task reads must contain the exact
+new task. The final task view must show the same project after reload. A Cloud
+provider must clean only these owned resources, settle owned tasks before
+archiving the project, and preserve their history. Catalog registration does not
+admit this candidate to a saved daily plan; a real deployment pass is required.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
 Cloud (`local` or `daytona` when present), and new Cloud. New Cloud must start
