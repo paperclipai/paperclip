@@ -394,6 +394,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           root,
           cwd,
           trace,
+          sessionId: input.normalizedSessionId,
           dispatch: (call) => {
             if (session === null)
               throw new Error("OpenCode session is not ready for tool calls");
@@ -2178,8 +2179,59 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 }
 
+/** OpenCode Go rejects gateway traffic that cannot name its routing session. */
+export function isOpenCodeGoBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname === "opencode.ai" && /^\/zen\/go(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Headers in which the harness names its own conversation. OpenCode uses
+ * x-opencode-session only for providers whose id starts with "opencode", and
+ * sends x-opencode-session-id plus x-session-affinity for every other
+ * provider, so a projected paperclip provider arrives under those names.
+ */
+const HARNESS_SESSION_HEADERS = ["x-opencode-session", "x-opencode-session-id", "x-session-affinity"] as const;
+
+/** Read one trimmed header value, ignoring blanks and duplicate arrays. */
+function headerValue(value: string | string[] | undefined): string | undefined {
+  const first = Array.isArray(value) ? value[0] : value;
+  const trimmed = (first ?? "").trim();
+  return trimmed || undefined;
+}
+
+/** Read the first non-empty harness routing identity from the client headers. */
+export function harnessRoutingSessionId(
+  headers: Record<string, string | string[] | undefined>,
+): string | undefined {
+  for (const name of HARNESS_SESSION_HEADERS) {
+    const value = headerValue(headers[name]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * One stable routing session per conversation. Reuse the harness identity so a
+ * resumed provider session keeps the same routing identity; fall back to the
+ * run's normalized session id. Other gateways receive no extra header.
+ */
+export function openCodeGoProviderHeaders(
+  baseUrl: string,
+  sessionId: string,
+  clientSessionId?: string,
+): Record<string, string> {
+  if (!isOpenCodeGoBaseUrl(baseUrl)) return {};
+  const routingSession = (clientSessionId ?? "").trim() || sessionId.trim();
+  return routingSession ? { "x-opencode-session": routingSession } : {};
+}
+
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, sessionId: string) {
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2232,11 +2284,17 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         response.writeHead(400).end();
         return;
       }
+      // An explicit x-opencode-session passes through unchanged to any gateway;
+      // the other harness names are mapped only for the Go endpoint.
+      const explicitSession = headerValue(request.headers["x-opencode-session"]);
+      const routingHeaders = explicitSession
+        ? { "x-opencode-session": explicitSession }
+        : openCodeGoProviderHeaders(baseUrl, sessionId, harnessRoutingSessionId(request.headers));
       const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: { ...routingHeaders, ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
@@ -2288,6 +2346,8 @@ async function startRuntime(input: {
   root: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
+  /** Stable per-conversation identity for provider routing headers. */
+  sessionId: string;
   dispatch: (call: {
     tool: string;
     callId: string;
@@ -2365,7 +2425,7 @@ async function startRuntime(input: {
       ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
       : null;
   const providerProxy = providerRoute
-    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment, input.sessionId).catch(async error => {
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
