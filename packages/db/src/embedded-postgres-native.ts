@@ -71,6 +71,21 @@ export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<s
   return created;
 }
 
+/**
+ * Directories of the bundled native PostgreSQL engine, for callers that run
+ * the binaries directly (the managed embedded supervisor runs `postgres` under
+ * a separate OS user). Null when this platform has no bundled engine.
+ */
+export async function resolveEmbeddedPostgresNativeDirs(): Promise<{ binDir: string; libDir: string } | null> {
+  const nativePackageName = resolveNativePackageName();
+  const packageRoot = resolveEmbeddedPostgresPackageRoot();
+  if (!nativePackageName || !packageRoot) return null;
+  const nativeRoot = path.resolve(packageRoot, "..", "@embedded-postgres", nativePackageName, "native");
+  const binDir = path.join(nativeRoot, "bin");
+  if (!(await pathExists(path.join(binDir, "postgres")))) return null;
+  return { binDir, libDir: path.join(nativeRoot, "lib") };
+}
+
 export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
   const nativePackageName = resolveNativePackageName();
   const packageRoot = resolveEmbeddedPostgresPackageRoot();

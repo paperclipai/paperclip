@@ -67,6 +67,7 @@ import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { resolveManagedEmbeddedAppDatabase } from "./managed-database/app-contract.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -483,8 +484,36 @@ async function startServerWithDatabaseTeardown(
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
+  // A supervisor-launched app on a managed embedded stack receives a restricted
+  // local DATABASE_URL; every other deployment keeps the rules below.
+  const managedEmbeddedDatabase = resolveManagedEmbeddedAppDatabase(process.env);
   assertCloudDatabaseContract();
-  if (config.databaseUrl) {
+  if (managedEmbeddedDatabase) {
+    if (config.databaseUrl !== managedEmbeddedDatabase.databaseUrl) {
+      throw new Error("managed embedded database: DATABASE_URL must come from the supervisor, not config.database.connectionString");
+    }
+    // The supervisor owns schema changes. The runtime role cannot apply DDL,
+    // so a non-current schema is a refusal, never a prompt or auto-apply.
+    const state = await inspectMigrations(config.databaseUrl);
+    if (state.status !== "upToDate") {
+      throw new Error(
+        `managed embedded database schema is not current (${formatPendingMigrationSummary(state.pendingMigrations)}); refusing to start`,
+      );
+    }
+    migrationSummary = "already applied";
+    db = createDb(config.databaseUrl);
+    pluginMigrationDb = createDb(managedEmbeddedDatabase.pluginMigrationUrl);
+    logger.info(
+      {
+        stackId: managedEmbeddedDatabase.readiness.stackId,
+        configGeneration: managedEmbeddedDatabase.readiness.configGeneration,
+        systemIdentifier: managedEmbeddedDatabase.readiness.systemIdentifier,
+      },
+      "Using managed embedded PostgreSQL via the database supervisor",
+    );
+    activeDatabaseConnectionString = config.databaseUrl;
+    startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+  } else if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
@@ -1000,6 +1029,7 @@ async function startServerWithDatabaseTeardown(
     companyDeletionEnabled: config.companyDeletionEnabled,
     announcements: { enabled: config.announcementsEnabled, feedUrl: config.announcementsFeedUrl },
     pluginMigrationDb: pluginMigrationDb as any,
+    managedDatabaseControlSocket: managedEmbeddedDatabase?.controlSocket,
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,

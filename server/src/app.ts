@@ -80,6 +80,8 @@ import { registerImportSpoolCleanupWork } from "./services/import-spool-cleanup-
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
 import { livenessRoutes } from "./routes/liveness.js";
+import { MANAGED_DATABASE_HTTP } from "@paperclipai/shared/managed-database";
+import { managedDatabaseRelay } from "./managed-database/relay.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { cloudRoutes } from "./routes/cloud.js";
@@ -442,6 +444,8 @@ export async function createApp(
     hostVersion?: string;
     localPluginDir?: string;
     pluginMigrationDb?: Db;
+    /** Managed embedded stacks: supervisor socket for the signed command relay. */
+    managedDatabaseControlSocket?: string;
     pluginWorkerManager?: PluginWorkerManager;
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
@@ -460,6 +464,9 @@ export async function createApp(
   },
 ) {
   const app = express();
+  if (opts.managedDatabaseControlSocket) {
+    app.use(MANAGED_DATABASE_HTTP.prefix, managedDatabaseRelay(opts.managedDatabaseControlSocket));
+  }
   app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();
   app.locals.paperclipDb = db;

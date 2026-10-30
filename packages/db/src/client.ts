@@ -12,8 +12,31 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url)
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
+/**
+ * Honors libpq's `?host=/socket/dir` URI parameter, which postgres.js does not
+ * read from a URL. The managed embedded supervisor reaches its privileged
+ * roles only through a Unix socket directory the tenant app cannot open.
+ */
+export function unixSocketConnectionOptions(url: string): { url: string; host?: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { url };
+  }
+  const host = parsed.searchParams.get("host");
+  if (!host || !host.startsWith("/")) return { url };
+  parsed.searchParams.delete("host");
+  return { url: parsed.toString(), host };
+}
+
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  const socket = unixSocketConnectionOptions(url);
+  return postgres(socket.url, {
+    max: 1,
+    onnotice: () => {},
+    ...(socket.host ? { host: socket.host } : {}),
+  });
 }
 
 type RegisteredPostgresClient = ReturnType<typeof postgres>;
