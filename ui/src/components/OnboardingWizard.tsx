@@ -127,6 +127,7 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCloudInstance } from "../hooks/useCloudInstance";
+import { useCompanyCreationAccess } from "../hooks/useCompanyCreationAccess";
 import { PillGuy } from "./onboarding/PillGuy";
 import { SleepingZs } from "./onboarding/SleepingZs";
 import {
@@ -538,11 +539,20 @@ function OnboardingWizardInner({
           companies,
           cloudManaged: Boolean(cloudInstance),
         });
-  const effectiveOnboardingOpen =
-    onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
     : routeOnboardingOptions ?? {};
+  const onboardingRequested = onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
+  const { canCreateCompany } = useCompanyCreationAccess(onboardingRequested && !cloudInstance);
+  // Existing organizations can still onboard agents. New organization forms
+  // remain closed until instance-level permission has been confirmed.
+  const effectiveOnboardingOpen =
+    onboardingRequested &&
+    Boolean(
+      effectiveOnboardingOptions.companyId ||
+      (saved?.createdCompanyId && Number(saved.step) >= 3) ||
+      canCreateCompany,
+    );
 
   // Sync disabled adapter types only when the wizard is visible. The wizard is
   // mounted globally, including on /auth, where protected adapter routes are
@@ -2692,7 +2702,7 @@ function OnboardingWizardInner({
     }
   }
 
-  if (!effectiveOnboardingOpen) return null;
+  if (!effectiveOnboardingOpen || (step === 1 && !canCreateCompany)) return null;
 
   // The arc strip stands in for the full-length bar only when the run began on
   // the arc — the Cloud-first path, where the company already exists and step 1

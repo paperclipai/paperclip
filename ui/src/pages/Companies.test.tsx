@@ -13,6 +13,8 @@ const mockCompaniesApi = vi.hoisted(() => ({
   remove: vi.fn(),
 }));
 const mockOpenOnboarding = vi.hoisted(() => vi.fn());
+const mockBoardAccess = vi.hoisted(() => vi.fn());
+vi.mock("../api/access", () => ({ accessApi: { getCurrentBoardAccess: mockBoardAccess } }));
 
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
@@ -71,6 +73,7 @@ describe("Companies page", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockCompaniesApi.stats.mockResolvedValue({});
@@ -122,5 +125,13 @@ describe("Companies page", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("hides organization creation for non-instance admins", async () => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    const root = await renderPage();
+    expect(container.textContent).not.toContain("New Organization");
+    expect(container.textContent).toContain("Acme Labs");
+    act(() => root.unmount());
   });
 });

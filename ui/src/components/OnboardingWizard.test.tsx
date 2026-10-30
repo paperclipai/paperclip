@@ -24,6 +24,11 @@ function setupAdapterInfo(input: Pick<import("../api/adapters").AdapterInfo, "ty
 }
 
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+const mockBoardAccess = vi.hoisted(() => vi.fn());
+vi.mock("../api/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/access")>();
+  return { ...actual, accessApi: { ...actual.accessApi, getCurrentBoardAccess: mockBoardAccess } };
+});
 const localHealth = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/api/health", () => ({ healthApi: localHealth }));
 const managedApi = vi.hoisted(() => ({
@@ -318,6 +323,7 @@ function render(staleTime = 0) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime } },
   });
+  queryClient.setQueryData(queryKeys.access.currentBoardAccess, { source: "session", isInstanceAdmin: true });
   // The company list is keyed by account, so it stays disabled until the
   // session is known. Seeding it is how these tests say "signed in as B".
   queryClient.setQueryData(queryKeys.auth.session, {
@@ -364,6 +370,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockAdaptersApi.list.mockReset().mockResolvedValue([]);
     mockEnvironmentsApi.probe.mockReset().mockResolvedValue({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "platform-lease" } });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     localHealth.get.mockResolvedValue({ deploymentMode: "authenticated" });
     managedApi.checkLocalLogin.mockReset().mockResolvedValue({
       status: "sign_in_required",
@@ -582,6 +589,68 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       await act(async () => root.unmount());
     });
+  });
+
+  it.each(["denied", "pending", "error"])("does not open a new organization form when creation access is %s", async (state) => {
+    if (state === "denied") mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    else if (state === "pending") mockBoardAccess.mockImplementation(() => new Promise(() => {}));
+    else mockBoardAccess.mockRejectedValue(new Error("Access unavailable"));
+    const { root, queryClient } = render();
+    queryClient.removeQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(document.body.textContent).not.toContain("What is the name of");
+    expect(document.querySelector("input")).toBeNull();
+    expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
+  it("does not request protected creation permissions when the global wizard is closed", async () => {
+    mockDialog.onboardingOpen = false;
+    const { root, queryClient } = render();
+    queryClient.removeQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(mockBoardAccess).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
+  it("does not restore the organization naming form from an existing-company draft for a non-instance admin", async () => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    mockCompany.companies = [{ id: "company-1", name: "Acme", issuePrefix: "PC1" }];
+    mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 1, createdCompanyId: "company-1" }));
+    const { root, queryClient } = render();
+    queryClient.removeQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(document.querySelector("#onboarding-company-name")).toBeNull();
+    expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
+  it("lets non-instance admins add agents to an existing organization", async () => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    mockDialog.onboardingOptions = { initialStep: 3, companyId: "company-1" };
+    const { root, queryClient } = render();
+    queryClient.removeQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(document.querySelector("#onboarding-agent-name")).not.toBeNull();
+    expect(document.querySelector("#onboarding-company-name")).toBeNull();
+    await act(async () => root.unmount());
+    queryClient.clear();
   });
 
   describe("step 1 leads straight to the agent — there is no mission step 2", () => {

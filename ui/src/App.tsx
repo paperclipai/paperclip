@@ -39,6 +39,7 @@ import {
 } from "./lib/onboarding-route";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 import { useCloudInstance } from "./hooks/useCloudInstance";
+import { useCompanyCreationAccess } from "./hooks/useCompanyCreationAccess";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -573,12 +574,16 @@ export function OnboardingRoutePage() {
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
   const cloudInstance = useCloudInstance();
+  const creationAccess = useCompanyCreationAccess(!cloudInstance);
   const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
     ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
     : null;
+  if (!matchedCompany && !cloudInstance && !creationAccess.canCreateCompany) {
+    return <CompanyCreationUnavailable access={creationAccess} />;
+  }
   // The OnboardingWizard auto-opens on this route (and can also be opened
   // explicitly). While it is showing it covers the whole screen, so the
   // launcher card below must not stay interactive behind it — otherwise users
@@ -718,6 +723,26 @@ function UnprefixedBoardRedirect() {
   );
 }
 
+function CompanyCreationUnavailable({ access }: { access: ReturnType<typeof useCompanyCreationAccess> }) {
+  return (
+    <div className="mx-auto max-w-xl py-10">
+      <div className="rounded-lg border border-border bg-card p-6">
+        <h1 className="text-xl font-semibold">Organizations</h1>
+        <p className="mt-2 text-sm text-muted-foreground" role="status">
+          {access.isPending
+            ? "Checking organization creation permissions…"
+            : access.isError
+              ? "Couldn't check organization creation permissions."
+              : "Only instance administrators can create organizations. Ask your administrator for access to an organization."}
+        </p>
+        {access.isError && (
+          <Button className="mt-4" onClick={() => void access.refetch()}>Try again</Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function NoCompaniesStartPage() {
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
@@ -725,6 +750,11 @@ function NoCompaniesStartPage() {
   // an invitation to create one in-app — creation lives on Cloud (403 floor).
   const cloudInstance = useCloudInstance();
   const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
+  const creationAccess = useCompanyCreationAccess(!cloudInstance);
+
+  if (!cloudInstance && !creationAccess.canCreateCompany) {
+    return <CompanyCreationUnavailable access={creationAccess} />;
+  }
 
   return (
     <div className="mx-auto max-w-xl py-10">
