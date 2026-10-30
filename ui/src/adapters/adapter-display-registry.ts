@@ -170,6 +170,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     comingSoon: true,
   },
+  openrouter: {
+    label: "OpenRouter",
+    description: "Unified API for 300+ LLMs",
+    icon: Bot,
+    recommended: true,
+  },
 };
 
 // ---------------------------------------------------------------------------
