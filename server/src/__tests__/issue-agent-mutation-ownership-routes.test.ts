@@ -2980,6 +2980,71 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  describe("native run changing its own task status", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    const runActor = () => ({ ...ownerActor(), source: "agent_jwt" });
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+    });
+
+    it.each([
+      ["in_review", {}],
+      ["in_review", { assigneeAgentId: ownerAgentId }],
+      ["done", {}],
+      ["blocked", {}],
+    ])("rejects %s before it releases the run's own execution lock (%j)", async (status, extra) => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status, ...extra });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(res.body.error).toContain("paperclip_finish");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    it("still lets the run edit other fields of its task", async () => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by its run" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["a legacy run", { runtimeMode: "legacy" }, {}],
+      ["a native run that no longer owns execution", {}, { executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", checkoutRunId: null }],
+      ["a native run that is no longer running", { status: "failed" }, {}],
+    ])("leaves the status change to the existing rules for %s", async (_label, runOverrides, issueOverrides) => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, ...runOverrides });
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId, ...issueOverrides }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+    });
+
+    it("does not intercept a native run handing its task to a human", async () => {
+      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
+        .patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" });
+
+      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+    });
+
+    it("does not intercept a board user changing the status", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+    });
+  });
+
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
