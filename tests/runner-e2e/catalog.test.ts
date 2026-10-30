@@ -61,7 +61,7 @@ describe("runner E2E catalog", () => {
     }
     expect(baseConfig.autoStopInterval).toBe(5);
     expect(daytonaWarmEnvironment.buildEnvironment(environmentInput).config).toMatchObject({ autoStopInterval: 5 });
-    expect(suite.definitionMetadata).toMatchObject({ version: 4, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15 });
+    expect(suite.definitionMetadata).toMatchObject({ version: 5, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15 });
   });
 
   it.each([

@@ -45,6 +45,8 @@ import {
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
+  storyAgentReplyMatches,
+  retainedControllerReplyMatcher,
   storyHasPendingHumanInteraction,
   storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
@@ -60,6 +62,7 @@ import {
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
+  type StoryReplyExpectation,
 } from "./everyday-observations.js";
 
 type Row = Record<string, any>;
@@ -325,7 +328,7 @@ export async function runEverydayFlow(input: Input) {
       sameConnections: false,
     };
   }
-  async function settled(expectedAgentReply?: string) {
+  async function settled(expectedAgentReply?: StoryReplyExpectation) {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
@@ -390,9 +393,7 @@ export async function runEverydayFlow(input: Input) {
     if (expectedAgentReply) {
       const issue = settledState.issues.find((candidate) => candidate.id === parent?.id);
       const reply = issue?.comments?.find(
-        (comment) =>
-          comment.authorAgentId === fixtures.agent.id &&
-          String(comment.body ?? "").includes(expectedAgentReply),
+        (comment) => storyAgentReplyMatches(comment, fixtures.agent.id, expectedAgentReply),
       );
       if (reply) {
         // Keep the exact snapshot that satisfied the readiness predicate. A
@@ -1455,15 +1456,16 @@ export async function runEverydayFlow(input: Input) {
         const outage = await input.restart();
         await openParent();
         const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
+        const expectedReply = retainedControllerReplyMatcher(marker);
         await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`);
-        await settled(`${marker} queue_r`);
+        await settled(expectedReply);
         const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
           .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
         if (!after) throw new Error("Retained continuation produced no new successful run");
         const events = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${after.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
         const evidence = { before, after: retainedControllerRun(after), outage: outage || undefined, requestedAt,
           completedTool: events.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed"),
-          usefulReply: settledAgentReply?.authorAgentId === fixtures.agent.id && String(settledAgentReply.body ?? "").includes(`${marker} queue_r`) };
+          usefulReply: storyAgentReplyMatches(settledAgentReply, fixtures.agent.id, expectedReply) };
         ev.checks.push(...gradeRetainedControllerContinuation(evidence));
         await input.evidence("retained-controller-continuation.json", evidence);
       }

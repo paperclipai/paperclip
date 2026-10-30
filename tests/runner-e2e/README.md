@@ -25,6 +25,8 @@ The five-minute outage is a resilience test, not an HTTP downtime allowance.
 This suite gives its Daytona sandbox a 15-minute provider auto-stop interval,
 leaving headroom for the outage and replacement startup. Native agent idle timing,
 ownership/reconnect limits, archive/delete backstops and owned cleanup remain unchanged.
+The retained continuation accepts whitespace between its exact marker and the
+exact `queue_r` output token; readiness and final grading use the same matcher.
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.

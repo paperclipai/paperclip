@@ -1173,7 +1173,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     })),
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
       .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 4, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true,
+    definitionMetadata: { version: 5, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },
