@@ -52,7 +52,7 @@ export function registerDeadlineWork(
     // the domain to probe its database while dispatch is closed.
     hasPending: async () => task.canRun() && requested !== reconciled,
     nextRunAt: () => !task.canRun() && requested !== reconciled
-      ? Math.min(next ?? Infinity, Date.now() + task.retryMs)
+      ? Date.now() + task.retryMs
       : next,
   });
   return { ...worker, wake: () => { requested++; worker.wake(); } };
