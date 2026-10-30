@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { verifyFileManifest } from "./file-manifest-cache.js";
@@ -7450,6 +7451,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     for (const row of rows) {
       await db.transaction(async (tx) => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyStatusCardIssueChange(tx, companyId);
         await tx
           .update(issues)
           .set({ hiddenAt: now, updatedAt: now })

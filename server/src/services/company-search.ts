@@ -207,14 +207,20 @@ function priorityRank(priority: string | null | undefined) {
   return index >= 0 ? index : ISSUE_PRIORITIES.length;
 }
 
-function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+/** Duration used by saved search membership and its deadline consumers. */
+export function companySearchUpdatedWithinMs(value: string | undefined): number | null {
   if (!value) return null;
   const match = /^(\d+)(h|d|w|m)$/.exec(value);
   if (!match) return null;
   const amount = Number.parseInt(match[1]!, 10);
   const unit = match[2];
   const hours = unit === "h" ? amount : unit === "d" ? amount * 24 : unit === "w" ? amount * 24 * 7 : amount * 24 * 30;
-  return new Date(now.getTime() - hours * 60 * 60 * 1000);
+  return hours * 60 * 60 * 1000;
+}
+
+function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+  const duration = companySearchUpdatedWithinMs(value);
+  return duration === null ? null : new Date(now.getTime() - duration);
 }
 
 function issueOnlyFiltersActive(query: CompanySearchQuery) {

@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -336,6 +337,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
@@ -492,6 +494,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);

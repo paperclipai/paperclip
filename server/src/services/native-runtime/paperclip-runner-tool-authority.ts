@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -2059,6 +2060,7 @@ export class PaperclipRunnerToolAuthority {
       }
       const patch = prepareIssueMonitorUpdate(target, input.monitor, actor);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyStatusCardIssueChange(tx, this.binding.companyId);
       const [updated] = await tx.update(issues).set({ ...patch, updatedAt: new Date() })
         .where(and(eq(issues.id, target.id), eq(issues.companyId, this.binding.companyId))).returning();
       if (!updated) throw notFound("Task not found");

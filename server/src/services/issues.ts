@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -10606,6 +10607,7 @@ export function issueService(db: Db) {
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyStatusCardIssueChange(tx, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -11486,6 +11488,7 @@ export function issueService(db: Db) {
                 (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
+        await notifyStatusCardIssueChange(tx, receiptExisting.companyId);
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
@@ -11954,6 +11957,7 @@ export function issueService(db: Db) {
           if (owner) {
             await notifyExternalConversationSettlement(tx, { companyId: owner.companyId });
             await notifyApprovalWork(tx, owner.companyId);
+            await notifyStatusCardIssueChange(tx, owner.companyId);
           }
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
@@ -12726,6 +12730,7 @@ export function issueService(db: Db) {
           .from(issueComments).where(eq(issueComments.id, commentId));
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
+        await notifyStatusCardIssueChange(tx, source.companyId);
         const [comment] = await tx
           .delete(issueComments)
           .where(eq(issueComments.id, commentId))
@@ -12765,6 +12770,7 @@ export function issueService(db: Db) {
           .for("update");
         if (!source) return null;
         await notifyExternalConversationSettlement(tx, source);
+        await notifyStatusCardIssueChange(tx, source.companyId);
         await notifyChatInboundWakeNotices(tx, source);
         const now = new Date();
         const [comment] = await tx

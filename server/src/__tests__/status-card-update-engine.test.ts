@@ -8,6 +8,7 @@ import {
   filterStatusCardChanges,
   isWithinStatusCardActiveHours,
   nextStatusCardEvaluationAt,
+  nextStatusCardPolicyEligibility,
   statusCardChangesHash,
 } from "../services/status-card-update-engine.js";
 
@@ -76,6 +77,28 @@ describe("status card update engine", () => {
     expect(isWithinStatusCardActiveHours(hours, new Date("2026-07-23T16:59:00.000Z"))).toBe(true);
     expect(isWithinStatusCardActiveHours(hours, new Date("2026-07-23T17:00:00.000Z"))).toBe(false);
     expect(evaluateStatusCardPolicy({ policy: hours, now: new Date("2026-07-23T18:00:00.000Z"), lastChangeAt: null, updatesLastHour: 0, tokensToday: 0, manual: false }).action).toBe("pause_hours");
+  });
+
+  it("disarms unchanged reactive evaluation while retaining exact pending eligibility", () => {
+    const policy = statusCardRefreshPolicySchema.parse({ mode: "reactive", debounceSeconds: 90, maxUpdatesPerHour: 2,
+      activeHours: { start: "09:00", end: "17:00", timezone: "UTC" } });
+    const now = new Date("2026-07-23T16:59:30Z");
+    expect(nextStatusCardEvaluationAt(policy, now)).toBeNull();
+    expect(nextStatusCardPolicyEligibility({ policy, now, lastChangeAt: now, completedUpdateTimes: [], tokensToday: 0 }))
+      .toEqual(new Date("2026-07-24T09:00:00Z"));
+    const open = new Date("2026-07-23T14:00:00Z");
+    expect(nextStatusCardPolicyEligibility({ policy, now: open, lastChangeAt: new Date("2026-07-23T13:00:00Z"),
+      completedUpdateTimes: [new Date("2026-07-23T13:30:00Z"), new Date("2026-07-23T13:45:00Z")], tokensToday: 0 }))
+      .toEqual(new Date("2026-07-23T14:30:00.001Z"));
+    expect(nextStatusCardPolicyEligibility({ policy, now: open, lastChangeAt: open, completedUpdateTimes: [], tokensToday: 100_000 }))
+      .toEqual(new Date("2026-07-24T09:00:00Z"));
+  });
+
+  it("retains empty-window pending changes without a recurring eligibility scan", () => {
+    const policy = statusCardRefreshPolicySchema.parse({ mode: "reactive", debounceSeconds: 1,
+      activeHours: { start: "09:00", end: "09:00", timezone: "UTC" } });
+    const now = new Date("2026-07-23T14:00:00Z");
+    expect(nextStatusCardPolicyEligibility({ policy, now, lastChangeAt: now, completedUpdateTimes: [], tokensToday: 0 })).toBeNull();
   });
 
   it("selects full rebuilds for bounded drift rules and incremental otherwise", () => {

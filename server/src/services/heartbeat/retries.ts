@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -1178,6 +1179,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         }
 
         if (issueId) {
+          await notifyStatusCardIssueChange(tx, run.companyId);
           await tx
             .update(issues)
             .set({
