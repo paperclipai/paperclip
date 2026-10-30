@@ -18,7 +18,8 @@ test("trusted workflow fallbacks preserve every declared partition and command",
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
   for (const [job, entries] of Object.entries(lanes)) {
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
-    assert.ok(block.includes(`fromJSON(needs.gate.outputs.plan).jobs.${job}.run`), job);
+    const normalized = block.replaceAll("(needs.test_selection.outputs.plan || needs.gate.outputs.plan)", "needs.gate.outputs.plan");
+    assert.ok(normalized.includes(`fromJSON(needs.gate.outputs.plan).jobs.${job}.run`), job);
     if (!block.includes("      matrix:")) { assert.equal(entries.length, 1); continue; }
     const fallback = block.match(/matrix:.*\|\| '(.*)'\) \}\}/)?.[1];
     assert.ok(fallback, `${job}: missing full fallback`);
@@ -115,7 +116,7 @@ test("cache-affecting definition changes force execution across successive PR pu
     }
   }
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
-  assert.equal((workflow.match(/force:.*fromJSON\(needs.gate.outputs.plan\).forceReason != null/g) ?? []).length, 3);
+  assert.equal((workflow.match(/force:.*\.forceReason != null/g) ?? []).length, 3);
   const action = readFileSync(new URL(".github/actions/run-ci-task/action.yml", root), "utf8");
   assert.match(action, /CI_FORCE_TASKS: \$\{\{ inputs.force \}\}/);
   assert.equal((action.match(/if:.*inputs.force != 'true'/g) ?? []).length, 2);
@@ -169,6 +170,9 @@ test("required aggregates reject omitted, failed and cancelled selected work", (
       env: { ...process.env, FULL_CI: "true", CI_PLAN: JSON.stringify(resultPlan), CI_RESULTS: JSON.stringify(results) } });
     assert.equal(run().status, 0);
     for (const name of names) {
+      // Optional analysis can fail or be skipped; the unchanged task plan
+      // still has to pass. Selected-plan cases are exercised separately.
+      if (name === "test_selection") continue;
       const previous = results[name].result;
       for (const bad of previous === "success" ? ["failure", "cancelled", "skipped"] : ["success"]) {
         results[name].result = bad;
