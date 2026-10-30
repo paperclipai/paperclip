@@ -236,7 +236,7 @@ const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
 
 /** Regex to extract cost from Hermes output. */
-const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
+const COST_REGEX = /(?:cost|spent)[:\s]*\$?(\d+(?:\.\d+)?|\.\d+)/i;
 
 interface ParsedOutput {
   sessionId?: string;
