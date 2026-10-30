@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -1007,6 +1008,7 @@ export function issueTreeControlService(db: Db) {
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
         for (const issueId of issueIdsForStatus) {
+          await notifyRoutineExecutionStatus(tx, issueId, companyId);
           await notifyNativeStatusReassessment(tx, { companyId, issueId });
           await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
           await notifyChatResponseAvailability(tx, { companyId, issueId });
