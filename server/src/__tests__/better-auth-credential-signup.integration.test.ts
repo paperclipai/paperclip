@@ -45,7 +45,7 @@ function testConfig(): Config {
     deploymentExposure: "private",
     authBaseUrlMode: "explicit",
     authPublicBaseUrl: ORIGIN,
-    authDisableSignUp: false,
+    authSignUpMode: "open",
     allowedHostnames: ["127.0.0.1"],
     port: 41999,
   } as unknown as Config;
