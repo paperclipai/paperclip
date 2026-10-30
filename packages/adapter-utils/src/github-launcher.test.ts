@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,29 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it.each([false, true])("rejects a PATH shim that re-enters the same helper before it can recurse (broker file: %s)", async brokerFile => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-recursion-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), shim = path.join(root, "shim"), calls = path.join(root, "calls");
+    await mkdir(managed); await mkdir(shim);
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, githubLauncherSource({ brokerFile }), { mode: 0o700 });
+    // Bound the pre-fix reproduction: the fixture stops at three invocations.
+    await writeFile(path.join(shim, "git"), `#!${process.execPath}
+const fs = require("node:fs"), {spawnSync} = require("node:child_process");
+fs.appendFileSync(${JSON.stringify(calls)}, "call\\n");
+if (fs.readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length >= 3) process.exit(99);
+const result = spawnSync(${JSON.stringify(launcher)}, process.argv.slice(2), {env: process.env, stdio: "inherit"});
+process.exit(result.status ?? 98);
+`, { mode: 0o700 });
+    const env = { ...process.env, ...githubBrokerEnvironment({}, {url: "", token: ""}),
+      PATH: `${managed}${path.delimiter}${shim}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+    await expect(exec(launcher, ["--version"], {env, timeout: 5000})).rejects.toMatchObject({
+      code: 126, stderr: expect.stringContaining("launcher_recursion_rejected"),
+    });
+    expect((await readFile(calls, "utf8")).trim().split("\n")).toEqual(["call"]);
+  });
+
   it("snapshots a staged tree and reports unstaged files without capturing GitHub credentials", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-snapshot-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

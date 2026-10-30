@@ -5,6 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+// A PATH shim can capture this launcher's absolute path and call it again.
+// Reject that cycle before resolving another executable or capturing authority.
+if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
+  process.stderr.write('Paperclip: GitHub launcher_recursion_rejected.\n');
+  process.exit(126);
+}
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
@@ -129,6 +135,7 @@ ${options.brokerFile ? String.raw`
     } catch { diagnostic('broker_transport_unavailable'); }
   }
   // Only this invocation and its children inherit the captured credential.
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
   // Its Git children use the real binary, so steering cannot split a gh operation.
   env.PATH = originalPath.join(path.delimiter);
   // Nested shell aliases must not reload the parent launcher profile and

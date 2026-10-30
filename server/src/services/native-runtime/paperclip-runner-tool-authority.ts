@@ -885,8 +885,21 @@ export class PaperclipRunnerToolAuthority {
           && (!statuses || statuses.size === 0 || statuses.has(task.status))
         );
         const readable = this.binding.museRuntime ? await this.#readableMuseTaskIds(context.run, matching.map(task => task.id)) : null;
-        return { tasks: matching.filter(task => !readable || readable.has(task.id))
-          .slice(0, boundedLimit(input.limit)).map(redactedTask) };
+        const limit = boundedLimit(input.limit, 50, 200);
+        const cursor = input.cursor === undefined ? null : requiredUuid(input.cursor).toLowerCase();
+        // IDs keep page order stable when task activity or status changes. Every
+        // page still applies current company, privacy and Muse read authority.
+        const remaining = matching.filter(task => (!readable || readable.has(task.id)) && (!cursor || task.id > cursor))
+          .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        const page = remaining.slice(0, limit);
+        const hasMore = remaining.length > limit;
+        return {
+          tasks: page.map(redactedTask),
+          limit,
+          returnedCount: page.length,
+          hasMore,
+          nextCursor: hasMore ? page[page.length - 1]!.id : null,
+        };
       }
       case "list_documents":
         return { documents: await this.#visibleMuseDocuments(context.issue,

@@ -223,6 +223,11 @@ and launcher preparation, run output initialization, workspace validation,
 runtime services, instruction files, and runtime selection. Database and HTTP
 instrumentation can attach child spans during each awaited operation.
 
+Early context preparation also records `agent_read`, `chat_completion`,
+`conversation`, `runtime_state`, `issue_context`, `run_identity`, `trust_preset`,
+and `task_context` beneath `heartbeat.prepare`. These time the existing awaited
+operations before environment selection; they do not add reads or record content.
+
 Execution configuration also records separate phases for mentioned skills,
 GitHub identity selection, secret resolution, managed AI runtime preparation,
 skill inventory, connector assignments, connector skill preparation and delivery,
@@ -336,8 +341,9 @@ attempt or owning phase:
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
 | `workspace_sync.seed_generation`, `.seed_lookup`, `.seed_replay`, `.seed_persist`, `.seed_publish`, `.seed_verify`, `.seed_extract`, `.seed_snapshot`, `.seed_cleanup` | Seed identity, cache lookup, replay, durable copies, publication, extraction/re-snapshot verification and temporary cleanup. Cache hits omit cold clone and verification work. |
-| `workspace_sync.seed_cache_copy`, `.seed_cache_sync`, `.seed_cache_hash` | Archive linking/copying, filesystem durability, and checksum work inside cache publication. These are children of seed publication, not additional elapsed time to add to that parent. |
+| `workspace_sync.seed_cache_copy`, `.seed_cache_sync`, `.seed_cache_hash` | Archive linking/copying, disk flush, and checksum work inside cache publication. Recovery-backed archives retain their existing flush, including when a cache link shares the recovery inode. Only a separate cache-only Git seed omits the flush; its bytes are rebuilt on a cache miss. Every reader verifies checksums. These are children of seed publication, not additional elapsed time to add to that parent. |
 | `workspace_sync.seed_cache_capacity`, `.seed_cache_evict`, `.seed_cache_locked_publish` | Quota inventory, eviction planning/application, and the publication body after the company lock is acquired. Capacity may run before and inside the lock. A gap after seed verification and before locked publication can include lock acquisition; locked publication itself excludes that wait. Copy/sync/hash and the locked quota/eviction work are nested children. |
+| `workspace_sync.seed_read_copy`, `.seed_read_hash`, `.seed_read_touch` | Private cache materialization, verification of the exact reused bytes, and last-used bookkeeping including company-lock acquisition. All are nested in seed lookup. A long lookup alone does not identify copy, hashing, or lock contention as its cause. |
 | `workspace_sync.git_index_refresh` | Fully awaited stat-metadata refresh after restoring a fresh OpenCode sandbox checkout. It shares the inbound barrier and command timeout; dirty working-tree content stays unstaged. Recovery and retained sandboxes skip it. |
 | `workspace_sync.inbound_barrier`, `.stage_workspace`, `.transfer` | The inbound scheduler barrier, whole workspace task, and provider `syncIn` call (including provider guards, upload and post-upload extraction). Parallel tasks overlap; provider transfer/exec children give the finer transport split when available. |
 | `workspace_sync.progress` | Awaited progress/status reporting, including the existing lifecycle run-log writes. These are not file transfer work. |
