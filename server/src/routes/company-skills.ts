@@ -9,6 +9,7 @@ import { skillSourceGitHubReader } from "../services/skill-source-github-access.
 import { toolAccessService } from "../services/tool-access.js";
 import { skillSourceCreateSchema, skillSourceDiscoverySchema, skillSourcePreviewSchema, skillSourceSelectionSchema, skillSourceSettingsSchema, skillSourceBranchesQuerySchema, projectSkillSourceAdoptSchema, skillSourceDisconnectSchema } from "@paperclipai/shared";
 import type { ActivityPublication } from "../services/activity-log.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { once } from "node:events";
 import type { SkillSourceDiscoveryEvent } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
@@ -101,7 +102,7 @@ type SkillPolicyResourceInput =
   | Promise<SkillPolicyEvaluationResource>
   | (() => SkillPolicyEvaluationResource | Promise<SkillPolicyEvaluationResource>);
 
-export function companySkillRoutes(db: Db) {
+export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
   router.use(skillAccessRequestContext);
   router.param("skillId", async (req, _res, next, id) => {
@@ -121,7 +122,7 @@ export function companySkillRoutes(db: Db) {
   const sourceSvc = skillSourceService(db);
   const sourceSync = skillSourceSyncService(db);
   const issues = issueService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: options.pluginWorkerManager });
   const skillPolicies = companySkillPolicyService(db);
 
   function asString(value: unknown): string | null {

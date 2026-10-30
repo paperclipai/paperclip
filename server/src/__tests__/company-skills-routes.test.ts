@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockCaptureRunIdentity = vi.hoisted(() => vi.fn());
 
@@ -77,6 +78,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(),
   cancelRun: vi.fn(),
 }));
+const mockHeartbeatFactory = vi.hoisted(() => vi.fn());
 
 const mockCatalogService = vi.hoisted(() => ({
   listCatalogSkillsOrEmpty: vi.fn(),
@@ -212,7 +214,7 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     companySkillService: () => mockCompanySkillService,
     issueService: () => mockIssueService,
-    heartbeatService: () => mockHeartbeatService,
+    heartbeatService: mockHeartbeatFactory,
     logActivity: mockLogActivity,
   }));
 }
@@ -295,7 +297,8 @@ describe("company skill mutation permissions", () => {
     return { companySkillRoutes, errorHandler };
   });
 
-  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void, database: any = {}) {
+  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void, database: any = {},
+    options: { pluginWorkerManager?: PluginWorkerManager } = {}) {
     const { companySkillRoutes, errorHandler } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -304,13 +307,14 @@ describe("company skill mutation permissions", () => {
       onResponse?.(res);
       next();
     });
-    app.use("/api", companySkillRoutes(database));
+    app.use("/api", companySkillRoutes(database, options));
     app.use(errorHandler);
     return app;
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHeartbeatFactory.mockReturnValue(mockHeartbeatService);
     mockCaptureRunIdentity.mockResolvedValue({ run: { responsibleUserId: "validated-owner" } });
     mockSkillSourceService.sourceForSkill.mockResolvedValue(null);
     mockSkillSourceService.importFromUrl.mockImplementation((companyId, source) => mockCompanySkillService.importFromSource(companyId, source));
@@ -1983,6 +1987,7 @@ describe("company skill mutation permissions", () => {
   });
 
   it("creates and cancels skill test runs through hidden issue orchestration", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
     mockCompanySkillService.createTestRun.mockImplementationOnce(async (
       _companyId: string,
       _skillId: string,
@@ -2030,7 +2035,8 @@ describe("company skill mutation permissions", () => {
       };
     });
 
-    const app = await createApp(boardActor());
+    const app = await createApp(boardActor(), undefined, {}, { pluginWorkerManager });
+    expect(mockHeartbeatFactory).toHaveBeenCalledWith(expect.anything(), { pluginWorkerManager });
 
     const created = await request(app)
       .post("/api/companies/company-1/skills/skill-1/test-runs")

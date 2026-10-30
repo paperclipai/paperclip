@@ -123,3 +123,21 @@ handoff, and production volume removal are outside this slice.
   `scripts/prove.sh`. Remote agent `300911d4-590d-4a26-b1c0-c80db14fa072` is
   preparing the executable flag through the ordinary API. Fresh-home replacement,
   delivered-byte verification and compatible rollback remain pending.
+- Final sequential project-access/process qualification passed all 31 cases;
+  the complete-map package checks passed all four isolated cases. The metadata
+  and linked-local fixes were pushed as `ceab192b1774fcb5be17db57de5579d81007b9c1`.
+- Remote preparation task EPH-1 saved revision 6, version
+  `1abec28d-dd4a-4763-acd4-5a67af874911`, with the script executable. All three
+  reported file digests match hashes independently computed from the Studio
+  inputs. Company: `16cfa89e-f159-5040-927e-aca46ee87c2f`.
+- Baseline Studio test `81951c91-ec59-4eae-b5c5-c0083119f6ae` failed before
+  execution (`b326a961-c1b8-43ad-b38b-7f6424939ee3`): its route constructed
+  heartbeat without the existing plugin worker manager. This is a route wiring
+  failure, not missing skill content or missing image dependencies. The fix passes
+  the app's existing manager through the Studio route to execution, matching other
+  task routes. No Cloud composition/admission policy changes are required.
+  The first route-suite attempt hit its 30-second module-load setup timeout before
+  any test ran; a bounded 120-second setup-budget retry is running.
+- The Studio route regression suite passed all 64 cases on retry, and server
+  typecheck passed. The managed sandbox manager is reused from app construction;
+  no provider behavior, permissions or lifecycle ownership changed.
