@@ -876,6 +876,182 @@ describe("Cursor Cloud native driver", () => {
     expect(f.events.some(event => event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false)).toBe(true);
   });
 
+  it.each((["fresh", "follow-up"] as const).flatMap(phase =>
+    (["stop_write", "rejection_write"] as const).map(overlap => ({ phase, overlap }))))(
+    "commits a rejected $phase create across $overlap before Stop and the next turn", async ({ phase, overlap }) => {
+      const peer = new Peer();
+      const f = await fixture(peer);
+      if (phase === "follow-up") {
+        await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } });
+        await peer.created.promise;
+        await f.session.interrupt!();
+        await acknowledgeTerminal(f.session);
+      }
+      const entered = deferred(), rejectCreate = deferred(), stopHeld = deferred(), releaseStop = deferred();
+      const rejectionHeld = deferred(), releaseRejection = deferred();
+      (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
+        entered.resolve(); await rejectCreate.promise;
+        throw new CursorCloudClientError("http_error", { status: 422 });
+      });
+      const before = { getAgent: peer.getAgent.mock.calls.length, getRun: peer.getRun.mock.calls.length, cancel: peer.cancelRun.mock.calls.length };
+      const originalWrite = CursorCloudCheckpointStore.prototype.write;
+      let pausedStop = false, pausedRejection = false;
+      const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+        if (value.phase === "idle" && value.terminalStatus === "REJECTED" && !pausedRejection) {
+          pausedRejection = true; rejectionHeld.resolve();
+          return releaseRejection.promise.then(() => originalWrite.call(this, value));
+        }
+        const persisted = originalWrite.call(this, value);
+        if (value.phase === "stopping" && !pausedStop) {
+          pausedStop = true;
+          return persisted.then(async () => { stopHeld.resolve(); if (overlap === "stop_write") await releaseStop.promise; });
+        }
+        return persisted;
+      });
+      let stopDone = false;
+      let stopped: Promise<{ error: unknown | null }> | undefined;
+      const stop = () => stopped = f.session.interrupt!().then(() => ({ error: null }), error => ({ error }))
+        .finally(() => { stopDone = true; });
+      try {
+        const turn = await f.session.startTurn({ message: { role: "user", text: "Rejected task" } });
+        await entered.promise;
+        if (overlap === "stop_write") {
+          stop(); await stopHeld.promise;
+          rejectCreate.resolve(); await new Promise<void>(accept => setImmediate(accept));
+          releaseStop.resolve();
+          await waitFor(() => pausedRejection || stopDone);
+          expect(pausedRejection, "the definite rejection must reach durable settlement even while stopping").toBe(true);
+        } else {
+          rejectCreate.resolve(); await rejectionHeld.promise;
+          stop(); await new Promise<void>(accept => setImmediate(accept));
+        }
+        expect(stopDone, "Stop must wait for the rejected-create checkpoint").toBe(false);
+        expect(await f.session.read()).toMatchObject({ phase: "stopping" });
+        await expect(f.session.startTurn({ message: { role: "user", text: "Too early" } })).rejects.toThrow("unresolved remote work");
+        const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+        expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).not.toBe("idle");
+        releaseRejection.resolve();
+        expect(await stopped).toEqual({ error: null });
+        await waitFor(() => f.events.some(event => event.turnId === turn.turnId && event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false));
+        expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "idle", terminalStatus: "REJECTED", pendingOperation: null, requestedAgentId: null });
+        expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
+        expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
+        expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
+        const snapshot = await f.session.snapshot();
+        await f.session.detachControllerForRestart(); await f.pump;
+        const recovered = await new CursorCloudDriver(f.options).recoverSession(snapshot);
+        expect(recovered.recovered).toBe(true);
+        const restored = recovered.session!; sessions.push(restored);
+        await restored.attachRun!({ runId: "paperclip-after-rejection" });
+        distinctFollowup(peer); peer.release = deferred();
+        const next = await restored.startTurn({ message: { role: "user", text: "Next admitted task" } });
+        await vi.waitFor(async () => expect(await restored.read()).toMatchObject({ phase: "running", turnId: next.turnId }));
+        await restored.interrupt!();
+        expect(await restored.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { turnId: next.turnId } });
+      } finally {
+        rejectCreate.resolve(); releaseStop.resolve(); releaseRejection.resolve();
+        await stopped; write.mockRestore();
+      }
+    });
+
+  it.each(["snapshot", "reconcile", "detachControllerForRestart"] as const)("orders %s after an in-flight definite rejection checkpoint", async operation => {
+    const peer = new Peer();
+    peer.createAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 422 }));
+    const f = await fixture(peer), held = deferred(), release = deferred();
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    let paused = false;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      if (value.phase === "idle" && value.terminalStatus === "REJECTED" && !paused) {
+        paused = true; held.resolve(); return release.promise.then(() => originalWrite.call(this, value));
+      }
+      return originalWrite.call(this, value);
+    });
+    let done = false;
+    let called: Promise<unknown> | undefined;
+    try {
+      await f.session.startTurn({ message: { role: "user", text: "Rejected task" } }); await held.promise;
+      called = f.session[operation]!().finally(() => { done = true; });
+      await new Promise<void>(accept => setImmediate(accept));
+      expect(done).toBe(false);
+      expect(await f.session.read()).toMatchObject({ phase: "creating" });
+      release.resolve(); await called;
+      const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "idle", terminalStatus: "REJECTED", pendingOperation: null });
+      expect(peer.getAgent).not.toHaveBeenCalled(); expect(peer.getRun).not.toHaveBeenCalled();
+    } finally { release.resolve(); await called; write.mockRestore(); }
+  });
+
+  it("does not let a stale create error replace the current rejection custody barrier", async () => {
+    const peer = new Peer(), oldReleased = deferred();
+    const create = peer.createAgent.getMockImplementation()!;
+    peer.createAgent.mockImplementationOnce(async input => { await create(input); await oldReleased.promise; throw new CursorCloudClientError("http_error", { status: 422 }); });
+    const f = await fixture(peer);
+    await f.session.startTurn({ message: { role: "user", text: "Previously accepted task" } }); await peer.created.promise;
+    peer.getRun.mockResolvedValueOnce({ ...peer.native!, status: "FINISHED" });
+    await f.session.reconcile!(); await acknowledgeTerminal(f.session); await f.session.attachRun!({ runId: "current-owner" });
+    peer.createRun.mockRejectedValue(new CursorCloudClientError("http_error", { status: 422 }));
+    const held = deferred(), release = deferred(), originalWrite = CursorCloudCheckpointStore.prototype.write;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      if (value.phase === "idle" && value.terminalStatus === "REJECTED") { held.resolve(); return release.promise.then(() => originalWrite.call(this, value)); }
+      return originalWrite.call(this, value);
+    });
+    let snapshot: Promise<unknown> | undefined, done = false;
+    try {
+      await f.session.startTurn({ message: { role: "user", text: "Current rejected task" } }); await held.promise;
+      oldReleased.resolve(); await new Promise<void>(accept => setImmediate(accept));
+      snapshot = f.session.snapshot().finally(() => { done = true; });
+      await new Promise<void>(accept => setImmediate(accept));
+      expect(done, "the current rejected-create custody gate survives a stale error").toBe(false);
+      release.resolve(); await snapshot;
+      expect(await savedCheckpoint(f.root, f.session)).toMatchObject({ phase: "idle", ownerRunId: "current-owner", terminalStatus: "REJECTED", pendingOperation: null });
+    } finally { oldReleased.resolve(); release.resolve(); await snapshot; write.mockRestore(); }
+  });
+
+  it.each(["fresh", "follow-up"] as const)("keeps a rejected %s create fenced when its settlement cannot commit", async phase => {
+    const peer = new Peer(), f = await fixture(peer);
+    if (phase === "follow-up") {
+      await f.session.startTurn({ message: { role: "user", text: "Previous accepted task" } }); await peer.created.promise;
+      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+    }
+    const entered = deferred(), rejected = deferred();
+    (phase === "fresh" ? peer.createAgent : peer.createRun).mockImplementationOnce(async () => {
+      entered.resolve(); await rejected.promise; throw new CursorCloudClientError("http_error", { status: 422 });
+    });
+    peer.getAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 404 }));
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      return value.phase === "idle" && value.terminalStatus === "REJECTED"
+        ? Promise.reject(new Error("injected rejection checkpoint failure")) : originalWrite.call(this, value);
+    });
+    try {
+      const turn = await f.session.startTurn({ message: { role: "user", text: "Rejected task" } }); await entered.promise;
+      const stopped = f.session.interrupt!().then(() => null, error => error);
+      rejected.resolve();
+      expect(await stopped).toMatchObject({ message: expect.stringContaining("remains fenced") });
+      expect(await f.session.read()).toMatchObject({ phase: "stopping", turnId: turn.turnId });
+      await expect(f.session.startTurn({ message: { role: "user", text: "Cannot replace unresolved custody" } })).rejects.toThrow("unresolved remote work");
+      const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "stopping", pendingOperation: phase === "fresh" ? "create_agent" : "create_run", terminalStatus: null });
+      expect(f.events.some(event => event.turnId === turn.turnId && event.payload.remoteWorkAccepted === false)).toBe(false);
+    } finally { rejected.resolve(); write.mockRestore(); }
+  });
+
+  it.each(["ambiguous", "server_failure"] as const)("does not classify a concurrent Stop with %s create outcome as definite no-work", async outcome => {
+    const peer = new Peer(), entered = deferred(), released = deferred();
+    peer.createAgent.mockImplementationOnce(async () => {
+      entered.resolve(); await released.promise;
+      throw outcome === "ambiguous" ? new TypeError("response lost") : new CursorCloudClientError("http_error", { status: 503 });
+    });
+    peer.getAgent.mockRejectedValue(new CursorCloudClientError("http_error", { status: 404 }));
+    const f = await fixture(peer), turn = await f.session.startTurn({ message: { role: "user", text: "Unknown create" } });
+    await entered.promise;
+    const stopped = f.session.interrupt!().then(() => null, error => error); released.resolve();
+    expect(await stopped).toMatchObject({ message: expect.stringContaining("remains fenced") });
+    expect(await savedCheckpoint(f.root, f.session)).toMatchObject({ phase: "stopping", pendingOperation: "create_agent", terminalStatus: null });
+    expect(f.events.some(event => event.turnId === turn.turnId && event.payload.remoteWorkAccepted === false)).toBe(false);
+    await expect(f.session.startTurn({ message: { role: "user", text: "No replacement" } })).rejects.toThrow("unresolved remote work");
+  });
+
   it("retains unconfirmed Stop as fenced active work, never emits a terminal on cancel acknowledgment alone", async () => {
     const peer = new Peer(); peer.cancelRun = vi.fn(async () => ({ id: runId }));
     const f = await fixture(peer, { cancelTimeoutMs: 120 });
