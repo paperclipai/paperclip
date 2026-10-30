@@ -301,7 +301,10 @@ describe("Cloud canonical onboarding first task", () => {
     expect(result.artifact.originatingRunId).toBe("child-run");
     expect(connectionDelay).toHaveBeenCalledOnce();
   });
-  it.each(["native_session_interrupted", "provider_transport_failed", "provider_request_timeout", "native_runner_process_exited"]
+  it.each(["native_session_interrupted", "provider_transport_failed", "provider_request_timeout", "native_runner_process_exited",
+    "provider_process_exited", "provider_stdout_closed", "provider_process_output_closed", "provider_process_status_failed",
+    "provider_initialize_timeout", "provider_initialize_protocol_error", "provider_request_protocol_error",
+    "provider_frame_too_large", "planning_mode_unsupported", "future_custom_recovery"]
     .flatMap(cause => [false, true].map(predecessor => ({ cause, predecessor }))))("observes $cause recovery through success with workspace predecessor=$predecessor", async ({ cause, predecessor }) => {
     let now = Date.now(), stage = 0;
     const failedAt = now - 1000, retryAt = now + 30_000;
@@ -366,7 +369,15 @@ describe("Cloud canonical onboarding first task", () => {
     ["mismatched issue binding", (run: Row) => { run.contextSnapshot.issueId = "other-issue"; }],
     ["provider failure", (run: Row) => { run.errorCode = run.execution.cause = "native_provider_terminal_failed"; }],
     ["mismatched cause", (run: Row) => { run.execution.cause = "provider_transport_failed"; }],
-    ["unknown matching cause", (run: Row) => { run.errorCode = run.execution.cause = "unclassified_provider_error"; }],
+    ["empty matching cause", (run: Row) => { run.errorCode = run.execution.cause = ""; }],
+    ["blank matching cause", (run: Row) => { run.errorCode = run.execution.cause = "  "; }],
+    ["missing run cause", (run: Row) => { delete run.errorCode; }],
+    ["missing execution cause", (run: Row) => { delete run.execution.cause; }],
+    ["nonstrings matching cause", (run: Row) => { run.errorCode = run.execution.cause = 42; }],
+    ["terminal provider checking recovery", (run: Row) => {
+      run.errorCode = run.execution.cause = "native_provider_terminal_failed"; run.nativePhase = "terminal_failure";
+      Object.assign(run.execution, { phase: "reconnecting", recoveryOwner: "agent", retryAt: null });
+    }],
     ["ambiguous transport failure", (run: Row) => {
       run.errorCode = run.execution.cause = "provider_transport_failed"; run.nativePhase = "terminal_failure";
       Object.assign(run.execution, { phase: "recovery_needed", recoveryOwner: "board", retryAt: null });
@@ -390,6 +401,22 @@ describe("Cloud canonical onboarding first task", () => {
       if (phase !== "accepted") return;
       const child = state.runs.find(run => run.id === "child-run")!;
       withPendingNativeRecovery(child, now - 1000, now + 30_000); change(child);
+    } });
+    await expect(onboardingFirstTask(f.input)).rejects.toMatchObject({ code: "onboarding_first_task_failed" });
+    expect(f.events).not.toContain("visible:download");
+  });
+  it.each([
+    "native_provider_runtime_missing", "native_provider_model_rejected", "native_provider_approval_required",
+    "native_event_replay_conflict", "runner_remote_provider_artifact_incompatible",
+    "runner_remote_provider_verification_unavailable", "native_current_wake_comments_unread",
+    "native_current_wake_comments_changed_after_read", "native_session_cleanup_quarantined",
+    "native_adopted_runner_authentication_timeout", "native_provider_usage_limit",
+    "native_permission_declined", "native_session_retry_exhausted",
+  ])("rejects permanent %s even when other fields claim a pending retry", async cause => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const f = fixture({ mutate(phase, state) {
+      if (phase === "accepted") withPendingNativeRecovery(state.runs.find(run => run.id === "child-run")!, now - 1000, now + 30_000, cause);
     } });
     await expect(onboardingFirstTask(f.input)).rejects.toMatchObject({ code: "onboarding_first_task_failed" });
     expect(f.events).not.toContain("visible:download");
