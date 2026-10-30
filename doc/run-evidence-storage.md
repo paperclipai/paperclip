@@ -44,8 +44,11 @@ legacy reads and writes. They do not override instance storage for new journals.
 Use stable bucket/prefix settings across replacements and releases.
 
 Raw capture still requires its existing explicit capture request. Its encryption
-uses the existing stable `PAPERCLIP_SECRETS_MASTER_KEY`, already supplied to Cloud
-stacks; no separate trace key is introduced or created on disposable disk.
+uses the existing vault key, from `PAPERCLIP_SECRETS_MASTER_KEY` or the existing
+configured key file. Cloud already supplies the environment key. No separate
+trace key is introduced, and a missing vault key fails rather than creating a
+replacement. Disposable deployments must preserve the existing vault key along
+with their other secrets.
 Raw payload and index objects
 use AES-GCM with a key derived for the particular company/run/trace/channel.
 The bounded head holds only ownership, range, digest, and publication metadata.
@@ -177,23 +180,33 @@ of the corresponding external wake, not a longer polling interval.
 
 ## History migration and rollback
 
-Deploy compatible readers before switching any authority. Drain legacy writers
-for the final cutover; do not detach the volume while any retained resource is
-unresolved. The importer uses indexed UUID keyset pages, accepts up to 100 rows
-of each resource per invocation, and prints a resumable inventory:
+S3-configured servers automatically migrate retained local history in the background.
+No command or extra configuration is required. The existing delivery coordinator
+starts the upgrade outside request handling, independently of the heartbeat
+scheduler toggle. Each batch processes at most one log and one trace, then yields
+for one second. Existing references are the durable work inventory. Restarting
+reconstructs unfinished work from those references; already migrated rows are
+excluded. No new payload or job table is added.
 
-```sh
-node --import ./server/node_modules/tsx/dist/loader.mjs server/scripts/migrate-run-evidence.ts
-node --import ./server/node_modules/tsx/dist/loader.mjs server/scripts/migrate-run-evidence.ts --apply --limit 50
-```
+Active writers, missing files, corrupt data, and storage failures leave history
+unresolved. Other pages continue. The server logs each blocked resource and a
+pass summary. Unresolved passes retry after five minutes, with backoff up to
+30 minutes. Transport failures retry through the shared coordinator. After all
+retained history is migrated, the worker stops querying and contacting storage.
+Local-disk instances do not register this worker. Outstanding migration conservatively
+blocks instance sleep, and shutdown aborts the batch and waits for owned work.
 
-Set `DATABASE_URL` and the storage environment explicitly for the intended
-instance. Use `--company`, `--after-run`, and `--after-trace` for scoped pages.
-The default is inventory-only. The command does not stop agents or select a
-production target. Save every page's JSON, including blocked items; do not treat
-a nonempty next cursor or a page with blocked resources as completed migration.
-Retry blocked items after resolving their cause, starting from the relevant
-cursor or the beginning. Already migrated resources are excluded.
+Deploy compatible readers and stop old binaries from starting new local runs.
+The upgrade waits for existing writers to settle and their leases to expire.
+Keep the source volume attached until migration completes and clean-filesystem
+reads pass. Automatic copying cannot recover a file after its only copy is lost.
+
+`server/scripts/migrate-run-evidence.ts` remains an optional diagnostic and repair
+tool. Its default is a read-only inventory; `--apply` runs the same verified
+importer used by the automatic worker. `--company`, `--after-run`, `--after-trace`
+and `--limit` allow scoped investigation against an explicitly selected
+`DATABASE_URL`. Normal upgrades do not require this tool. It does not stop agents,
+select a production target, delete source files, or certify volume removal.
 
 For logs, migration verifies exact local bytes or a mirror with proven length
 and digest, compares any previously uploaded prefix, verifies remote SHA-256,
@@ -213,7 +226,7 @@ completeness metadata, and source cursor have not changed. Keep the original
 volume and resolve blocked inventory before cutover.
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
-the staged object prefix. Resume the importer to finish its verified switch.
+the staged object prefix. The automatic worker resumes the verified switch after restart or retry.
 Ordinary local traces have no S3 cleanup dependency.
 
 Keep the volume until every retained item has been verified from a clean web

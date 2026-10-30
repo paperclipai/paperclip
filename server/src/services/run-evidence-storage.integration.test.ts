@@ -15,6 +15,7 @@ import type { RunLogStore } from "./run-log-store.js";
 const endpoint = process.env.PAPERCLIP_LOG_TEST_S3_ENDPOINT;
 describe.skipIf(!endpoint)("instance storage for run evidence", () => {
   const buckets = [0, 1].map(() => `pc-evidence-config-${randomUUID()}`);
+  const stores: RunLogStore[] = [];
   let client: S3Client, directory: string;
   beforeAll(async () => {
     directory = await fs.mkdtemp(path.join(tmpdir(), "evidence-config-"));
@@ -32,6 +33,12 @@ describe.skipIf(!endpoint)("instance storage for run evidence", () => {
       vi.stubEnv(key, undefined);
     client = new S3Client({ endpoint, region: "us-east-1", forcePathStyle: true });
     for (const bucket of buckets) await client.send(new CreateBucketCommand({ Bucket: bucket }));
+    for (const bucket of buckets) {
+      vi.resetModules();
+      selectStack(bucket);
+      const { getRunLogStore } = await import("./run-log-store.js");
+      stores.push(getRunLogStore());
+    }
   });
   afterAll(async () => {
     if (client) {
@@ -62,14 +69,9 @@ describe.skipIf(!endpoint)("instance storage for run evidence", () => {
     vi.stubEnv("PAPERCLIP_STORAGE_S3_PREFIX", prefix);
   }
   it("automatically uses each stack's existing bucket and prefix for identical run identities", async () => {
-    const stores: RunLogStore[] = [];
     const handles: Awaited<ReturnType<RunLogStore["begin"]>>[] = [];
     for (const [index, bucket] of buckets.entries()) {
-      vi.resetModules();
-      selectStack(bucket);
-      const { getRunLogStore } = await import("./run-log-store.js");
-      const store = getRunLogStore();
-      stores.push(store);
+      const store = stores[index]!;
       const handle = await store.begin({
         companyId: "same-company",
         agentId: "same-agent",

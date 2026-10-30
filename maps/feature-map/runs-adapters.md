@@ -333,18 +333,6 @@ preserves the existing validated Done-parent handoff; process-death and ownershi
 checks remain active. Its PostgreSQL controls are separate from the required
 revised-source live onboarding and follow-up proof.
 
-### Object-backed evidence
-
-With the segmented backend configured, open a run through its normal task/agent
-history and inspect its output. Replace the web process using a separate empty
-log/trace cache, then reopen and page through the same committed output. Compare
-byte offsets and the completed digest. Administrators should also check raw trace
-inspection/download and deletion after replacement, with the existing expiry.
-Migrate retained local history before removing its source volume.
-[Storage qualification](../../doc/run-evidence-storage.md#qualification) covers
-payload and metadata boundaries; a synthetic storage fixture does not establish
-live provider continuity, agent authority, or Railway deployment handoff.
-
 ## Gotchas
 
 - Model accounts are managed in Apps and inline agent account controls.

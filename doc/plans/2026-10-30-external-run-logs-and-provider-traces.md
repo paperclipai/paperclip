@@ -445,6 +445,23 @@ claim live-provider or fleet evidence from deterministic fixtures.
   passed, including real S3-compatible bucket/prefix isolation and cleanup tests.
   Four existing Cloud environment-contract tests also passed without Cloud code
   or deployment changes.
+- User follow-up: remove the added run/adapters map sections. Retained-history
+  conversion now belongs to an automatic, bounded delivery worker; the command
+  is optional diagnosis/repair. Existing local references remain durable work.
+  Startup reconstructs it, active or blocked history retries with backoff, and
+  completed history has no recurring SQL/network scan. Migration stays with its
+  owning service; index.ts only registers its lifecycle, and the shared delivery
+  registry adds the queue name. The source volume must survive until all retained
+  history is verified. Mixed versions must stop creating new local-file runs.
+- Trace encryption reuses either existing vault key source, including the
+  configured key file, and never creates a replacement key for external traces.
+  Both strict missing-key and file-key round-trip regressions failed before the fix.
+  The configuration/storage regression run passed 91 tests. Automatic migration
+  and retention passed 10 tests, including a real Postgres/S3 upgrade followed by
+  source-directory deletion. Harness failures remain in the local evidence: a
+  cold import exceeded a test deadline (moved module setup into the fixture), a
+  sandbox denied localhost access (rerun with network permission), and the first
+  automatic fixture bucket name exceeded S3's length limit (shortened the name).
 - Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
 - S3 holds payloads from the first committed batch. Conditional object heads
   hold cursors and writer generations. Existing Postgres rows hold lifecycle and

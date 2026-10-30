@@ -3821,6 +3821,6 @@ New logs and opted-in provider traces automatically use the instance's existing
 S3 storage configuration, bucket, credentials and prefix, under `run-logs/` and
 `provider-traces/`. No extra storage switches are needed. Local-disk instances
 remain local. See [run evidence storage](run-evidence-storage.md) for required provider
-capabilities, stable keys, operating limits, migration commands and qualification.
+capabilities, stable keys, operating limits, automatic history migration and qualification.
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.

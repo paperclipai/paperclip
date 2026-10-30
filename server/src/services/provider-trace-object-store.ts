@@ -49,8 +49,7 @@ export function createProviderTraceObjectStore(
   provider: StorageProvider,
   prefix = "provider-traces",
 ) {
-  if (!process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim())
-    throw new Error("External traces require stable PAPERCLIP_SECRETS_MASTER_KEY");
+  deriveLocalEncryptedInstanceSecret("provider-trace:existing-key", process.env, { allowCreate: false });
   const captures = new Map<string, Capture>();
   const openings = new Map<string, Promise<void>>();
   function schedule(capture: Capture) {
@@ -68,7 +67,7 @@ export function createProviderTraceObjectStore(
     return ["native", "rehydration"].map((channel, i) => {
       const root = `${prefix}/segments-v1/${match[1]}/${match[2]}/${match[3]}/${channel}`;
       const key = Buffer.from(
-        deriveLocalEncryptedInstanceSecret(`provider-trace:${root}`),
+        deriveLocalEncryptedInstanceSecret(`provider-trace:${root}`, process.env, { allowCreate: false }),
         "base64url",
       );
       const aad = Buffer.from(root);

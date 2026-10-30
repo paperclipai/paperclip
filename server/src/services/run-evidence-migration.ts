@@ -41,6 +41,8 @@ export async function migrateRunEvidence(
     afterRunId?: string;
     afterTraceId?: string;
     limit?: number;
+    kinds?: readonly ("log" | "trace")[];
+    signal?: AbortSignal;
   },
 ): Promise<{
   items: RunEvidenceMigrationItem[];
@@ -48,6 +50,7 @@ export async function migrateRunEvidence(
   nextTraceId?: string;
 }> {
   const limit = options.limit ?? 50;
+  options.signal?.throwIfAborted();
   if (!Number.isInteger(limit) || limit < 1 || limit > 100)
     throw new Error("Migration limit must be between 1 and 100");
   const config = resolveRunEvidenceStorage();
@@ -76,29 +79,33 @@ export async function migrateRunEvidence(
     if (!run) throw new Error("legacy_writer_not_drained");
   }
   const items: RunEvidenceMigrationItem[] = [];
-  const logs = await db
-    .select({
-      id: heartbeatRuns.id,
-      companyId: heartbeatRuns.companyId,
-      agentId: heartbeatRuns.agentId,
-      status: heartbeatRuns.status,
-      runtimeMode: heartbeatRuns.runtimeMode,
-      logRef: heartbeatRuns.logRef,
-      bytes: heartbeatRuns.logBytes,
-      sha256: heartbeatRuns.logSha256,
-      lastSequence: heartbeatRuns.lastOutputSeq,
-    })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.logStore, "local_file"),
-        options.companyId ? eq(heartbeatRuns.companyId, options.companyId) : undefined,
-        options.afterRunId ? gt(heartbeatRuns.id, options.afterRunId) : undefined,
-      ),
-    )
-    .orderBy(asc(heartbeatRuns.id))
-    .limit(limit);
+  const logs =
+    options.kinds && !options.kinds.includes("log")
+      ? []
+      : await db
+          .select({
+            id: heartbeatRuns.id,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
+            runtimeMode: heartbeatRuns.runtimeMode,
+            logRef: heartbeatRuns.logRef,
+            bytes: heartbeatRuns.logBytes,
+            sha256: heartbeatRuns.logSha256,
+            lastSequence: heartbeatRuns.lastOutputSeq,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.logStore, "local_file"),
+              options.companyId ? eq(heartbeatRuns.companyId, options.companyId) : undefined,
+              options.afterRunId ? gt(heartbeatRuns.id, options.afterRunId) : undefined,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.id))
+          .limit(limit);
   for (const run of logs) {
+    options.signal?.throwIfAborted();
     const item: RunEvidenceMigrationItem = {
       kind: "log",
       id: run.id,
@@ -116,7 +123,8 @@ export async function migrateRunEvidence(
       });
       let writer = options.apply
         ? await journal.claim({
-            expectedOwner: (await journal.head())?.head.owner ?? null,
+            expectedOwner: (await journal.head(options.signal))?.head.owner ?? null,
+            signal: options.signal,
             assertAuthority: async () => {
               const [current] = await db
                 .select({ id: heartbeatRuns.id })
@@ -149,6 +157,7 @@ export async function migrateRunEvidence(
         sequence = run.lastSequence;
       try {
         for await (const chunk of source.stream) {
+          options.signal?.throwIfAborted();
           const bytes = Buffer.from(chunk);
           hash.update(bytes);
           await nativeCoverage?.write(bytes);
@@ -157,13 +166,13 @@ export async function migrateRunEvidence(
             const overlap = Math.min(bytes.length, Math.max(0, writer.head.end - offset));
             if (
               overlap &&
-              !(await journal.readRange(writer.head, offset, overlap)).equals(
+              !(await journal.readRange(writer.head, offset, overlap, options.signal)).equals(
                 bytes.subarray(0, overlap),
               )
             )
               throw new Error("migration_prefix_conflict");
             if (overlap < bytes.length)
-              writer = await journal.append(writer, bytes.subarray(overlap));
+              writer = await journal.append(writer, bytes.subarray(overlap), options.signal);
           }
           offset += bytes.length;
         }
@@ -196,15 +205,19 @@ export async function migrateRunEvidence(
         sourceCursor = source?.seq ?? 0;
       }
       if (writer) {
+        options.signal?.throwIfAborted();
         if (writer.head.end !== offset) throw new Error("migration_prefix_exceeds_source");
 
         const remoteHash = createHash("sha256");
         for (let start = 0; start < offset; start += 1024 * 1024)
-          remoteHash.update(await journal.readRange(writer.head, start, 1024 * 1024));
+          remoteHash.update(
+            await journal.readRange(writer.head, start, 1024 * 1024, options.signal),
+          );
         if (remoteHash.digest("hex") !== digest)
           throw new Error("migration_remote_digest_mismatch");
         writer.head = { ...writer.head, sequence, sourceCursor };
-        await journal.close(writer);
+        await journal.close(writer, options.signal);
+        options.signal?.throwIfAborted();
         const [updated] = await db
           .update(heartbeatRuns)
           .set({ logStore: "s3_segments", logRef: ref })
@@ -234,39 +247,42 @@ export async function migrateRunEvidence(
         item.state = "migrated";
       }
     } catch (error) {
+      options.signal?.throwIfAborted();
       item.state = "blocked";
       item.reason = error instanceof Error ? error.message : "migration_failed";
     }
   }
-  const traces = await db
-    .select({ trace: providerTraceRecords, runStatus: heartbeatRuns.status })
-    .from(providerTraceRecords)
-    .innerJoin(
-      heartbeatRuns,
-      and(
-        eq(heartbeatRuns.id, providerTraceRecords.runId),
-        eq(heartbeatRuns.companyId, providerTraceRecords.companyId),
-      ),
-    )
-    .where(
-      and(
-        sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
-        isNull(providerTraceRecords.deletedAt),
-        gt(providerTraceRecords.expiresAt, new Date()),
-        options.companyId ? eq(providerTraceRecords.companyId, options.companyId) : undefined,
-        options.afterTraceId ? gt(providerTraceRecords.id, options.afterTraceId) : undefined,
-      ),
-    )
-    .orderBy(asc(providerTraceRecords.id))
-    .limit(limit);
+  options.signal?.throwIfAborted();
+  const traces =
+    options.kinds && !options.kinds.includes("trace")
+      ? []
+      : await db
+          .select({ trace: providerTraceRecords, runStatus: heartbeatRuns.status })
+          .from(providerTraceRecords)
+          .innerJoin(
+            heartbeatRuns,
+            and(
+              eq(heartbeatRuns.id, providerTraceRecords.runId),
+              eq(heartbeatRuns.companyId, providerTraceRecords.companyId),
+            ),
+          )
+          .where(
+            and(
+              sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
+              isNull(providerTraceRecords.deletedAt),
+              gt(providerTraceRecords.expiresAt, new Date()),
+              options.companyId ? eq(providerTraceRecords.companyId, options.companyId) : undefined,
+              options.afterTraceId ? gt(providerTraceRecords.id, options.afterTraceId) : undefined,
+            ),
+          )
+          .orderBy(asc(providerTraceRecords.id))
+          .limit(limit);
   const traceObjects =
     traces.length && options.apply
-      ? createProviderTraceObjectStore(
-          config.provider,
-          config.tracePrefix,
-        )
+      ? createProviderTraceObjectStore(config.provider, config.tracePrefix)
       : null;
   for (const { trace, runStatus } of traces) {
+    options.signal?.throwIfAborted();
     const item: RunEvidenceMigrationItem = {
       kind: "trace",
       id: trace.id,
@@ -310,6 +326,7 @@ export async function migrateRunEvidence(
       item.bytes = bytes.length;
       item.sha256 = digest;
       if (traceObjects) {
+        options.signal?.throwIfAborted();
         const ref = `s3-segments-v1:${trace.companyId}/${trace.runId}/${filename}`;
         const pendingRef = ref.replace("s3-segments-v1:", "s3-import-v1:");
         if (!importing) {
@@ -354,6 +371,7 @@ export async function migrateRunEvidence(
         await traceObjects.finish(ref);
         if (!(await traceObjects.read(ref)).equals(bytes))
           throw new Error("trace_migration_remote_digest_mismatch");
+        options.signal?.throwIfAborted();
         const updated = await db.transaction(async (tx) => {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerTraceRetention);
           return tx
@@ -378,6 +396,7 @@ export async function migrateRunEvidence(
         item.state = "migrated";
       }
     } catch (error) {
+      options.signal?.throwIfAborted();
       item.state = "blocked";
       item.reason = error instanceof Error ? error.message : "trace_migration_failed";
     }
