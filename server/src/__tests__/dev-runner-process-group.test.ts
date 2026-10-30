@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  killRemainingProcessGroup,
   signalProcessGroup,
   usesProcessGroups,
   waitForProcessGroupExit,
@@ -12,7 +13,10 @@ const parentScript = `
 const { spawn } = require("node:child_process");
 const grandchild = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "ignore" });
 process.stdout.write(String(grandchild.pid) + "\\n");
-process.on("SIGTERM", () => process.exit(0));
+process.on("SIGTERM", () => {
+  if (grandchild.exitCode !== null || grandchild.signalCode !== null) process.exit(0);
+  grandchild.once("exit", () => process.exit(0));
+});
 setInterval(() => {}, 1000);
 `;
 
@@ -34,14 +38,27 @@ async function spawnGroupWithGrandchild(): Promise<{ parent: ChildProcess; grand
   return { parent, grandchildPid: Number(String(chunk).trim()) };
 }
 
+async function spawnSigtermIgnoringGroup(): Promise<ChildProcess> {
+  const child = spawn(
+    process.execPath,
+    ["-e", 'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);'],
+    { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  await once(child.stdout!, "data");
+  return child;
+}
+
 const spawnedGroups: number[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const pid of spawnedGroups.splice(0)) {
     try {
-      process.kill(-pid, "SIGKILL");
+      process.kill(-pid, "SIGTERM");
     } catch {
       continue;
+    }
+    if (!(await waitForProcessGroupExit(pid, 5_000))) {
+      await killRemainingProcessGroup(pid);
     }
   }
 });
@@ -89,5 +106,28 @@ describe("waitForProcessGroupExit", () => {
     spawnedGroups.push(parent.pid!);
 
     await expect(waitForProcessGroupExit(parent.pid, 200)).resolves.toBe(false);
+  });
+});
+
+describe("killRemainingProcessGroup", () => {
+  it("ignores missing or invalid process group ids", async () => {
+    await expect(killRemainingProcessGroup(undefined)).resolves.toBe(false);
+    await expect(killRemainingProcessGroup("123")).resolves.toBe(false);
+    await expect(killRemainingProcessGroup(0)).resolves.toBe(false);
+    await expect(killRemainingProcessGroup(123, "win32")).resolves.toBe(false);
+  });
+
+  it("returns false when the group is already gone", async () => {
+    await expect(killRemainingProcessGroup(2 ** 22 - 1)).resolves.toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("force stops a group that ignores SIGTERM", async () => {
+    const child = await spawnSigtermIgnoringGroup();
+    spawnedGroups.push(child.pid!);
+    signalProcessGroup(child, "SIGTERM");
+    await expect(waitForProcessGroupExit(child.pid, 300)).resolves.toBe(false);
+
+    await expect(killRemainingProcessGroup(child.pid)).resolves.toBe(true);
+    await expect(waitForProcessGroupExit(child.pid, 5_000)).resolves.toBe(true);
   });
 });

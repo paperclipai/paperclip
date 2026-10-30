@@ -1,5 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 
+export const serverGroupShutdownTimeoutMs = 45_000;
+export const devRunnerStopTimeoutMs = serverGroupShutdownTimeoutMs + 5_000;
+
 export function usesProcessGroups(platform: NodeJS.Platform = process.platform): boolean {
   return platform !== "win32";
 }
@@ -36,4 +39,19 @@ export async function waitForProcessGroupExit(
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
+}
+
+export async function killRemainingProcessGroup(
+  processGroupId: unknown,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (!usesProcessGroups(platform)) return false;
+  if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    process.kill(-processGroupId, "SIGKILL");
+  } catch {
+    return false;
+  }
+  await waitForProcessGroupExit(processGroupId, 5_000, platform);
+  return true;
 }

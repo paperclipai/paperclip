@@ -12,7 +12,12 @@ import {
   resolveNativeRunnerRequirement,
 } from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
-import { signalProcessGroup, usesProcessGroups, waitForProcessGroupExit } from "./dev-runner-process-group.ts";
+import {
+  serverGroupShutdownTimeoutMs,
+  signalProcessGroup,
+  usesProcessGroups,
+  waitForProcessGroupExit,
+} from "./dev-runner-process-group.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
@@ -365,6 +370,7 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
       repoRoot,
       mode,
       childPid: child?.pid ?? null,
+      serverProcessGroupId: usesProcessGroups() ? child?.pid ?? null : null,
       url: `http://127.0.0.1:${serverPort}`,
       ...extra,
     },
@@ -882,7 +888,9 @@ async function shutdown(signal: NodeJS.Signals) {
   const stoppingChild = child;
   signalProcessGroup(stoppingChild, "SIGTERM");
   const exit = await waitForChildExit();
-  await waitForProcessGroupExit(stoppingChild.pid, gracefulShutdownTimeoutMs);
+  if (!(await waitForProcessGroupExit(stoppingChild.pid, serverGroupShutdownTimeoutMs))) {
+    signalProcessGroup(stoppingChild, "SIGKILL");
+  }
   if (exit.signal) {
     exitForSignal(signal);
     return;
