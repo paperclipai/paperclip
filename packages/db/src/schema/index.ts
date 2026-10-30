@@ -39,6 +39,7 @@ export {
 } from "./execution_workspace_restore_points.js";
 export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";
+export { sandboxCreationOperations } from "./sandbox_creation_operations.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
@@ -193,6 +194,7 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
+  companySkillMutationReceipts,
   companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
   companySkillStars,
   companySkillComments,

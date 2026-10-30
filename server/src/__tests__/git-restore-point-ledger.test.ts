@@ -73,7 +73,7 @@ describeEmbeddedPostgres("git restore point retention", () => {
   } = {}) {
     const companyId = input.companyId ?? randomUUID();
     if (!input.companyId) {
-      await db.insert(companies).values({ id: companyId, name: "Restore", issuePrefix: `R${companyId.slice(0, 6)}` });
+      await db.insert(companies).values({ id: companyId, name: "Restore", issuePrefix: `R${companyId.replaceAll("-", "")}` });
     }
     const issueStatus = input.issueStatus ?? "done";
     const closedAt = new Date(now.getTime() - (input.closedDaysAgo ?? 10) * DAY_MS);

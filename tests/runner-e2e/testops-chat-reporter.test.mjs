@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { verifySelectionFile, reporter } from './testops-chat-reporter.mjs';
+import { verifySelectionFile, reporter, parseOfficialBootstrapContext } from './testops-chat-reporter.mjs';
 import { executionId, scenario, fullName } from './chat-feature-testops-api.mjs';
 const context = { GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 'refs/heads/master', GITHUB_EVENT_NAME: 'workflow_dispatch',
   GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', ALLURE_JOB_RUN_ID: '9',
@@ -135,4 +135,142 @@ test('actual launch caller rejects five own-run contradictions before TestOps au
       assert.equal(error.stage, 'launch_admission'); assert.equal(error.code, 'chat_testops_launch_admission');
     }
   } finally { process.stderr.write = original; }
+});
+
+async function bootstrapContextFixture(t, inputs = { operation: 'bootstrap', ALLURE_JOB_RUN_ID: '' }) {
+  const f = await fixture(t), workspace = f.env.GITHUB_WORKSPACE;
+  const temporary = path.join(workspace, 'temp'); await mkdir(temporary);
+  const state = path.join(temporary, 'chat-testops-bootstrap-state'); await mkdir(state, { mode: 0o700 });
+  const originalJob = Buffer.from('{"status":"official_job_run_id_missing","actualResult":null}');
+  await writeFile(path.join(state, 'job.json'), originalJob, { mode: 0o600 });
+  const event = path.join(workspace, 'event.json'); await writeFile(event, JSON.stringify({ inputs }));
+  return { ...f, state, originalJob, env: { ...f.env, RUNNER_TEMP: temporary, GITHUB_EVENT_PATH: event, ALLURE_JOB_RUN_ID: '',
+    ALLURE_ENDPOINT: 'https://paperclip.testops.cloud', ALLURE_PROJECT_ID: '1', ALLURE_TOKEN: 'SYNTHETIC_REPORTER_TOKEN', CHAT_TESTOPS_GITHUB_WORKFLOW_ID: '99' } };
+}
+function bootstrapContextFetch(change = {}) {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const route = new URL(url).pathname; calls.push({ route, method: options.method });
+    let value;
+    if (route === '/api/uaa/oauth/token') { assert.equal(options.method, 'POST'); value = { access_token: 'SYNTHETIC_ACCESS' }; }
+    else {
+      assert.equal(options.method, 'GET');
+      if (route === '/api/jobrun/9') value = { id: 9, job: { id: 7, type: 'github' }, launchId: 10,
+        url: 'https://github.com/paperclipai/paperclip/actions/runs/123', ...change };
+      else if (route === '/api/launch/10') value = { id: 10, projectId: 1 };
+      else if (route === '/api/job/7') value = { id: 7, type: 'github', url: 'https://github.com/paperclipai/paperclip/actions/workflows/99',
+        parameters: [{ id: 17, value: 'bootstrap' }] };
+      else if (route === '/api/environment/17') value = { id: 17, name: 'operation' };
+      else assert.fail(route);
+    }
+    return { ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) };
+  };
+  return { fetchImpl, calls };
+}
+async function captureSafeErrors(callback) {
+  const original = process.stderr.write;
+  let text = '';
+  process.stderr.write = chunk => { text += String(chunk); return true; };
+  try { return { value: await callback(), text }; } finally { process.stderr.write = original; }
+}
+
+test('official context parser admits only unique positive numeric job-run and launch assignments', () => {
+  const text = 'ALLURE_TOKEN=SYNTHETIC_SECRET\nALLURE_JOB_RUN_URL=untrusted\nALLURE_JOB_RUN_ID=9\r\nALLURE_LAUNCH_ID=10\n';
+  assert.deepEqual(parseOfficialBootstrapContext(text), { jobRunId: '9', launchId: 10 });
+  for (const text of ['', 'ALLURE_JOB_RUN_ID=9\n', 'ALLURE_JOB_RUN_ID=0\nALLURE_LAUNCH_ID=10',
+    'ALLURE_JOB_RUN_ID=9\nALLURE_LAUNCH_ID=10\nALLURE_JOB_RUN_ID=9', 'ALLURE_JOB_RUN_ID=9\nALLURE_LAUNCH_ID=$(secret)',
+    'ALLURE_JOB_RUN_ID=9007199254740992\nALLURE_LAUNCH_ID=10', 'ALLURE_JOB_RUN_ID=9; secret\nALLURE_LAUNCH_ID=10', 'x'.repeat(16_385)]) {
+    assert.throws(() => parseOfficialBootstrapContext(text), /chat_testops_bootstrap_context_invalid/);
+  }
+});
+
+test('post-watch facade runs exact official command with bounded pipes and preserves original missing-child artifact', async t => {
+  const f = await bootstrapContextFixture(t), server = bootstrapContextFetch(); let executions = 0;
+  const execImpl = async (command, args, options) => {
+    executions++; assert.equal(command, 'allurectl'); assert.deepEqual(args, ['job-run', 'env']);
+    assert.equal(options.shell, false); assert.equal(options.timeout, 30_000); assert.equal(options.maxBuffer, 16_384);
+    assert.equal(options.encoding, 'utf8'); assert.equal(options.cwd, f.env.GITHUB_WORKSPACE); assert.equal(options.env, f.env);
+    return { stdout: 'ALLURE_TOKEN=SYNTHETIC_SECRET\nALLURE_JOB_RUN_ID=9\nALLURE_LAUNCH_ID=10\n', stderr: 'SYNTHETIC_SECRET_STDERR' };
+  };
+  assert.equal(await reporter('bootstrap-context', undefined, f.env, server.fetchImpl, execImpl), 0);
+  const bytes = await readFile(path.join(f.state, 'registration.json'));
+  const result = JSON.parse(bytes);
+  assert.equal(result.schema, 'paperclip.chat-feature-testops-bootstrap-registration/v1');
+  assert.equal(result.jobId, 7); assert.equal(result.allureJobRunId, '9'); assert.equal(result.launchId, 10);
+  assert.equal(result.runId, '123'); assert.equal(result.workflowSha, context.GITHUB_SHA); assert.equal(result.targetSha, context.GITHUB_SHA);
+  assert.equal(result.currentRunUrlMatches, true); assert.equal(result.publicWorkflowMatches, true);
+  assert.equal(result.capturedAfterWatch, true); assert.equal(result.runnableBindingQualified, false); assert.equal(result.actualResult, null);
+  assert.deepEqual(result.parameters, [{ id: 17, name: 'operation', value: 'bootstrap' }]);
+  assert.ok(!bytes.toString().includes('SYNTHETIC')); assert.equal(f.env.ALLURE_JOB_RUN_ID, '');
+  assert.deepEqual(await readFile(path.join(f.state, 'job.json')), f.originalJob);
+  const second = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no second auth'), () => assert.fail('no second CLI')));
+  assert.equal(second.value, 1); assert.equal(executions, 1);
+  assert.deepEqual(await readFile(path.join(f.state, 'registration.json')), bytes);
+  assert.equal(server.calls.filter(row => row.method === 'POST').length, 1);
+  assert.equal(server.calls[0].route, '/api/uaa/oauth/token');
+});
+
+test('post-watch missing official IDs fails closed without API auth or invented registration', async t => {
+  const f = await bootstrapContextFixture(t);
+  const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no API'),
+    async () => ({ stdout: 'ALLURE_TOKEN=SYNTHETIC_SECRET\n', stderr: 'PRIVATE_STDERR' })));
+  assert.equal(result.value, 1); assert.ok(!result.text.includes('SYNTHETIC')); assert.ok(!result.text.includes('PRIVATE'));
+  assert.equal(JSON.parse(await readFile(path.join(f.state, 'registration-failure.json'))).code, 'chat_testops_bootstrap_context_invalid');
+  await assert.rejects(readFile(path.join(f.state, 'registration.json')), { code: 'ENOENT' });
+});
+
+test('post-watch command errors discard stdout stderr and raw exception without retry or API', async t => {
+  const f = await bootstrapContextFixture(t); let calls = 0;
+  const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no API'), async () => {
+    calls++; throw Object.assign(new Error('SYNTHETIC_PRIVATE_EXCEPTION'), { stdout: 'SYNTHETIC_PRIVATE_STDOUT', stderr: 'SYNTHETIC_PRIVATE_STDERR' });
+  }));
+  assert.equal(result.value, 1); assert.equal(calls, 1); assert.ok(!result.text.includes('SYNTHETIC'));
+  assert.equal(JSON.parse(await readFile(path.join(f.state, 'registration-failure.json'))).code, 'chat_testops_bootstrap_command_failed');
+});
+
+test('post-watch wrong original operation or extra source input stops before official command and auth', async t => {
+  for (const inputs of [{ operation: 'evaluate' }, { operation: 'launch-plan' }, { operation: 'bootstrap', ALLURE_JOB_RUN_ID: '9' }, { operation: 'bootstrap', model: 'foreign/model' }]) {
+    const f = await bootstrapContextFixture(t, inputs);
+    const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no API'), () => assert.fail('no CLI')));
+    assert.equal(result.value, 1);
+  }
+});
+
+test('post-watch foreign backend binding returns safe nonzero and preserves original job evidence', async t => {
+  const f = await bootstrapContextFixture(t), server = bootstrapContextFetch({ url: 'https://github.com/paperclipai/paperclip/actions/runs/999' });
+  const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, server.fetchImpl,
+    async () => ({ stdout: 'ALLURE_JOB_RUN_ID=9\nALLURE_LAUNCH_ID=10\n' })));
+  assert.equal(result.value, 1); assert.equal(JSON.parse(await readFile(path.join(f.state, 'registration-failure.json'))).code, 'chat_testops_jobrun_mismatch');
+  assert.deepEqual(await readFile(path.join(f.state, 'job.json')), f.originalJob);
+});
+
+test('bootstrap workflow captures official context only after watch and retains exactly named closed receipts', async () => {
+  const workflow = await readFile(new URL('../../.github/workflows/chat-feature-testops.yml', import.meta.url), 'utf8');
+  const start = workflow.indexOf('      - name: Register the public job without an evaluation or a synthetic result');
+  const end = workflow.indexOf('      - name: Validate the one real TestOps selection', start);
+  const step = workflow.slice(start, end);
+  assert.ok(step.includes("if: needs.authorize.outputs.operation == 'bootstrap'"));
+  assert.match(step, /allurectl watch -- node tests\/runner-e2e\/testops-chat-reporter\.mjs bootstrap\n\s+node tests\/runner-e2e\/testops-chat-reporter\.mjs bootstrap-context/);
+  assert.equal((step.match(/allurectl watch/g) ?? []).length, 1); assert.ok(!step.includes('continue-on-error'));
+  assert.ok(workflow.includes('${{ runner.temp }}/chat-testops-bootstrap-state/registration.json'));
+  assert.ok(workflow.includes('${{ runner.temp }}/chat-testops-bootstrap-state/registration-failure.json'));
+});
+
+test('post-watch refuses nonprivate state custody before any command auth or receipt write', async t => {
+  const f = await bootstrapContextFixture(t); await chmod(f.state, 0o755);
+  const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no API'), () => assert.fail('no CLI')));
+  assert.equal(result.value, 1);
+  await assert.rejects(readFile(path.join(f.state, 'registration.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.state, 'registration-failure.json')), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(path.join(f.state, 'job.json')), f.originalJob);
+});
+
+test('post-watch authentication failure retains only fixed HTTP diagnostic and never reads body', async t => {
+  const f = await bootstrapContextFixture(t); let calls = 0;
+  const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, async () => {
+    calls++; return { ok: false, status: 403, json: () => assert.fail('no auth body read'), text: () => assert.fail('no auth body read') };
+  }, async () => ({ stdout: 'ALLURE_JOB_RUN_ID=9\nALLURE_LAUNCH_ID=10\n' })));
+  assert.equal(result.value, 1); assert.equal(calls, 1);
+  const failure = JSON.parse(await readFile(path.join(f.state, 'registration-failure.json')));
+  assert.deepEqual(failure, { stage: 'bootstrap_context', code: 'testops_auth_http', httpStatus: 403 });
 });

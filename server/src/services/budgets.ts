@@ -1,5 +1,8 @@
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
-import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyAttentionRetentionWork, notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -287,6 +290,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      await notifyRunDispatch(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -300,7 +304,10 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
+    await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyStatusCardIssueChange(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
@@ -346,6 +353,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      await notifyRunDispatch(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -360,7 +368,10 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
+    await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyStatusCardIssueChange(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
@@ -466,6 +477,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       windowEnd: end,
     });
 
+    await notifyAttentionRetentionWork(db, { companyId: policy.companyId, sourceKind: "budget_alert" });
     if (thresholdType === "hard") await notifyApprovalWork(db, policy.companyId);
     const approval = thresholdType === "hard"
       ? await db
@@ -504,7 +516,8 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     return incident ? { incident, created: true } : null;
   }
 
-  async function resolveOpenSoftIncidents(policyId: string) {
+  async function resolveOpenSoftIncidents(policyId: string, companyId: string) {
+    await notifyAttentionRetentionWork(db, { companyId, sourceKind: "budget_alert" });
     await db
       .update(budgetIncidents)
       .set({
@@ -523,10 +536,12 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
   async function resolveOpenIncidentsForPolicy(
     policyId: string,
+    companyId: string,
     approvalStatus: "approved" | "rejected" | null,
     decidedByUserId: string | null,
     thresholdType?: BudgetThresholdType,
   ) {
+    await notifyAttentionRetentionWork(db, { companyId, sourceKind: "budget_alert" });
     const condition = and(eq(budgetIncidents.policyId, policyId), eq(budgetIncidents.status, "open"),
       thresholdType ? eq(budgetIncidents.thresholdType, thresholdType) : undefined);
     const openRows = await db
@@ -615,9 +630,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (policy.isActive && policy.hardStopEnabled && policy.amount > 0 && observed.recoveringRunCount > 0) recoveringPolicy ??= policy;
       // A closed UTC window, inactive policy, or budget raise releases only
       // budget-owned pauses. Manual pauses remain operator decisions.
-      await resolveOpenIncidentsForPolicy(policy.id, "approved", "budget_service", "hard");
+      await resolveOpenIncidentsForPolicy(policy.id, policy.companyId, "approved", "budget_service", "hard");
       if (!policy.isActive || !policy.notifyEnabled || compareCents(observed.totalExact, Math.ceil(policy.amount * policy.warnPercent / 100)) < 0) {
-        await resolveOpenIncidentsForPolicy(policy.id, "approved", "budget_service", "soft");
+        await resolveOpenIncidentsForPolicy(policy.id, policy.companyId, "approved", "budget_service", "soft");
       }
     }
     // Agent status has its own admission gate and error code. Preserve a
@@ -674,7 +689,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       }
 
       if (observedBlocks(policy, observed)) {
-        await resolveOpenSoftIncidents(policy.id);
+        await resolveOpenSoftIncidents(policy.id, policy.companyId);
         const hardIncident = await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy);
         if (hardIncident?.created) {
@@ -844,11 +859,11 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         const observed = await computeObservedSpend(db, row);
         if (!observedBlocks(row, observed)) {
           await resumeScopeFromBudget(row);
-          await resolveOpenIncidentsForPolicy(row.id, "approved", actorUserId ?? "budget_service", "hard");
+          await resolveOpenIncidentsForPolicy(row.id, row.companyId, "approved", actorUserId ?? "budget_service", "hard");
           if (row.notifyEnabled && compareCents(observed.totalExact, Math.ceil(row.amount * row.warnPercent / 100)) >= 0) {
             await createIncidentIfNeeded(row, "soft", observed);
           } else {
-            await resolveOpenIncidentsForPolicy(row.id, null, null, "soft");
+            await resolveOpenIncidentsForPolicy(row.id, row.companyId, null, null, "soft");
           }
         } else {
           const softThreshold = Math.ceil((row.amount * row.warnPercent) / 100);
@@ -856,14 +871,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
             await createIncidentIfNeeded(row, "soft", observed);
           }
           if (observedBlocks(row, observed)) {
-            await resolveOpenSoftIncidents(row.id);
+            await resolveOpenSoftIncidents(row.id, row.companyId);
             await createIncidentIfNeeded(row, "hard", observed);
             await pauseAndCancelScopeForBudget(row);
           }
         }
       } else {
         await resumeScopeFromBudget(row);
-        await resolveOpenIncidentsForPolicy(row.id, "approved", actorUserId ?? "budget_service");
+        await resolveOpenIncidentsForPolicy(row.id, row.companyId, "approved", actorUserId ?? "budget_service");
       }
 
       await recordActivity({
@@ -937,6 +952,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
 
         const now = new Date();
+        await notifyAttentionRetentionWork(db, { companyId, sourceKind: "budget_alert" });
         await notifyDeliveryWork(db, DELIVERY_QUEUES.budgetEnforcement, companyId);
         await db
           .update(budgetPolicies)

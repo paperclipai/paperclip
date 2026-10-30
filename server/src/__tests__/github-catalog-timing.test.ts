@@ -1,9 +1,10 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { context, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import {
-  authUsers, companies, companyMemberships, connectionGrants, createDb,
+  applyPendingMigrations, authUsers, companies, companySecrets, companyMemberships, connectionGrants, createDb,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -15,15 +16,18 @@ import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connec
 import { toolAccessService } from "../services/tool-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_CATALOG_TEST_DATABASE_URL");
+const support = databaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("GitHub repository catalog execution timing", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  const ownedCompanies: string[] = [];
   let exporter: InMemorySpanExporter, provider: TracerProvider, manager: AsyncLocalStorageContextManager;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-github-catalog-timing-");
-    db = createDb(temporary.connectionString, { maxConnections: 3 });
+    if (databaseUrl) await applyPendingMigrations(databaseUrl);
+    else temporary = await startEmbeddedPostgresTestDatabase("paperclip-github-catalog-timing-");
+    db = createDb(databaseUrl ?? temporary.connectionString, { maxConnections: 3 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   beforeEach(() => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "01234567890123456789012345678901");
@@ -38,6 +42,7 @@ const support = await getEmbeddedPostgresTestSupport();
     vi.restoreAllMocks(); vi.unstubAllEnvs();
     trace.disable(); context.disable(); manager.disable();
     await provider.shutdown();
+    for (const id of ownedCompanies.splice(0)) { await db.delete(companyMemberships).where(eq(companyMemberships.companyId, id)); await db.delete(companySecrets).where(eq(companySecrets.companyId, id)); await db.delete(companies).where(eq(companies.id, id)); }
   });
   afterAll(async () => {
     await db?.$client.end({ timeout: 0 });
@@ -47,6 +52,7 @@ const support = await getEmbeddedPostgresTestSupport();
   async function fixture() {
     const userId = `catalog-user-${randomUUID()}`;
     const [company] = await db.insert(companies).values({ name: "Catalog timing", issuePrefix: `GH${randomUUID().slice(0, 6)}` }).returning();
+    ownedCompanies.push(company.id);
     await db.insert(authUsers).values({ id: userId, name: "Catalog owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
     const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "GitHub catalog", type: "mcp_http" }).returning();

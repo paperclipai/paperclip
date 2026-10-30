@@ -334,7 +334,7 @@ export async function requestTaskRetry(input: {
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
-  });
+  }, { companyId: input.companyId });
 }
 
 /** Chat owns admission and authorization. The task receipt follows that
