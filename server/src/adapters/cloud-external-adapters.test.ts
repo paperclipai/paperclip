@@ -25,7 +25,7 @@ function writePackage(packageDir: string, type: string): void {
     export function createServerAdapter() {
       return {
         type: ${JSON.stringify(type)},
-        label: "External fixture",
+        agentConfigurationDoc: "External fixture",
         models: [],
         execute: async () => ({ exitCode: 41, signal: null, timedOut: false }),
         testEnvironment: async () => ({ status: "pass", checks: [] }),
@@ -71,7 +71,7 @@ describe("Cloud image adapter boundary", () => {
       const loader = await import("./plugin-loader.js");
       const store = await import("../services/adapter-plugin-store.js");
 
-      expect(registry.requireServerAdapter("codex_local").label).not.toBe("External fixture");
+      expect(registry.requireServerAdapter("codex_local").agentConfigurationDoc).not.toBe("External fixture");
       expect(registry.requireServerAdapter("process").execute).toBeTypeOf("function");
       expect(registry.findServerAdapter("fixture_npm")).toBeNull();
       expect(registry.hasActiveAdapterOverride("codex_local")).toBe(false);
@@ -106,9 +106,9 @@ describe("Cloud image adapter boundary", () => {
     await registry.waitForExternalAdapters();
 
     const override = registry.requireServerAdapter("codex_local");
-    expect(override.label).toBe("External fixture");
+    expect(override.agentConfigurationDoc).toBe("External fixture");
     expect(registry.hasActiveAdapterOverride("codex_local")).toBe(true);
-    expect(registry.requireServerAdapter("fixture_npm").label).toBe("External fixture");
+    expect(registry.requireServerAdapter("fixture_npm").agentConfigurationDoc).toBe("External fixture");
     expect(await override.execute({} as never)).toMatchObject({ exitCode: 41 });
     expect(fs.readFileSync(sentinel, "utf8").trim().split("\n")).toEqual(["codex_local", "fixture_npm"]);
     expect(loader.getUiParserSource("fixture_npm")).toBe(parserSource);
@@ -116,10 +116,10 @@ describe("Cloud image adapter boundary", () => {
     expect(reloaded?.type).toBe("codex_local");
     expect(await reloaded?.execute({} as never)).toMatchObject({ exitCode: 41 });
     expect(registry.setOverridePaused("codex_local", true)).toBe(true);
-    expect(registry.findActiveServerAdapter("codex_local")?.label).not.toBe("External fixture");
+    expect(registry.findActiveServerAdapter("codex_local")?.agentConfigurationDoc).not.toBe("External fixture");
     expect(registry.setOverridePaused("codex_local", false)).toBe(true);
     registry.unregisterServerAdapter("codex_local");
-    expect(registry.requireServerAdapter("codex_local").label).not.toBe("External fixture");
+    expect(registry.requireServerAdapter("codex_local").agentConfigurationDoc).not.toBe("External fixture");
   });
 
   it("does not expose a cached registration or parser after a managed signal becomes present", async () => {
