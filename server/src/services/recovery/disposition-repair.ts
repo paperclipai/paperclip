@@ -12,6 +12,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
+import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-delivery.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -204,7 +205,7 @@ export async function collectDispositionRepairSourceState(
   const pendingApproval = linkedApprovals.some((row) =>
     row.status === "pending" || row.status === "revision_requested",
   );
-  const durablePathReason = issue.assigneeUserId
+  const staticDurablePathReason = issue.assigneeUserId
     ? "user_owner"
     : blockers.length > 0
       ? "blocker"
@@ -217,6 +218,9 @@ export async function collectDispositionRepairSourceState(
             : pendingApproval
               ? "approval"
               : null;
+  const durablePathReason =
+    staticDurablePathReason ??
+    ((await hasArmedInvokableIssueWatchdog(db, issue)) ? "watchdog" : null);
 
   const durableState = {
     source: {

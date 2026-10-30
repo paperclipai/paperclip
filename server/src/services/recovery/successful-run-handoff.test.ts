@@ -57,6 +57,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasPersistedMonitor: false,
+    hasArmedWatchdog: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
@@ -315,6 +316,17 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasActiveExecutionPath: true }))).toBe(true);
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasQueuedWake: true }))).toBe(true);
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
+  });
+
+  it("does not queue a handoff wake when an armed watchdog owns the next wake", () => {
+    const decision = decide({ hasArmedWatchdog: true });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "armed issue watchdog owns the next action",
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+    expect(decide({ hasArmedWatchdog: false }).kind).toBe("enqueue");
   });
 
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {
