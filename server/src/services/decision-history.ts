@@ -1,8 +1,9 @@
 import { and, asc, desc, eq, ilike, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { agents, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
 import type { DecisionHistoryItem, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { badRequest } from "../errors.js";
+import { readAttentionHandledDetails } from "./attention-receipts.js";
 
 type HistoryOptions = DecisionHistoryQuery & { actor: AuthorizationActor; userId: string; issueIds?: string[] };
 type Cursor = { at: string; id: string; sort: "newest" | "oldest" };
@@ -98,6 +99,47 @@ export function pageDecisionHistory(items: DecisionHistoryItem[], limit: number,
     ? Buffer.from(JSON.stringify({ at: last.resolvedAt, id: last.id, sort })).toString("base64url") : null };
 }
 
+/**
+ * "Handled for me" (PAP-749 plan §6): a different person answered, withdrew
+ * or transferred this card while it was for `userId`. Reads the receipt on the
+ * action's activity entry.
+ */
+function handledForUserSourceCondition(companyId: string, userId: string, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: SQL | typeof decisions.id | typeof issueThreadInteractions.id) {
+  return sql<boolean>`exists (
+    select 1 from ${activityLog}
+    where ${activityLog.companyId} = ${companyId}
+      and (${activityLog.details} ->> 'handledForUserId') = ${userId}
+      and ${activityLog.details} -> 'receipt' ->> 'sourceKind' = ${sourceKind}
+      and ${activityLog.details} -> 'receipt' ->> 'sourceId' = ${sourceId}::text
+  )`;
+}
+
+/**
+ * The person each answered card was for, when someone else answered it
+ * ("Answered by @x for @y"). A transfer is not the answer, so it is skipped.
+ */
+async function handledForBySource(db: Db, companyId: string, sourceIds: string[]) {
+  const result = new Map<string, string>();
+  if (sourceIds.length === 0) return result;
+  const rows = await db
+    .select({ details: activityLog.details, createdAt: activityLog.createdAt })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, companyId),
+      sql`(${activityLog.details} ->> 'handledForUserId') IS NOT NULL`,
+      inArray(sql<string>`${activityLog.details} -> 'receipt' ->> 'sourceId'`, sourceIds),
+    ))
+    .orderBy(desc(activityLog.createdAt));
+  for (const row of rows) {
+    const receipt = readAttentionHandledDetails(row.details);
+    const userId = (row.details as Record<string, unknown> | null)?.handledForUserId;
+    if (!receipt || receipt.outcome === "transferred" || typeof userId !== "string") continue;
+    const key = `${receipt.sourceKind}:${receipt.sourceId}`;
+    if (!result.has(key)) result.set(key, userId);
+  }
+  return result;
+}
+
 export function decisionHistoryService(db: Db) {
   return { async list(companyId: string, options: HistoryOptions): Promise<DecisionHistoryPage> {
     if (options.issueIds?.length === 0) return { items: [], nextCursor: null };
@@ -161,6 +203,7 @@ export function decisionHistoryService(db: Db) {
         .where(and(eq(issueThreadInteractions.companyId, companyId), readable, isNotNull(issueThreadInteractions.resolvedAt),
           notInArray(issueThreadInteractions.status, ["pending"]),
           interactionOutcome,
+          options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "issue_thread_interaction", issueThreadInteractions.id) : undefined,
           options.agentId ? eq(issueThreadInteractions.createdByAgentId, options.agentId) : undefined,
           ...conditions(interactionTime, interactionKey, issueThreadInteractions.title)))
         .orderBy(order(interactionTime), order(interactionKey)).limit(limit + 1),
@@ -175,6 +218,7 @@ export function decisionHistoryService(db: Db) {
         .where(and(eq(decisions.companyId, companyId), readable, notInArray(decisions.status, ["open"]),
           sql`not exists (select 1 from ${decisionTargetIssues} where ${decisionTargetIssues.decisionId} = ${decisions.id} and (${decisionTargetIssues.companyId} <> ${companyId} or ${decisionTargetIssues.issueId} not in (${readableIssues})))`,
           decisionOutcome,
+          options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "decision", decisions.id) : undefined,
           options.agentId ? eq(decisions.originAgentId, options.agentId) : undefined,
           ...conditions(decisionTime, decisionKey, decisions.title)))
         .orderBy(order(decisionTime), order(decisionKey)).limit(limit + 1),
@@ -195,6 +239,9 @@ export function decisionHistoryService(db: Db) {
       reason: interactionHistoryReason({ reason: metadata.cancelReason }),
       href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "decision", row.sourceId, null),
     }));
-    return pageDecisionHistory([...interactionItems, ...decisionItems], limit, sort);
+    const page = pageDecisionHistory([...interactionItems, ...decisionItems], limit, sort);
+    const handledFor = await handledForBySource(db, companyId, page.items.map((item) => item.sourceId));
+    for (const item of page.items) item.handledForUserId = handledFor.get(item.id) ?? null;
+    return page;
   } };
 }

@@ -251,6 +251,12 @@ export interface AttentionAudience {
   kind: AttentionAudienceKind;
   userId: string | null;
   reason: AttentionAudienceReason;
+  /**
+   * The person who transferred the card to {@link userId} ("Route to @x"),
+   * when the addressee came from a transfer (PAP-749 plan §6, Rule 12). The
+   * "Why me?" line reads "Transferred by @x".
+   */
+  transferredByUserId?: string | null;
 }
 
 /**
@@ -380,6 +386,70 @@ export interface AttentionStale {
   reason: AttentionStaleReason;
 }
 
+/**
+ * What a different person did with a card that was for you (PAP-749 plan §6,
+ * Rule 12). Archive and snooze are personal, so they never make a receipt;
+ * Claim takes only ownerless cards, so it has no audience person to tell.
+ */
+export const ATTENTION_RECEIPT_OUTCOMES = [
+  "answered",
+  "approved",
+  "rejected",
+  "revision_requested",
+  "withdrawn",
+  "skipped",
+  "transferred",
+] as const;
+export type AttentionReceiptOutcome = (typeof ATTENTION_RECEIPT_OUTCOMES)[number];
+
+/** A receipt stays at the top of For you this long, or until its person dismisses it. */
+export const ATTENTION_RECEIPT_DAYS = 7;
+
+/**
+ * Stored on the activity entry of the action as `details.receipt`, next to
+ * `details.handledForUserId` (the card's audience person at the time of the
+ * action). Present only when that person is not the actor. Receipts and the
+ * "Handled for me" history filter read these; there is no receipts table.
+ */
+export interface AttentionHandledDetails {
+  outcome: AttentionReceiptOutcome;
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  issueId: string | null;
+  /** The card title when the person acted. */
+  title: string | null;
+  /** The person who acted. Decisions log as the executor, so it is kept here. */
+  actorUserId: string;
+  reason?: string | null;
+  /** For `transferred`: who got the card. */
+  transferredToUserId?: string | null;
+}
+
+/**
+ * One receipt at the top of For you: "Answered by @scott", "Withdrawn by
+ * @scott" with the reason, "Transferred to @riley by @scott". A receipt is not
+ * a card and is never in the badge count.
+ */
+export interface AttentionReceipt {
+  /** The activity entry the receipt comes from. */
+  id: string;
+  /** Inbox dismissal key; dismissing it hides the receipt for you. */
+  dismissalKey: string;
+  outcome: AttentionReceiptOutcome;
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  title: string | null;
+  reason: string | null;
+  actorUserId: string;
+  transferredToUserId: string | null;
+  issue: { id: string; identifier: string | null; title: string; href: string } | null;
+  /** Where the source shows now: its task thread, or the approval page. */
+  href: string | null;
+  createdAt: string;
+  /** When the receipt leaves For you on its own. */
+  expiresAt: string;
+}
+
 export interface AttentionItem {
   id: string;
   companyId: string;
@@ -463,6 +533,11 @@ export interface AttentionFeed {
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
+  /**
+   * Receipts for the requesting person, newest first (PAP-749 plan §6). Set
+   * for the For you view (`view=mine`) only; not counted in any badge.
+   */
+  receipts?: AttentionReceipt[];
 }
 /** Read-only projection of canonical task decisions; never a second write store. */
 export interface DecisionHistoryItem {
@@ -484,6 +559,11 @@ export interface DecisionHistoryItem {
   resolvedAt: string;
   resolvedByUserId: string | null;
   resolvedByAgentId: string | null;
+  /**
+   * The person the card was for, when a different person answered, withdrew
+   * or transferred it ("Answered by @x for @y"; PAP-749 plan §6).
+   */
+  handledForUserId?: string | null;
   href: string;
   target: { kind: "issue_document"; issueId?: string; key: string; revisionId: string } | { kind: "issue_attachment"; attachmentId: string } | null;
 }
@@ -497,6 +577,8 @@ export interface DecisionHistoryQuery {
   projectId?: string;
   sort?: "newest" | "oldest";
   since?: string;
+  /** "Handled for me": only cards for you that a different person handled (PAP-749 plan §6). */
+  handledForMe?: boolean;
 }
 
 export interface DecisionHistoryPage {

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AttentionAudience, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import type { AttentionAudience, AttentionItem, AttentionReceipt, AttentionSourceKind } from "@paperclipai/shared";
 import {
   ATTENTION_COMPANY_AUDIENCE_TEXT,
   ATTENTION_POOL_AUDIENCE_TEXT,
   attentionItemClaimable,
+  attentionReceiptLine,
   describeAttentionAudience,
   parseAttentionView,
   unassignedBannerText,
@@ -55,6 +56,21 @@ describe("attention views (PAP-749 task 1b)", () => {
       .toEqual({ kind: "company", text: ATTENTION_COMPANY_AUDIENCE_TEXT, claimable: true });
     expect(attentionItemClaimable(item({ kind: "company", userId: null, reason: "none" }, "failed_run"))).toBe(false);
     expect(attentionItemClaimable(item({ kind: "user", userId: "dotta", reason: "addressee" }))).toBe(false);
+  });
+
+  it("says \"Transferred by\" on a card routed to you (PAP-749 plan §6)", () => {
+    expect(describeAttentionAudience(item({ kind: "user", userId: "riley", reason: "addressee", transferredByUserId: "scott" }), "riley"))
+      .toEqual({ kind: "mine", text: "Transferred by", transferredByUserId: "scott" });
+  });
+
+  it("phrases receipts with display names, never IDs", () => {
+    const labels = new Map([["scott", "Scott"], ["riley", "Riley"]]);
+    const receipt = (outcome: AttentionReceipt["outcome"], transferredToUserId: string | null = null) =>
+      ({ outcome, actorUserId: "scott", transferredToUserId }) as AttentionReceipt;
+    expect(attentionReceiptLine(receipt("answered"), labels)).toBe("Answered by @Scott");
+    expect(attentionReceiptLine(receipt("withdrawn"), labels)).toBe("Withdrawn by @Scott");
+    expect(attentionReceiptLine(receipt("transferred", "riley"), labels)).toBe("Transferred to @Riley by @Scott");
+    expect(attentionReceiptLine(receipt("approved"), null)).toBe("Approved by @someone");
   });
 
   it("phrases the Unassigned banner", () => {

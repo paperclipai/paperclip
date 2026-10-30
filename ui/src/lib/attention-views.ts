@@ -2,8 +2,10 @@ import {
   ATTENTION_CLAIMABLE_SOURCE_KINDS,
   ATTENTION_PERSONAL_VIEWS,
   attentionAudienceReasonText,
+  attentionReceiptText,
   type AttentionItem,
   type AttentionPersonalView,
+  type AttentionReceipt,
   type AttentionViewCounts,
 } from "@paperclipai/shared";
 
@@ -41,7 +43,7 @@ export function unassignedBannerText(count: number) {
  * resolver policy, not this line, decides who may act.
  */
 export type AttentionAudienceDescription =
-  | { kind: "mine"; text: string }
+  | { kind: "mine"; text: string; transferredByUserId?: string }
   | { kind: "other"; userId: string }
   | { kind: "pool"; text: string; claimable: boolean }
   | { kind: "company"; text: string; claimable: boolean };
@@ -69,6 +71,10 @@ export function describeAttentionAudience(
   if (!audience) return null;
   if (audience.kind === "user" && audience.userId) {
     if (audience.userId !== currentUserId) return { kind: "other", userId: audience.userId };
+    // "Transferred by @x" replaces "Sent to you" (PAP-749 plan §6, Rule 12).
+    if (audience.transferredByUserId) {
+      return { kind: "mine", text: "Transferred by", transferredByUserId: audience.transferredByUserId };
+    }
     const text = attentionAudienceReasonText(audience.reason);
     return text ? { kind: "mine", text } : null;
   }
@@ -76,4 +82,21 @@ export function describeAttentionAudience(
     return { kind: "pool", text: ATTENTION_POOL_AUDIENCE_TEXT, claimable: attentionItemClaimable(item) };
   }
   return { kind: "company", text: ATTENTION_COMPANY_AUDIENCE_TEXT, claimable: attentionItemClaimable(item) };
+}
+
+/** Display name for a person on a receipt; never an ID. */
+function receiptUserLabel(userId: string | null | undefined, userLabelMap?: ReadonlyMap<string, string> | null) {
+  return (userId ? userLabelMap?.get(userId) : null) ?? "someone";
+}
+
+/**
+ * The first line of a receipt (PAP-749 plan §6, Rule 12): "Answered by
+ * @scott", "Withdrawn by @scott", "Transferred to @riley by @scott".
+ */
+export function attentionReceiptLine(receipt: AttentionReceipt, userLabelMap?: ReadonlyMap<string, string> | null) {
+  return attentionReceiptText({
+    outcome: receipt.outcome,
+    actorLabel: receiptUserLabel(receipt.actorUserId, userLabelMap),
+    transferredToLabel: receipt.transferredToUserId ? receiptUserLabel(receipt.transferredToUserId, userLabelMap) : null,
+  });
 }

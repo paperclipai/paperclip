@@ -1382,9 +1382,13 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
   const decisionProjectionChanged = entityType === "decision" ||
+    // Approvals are cards too: a decision by another person must leave every open list.
+    entityType === "approval" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
     // A claim moves a card between people's views (PAP-749), so open pages refetch.
     action?.startsWith("attention.") ||
+    // A receipt for the person a card was for (PAP-749 plan §6): their For you updates without a reload.
+    typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
     action === "issue.conversation_session_started" ||

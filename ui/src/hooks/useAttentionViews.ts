@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AttentionCloseMode, AttentionItem, AttentionPersonalView } from "@paperclipai/shared";
+import type { AttentionCloseMode, AttentionItem, AttentionPersonalView, AttentionReceipt } from "@paperclipai/shared";
 import { attentionApi } from "@/api/attention";
 import { inboxDismissalsApi } from "@/api/inboxDismissals";
 import { useOptionalToastActions } from "@/context/ToastContext";
@@ -72,6 +72,32 @@ export function useClaimAttentionItem(companyId: string | null | undefined) {
       if (companyId) void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     },
   });
+}
+
+/**
+ * Dismiss a receipt at the top of For you (PAP-749 plan §6). It is personal
+ * presentation state, stored like an archived card under the receipt's key.
+ */
+export function useDismissAttentionReceipt(companyId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  const toasts = useOptionalToastActions();
+  const mutation = useMutation({
+    mutationFn: (receipt: AttentionReceipt) => inboxDismissalsApi.dismiss(companyId!, receipt.dismissalKey),
+    onError: (error) => {
+      toasts?.pushToast({
+        title: "Could not dismiss this receipt",
+        body: error instanceof Error ? error.message : undefined,
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      if (companyId) void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+    },
+  });
+  return {
+    dismiss: mutation.mutate,
+    dismissingId: mutation.isPending ? mutation.variables?.id ?? null : null,
+  };
 }
 
 export interface AttentionCloseRequest {

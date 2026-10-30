@@ -6172,7 +6172,7 @@ registry.registerPath({
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
       view: z.enum(["mine", "unassigned", "company", "all"]).optional()
-        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it."),
+        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6267,6 +6267,7 @@ registry.registerPath({
       projectId: z.string().uuid().optional(),
       sort: z.enum(["newest", "oldest"]).optional(),
       since: z.string().datetime().optional(),
+      handledForMe: z.enum(["true", "false"]).optional().describe("Only cards for you that a different person answered, withdrew or transferred."),
     }).strict(),
   },
   responses: {

@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionAudience, AttentionItem } from "@paperclipai/shared";
-import { AttentionAudienceLine, AttentionUnassignedBanner, AttentionViewSwitch } from "./AttentionViews";
+import type { AttentionAudience, AttentionItem, AttentionReceipt } from "@paperclipai/shared";
+import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "./AttentionViews";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,8 +81,56 @@ describe("AttentionAudienceLine", () => {
     expect(onClaim).toHaveBeenCalledWith(pool);
   });
 
+  it("says who transferred a card to you", async () => {
+    const labelsWithScott = new Map([["scott", "Scott"]]);
+    await act(async () => root.render(<AttentionAudienceLine item={card({ kind: "user", userId: "riley", reason: "addressee", transferredByUserId: "scott" })} currentUserId="riley" userLabelMap={labelsWithScott} />));
+    expect(container.querySelector('[data-attention-audience="mine"]')?.textContent).toBe("Why me?Transferred by @Scott");
+  });
+
   it("stays silent until the viewer is known", async () => {
     await act(async () => root.render(<AttentionAudienceLine item={card({ kind: "user", userId: "scott", reason: "addressee" })} currentUserId={null} />));
     expect(container.innerHTML).toBe("");
+  });
+});
+
+describe("AttentionReceiptList (PAP-749 plan §6)", () => {
+  const receipt = (overrides: Partial<AttentionReceipt> = {}): AttentionReceipt => ({
+    id: "activity-1",
+    dismissalKey: "attention:receipt:activity-1",
+    outcome: "withdrawn",
+    sourceKind: "issue_thread_interaction",
+    sourceId: "interaction-1",
+    title: "Approve the launch plan?",
+    reason: "Plan changed",
+    actorUserId: "scott",
+    transferredToUserId: null,
+    issue: { id: "issue-1", identifier: "PAP-1", title: "Launch", href: "/PAP/issues/PAP-1" },
+    href: "/PAP/issues/PAP-1#interaction-interaction-1",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    ...overrides,
+  });
+  const people = new Map([["scott", "Scott"], ["riley", "Riley"]]);
+
+  it("says who did what, why, and opens or dismisses the receipt", async () => {
+    const onDismiss = vi.fn();
+    const onOpen = vi.fn();
+    const withdrawn = receipt();
+    await act(async () => root.render(<AttentionReceiptList receipts={[withdrawn, receipt({ id: "activity-2", outcome: "transferred", reason: null, transferredToUserId: "riley" })]} userLabelMap={people} onDismiss={onDismiss} onOpen={onOpen} />));
+    const rows = [...container.querySelectorAll("[data-attention-receipt]")];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("Withdrawn by @Scott");
+    expect(rows[0]?.textContent).toContain("Reason: Plan changed");
+    expect(rows[0]?.textContent).toContain("PAP-1");
+    expect(rows[1]?.textContent).toContain("Transferred to @Riley by @Scott");
+    await act(async () => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
+    expect(onOpen).toHaveBeenCalledWith("/PAP/issues/PAP-1#interaction-interaction-1");
+    await act(async () => rows[0]!.querySelector<HTMLButtonElement>('[aria-label="Dismiss receipt"]')!.click());
+    expect(onDismiss).toHaveBeenCalledWith(withdrawn);
+  });
+
+  it("renders nothing without receipts", async () => {
+    await act(async () => root.render(<AttentionReceiptList receipts={[]} onDismiss={() => {}} />));
+    expect(container.querySelector("[data-attention-receipts]")).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approva
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   approvals,
   assets,
@@ -693,7 +694,7 @@ function betterDuplicate(left: AttentionItem, right: AttentionItem) {
   return compareAttentionItems(left, right) <= 0 ? left : right;
 }
 
-function approvalTitle(type: string, payload: Record<string, unknown>) {
+export function approvalTitle(type: string, payload: Record<string, unknown>) {
   const title = typeof payload.title === "string" ? payload.title.trim() : "";
   if (title) return title;
   const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
@@ -701,7 +702,7 @@ function approvalTitle(type: string, payload: Record<string, unknown>) {
   return type.replaceAll("_", " ");
 }
 
-function interactionLabel(kind: string) {
+export function interactionLabel(kind: string) {
   switch (kind) {
     case "request_confirmation":
       return "Confirmation requested";
@@ -841,7 +842,7 @@ function budgetObservedPercent(amountObserved: number, amountLimit: number) {
  * href building and the default decision owner for the audience post-pass
  * (PAP-749 task 1d-lite).
  */
-async function loadCompanyAttentionConfig(db: Db, companyId: string) {
+export async function loadCompanyAttentionConfig(db: Db, companyId: string) {
   const row = await db
     .select({
       issuePrefix: companies.issuePrefix,
@@ -1457,7 +1458,7 @@ export function escalateStaleAudience(input: {
  * the shared {@link humanCreatedIssueCondition} predicate (no copy), so this
  * never attributes agent- or routine-created work to a person.
  */
-async function resolveIssueAudienceContextMap(
+export async function resolveIssueAudienceContextMap(
   db: Db,
   companyId: string,
   startIssueIds: Array<string | null | undefined>,
@@ -2458,6 +2459,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         currentItems.push(item);
       }
 
+      // "Transferred by @x" on a card that reached its person through a
+      // transfer (PAP-749 plan §6, Rule 12).
+      await attachTransferredBy(db, companyId, currentItems);
+
       const collectedItems = currentItems.sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
@@ -2886,6 +2891,46 @@ const WITHDRAW_UNSUPPORTED_TEXT: Partial<Record<AttentionSourceKind, string>> = 
   blocker_attention: "Unblock the task on its page, or archive the card for yourself.",
   join_request: "Approve or reject the join request, or archive the card for yourself.",
 };
+
+/**
+ * Mark cards whose addressee came from "Route to @x" with the person who
+ * routed them. Reads the newest `attention.transferred` entry per card; a
+ * later claim or re-address that does not match it leaves the card unmarked.
+ */
+async function attachTransferredBy(db: Db, companyId: string, items: AttentionItem[]) {
+  const addressed = items.filter((item) => item.sourceKind === "issue_thread_interaction"
+    && item.audience.kind === "user" && item.audience.reason === "addressee" && item.audience.userId);
+  if (addressed.length === 0) return;
+  const issueIds = [...new Set(addressed.map(attentionItemIssueId).filter((id): id is string => Boolean(id)))];
+  const latest = new Map<string, { toUserId: string | null; byUserId: string | null; at: number }>();
+  for (const chunk of chunkValues(issueIds, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+    const rows = await db
+      .select({ actorId: activityLog.actorId, createdAt: activityLog.createdAt, details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, chunk),
+        eq(activityLog.action, "attention.transferred"),
+      ));
+    for (const row of rows) {
+      const details = readRecord(row.details);
+      const sourceId = readString(details.sourceId);
+      const at = timestamp(row.createdAt);
+      if (!sourceId || (latest.get(sourceId)?.at ?? -1) >= at) continue;
+      latest.set(sourceId, {
+        toUserId: readString(details.transferredToUserId),
+        byUserId: readString(details.transferredByUserId) ?? row.actorId,
+        at,
+      });
+    }
+  }
+  for (const item of addressed) {
+    const transfer = latest.get(item.subject.id);
+    if (!transfer?.byUserId || transfer.toUserId !== item.audience.userId || transfer.byUserId === transfer.toUserId) continue;
+    item.audience = { ...item.audience, transferredByUserId: transfer.byUserId };
+  }
+}
 
 function attentionItemIssueId(item: AttentionItem): string | null {
   if (item.relatedIssue) return item.relatedIssue.id;

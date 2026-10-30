@@ -1,8 +1,9 @@
-import { ArrowRight, Hand, UserRound } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Hand, Mail, UserRound, X } from "lucide-react";
 import {
   ATTENTION_PERSONAL_VIEWS,
   type AttentionItem,
   type AttentionPersonalView,
+  type AttentionReceipt,
   type AttentionViewCounts,
 } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
@@ -10,9 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ATTENTION_VIEW_LABELS,
+  attentionReceiptLine,
   describeAttentionAudience,
   unassignedBannerText,
 } from "@/lib/attention-views";
+import { timeAgo } from "@/lib/timeAgo";
 import { cn } from "@/lib/utils";
 
 /**
@@ -97,7 +100,11 @@ export function AttentionAudienceLine({
     return (
       <p className={base} data-attention-audience="mine">
         <span className="font-medium text-foreground">Why me?</span>
-        <span>{description.text}</span>
+        <span data-attention-transferred-by={description.transferredByUserId}>
+          {description.transferredByUserId
+            ? `${description.text} @${userLabelMap?.get(description.transferredByUserId) ?? "someone"}`
+            : description.text}
+        </span>
       </p>
     );
   }
@@ -131,5 +138,71 @@ export function AttentionAudienceLine({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Receipts at the top of For you (PAP-749 plan §6, Rule 12): what a different
+ * person did with a card that was for you. A receipt is not a card: it is not
+ * in the badge, has no Close… menu, and leaves after 7 days or when you
+ * dismiss it.
+ */
+export function AttentionReceiptList({
+  receipts,
+  userLabelMap,
+  onDismiss,
+  onOpen,
+  dismissingId,
+  className,
+}: {
+  receipts: readonly AttentionReceipt[];
+  userLabelMap?: ReadonlyMap<string, string> | null;
+  onDismiss: (receipt: AttentionReceipt) => void;
+  onOpen?: (href: string) => void;
+  dismissingId?: string | null;
+  className?: string;
+}) {
+  if (receipts.length === 0) return null;
+  return (
+    <section aria-label="Receipts" data-attention-receipts className={cn("space-y-2", className)}>
+      {receipts.map((receipt) => {
+        const href = receipt.href ?? receipt.issue?.href ?? null;
+        return (
+          <div
+            key={receipt.id}
+            role="status"
+            data-attention-receipt={receipt.outcome}
+            className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+          >
+            <Mail className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <p className="font-medium text-foreground">{attentionReceiptLine(receipt, userLabelMap)}</p>
+              {receipt.title ? <p className="truncate text-muted-foreground">{receipt.title}</p> : null}
+              {receipt.reason ? <p className="text-muted-foreground">Reason: {receipt.reason}</p> : null}
+              <p className="text-xs text-muted-foreground">
+                {receipt.issue?.identifier ? `${receipt.issue.identifier} · ` : null}
+                <time dateTime={receipt.createdAt}>{timeAgo(receipt.createdAt)}</time>
+              </p>
+            </div>
+            {href && onOpen ? (
+              <Button type="button" variant="ghost" size="xs" onClick={() => onOpen(href)}>
+                Open
+                <ArrowUpRight className="h-3 w-3" />
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Dismiss receipt"
+              disabled={dismissingId === receipt.id}
+              onClick={() => onDismiss(receipt)}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        );
+      })}
+    </section>
   );
 }

@@ -196,6 +196,9 @@ export type {
   AttentionSourceKind,
   AttentionStale,
   AttentionStaleReason,
+  AttentionHandledDetails,
+  AttentionReceipt,
+  AttentionReceiptOutcome,
   AttentionSubject,
   AttentionSubjectKind,
   AttentionTriageAttribution,
@@ -206,6 +209,8 @@ export {
   ATTENTION_CLAIMABLE_SOURCE_KINDS,
   ATTENTION_CLOSE_MODES,
   ATTENTION_PERSONAL_VIEWS,
+  ATTENTION_RECEIPT_DAYS,
+  ATTENTION_RECEIPT_OUTCOMES,
   ATTENTION_SOURCE_KINDS,
 } from "./types/attention.js";
 export { questionSetToAskUserQuestionsPayload } from "./question-set.js";

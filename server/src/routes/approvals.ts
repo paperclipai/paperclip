@@ -12,6 +12,7 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { attentionAlreadyClosedError } from "../services/attention-already-closed.js";
+import { attentionHandledDetails, attentionHandledFor, type AttentionHandledFor } from "../services/attention-receipts.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -167,6 +168,8 @@ export async function cancelApprovalAndNotify(input: {
   approvalId: string;
   userId: string;
   reason?: string | null;
+  /** Who the card was for, read before the cancel (PAP-749 plan §6). Omitted: read here. */
+  handledFor?: AttentionHandledFor | null;
 }) {
   const { db, heartbeat, userId } = input;
   const svc = approvalService(db);
@@ -185,6 +188,9 @@ export async function cancelApprovalAndNotify(input: {
   });
   if (!(resolvableApprovalStatuses as readonly string[]).includes(existing.status)) throw alreadyClosed(existing);
   const reason = input.reason?.trim() || null;
+  const handledFor = input.handledFor !== undefined
+    ? input.handledFor
+    : await attentionHandledFor(db, existing.companyId, { sourceKind: "approval", sourceId: existing.id }, userId);
   const approval = await svc.cancel(existing.id, reason, { cancelledByUserId: userId });
   if (!approval) {
     // A different person resolved it between the read and the write.
@@ -203,7 +209,13 @@ export async function cancelApprovalAndNotify(input: {
     action: "approval.cancelled",
     entityType: "approval",
     entityId: approval.id,
-    details: { type: approval.type, reason, requestedByAgentId: approval.requestedByAgentId, linkedIssueIds },
+    details: {
+      type: approval.type,
+      reason,
+      requestedByAgentId: approval.requestedByAgentId,
+      linkedIssueIds,
+      ...attentionHandledDetails(handledFor, "withdrawn", { reason }),
+    },
   });
 
   let primaryReviewPathWakeCovered = false;
@@ -306,6 +318,14 @@ export function approvalRoutes(
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const { approvalReviewPathContext, lostReviewPathIssueIds, queueAdditionalApprovalReviewPathWakes } =
     approvalReviewPathWakes(db, heartbeat);
+
+  /** Who an approval card is for, read before a person decides it (PAP-749 plan §6). */
+  async function approvalHandledFor(id: string, userId: string | null | undefined) {
+    const approval = await svc.getById(id);
+    return approval
+      ? attentionHandledFor(db, approval.companyId, { sourceKind: "approval", sourceId: id }, userId)
+      : null;
+  }
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -446,6 +466,8 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
+    // Who the card was for, read before the decision (PAP-749 plan §6).
+    const handledFor = await approvalHandledFor(id, req.actor.userId);
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -468,6 +490,7 @@ export function approvalRoutes(
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
+          ...attentionHandledDetails(handledFor, "approved"),
         },
       });
 
@@ -562,6 +585,7 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
+    const handledFor = await approvalHandledFor(id, req.actor.userId);
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -574,7 +598,7 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, ...attentionHandledDetails(handledFor, "rejected", { reason: req.body.decisionNote }) },
       });
       await queueAdditionalApprovalReviewPathWakes({
         approvalId: approval.id,
@@ -600,6 +624,7 @@ export function approvalRoutes(
         return;
       }
       const decidedByUserId = req.actor.userId ?? "board";
+      const handledFor = await approvalHandledFor(id, req.actor.userId);
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
 
       await logActivity(db, {
@@ -609,7 +634,10 @@ export function approvalRoutes(
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: {
+          type: approval.type,
+          ...attentionHandledDetails(handledFor, "revision_requested", { reason: req.body.decisionNote }),
+        },
       });
 
       res.json(redactApprovalPayload(approval));

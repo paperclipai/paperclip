@@ -347,7 +347,7 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
     });
     await request(scott).post(url).send({ userId: RILEY }).expect(200).then((response) => expect(response.body.alreadyTransferred).toBe(true));
     const rileyMine = await attentionService(db).list(companyId, { userId: RILEY, view: "mine" });
-    expect(rileyMine.items.find((item) => item.subject.id === forDotta)?.audience).toEqual({ kind: "user", userId: RILEY, reason: "addressee" });
+    expect(rileyMine.items.find((item) => item.subject.id === forDotta)?.audience).toEqual({ kind: "user", userId: RILEY, reason: "addressee", transferredByUserId: SCOTT });
     const dottaMine = await attentionService(db).list(companyId, { userId: DOTTA, view: "mine" });
     expect(dottaMine.items.some((item) => item.subject.id === forDotta)).toBe(false);
     const entries = await activity(companyId, "attention.transferred");

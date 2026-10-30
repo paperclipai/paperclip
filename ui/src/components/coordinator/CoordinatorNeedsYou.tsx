@@ -13,7 +13,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useAttentionBadge, useAttentionCloseActions, useAttentionViewFeed, useClaimAttentionItem } from "@/hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
@@ -21,7 +21,7 @@ import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
 import { splitStaleAttentionItems } from "@/lib/attention-close";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
-import { AttentionAudienceLine, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
+import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
@@ -51,7 +51,10 @@ const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
   company: "No company alerts right now.",
 };
 
-function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyId: string; agents: Agent[]; onClose: () => void; mobile?: boolean }) {
+/** "Handled for me" is a filter on who the card was for, not an outcome (PAP-749 plan §6). */
+const HANDLED_FOR_ME = "handled_for_me";
+
+function HistoryPanel({ companyId, agents, userLabelMap, onClose, mobile = false }: { companyId: string; agents: Agent[]; userLabelMap?: ReadonlyMap<string, string>; onClose: () => void; mobile?: boolean }) {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState("");
@@ -62,7 +65,10 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
   const history = useInfiniteQuery({
     queryKey: [...queryKeys.attention(companyId), "history", { search, outcome, agentId, projectId, sort }],
-    queryFn: ({ pageParam }) => attentionApi.history(companyId, { search, outcome, agentId, projectId, sort, cursor: pageParam, limit: 40 }),
+    queryFn: ({ pageParam }) => attentionApi.history(companyId, {
+      search, agentId, projectId, sort, cursor: pageParam, limit: 40,
+      ...(outcome === HANDLED_FOR_ME ? { handledForMe: true } : { outcome }),
+    }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
@@ -79,7 +85,7 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
     <ToolbarSearch query={search} onQueryChange={setSearch} label="Search decision history" placeholder="Search decisions or task IDs…" />
     <div className="grid grid-cols-2 gap-2">
       <NativeSelect aria-label="Filter decision outcomes" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
-        <option value="">All outcomes</option><option value="accepted">Approved</option><option value="answered">Answered</option><option value="rejected">Changes requested</option><option value="decided">Decided</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option>
+        <option value="">All outcomes</option><option value="accepted">Approved</option><option value="answered">Answered</option><option value="rejected">Changes requested</option><option value="decided">Decided</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value={HANDLED_FOR_ME}>Handled for me</option>
       </NativeSelect>
       <NativeSelect aria-label="Sort decision history" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></NativeSelect>
       <NativeSelect aria-label="Filter decision history by agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="col-span-2"><option value="">All agents</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
@@ -89,7 +95,7 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
     {history.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading decisions…</p> : null}
     {history.isError ? <div role="alert" className="space-y-2 text-sm"><p>Decision history could not be loaded.</p><Button variant="outline" onClick={() => void history.refetch()}>Retry</Button></div> : null}
     {!history.isPending && !history.isError && !items.length ? <p className="text-sm text-muted-foreground">No decisions match these filters.</p> : null}
-    <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time></p></div>)}</section>)}</div>
+    <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time></p></div>)}</section>)}</div>
     {history.hasNextPage ? <Button variant="outline" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "Loading…" : "Load more decisions"}</Button> : null}
   </div>;
 }
@@ -128,6 +134,7 @@ export function CoordinatorNeedsYou() {
   const feed = useAttentionViewFeed(selectedCompanyId, view);
   const { viewCounts } = useAttentionBadge(selectedCompanyId);
   const claim = useClaimAttentionItem(selectedCompanyId);
+  const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
   const userLabelMap = useMemo(() => buildCompanyUserLabelMap(directory.data?.users), [directory.data?.users]);
   // A closed card leaves the list at once; a withdrawn one comes back as a
@@ -214,8 +221,8 @@ export function CoordinatorNeedsYou() {
   useEffect(() => {
     if (!historyOpen || !selectedCompanyId || isMobile) { closePanel(); return; }
     setPanelVisible(true);
-    openPanel(<HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} onClose={closeHistory} />);
-  }, [historyOpen, selectedCompanyId, isMobile, agentQuery.data, openPanel, closePanel, closeHistory, setPanelVisible]);
+    openPanel(<HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} onClose={closeHistory} />);
+  }, [historyOpen, selectedCompanyId, isMobile, agentQuery.data, userLabelMap, openPanel, closePanel, closeHistory, setPanelVisible]);
   useEffect(() => {
     const next = recentItems.reduce((earliest, item) => Math.min(earliest, Date.parse(item.resolvedAt) + COORDINATOR_RECENT_DECISION_MS), Infinity);
     if (!Number.isFinite(next)) return;
@@ -249,7 +256,7 @@ export function CoordinatorNeedsYou() {
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
       onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
-    {receipt ? <Receipt item={receipt} onOpen={navigate} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6" data-attention-card={item.id}>
+    {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6" data-attention-card={item.id}>
       {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -284,12 +291,14 @@ export function CoordinatorNeedsYou() {
     {isMobile ? <Sheet open={historyOpen} onOpenChange={open => { if (!open) closeHistory(); }}>
       <SheetContent side="bottom" aria-describedby={undefined} className="mobile-task-side-panel inset-0 h-dvh max-h-dvh w-full max-w-none gap-0 border-0 p-0 pt-(--sz-safe-top) pb-(--sz-safe-bottom)">
         <SheetHeader><SheetTitle>Decision history</SheetTitle></SheetHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4"><HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} onClose={closeHistory} mobile /></div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4"><HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} onClose={closeHistory} mobile /></div>
       </SheetContent>
     </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
     <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} />
     {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
+    {/* What other people did with your cards (PAP-749 plan §6). Not in the badge. */}
+    {view === "mine" ? <AttentionReceiptList receipts={feed.data?.receipts ?? []} userLabelMap={userLabelMap} onOpen={navigate} onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} /> : null}
     <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
       <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search decisions or task IDs…" />
       <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
@@ -306,7 +315,7 @@ export function CoordinatorNeedsYou() {
       busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap}>
       {staleItems.map(renderCard)}
     </AttentionStaleGroup>
-    {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} /></motion.div>)}</div>)}</section> : null}
+    {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /></motion.div>)}</div>)}</section> : null}
     {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">Recent decisions could not be loaded. <button className="underline" onClick={() => void recent.refetch()}>Retry</button></p> : null}
   </section></LayoutGroup>;
 }

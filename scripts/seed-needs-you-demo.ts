@@ -48,6 +48,13 @@
  * through the same services the close endpoint calls, with matching
  * `attention.closed` entries. Riley still starts with no cards, so "transfer a
  * card to Riley" is a live step in the checklist.
+ *
+ * Receipts (PAP-749 task 2f): Dotta's For you opens with three receipts, made
+ * the way the routes make them (the card's audience is read before the action
+ * and written as `handledForUserId` + `receipt` on the activity entry): Scott
+ * answered a confirmation on her task, withdrew her question with a reason
+ * (the task shows unread in her Mine), and approved the approval she
+ * requested. Transfer stays a live step, so Riley still starts with no cards.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -88,6 +95,7 @@ import { costService } from "../server/src/services/costs.js";
 import { issueRecoveryActionService } from "../server/src/services/issue-recovery-actions.js";
 import { inboxDismissalService } from "../server/src/services/inbox-dismissals.js";
 import { attentionService } from "../server/src/services/attention.js";
+import { attentionHandledDetails, attentionHandledFor } from "../server/src/services/attention-receipts.js";
 import { logActivity } from "../server/src/services/activity-log.js";
 import { createAgentLifecycle } from "../server/src/services/agent-lifecycle.js";
 
@@ -613,6 +621,52 @@ async function seed(db: Db) {
     await db.update(issueThreadInteractions).set({ status: "cancelled", resolvedAt: daysAgo(1), result: { outcome: "issue_closed" }, updatedAt: daysAgo(1) }).where(eq(issueThreadInteractions.id, c.id));
     await db.update(issuesTable).set({ status: "done", updatedAt: daysAgo(1) }).where(eq(issuesTable.id, histClosedWithTask.id));
     card("Closed history", "interaction closed with its task");
+  }
+
+  // =========================================================================
+  // GROUP: Receipts for Dotta (task 2f) — what Scott did with Dotta's cards.
+  // =========================================================================
+  {
+    const handledFor = (sourceKind: "issue_thread_interaction" | "approval", sourceId: string) =>
+      attentionHandledFor(db, companyId, { sourceKind, sourceId }, scott);
+
+    const answeredIssue = await makeIssue({ title: "Dotta: launch checklist", status: "todo", createdByUserId: dotta, responsibleUserId: dotta });
+    const answered = await makeInteraction(answeredIssue, "request_confirmation", { prompt: "Is the launch checklist complete?" }, { title: "Confirm the launch checklist" });
+    const answeredFor = await handledFor("issue_thread_interaction", answered.id);
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: now(), resolvedByUserId: scott, result: { outcome: "accepted" }, updatedAt: now() }).where(eq(issueThreadInteractions.id, answered.id));
+    await logActivity(db, {
+      companyId, actorType: "user", actorId: scott, action: "issue.thread_interaction_accepted", entityType: "issue", entityId: answeredIssue.id,
+      details: { interactionId: answered.id, interactionKind: "request_confirmation", interactionStatus: "accepted", ...attentionHandledDetails(answeredFor, "answered") },
+    });
+    card("Receipts", "Dotta: \"Answered by @Scott\" (confirmation on her task)");
+
+    const withdrawnIssue = await makeIssue({ title: "Dotta: vendor shortlist", status: "todo", createdByUserId: dotta, responsibleUserId: dotta });
+    const withdrawn = await makeInteraction(withdrawnIssue, "ask_user_questions", {
+      questions: [{ id: "vendor", prompt: "Which vendor should we shortlist?", selectionMode: "single", options: [{ id: "a", label: "Acme" }, { id: "b", label: "Globex" }] }],
+    }, { title: "Pick a vendor to shortlist" });
+    // Dotta read the task first, so the withdraw makes it unread in her Mine.
+    await issuesSvc.markRead(companyId, withdrawnIssue.id, dotta, now());
+    const withdrawnFor = await handledFor("issue_thread_interaction", withdrawn.id);
+    const reason = "We already signed with Acme.";
+    await interactions.withdrawInteraction({ id: withdrawnIssue.id, companyId }, withdrawn.id, { reason }, { userId: scott });
+    for (const action of ["issue.thread_interaction_withdrawn", "attention.closed"]) {
+      await logActivity(db, {
+        companyId, actorType: "user", actorId: scott, action, entityType: "issue", entityId: withdrawnIssue.id, issueId: withdrawnIssue.id,
+        details: action === "attention.closed"
+          ? { sourceKind: "issue_thread_interaction", sourceId: withdrawn.id, mode: "withdraw", reason, until: null, closedByUserId: scott, ...attentionHandledDetails(withdrawnFor, "withdrawn", { reason }) }
+          : { interactionId: withdrawn.id, interactionKind: "ask_user_questions", interactionStatus: "cancelled", reason, ...attentionHandledDetails(withdrawnFor, "withdrawn", { reason }) },
+      });
+    }
+    card("Receipts", "Dotta: \"Withdrawn by @Scott\" with the reason; task unread in her Mine");
+
+    const approvedRequest = await approvalSvc.create(companyId, { type: "request_board_approval", status: "pending", requestedByUserId: dotta, payload: { title: "Approve the Q4 hiring plan", summary: "Dotta asked; Scott approved." } } as never) as { id: string };
+    const approvedFor = await handledFor("approval", approvedRequest.id);
+    await approvalSvc.approve(approvedRequest.id, scott, null);
+    await logActivity(db, {
+      companyId, actorType: "user", actorId: scott, action: "approval.approved", entityType: "approval", entityId: approvedRequest.id,
+      details: { type: "request_board_approval", requestedByAgentId: null, linkedIssueIds: [], ...attentionHandledDetails(approvedFor, "approved") },
+    });
+    card("Receipts", "Dotta: \"Approved by @Scott\" (approval she requested)");
   }
 
   // =========================================================================

@@ -27,6 +27,8 @@ import {
 } from "../packages/db/src/index.js";
 import type { AttentionFeedView } from "../packages/shared/src/index.js";
 import { attentionService } from "../server/src/services/attention.js";
+import { attentionReceiptService } from "../server/src/services/attention-receipts.js";
+import { issueService } from "../server/src/services/issues.js";
 import { expirePendingInteractionsOnClosedIssues } from "../server/src/services/closed-issue-interaction-sweep.js";
 
 // Repo-root scripts can't resolve server-only bare deps directly, so pull
@@ -133,6 +135,20 @@ async function main() {
           const verb = bulk(item) ? "withdraw" : item.required ? "required" : "stays   ";
           console.log(`  - ${verb} ${item.stale!.reason.padEnd(17)} ${item.sourceKind}: ${item.subject.title}`);
         }
+      }
+    }
+
+    // Receipts at the top of For you, and tasks unread in Mine (task 2f).
+    console.log("\n=== Receipts (task 2f) ===");
+    for (const [name, email] of Object.entries(DEMO_EMAILS)) {
+      const userId = idByEmail.get(email);
+      if (!userId) continue;
+      const actor = { type: "board", source: "session", userId, companyIds: [company.id], isInstanceAdmin: true } as never;
+      const receipts = await attentionReceiptService(db).list(company.id, { userId, actor });
+      const unread = await issueService(db).list(company.id, { unreadForUserId: userId });
+      console.log(`${name}: ${receipts.length} receipt(s); unread in Mine: ${unread.map((issue) => issue.title).join(", ") || "none"}`);
+      for (const receipt of receipts) {
+        console.log(`  - ${receipt.outcome.padEnd(9)} by ${receipt.actorUserId === idByEmail.get(DEMO_EMAILS.Scott) ? "Scott" : receipt.actorUserId}: ${receipt.title}${receipt.reason ? ` (reason: ${receipt.reason})` : ""}`);
       }
     }
 

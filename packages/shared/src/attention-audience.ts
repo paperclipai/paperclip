@@ -1,4 +1,4 @@
-import type { AttentionAudienceReason, AttentionStaleReason } from "./types/attention.js";
+import type { AttentionAudienceReason, AttentionReceiptOutcome, AttentionStaleReason } from "./types/attention.js";
 
 /**
  * The "Why me?" line for each audience reason (PAP-749 plan §1, Rule 4). The UI
@@ -36,4 +36,31 @@ export const ATTENTION_STALE_REASON_TEXT: Record<AttentionStaleReason, string> =
 
 export function attentionStaleReasonText(reason: AttentionStaleReason): string {
   return ATTENTION_STALE_REASON_TEXT[reason];
+}
+
+/** The verb of each receipt (PAP-749 plan §6, Rule 12). Exhaustive, like the copy above. */
+export const ATTENTION_RECEIPT_OUTCOME_TEXT: Record<AttentionReceiptOutcome, string> = {
+  answered: "Answered",
+  approved: "Approved",
+  rejected: "Rejected",
+  revision_requested: "Revision requested",
+  withdrawn: "Withdrawn",
+  skipped: "Skipped",
+  transferred: "Transferred",
+};
+
+/**
+ * "Answered by @scott", "Withdrawn by @scott", "Transferred to @riley by
+ * @scott". Labels are display names without the `@`.
+ */
+export function attentionReceiptText(input: {
+  outcome: AttentionReceiptOutcome;
+  actorLabel: string;
+  transferredToLabel?: string | null;
+}): string {
+  const verb = ATTENTION_RECEIPT_OUTCOME_TEXT[input.outcome];
+  if (input.outcome === "transferred" && input.transferredToLabel) {
+    return `${verb} to @${input.transferredToLabel} by @${input.actorLabel}`;
+  }
+  return `${verb} by @${input.actorLabel}`;
 }

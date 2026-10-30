@@ -11,6 +11,12 @@ import {
   type AttentionTransferResult,
 } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
+import {
+  attentionHandledDetails,
+  attentionHandledFor,
+  attentionReceiptService,
+  type AttentionHandledSourceKind,
+} from "../services/attention-receipts.js";
 import { decisionHistoryService } from "../services/decision-history.js";
 import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
 import { createDecisionWakeOriginAgent } from "../services/decision-wakeup.js";
@@ -68,9 +74,17 @@ export function attentionRoutes(
       search: z.string().trim().max(200).optional(), outcome: z.string().max(40).optional(),
       agentId: z.string().uuid().optional(), projectId: z.string().uuid().optional(),
       sort: z.enum(["newest", "oldest"]).optional(), since: z.string().datetime().optional(),
+      // "Handled for me" (PAP-749 plan §6).
+      handledForMe: z.enum(["true", "false"]).optional(),
     }).strict().safeParse(req.query);
     if (!query.success) throw badRequest("Invalid decision history filters");
-    res.json(await decisionHistoryService(db).list(companyId, { ...query.data, actor: req.actor, userId: req.actor.userId }));
+    const { handledForMe, ...filters } = query.data;
+    res.json(await decisionHistoryService(db).list(companyId, {
+      ...filters,
+      handledForMe: handledForMe === "true",
+      actor: req.actor,
+      userId: req.actor.userId,
+    }));
   });
 
   router.get("/companies/:companyId/attention", async (req, res) => {
@@ -116,6 +130,10 @@ export function attentionRoutes(
       sort: sortValue as AttentionSortMode | undefined,
       limit,
     });
+    // Receipts sit at the top of For you only (PAP-749 plan §6, Rule 12).
+    if (view === "mine") {
+      feed.receipts = await attentionReceiptService(db).list(companyId, { userId: req.actor.userId, actor: req.actor });
+    }
     res.json(feed);
   });
 
@@ -181,6 +199,12 @@ export function attentionRoutes(
       if (body.mode === "withdraw") {
         const target = await svc.withdrawTarget(companyId, { sourceKind, sourceId, actor: req.actor });
         issueId = target.issueId;
+        // Who the card was for, read before the withdraw closes it, so that
+        // person gets "Withdrawn by @x" (PAP-749 plan §6, Rule 12).
+        const handledFor = await attentionHandledFor(
+          db, companyId, { sourceKind: target.sourceKind as AttentionHandledSourceKind, sourceId }, userId,
+        );
+        details = attentionHandledDetails(handledFor, "withdrawn", { reason });
         // A different person may answer between the check and the write. The
         // first answer wins; the second person gets "Already answered by @x".
         try {
@@ -193,11 +217,15 @@ export function attentionRoutes(
               body: { reason: reason ?? undefined },
               actor: getActorInfo(req),
               allowClosedIssueForHuman: true,
+              handledFor,
             });
           } else if (target.sourceKind === "approval") {
-            await cancelApprovalAndNotify({ db, heartbeat, approvalId: sourceId, userId, reason });
+            await cancelApprovalAndNotify({ db, heartbeat, approvalId: sourceId, userId, reason, handledFor });
           } else {
-            await decisions.cancel(sourceId, { actorType: "user", actorId: userId }, { reason });
+            await decisions.cancel(sourceId, { actorType: "user", actorId: userId }, {
+              reason,
+              activityDetails: attentionHandledDetails(handledFor, "withdrawn", { reason }),
+            });
           }
         } catch (error) {
           if (error instanceof HttpError && error.status === 409) {
@@ -250,8 +278,14 @@ export function attentionRoutes(
         return;
       }
       const body = req.body as { userId: string; reason?: string | null };
+      // The person the card was for before the transfer gets "Transferred to
+      // @y by @x" (PAP-749 plan §6, Rule 12).
+      const handledFor = sourceKind === "issue_thread_interaction"
+        ? await attentionHandledFor(db, companyId, { sourceKind, sourceId }, userId)
+        : null;
       const transfer = await svc.transfer(companyId, { sourceKind, sourceId, toUserId: body.userId, actor: req.actor });
       if (!transfer.alreadyTransferred) {
+        const reason = body.reason?.trim() || null;
         const actor = getActorInfo(req);
         await logActivity(db, {
           companyId,
@@ -271,7 +305,11 @@ export function attentionRoutes(
             transferredByUserId: userId,
             previousAddresseeUserId: transfer.previousAddresseeUserId,
             previousAddresseeAgentId: transfer.previousAddresseeAgentId,
-            reason: body.reason?.trim() || null,
+            reason,
+            // No receipt when the card goes back to the same person.
+            ...(handledFor?.userId === transfer.transferredToUserId
+              ? {}
+              : attentionHandledDetails(handledFor, "transferred", { reason, transferredToUserId: transfer.transferredToUserId })),
           },
         });
       }

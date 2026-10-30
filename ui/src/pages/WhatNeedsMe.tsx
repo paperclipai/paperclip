@@ -12,10 +12,10 @@ import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
-import { useAttentionBadge, useAttentionCloseActions, useClaimAttentionItem } from "../hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useClaimAttentionItem, useDismissAttentionReceipt } from "../hooks/useAttentionViews";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
 import { buildCompanyUserLabelMap } from "../lib/company-members";
-import { AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
+import { AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
 import { AttentionStaleGroup } from "../components/AttentionCloseMenu";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -237,6 +237,7 @@ function ClassicWhatNeedsMe() {
     });
   }, []);
   const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onCloseFailed: unhide });
+  const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
   const closeCard = closeActions.close;
   const transferCard = closeActions.transfer;
   const closingId = closeActions.closingItemId ?? closeActions.transferringItemId;
@@ -613,6 +614,17 @@ function ClassicWhatNeedsMe() {
 
       {view === "mine" && (
         <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} />
+      )}
+
+      {/* What other people did with your cards (PAP-749 plan §6). Not in the badge. */}
+      {view === "mine" && (
+        <AttentionReceiptList
+          receipts={feed?.receipts ?? []}
+          userLabelMap={userLabelMap}
+          onOpen={navigate}
+          onDismiss={receiptActions.dismiss}
+          dismissingId={receiptActions.dismissingId}
+        />
       )}
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}

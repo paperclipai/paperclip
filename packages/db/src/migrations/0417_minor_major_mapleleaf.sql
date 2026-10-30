@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "activity_log_company_handled_for_created_idx" ON "activity_log" USING btree ("company_id",("details" ->> 'handledForUserId'),"created_at") WHERE ("activity_log"."details" ->> 'handledForUserId') IS NOT NULL;

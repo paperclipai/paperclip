@@ -181,6 +181,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
+import { attentionHandledDetails, attentionHandledFor, type AttentionHandledFor } from "../services/attention-receipts.js";
 import {
   accessService,
   agentService,
@@ -2454,8 +2455,21 @@ export async function withdrawIssueThreadInteractionAndNotify(input: {
   actor: ReturnType<typeof getActorInfo>;
   /** A person may withdraw a card that outlived its closed task. */
   allowClosedIssueForHuman?: boolean;
+  /**
+   * Who the card was for, read before the withdraw (PAP-749 plan §6). Omitted:
+   * read here. `null`: the caller found no other person.
+   */
+  handledFor?: AttentionHandledFor | null;
 }) {
   const { db, heartbeat, issue, actor } = input;
+  const handledFor = input.handledFor !== undefined
+    ? input.handledFor
+    : await attentionHandledFor(
+      db,
+      issue.companyId,
+      { sourceKind: "issue_thread_interaction", sourceId: input.interactionId },
+      actor.actorType === "user" ? actor.actorId : null,
+    );
   let nativeRunId: string | null = null;
   const interaction = await issueThreadInteractionService(db).withdrawInteraction(
     issue,
@@ -2519,6 +2533,9 @@ export async function withdrawIssueThreadInteractionAndNotify(input: {
         interaction.result && "reason" in interaction.result
           ? (interaction.result.reason ?? null)
           : null,
+      ...attentionHandledDetails(handledFor, "withdrawn", {
+        reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+      }),
     },
   });
 
@@ -17439,6 +17456,13 @@ export function issueRoutes(
         throw unprocessable(
           "Remembered permission is only supported for tool reviews",
         );
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, createdIssues, continuationIssue } =
         await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
           agentId: actor.agentId,
@@ -17629,6 +17653,7 @@ export function issueRoutes(
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.skippedClientKeys?.length ?? 0)
               : 0,
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "answered")),
         },
       });
 
@@ -17751,6 +17776,13 @@ export function issueRoutes(
         res.json(await interactionSvc.getById(current.id));
         return;
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.rejectInteraction(
         issue,
         interactionId,
@@ -17795,6 +17827,7 @@ export function issueRoutes(
                   interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
                 : null,
+          ...(interaction.status === "expired" ? {} : attentionHandledDetails(handledFor, "rejected")),
         },
       });
 
@@ -17839,6 +17872,13 @@ export function issueRoutes(
       if (current.kind === "ask_user_questions") {
         await validateNativeQuestionResponseInput(current, req.body);
       }
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await interactionSvc.answerQuestions(
         issue,
         interactionId,
@@ -17877,6 +17917,7 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
               : 0,
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -17920,6 +17961,13 @@ export function issueRoutes(
       const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the answer (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const { interaction, newlyResolvedItemIds } =
         await interactionSvc.submitItemVerdicts(
           issue,
@@ -17967,6 +18015,8 @@ export function issueRoutes(
             interaction.kind === "request_item_verdicts"
               ? (interaction.result?.complete ?? false)
               : false,
+          // Only the verdict that completes the review closes the card.
+          ...(interaction.status === "answered" ? attentionHandledDetails(handledFor, "answered") : {}),
         },
       });
 
@@ -18073,6 +18123,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the skip (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       const interaction = await issueThreadInteractionService(
         db,
       ).skipInteraction(issue, interactionId, req.body, {
@@ -18099,6 +18156,9 @@ export function issueRoutes(
             interaction.result && "reason" in interaction.result
               ? (interaction.result.reason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "skipped", {
+            reason: interaction.result && "reason" in interaction.result ? interaction.result.reason : null,
+          }),
         },
       });
 
@@ -18131,6 +18191,13 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
+      // Who the card was for, read before the cancel (PAP-749 plan §6).
+      const handledFor = await attentionHandledFor(
+        db,
+        issue.companyId,
+        { sourceKind: "issue_thread_interaction", sourceId: interactionId },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
       let nativeRunId: string | null = null;
       const interaction = await issueThreadInteractionService(
         db,
@@ -18175,6 +18242,9 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
               : null,
+          ...attentionHandledDetails(handledFor, "withdrawn", {
+            reason: interaction.kind === "ask_user_questions" ? interaction.result?.cancellationReason : null,
+          }),
         },
       });
 
