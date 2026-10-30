@@ -180,6 +180,8 @@ async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; com
 type CreateInteractionOptions = {
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
   supersedePendingSiblingInteractions?: boolean;
+  replayAcceptedInteractionIds?: readonly string[];
+  requireAcceptedReplay?: boolean;
 };
 
 type InteractionWakeup = (
@@ -622,6 +624,36 @@ function isEquivalentCreateRequest(
     (row.createdByUserId ?? null) === (actor.userId ?? null) &&
     isDeepStrictEqual(row.payload, input.payload)
   );
+}
+
+async function isEquivalentAcceptedReplay(
+  db: Db,
+  row: IssueThreadInteractionRow,
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+  replayAcceptedInteractionIds: readonly string[] = [],
+  defaultAddresseeUserId: string | null = null,
+) {
+  if (
+    !replayAcceptedInteractionIds.includes(row.id)
+    || !isRequestConfirmationLikeKind(row.kind)
+    || ["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => Object.hasOwn(row.payload, key))
+    || row.status !== "accepted"
+    || row.result?.outcome !== "accepted"
+    || !row.resolvedAt
+    || !actor.agentId
+    || !actor.runId
+    || input.sourceRunId !== actor.runId
+    || !row.sourceRunId
+    || row.sourceRunId === actor.runId
+    || !isEquivalentCreateRequest(row, { ...input, sourceRunId: row.sourceRunId }, actor, defaultAddresseeUserId)
+  ) return false;
+  const [latest] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, row.companyId),
+    eq(issueThreadInteractions.issueId, row.issueId),
+    inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
+  )).orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id)).limit(1);
+  return latest?.id === row.id;
 }
 
 /**
@@ -3617,16 +3649,17 @@ export function issueThreadInteractionService(
         });
         if (existing) {
           if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) {
-            throw conflict(
-              "Interaction idempotency key already exists for a different request",
-              {
-                idempotencyKey: normalizedData.idempotencyKey,
-              },
-            );
+            if (!options.replayAcceptedInteractionIds?.includes(existing.id)) {
+              throw conflict(
+                "Interaction idempotency key already exists for a different request",
+                { idempotencyKey: normalizedData.idempotencyKey },
+              );
+            }
+          } else if (!options.requireAcceptedReplay) {
+            const interaction = hydrateInteraction(existing);
+            await enqueueIssueInteractionChatPublications(db, interaction);
+            return interaction;
           }
-          const interaction = hydrateInteraction(existing);
-          await enqueueIssueInteractionChatPublications(db, interaction);
-          return interaction;
         }
       }
 
@@ -3728,10 +3761,18 @@ export function issueThreadInteractionService(
           if (normalizedData.idempotencyKey) {
             const existing = await getIdempotentInteraction({ ...issue, issueId: issue.id, idempotencyKey: normalizedData.idempotencyKey }, tx as unknown as Db);
             if (existing) {
-              if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
+              const acceptedReplay = await isEquivalentAcceptedReplay(tx as unknown as Db, existing, normalizedData, actor,
+                options.replayAcceptedInteractionIds, defaultAddresseeUserId);
+              if ((options.requireAcceptedReplay || !isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) && !acceptedReplay) {
+                throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
+              }
+              if (acceptedReplay) return { row: existing, supersededRows: [], reused: true };
               await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(existing));
               return { row: existing, supersededRows: [], reused: true };
             }
+          }
+          if (options.requireAcceptedReplay) {
+            throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
           }
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");

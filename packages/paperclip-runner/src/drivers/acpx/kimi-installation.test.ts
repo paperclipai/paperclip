@@ -57,6 +57,36 @@ describe("Kimi installed runtime admission", () => {
       agentProfileVersion: 11, commandDigest: prior.commandDigest })).toThrow(/trusted declaration/);
   });
 
+  it("decodes pending14 history without installing it as the repaired pending15 runtime", () => {
+    const bytes = readFileSync(new URL("../../../test/fixtures/kimi-profile-v14-identity.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("13ce8e301e6b7d622f4b3ffdca7981e18538e7a5ca2f1b2208ec466259469e7b");
+    const prior = JSON.parse(bytes.toString("utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/kimi-profile-v15-identity.json", import.meta.url), "utf8"));
+    expect(current.declaration.agentProfileVersion).toBe(15);
+    expect(Object.keys(current.declaration.sources)).toHaveLength(55);
+    expect(Object.keys(current.declaration.sources).filter(key => current.declaration.sources[key] !== prior.declaration.sources[key])).toEqual([
+      "runner/crates/runner-core/src/acpx_provider_backend.rs",
+    ]);
+    expect(isSupportedAcpxProfileVersion("kimi", 14)).toBe(true);
+    expect(() => assertKimiInstallationProfile({ ...QUALIFIED_ACPX_PROFILES.kimi,
+      agentProfileVersion: 14, commandDigest: prior.commandDigest })).toThrow(/trusted declaration/);
+    expect(() => assertKimiInstallationProfile(QUALIFIED_ACPX_PROFILES.kimi)).not.toThrow();
+  });
+
+  it("decodes pending15 history without installing it as merged pending16", () => {
+    const bytes = readFileSync(new URL("../../../test/fixtures/kimi-profile-v15-identity.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("5221f6f9f64c02ca7ee68b185e08ed46b1c82a13037b001854065b9fad28ff87");
+    const prior = JSON.parse(bytes.toString("utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/kimi-profile-v16-identity.json", import.meta.url), "utf8"));
+    expect(current.declaration.agentProfileVersion).toBe(16);
+    expect(current.declaration.qualificationStatus).toBe("pending");
+    expect(Object.keys(current.declaration.sources)).toHaveLength(58);
+    expect(isSupportedAcpxProfileVersion("kimi", 15)).toBe(true);
+    expect(() => assertKimiInstallationProfile({ ...QUALIFIED_ACPX_PROFILES.kimi,
+      agentProfileVersion: 15, commandDigest: prior.commandDigest })).toThrow(/trusted declaration/);
+    expect(() => assertKimiInstallationProfile(QUALIFIED_ACPX_PROFILES.kimi)).not.toThrow();
+  });
+
   it("gives the normal setup command and never falls back to ambient kimi when assets are missing", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-kimi-installation-test-"))); roots.push(root);
     await writeFile(join(root, "package.json"), '{"name":"@paperclipai/paperclip-runner"}');
