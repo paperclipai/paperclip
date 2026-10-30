@@ -1809,12 +1809,7 @@ export function pluginLoader(
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
     }> {
-      const plugin = (await registry.getById(pluginId)) as {
-        id: string;
-        packageName: string;
-        packagePath: string | null;
-        manifestJson: PaperclipPluginManifestV1;
-      } | null;
+      const plugin = await registry.getById(pluginId);
       if (!plugin) throw new Error(`Plugin not found: ${pluginId}`);
 
       const oldManifest = plugin.manifestJson;
