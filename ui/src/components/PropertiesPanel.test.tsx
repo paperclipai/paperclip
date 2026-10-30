@@ -188,8 +188,54 @@ describe("PropertiesPanel", () => {
       await renderPanel({ taskDetailLayout });
 
       expect(container.querySelector("aside")).toBe(aside);
-      expect(aside.style.width).toBe("344px");
+      expect(aside.style.width).toBe("330px");
       expect(window.localStorage.getItem(storageKey)).toBe("700");
+    });
+
+    it("gives the width back to the thread when the window is half-screened, then returns it", async () => {
+      window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "434");
+      await renderPanel({ taskDetailLayout: true });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("434px");
+
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 960 });
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+
+      expect(aside.style.width).toBe("317px");
+      expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("434");
+
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1920 });
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+
+      expect(aside.style.width).toBe("434px");
+    });
+
+    it("drops the 260px floor once a third of the viewport is narrower", async () => {
+      window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "434");
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 768 });
+      await renderPanel();
+      expect(container.querySelector("aside")!.style.width).toBe("253px");
+    });
+
+    it("honors a dragged width that still fits the viewport", async () => {
+      window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "470");
+      await renderPanel();
+      expect(container.querySelector("aside")!.style.width).toBe("470px");
+    });
+
+    it("keeps a double-click reset inside the viewport share", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 960 });
+      window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "300");
+      await renderPanel({ taskDetailLayout: true });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("300px");
+
+      aside.querySelector('[aria-label="Resize panel"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await flushReact();
+
+      expect(aside.style.width).toBe("317px");
     });
 
     it("renders the Paper task-detail rail width with a drag grip and a maximize button", async () => {
@@ -209,6 +255,7 @@ describe("PropertiesPanel", () => {
 
     it("uses the proposal width token and resets only the sandbox's saved width", async () => {
       mockSandbox.enabled = true;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1600 });
       document.documentElement.style.setProperty("--design-page-aside-width", "320px");
       window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "434");
       window.localStorage.setItem("paperclip.design-proposal.properties-pane-width.task-detail", "480");
