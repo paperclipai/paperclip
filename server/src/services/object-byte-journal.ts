@@ -422,20 +422,39 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     return publish({ ...writer.head, closed: true }, writer.etag, signal);
   }
   async function remove(signal?: AbortSignal) {
-    const current = await head(signal);
-    if (!current) return;
-    const tombstone = current.head.deleted
-      ? current
-      : await publish(
-          {
+    let tombstone: ObjectJournalWriter | undefined;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const current = await head(signal);
+      if (current?.head.deleted) {
+        tombstone = current;
+        break;
+      }
+      const value: ObjectJournalHead = current
+        ? {
             ...current.head,
             deleted: true,
             closed: true,
             cleanupAfter: current.head.closed ? 0 : Date.now() + 30_000,
-          },
-          current.etag,
-          signal,
-        );
+          }
+        : {
+            v: 1,
+            owner: randomUUID(),
+            generation: 0,
+            end: 0,
+            sequence: 0,
+            root: null,
+            deleted: true,
+            closed: true,
+            cleanupAfter: 0,
+          };
+      try {
+        tombstone = await publish(value, current?.etag ?? null, signal);
+        break;
+      } catch (error) {
+        if (!(error instanceof ObjectJournalConflictError)) throw error;
+      }
+    }
+    if (!tombstone) throw new ObjectJournalConflictError();
     if (tombstone.head.cleanupAfter > Date.now()) throw new Error("object_journal_cleanup_pending");
 
     let continuationToken: string | undefined;

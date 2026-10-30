@@ -11,7 +11,7 @@ const state = vi.hoisted(() => ({
   unregister: vi.fn(),
 }));
 vi.mock("../services/provider-trace-store.js", () => ({
-  providerTraceStore: () => ({ cleanupExpired: state.cleanup, nextExternalExpiry: state.next }),
+  providerTraceStore: () => ({ cleanupExpired: state.cleanup, nextRetentionDeadline: state.next }),
 }));
 vi.mock("../services/idle-local-work.js", () => ({
   registerIdleLocalWorkProbe: (probe: () => string) => {

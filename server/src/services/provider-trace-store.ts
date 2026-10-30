@@ -253,15 +253,20 @@ export function assessProviderTraceEntries(
   return { status: "complete", reason: null };
 }
 
+const traceObjectStores = new WeakMap<Db, ProviderTraceObjectStore>();
+
 export function providerTraceStore(db: Db, options: { objectStore?: ProviderTraceObjectStore } = {}) {
   const selected = process.env.PROVIDER_TRACE_STORE?.trim() || "local_file";
   if (!["local_file", "s3_segments"].includes(selected)) throw new Error("Invalid PROVIDER_TRACE_STORE");
   let external = options.objectStore;
   function objectStore() {
     if (external) return external;
+    const shared = traceObjectStores.get(db);
+    if (shared) return external = shared;
     const config = resolveRunLogS3();
     if (!config) throw new Error("External provider traces require RUN_LOG_S3_BUCKET");
     external = createProviderTraceObjectStore(config.provider, process.env.PROVIDER_TRACE_S3_PREFIX?.trim() || "provider-traces");
+    traceObjectStores.set(db, external);
     return external;
   }
   if (selected === "s3_segments") objectStore();
@@ -275,13 +280,12 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       catch { return [{ kind: "trace_status", status: "incomplete", reason: "invalid_sidecar_record" }]; }
     });
   }
-  async function removeTraceFiles(traceRef: string, owner?: { companyId: string; runId: string }) {
-    if (objectProviderTraceRef(traceRef)) await objectStore().remove(traceRef);
+  async function removeTraceFiles(traceRef: string, owner?: { companyId: string; runId: string }, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (objectProviderTraceRef(traceRef)) await objectStore().remove(traceRef, signal);
     else if (owner && process.env.RUN_LOG_S3_BUCKET && process.env.PAPERCLIP_SECRETS_MASTER_KEY
       && /^[a-f0-9-]+\.ndjson$/.test(traceRef)) {
-
-
-      await objectStore().remove(`s3-segments-v1:${owner.companyId}/${owner.runId}/${traceRef}`);
+      await objectStore().remove(`s3-segments-v1:${owner.companyId}/${owner.runId}/${traceRef}`, signal);
     }
     for (const filePath of [tracePath(traceRef), rehydrationTracePath(traceRef)]) {
       try {
@@ -292,7 +296,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     }
   }
 
-  async function expireRow(row: TraceRow, now: Date) {
+  async function expireRow(row: TraceRow, now: Date, signal?: AbortSignal) {
     let expired = row;
     let newlyExpired = false;
     if (!row.deletedAt) {
@@ -316,7 +320,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       newlyExpired = true;
     } else if (row.expiresAt.getTime() > now.getTime()) {
       if (row.status !== "deleted" || !objectProviderTraceRef(row.traceRef)) return null;
-      await removeTraceFiles(row.traceRef, row);
+      await removeTraceFiles(row.traceRef, row, signal);
       const [cleaned] = await db.update(providerTraceRecords).set({ traceRef: EXPIRED_PROVIDER_TRACE_REF, updatedAt: now })
         .where(and(eq(providerTraceRecords.id, row.id), eq(providerTraceRecords.traceRef, row.traceRef))).returning();
       return cleaned ?? row;
@@ -327,7 +331,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     // marker only after both raw sidecars are absent; failures are retried by
     // later reads and cleanup passes.
     if (expired.traceRef !== EXPIRED_PROVIDER_TRACE_REF) {
-      await removeTraceFiles(expired.traceRef, expired);
+      await removeTraceFiles(expired.traceRef, expired, signal);
       await db
         .update(providerTraceRecords)
         .set({
@@ -361,7 +365,7 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     return expired;
   }
 
-  async function cleanupExpired(now = new Date()) {
+  async function cleanupExpired(now = new Date(), signal?: AbortSignal) {
     const expired = await db
       .select()
       .from(providerTraceRecords)
@@ -376,7 +380,8 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     let failure: unknown;
     for (const row of expired) {
       try {
-        const removedRow = await expireRow(row, now);
+        signal?.throwIfAborted();
+        const removedRow = await expireRow(row, now, signal);
         if (removedRow) removed.push(removedRow);
       } catch (error) { failure ??= error; }
     }
@@ -391,7 +396,6 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     requestedBy: string;
     assertWriterAuthority?: () => Promise<void>;
   }) {
-    await cleanupExpired().catch(() => []);
     const existing = await db
       .select()
       .from(providerTraceRecords)
@@ -488,7 +492,11 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     return rows.map(asMetadata);
   }
 
-  async function finalize(
+  async function finalize(runId: string, companyId: string, failureReason?: string | null) {
+    try { return await finalizeCapture(runId, companyId, failureReason); }
+    finally { await external?.stopRun(companyId, runId); }
+  }
+  async function finalizeCapture(
     runId: string,
     companyId: string,
     failureReason?: string | null,
@@ -627,10 +635,13 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
       .where(eq(providerTraceRecords.id, row.id)).returning().then(rows => rows[0] ?? null);
   }
 
-  async function nextExternalExpiry() {
+  async function nextRetentionDeadline() {
     const [row] = await db.select({ at: providerTraceRecords.expiresAt, deletedAt: providerTraceRecords.deletedAt })
-      .from(providerTraceRecords).where(sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`)
-      .orderBy(asc(providerTraceRecords.expiresAt)).limit(1);
+      .from(providerTraceRecords).where(or(
+        sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`,
+        and(lte(providerTraceRecords.expiresAt, new Date()), ne(providerTraceRecords.traceRef, EXPIRED_PROVIDER_TRACE_REF)),
+      ))
+      .orderBy(asc(sql`case when ${providerTraceRecords.deletedAt} is not null then 0 else 1 end`), asc(providerTraceRecords.expiresAt)).limit(1);
     return row ? row.deletedAt ? Date.now() : row.at.getTime() : null;
   }
 
@@ -645,6 +656,6 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
     getByRun,
     listMetadataForRuns,
     cleanupExpired,
-    nextExternalExpiry,
+    nextRetentionDeadline,
   };
 }

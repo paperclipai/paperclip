@@ -1953,7 +1953,7 @@ async function startServerWithDatabaseTeardown(
         const worker = registerProviderTraceRetentionWork(db, deliveryWork,
           () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
         server.on("close", worker.stop);
-        await worker.ready;
+        trackHeartbeatSchedulerWork(worker.ready);
       });
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);

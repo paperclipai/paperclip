@@ -160,6 +160,30 @@ describe("object byte journal", () => {
     ).rejects.toThrow("revoked");
     expect(s.calls.put).toBe(0);
   });
+  it("fences a pending first claim when deletion wins before journal creation", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = journal.claim({
+      expectedOwner: null,
+      assertAuthority: async () => {
+        enter();
+        await blocked;
+      },
+    });
+    await entered;
+    await journal.remove();
+    release();
+    await expect(pending).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    expect((await journal.head())!.head.deleted).toBe(true);
+    expect([...s.objects.keys()]).toEqual(["c/r/log/head.json"]);
+  });
   it("rejects a compatible provider which silently ignores conditional writes", async () => {
     const s = storage();
     s.provider.putObjectConditional = async (input) => {

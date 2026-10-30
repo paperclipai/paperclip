@@ -24,6 +24,7 @@ interface Channel {
 }
 interface Capture {
   channels: Channel[];
+  controller: AbortController;
   flush?: Promise<void>;
   timer?: NodeJS.Timeout;
   stopped: boolean;
@@ -88,6 +89,7 @@ export function createProviderTraceObjectStore(
     capture.dirty = false;
     capture.flush = (async () => {
       for (const channel of capture.channels) {
+        capture.controller.signal.throwIfAborted();
         const file = await fs.open(channel.path, "r");
         try {
           const stat = await file.stat();
@@ -98,7 +100,11 @@ export function createProviderTraceObjectStore(
             const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, stat.size - offset));
             const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
             if (bytesRead !== buffer.length) throw new Error("provider_trace_capture_changed");
-            channel.writer = await channel.journal.append(channel.writer, buffer);
+            channel.writer = await channel.journal.append(
+              channel.writer,
+              buffer,
+              capture.controller.signal,
+            );
             offset += buffer.length;
           }
         } finally {
@@ -125,6 +131,7 @@ export function createProviderTraceObjectStore(
     if (captures.has(ref)) return;
     const capture: Capture = {
       channels: [],
+      controller: new AbortController(),
       stopped: false,
       dirty: false,
       finishIdle: () => undefined,
@@ -207,16 +214,23 @@ export function createProviderTraceObjectStore(
       rehydration,
     ]);
   }
-  async function remove(ref: string, signal?: AbortSignal) {
+  async function stop(ref: string) {
     const capture = captures.get(ref);
-    if (capture) {
-      capture.stopped = true;
-      if (capture.timer) clearTimeout(capture.timer);
-      for (const channel of capture.channels) channel.watcher?.close();
-      await capture.flush?.catch(() => undefined);
-      captures.delete(ref);
-      capture.finishIdle();
-    }
+    if (!capture) return;
+    capture.stopped = true;
+    capture.controller.abort(new Error("provider_trace_capture_stopped"));
+    if (capture.timer) clearTimeout(capture.timer);
+    for (const channel of capture.channels) channel.watcher?.close();
+    await capture.flush?.catch(() => undefined);
+    captures.delete(ref);
+    capture.finishIdle();
+  }
+  async function stopRun(companyId: string, runId: string) {
+    const scope = `s3-segments-v1:${companyId}/${runId}/`;
+    await Promise.all([...captures.keys()].filter((ref) => ref.startsWith(scope)).map(stop));
+  }
+  async function remove(ref: string, signal?: AbortSignal) {
+    await stop(ref);
     const results = await Promise.allSettled(
       channelsFor(ref).map(({ journal }) => journal.remove(signal)),
     );
@@ -229,6 +243,6 @@ export function createProviderTraceObjectStore(
     }
     return true;
   }
-  return { open, finish, read, remove, settled };
+  return { open, finish, read, remove, settled, stopRun };
 }
 export type ProviderTraceObjectStore = ReturnType<typeof createProviderTraceObjectStore>;

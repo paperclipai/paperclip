@@ -23,9 +23,9 @@ export function registerProviderTraceRetentionWork(
       deadline = undefined;
     },
     run: (signal) =>
-      signal.aborted ? Promise.resolve() : traces.cleanupExpired().then(() => undefined),
+      signal.aborted ? Promise.resolve() : traces.cleanupExpired(new Date(), signal).then(() => undefined),
     next: async () => {
-      deadline = await traces.nextExternalExpiry();
+      deadline = await traces.nextRetentionDeadline();
       return deadline;
     },
   });

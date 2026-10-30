@@ -28,7 +28,10 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await db.execute(sql.raw(`create schema ${schema}`));
     await db.execute(sql.raw(`set search_path=${schema}`));
     await db.execute(sql`create table heartbeat_runs (id uuid primary key, company_id uuid not null, agent_id uuid not null,
-      status text not null, log_store text, log_ref text, log_bytes bigint, log_sha256 text, last_output_seq int not null default 0)`);
+      status text not null, log_store text, log_ref text, log_bytes bigint, log_sha256 text, last_output_seq int not null default 0, controller_lease_expires_at timestamptz)`);
+    await db.execute(
+      sql`create table native_run_finalizations(run_id uuid, company_id uuid, lease_expires_at timestamptz)`,
+    );
     await db.execute(sql`create table provider_trace_records (id uuid primary key, company_id uuid not null, run_id uuid not null,
       status text not null, provider text not null, trace_ref text not null, frame_count int not null default 0,
       byte_count bigint not null default 0, digest text, reason text, requested_by text not null, expires_at timestamptz not null,
@@ -41,7 +44,11 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     vi.stubEnv("RUN_LOG_S3_REGION", "us-east-1");
     bucket = `paperclip-migration-test-${randomUUID()}`;
     vi.stubEnv("RUN_LOG_S3_BUCKET", bucket);
-    client = new S3Client({ endpoint, region: "us-east-1", forcePathStyle: true });
+    client = new S3Client({
+      endpoint,
+      region: "us-east-1",
+      forcePathStyle: true,
+    });
     await client.send(new CreateBucketCommand({ Bucket: bucket }));
   }, 30_000);
   afterAll(async () => {
@@ -76,11 +83,18 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
       Array.from(
         { length: 100 },
         (_, i) =>
-          JSON.stringify({ ts: "then", seq: i + 1, stream: "stdout", chunk: `再開 ${i}` }) + "\n",
+          JSON.stringify({
+            ts: "then",
+            seq: i + 1,
+            stream: "stdout",
+            chunk: `再開 ${i}`,
+          }) + "\n",
       ).join(""),
     );
     const logRef = `${company}/${agent}/${run}.ndjson`;
-    await fs.mkdir(path.dirname(path.join(directory, "logs", logRef)), { recursive: true });
+    await fs.mkdir(path.dirname(path.join(directory, "logs", logRef)), {
+      recursive: true,
+    });
     await fs.writeFile(path.join(directory, "logs", logRef), log);
     await fs.mkdir(path.join(directory, "traces"), { recursive: true });
     const native = Buffer.from('{"kind":"frame","rawBase64":"e30="}\n'),
@@ -89,7 +103,7 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await fs.writeFile(path.join(directory, "traces", `${filename}.rehydration`), rehydration);
     const expiry = new Date(Date.now() + 3600_000);
     await db.execute(
-      sql`insert into heartbeat_runs values (${run}, ${company}, ${agent}, 'succeeded', 'local_file', ${logRef}, ${log.length}, ${createHash("sha256").update(log).digest("hex")}, 100)`,
+      sql`insert into heartbeat_runs(id, company_id, agent_id, status, log_store, log_ref, log_bytes, log_sha256, last_output_seq) values (${run}, ${company}, ${agent}, 'succeeded', 'local_file', ${logRef}, ${log.length}, ${createHash("sha256").update(log).digest("hex")}, 100)`,
     );
     await db.execute(sql`insert into provider_trace_records(id, company_id, run_id, status, provider, trace_ref, requested_by, expires_at, digest)
       values (${trace}, ${company}, ${run}, 'complete', 'codex', ${filename}, 'test', ${expiry.toISOString()}, ${`sha256:${createHash(
@@ -104,11 +118,26 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
       values (${active}, ${company}, ${agent}, 'running', 'local_file', ${logRef}, ${log.length}, null),
       (${missing}, ${company}, ${agent}, 'succeeded', 'local_file', 'missing.ndjson', 10, null),
       (${corrupt}, ${company}, ${agent}, 'succeeded', 'local_file', ${logRef}, ${log.length + 1}, null)`);
-    const inventory = await migrateRunEvidence(db, { apply: false, companyId: company });
+    const legacyLease = randomUUID(),
+      nativeLease = randomUUID(),
+      leaseExpiry = new Date(Date.now() + 60_000).toISOString();
+    await db.execute(sql`insert into heartbeat_runs(id, company_id, agent_id, status, log_store, log_ref, log_bytes, controller_lease_expires_at)
+      values (${legacyLease}, ${company}, ${agent}, 'succeeded', 'local_file', ${logRef}, ${log.length}, ${leaseExpiry}),
+      (${nativeLease}, ${company}, ${agent}, 'succeeded', 'local_file', ${logRef}, ${log.length}, null)`);
+    await db.execute(
+      sql`insert into native_run_finalizations values (${nativeLease}, ${company}, ${leaseExpiry})`,
+    );
+    const inventory = await migrateRunEvidence(db, {
+      apply: false,
+      companyId: company,
+    });
     expect(inventory.items.find((i) => i.id === run)?.state).toBe("inventoried");
-    const result = await migrateRunEvidence(db, { apply: true, companyId: company });
+    const result = await migrateRunEvidence(db, {
+      apply: true,
+      companyId: company,
+    });
     expect(result.items.filter((i) => i.state === "migrated")).toHaveLength(2);
-    expect(result.items.filter((i) => i.state === "blocked")).toHaveLength(3);
+    expect(result.items.filter((i) => i.state === "blocked")).toHaveLength(5);
     const records = await db.$client.unsafe(
       "select log_store, log_ref from heartbeat_runs where id=$1",
       [run],
@@ -131,7 +160,12 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await fs.rm(path.join(directory, "traces"), { recursive: true });
     expect(
       Buffer.from(
-        (await reader.read({ store: "s3_segments", logRef: records[0].log_ref })).content,
+        (
+          await reader.read({
+            store: "s3_segments",
+            logRef: records[0].log_ref,
+          })
+        ).content,
       ),
     ).toEqual(log);
     const saved = await db.$client.unsafe(
