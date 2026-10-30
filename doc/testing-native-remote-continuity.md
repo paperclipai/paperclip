@@ -14,6 +14,14 @@ Recovery can restart a provider to refresh its tool contract; process reuse is
 required for ordinary healthy follow-ups.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
+The same-server case also starts preparation lease renewal during recovery and
+holds instruction collection open past a renewal tick after coordinator release.
+The executor must acquire renewal before preparation releases its reference, then
+stop renewal before releasing the coordinator. Completion must not detach the
+retained runner or strand the next turn.
+Buffered transport messages and close notifications can arrive synchronously on
+subscription. The controller must register the connection before subscribing so
+completed message processing can drain and the suspended session can retire.
 It does not qualify a live model or a sandbox provider API.
 
 Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.
@@ -87,6 +95,24 @@ to five minutes without the main server. The sandbox keeps its process, provider
 turn and event outbox. Server-dependent tools wait for reconnection; work already
 accepted into the queue resumes through normal admission. A single offline web
 server cannot accept new HTTP requests during that interval.
+
+Cloud operators can read `GET /api/instance/task-drain?upgradeReadiness=1`
+with existing instance-control authority. The version 1 `upgradeReadiness` report
+counts current remote executions with a bound current-format encrypted header and a live owner lease.
+The checkpoint owner authenticates/decrypts that header and delegates version and identity
+inspection to Runner; the identity must match the run, session and runner. Ordinary
+sandbox runs bind their workspace identity; plugin tasks bind their active dispatched
+environment lease and need no workspace-sync descriptor.
+Legacy/local executions, missing identities/checkpoints, foreign/expired owners,
+in-flight admission, and an incomplete census prevent a positive report. It
+returns aggregate counts only. The request does not stop admission, detach a
+runner, or authorize new work. Ordinary drain reads do not perform this SQL.
+The explicit probe uses a read-only transaction, a two-second statement timeout,
+and at most 1,001 run rows. Header reads are capped at 256 KiB each and 8 MiB total;
+oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
+This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
+startup owners still perform the actual handoff and enforce Stop and fencing.
+A positive report alone does not prove hosted upgrade continuity.
 
 Retain Postgres and the instance secret encryption key across deployments. The
 private `native_runner_checkpoints` journal holds encrypted authentication state,

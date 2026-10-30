@@ -1,3 +1,5 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { chatConversations, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -43,6 +45,8 @@ export function nonIdleSlackIssueCondition() {
 
 /** Called inside message admission while its transaction owns the issue lock. */
 export async function resumeExternalConversation(tx: Db, companyId: string, issueId: string) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyExternalConversationSettlement(tx, { companyId, issueId });
   // Only the verified idle convention may leave In Review automatically.
   // A real decision or delivery problem keeps the existing review semantics.
   await tx.update(issues).set({ status: "todo", updatedAt: new Date() })

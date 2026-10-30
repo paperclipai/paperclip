@@ -277,6 +277,14 @@ See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
 
+The explicit-only [Antigravity additional-agent journey](ANTIGRAVITY-AGENT-JOURNEY.md)
+protects ordinary picker discovery, reuse of a saved personal Google subscription,
+native Test and genuine setup readiness, an Instructions-only file proof and a
+same-task follow-up. Its one local macOS ARM64 cell attaches to an already running
+self-hosted test target and preserves the supplied account. It has separate
+non-paying preflight, owned-resource recovery and normal report commands. Saved
+reuse is separate from the fresh-connection suite and global release qualification.
+
 The [public MCP suite](PUBLIC-MCP.md) adds explicit paid assistant/plugin journeys
 with authenticated browser consent, real MCP tool use and independently graded
 team execution. Select `--suite public-mcp`; it is excluded from `--all`.
@@ -1054,6 +1062,24 @@ public API, including completion events beyond the first 1,000 rows. It rejects
 missing, repeated, or out-of-order sequence numbers and fails capture after
 100 full pages instead of grading a truncated stream. Original incomplete
 captures remain failed evidence; qualifying a fix requires a new live attempt.
+
+Every standard runner attempt automatically captures `taskChat` before fixture
+teardown, including failed attempts. Test details show each task's saved brief,
+full comments, question/approval prompts and recorded answers in a chat layout,
+plus native agent progress when available. Delegated tasks have their own
+threads; standing chats remain included after a journey restores the Agent Chat
+setting. Comments are paginated and message bodies are retained without display
+truncation. Missing reads, repeated pages, and capture limits are labeled partial
+or unavailable without changing the workflow's grade. Browser-only attempts with
+no tasks show no chat section. Existing reports without `taskChat` continue to
+render normally; screenshots cannot reconstruct a historical conversation.
+
+`taskChat` is a closed, credential-redacted public projection in the normalized
+result, so local, CI, regenerated, and published dashboards share the same
+recording. It contains visible conversation text, not raw run logs, reasoning,
+tool arguments or provider/session metadata. Collection uses the public API,
+has a 30-second request-admission budget, and caps task/comment discovery at
+100 pages; incomplete collection is never labeled complete.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -3043,3 +3069,36 @@ they are not reported as charges or converted into reviewed lifecycle bounds.
 This mode therefore does not certify a full-lifecycle operating-cost ceiling.
 Omitting the policy preserves the stricter full-accounting gate. Historical
 journals and their holds are not rewritten by changing future campaign policy.
+
+## Private catalog metadata preview
+
+The existing dashboard renderer can show a display-only overview without creating
+result rows or discovering historical evidence:
+
+```sh
+pnpm test:e2e:runner:dashboard -- --catalog-overview <display-metadata.json> --output <new-private-directory>
+```
+
+The input must match `CatalogOverview` in `catalog-overview.ts`, contain exactly
+the frozen 244 YAML scenario IDs, and use only the declared outcome, allowance
+and source-readiness enums. Extra fields are rejected. Build this projection
+from authenticated accounting metadata, preserving unknown allowances and the
+original qualification scope. Source review never supplies a result grade. The execution-record column distinguishes
+candidate measurements from never-run cases without changing main qualification.
+Allowance certainty is independent of a recorded measurement: a main pass or fail
+can retain `allowance: "unknown"`. Known exhausted rows bound the accounting total;
+unknown allowances can account for its remaining uncertainty. The optional
+`latestCandidateOutcome` enum (`passed`, `failed`, or `not-projected`) can record a
+later candidate measurement alongside a main outcome. It never changes
+`mainOutcome`, main counters, or the qualification scope. Omit it when no such
+additional outcome is projected; existing projections render unchanged.
+Expandable human requests and expected outcomes come only from the static YAML catalog,
+not from retained conversations or private artifacts.
+The renderer requires a new output directory and makes it private; it does not
+publish the preview or modify existing campaign files. Normal campaign rendering
+and retained result cards continue to use the existing bundle command.
+
+The shared report navigation links the dated, immutable catalog snapshot.
+Deploying this generator does not rewrite existing published history HTML.
+Activating the link on an existing page requires a separately reviewed,
+conditional navigation-only update. The metadata command publishes nothing.

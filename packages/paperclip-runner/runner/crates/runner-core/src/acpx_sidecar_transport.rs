@@ -216,6 +216,10 @@ impl AcpxSidecarTransport {
             "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "antigravity" => &[
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a known agent profile",
@@ -250,7 +254,7 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "antigravity") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
@@ -326,6 +330,10 @@ impl AcpxSidecarTransport {
                 "XDG_DATA_HOME",
                 "XDG_CACHE_HOME",
             ]);
+        }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
         }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at

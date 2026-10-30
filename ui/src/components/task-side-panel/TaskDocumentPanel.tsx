@@ -15,24 +15,30 @@ export function TaskDocumentPanel({
   issueId,
   documentKey,
   initialDocument,
+  revisionId,
 }: {
   issueId: string;
   documentKey: string;
   initialDocument?: IssueDocument;
+  revisionId?: string;
 }) {
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
-    queryKey: [...queryKeys.issues.documents(issueId), documentKey],
+    queryKey: [...queryKeys.issues.documents(issueId), documentKey, ...(revisionId ? ["revision", revisionId] : [])],
     queryFn: async () => {
       try {
-        return await issuesApi.getDocument(issueId, documentKey);
+        const current = await issuesApi.getDocument(issueId, documentKey);
+        if (!revisionId) return current;
+        const revision = await issuesApi.getDocumentRevision(issueId, documentKey, revisionId);
+        return { ...current, title: revision.title, body: revision.body, format: revision.format,
+          latestRevisionId: revision.id, latestRevisionNumber: revision.revisionNumber, updatedAt: revision.createdAt };
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       }
     },
-    initialData: initialDocument,
+    initialData: revisionId ? undefined : initialDocument,
   });
 
   const view = useQueryView(query);
@@ -58,9 +64,9 @@ export function TaskDocumentPanel({
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
         <FileQuestion className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
         <div className="space-y-1">
-          <p className="font-medium">Document no longer available</p>
+          <p className="font-medium">{revisionId ? "Reviewed revision unavailable" : "Document no longer available"}</p>
           <p className="text-muted-foreground">
-            This tab is preserved so the missing resource is explicit. Close it or choose another document.
+            {revisionId ? "The exact reviewed revision could not be found. The current version has not been substituted." : "Close this tab or choose another document."}
           </p>
         </div>
       </div>
@@ -75,12 +81,12 @@ export function TaskDocumentPanel({
           <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
           <span aria-hidden>·</span>
           <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
-          <DocumentAnnotationsCountChip
+          {!revisionId ? <DocumentAnnotationsCountChip
             issueId={issueId}
             docKey={document.key}
             panelOpen={annotationPanelOpen}
             onToggle={() => setAnnotationPanelOpen((open) => !open)}
-          />
+          /> : <span>· Reviewed version</span>}
         </div>
       </header>
       {document.body.trim() ? (
@@ -90,7 +96,7 @@ export function TaskDocumentPanel({
           bodyMarkdown={document.body}
           draftDirty={false}
           draftConflicted={false}
-          historicalPreview={false}
+          historicalPreview={!!revisionId}
           locationHash={location.hash}
           panelOpen={annotationPanelOpen}
           onPanelOpenChange={setAnnotationPanelOpen}

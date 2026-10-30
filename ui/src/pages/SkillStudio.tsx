@@ -39,7 +39,6 @@ import type {
   CompanySkillTestRunTemplate,
   CompanySkillTestRunTemplateCreateRequest,
   CompanySkillTestRunTemplateUpdateRequest,
-  CompanySkillVersion,
   IssueDocument,
   IssueThreadInteraction,
   AskUserQuestionsInteraction,
@@ -3463,7 +3462,8 @@ function VersionHistorySheet({
   const [rightId, setRightId] = useState<string | null>(null);
 
   const restore = useMutation({
-    mutationFn: async (version: CompanySkillVersion) => {
+    mutationFn: async (selection: { id: string }) => {
+      const version = await companySkillsApi.version(companyId, skillId, selection.id);
       // Restore = write each file from the chosen version back, then cut a new
       // head version (immutability: never rewrites history).
       for (const file of version.fileInventory) {
@@ -3479,8 +3479,18 @@ function VersionHistorySheet({
     },
   });
 
-  const left = versions.find((v) => v.id === leftId) ?? null;
-  const right = versions.find((v) => v.id === rightId) ?? null;
+  const leftQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(companyId, skillId), leftId],
+    queryFn: () => companySkillsApi.version(companyId, skillId, leftId!),
+    enabled: open && Boolean(leftId && rightId),
+  });
+  const rightQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(companyId, skillId), rightId],
+    queryFn: () => companySkillsApi.version(companyId, skillId, rightId!),
+    enabled: open && Boolean(leftId && rightId),
+  });
+  const left = leftQuery.data ?? null;
+  const right = rightQuery.data ?? null;
   const diff = left && right ? buildLineDiff(
     left.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
     right.fileInventory.map((f) => `# ${f.path}${f.executable ? " (executable)" : ""}\n${f.encoding === "base64" ? "[Binary asset]" : f.content}`).join("\n\n"),
@@ -3531,6 +3541,14 @@ function VersionHistorySheet({
                 />
               ))}
             </div>
+          )}
+          {(versionsQuery.error || leftQuery.error || rightQuery.error || restore.error) && (
+            <p role="alert" className="text-sm text-destructive">
+              {(versionsQuery.error ?? leftQuery.error ?? rightQuery.error ?? restore.error)?.message}
+            </p>
+          )}
+          {leftId && rightId && (leftQuery.isLoading || rightQuery.isLoading) && (
+            <p className="text-sm text-muted-foreground">Loading selected versions…</p>
           )}
           {diff && (
             <div className="rounded-md border border-border">

@@ -11,6 +11,12 @@ import {
 } from "./daytona-image-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+function lastDockerignoreRule(dockerignore: string, fixturePath: string) {
+  return dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#")).filter(rule => {
+    const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
+    return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+  }).at(-1);
+}
 
 describe("runner E2E Daytona image contract", () => {
   it("retains the active Copilot identity declaration in the Docker context", async () => {
@@ -24,11 +30,7 @@ describe("runner E2E Daytona image contract", () => {
     expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(fixturePath);
     await expect(readFile(path.join(repositoryRoot, fixturePath), "utf8")).resolves.toContain('"commandDigest"');
     // Docker's last matching rule wins, including the parent-directory exclusion.
-    const rules = dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#"));
-    const lastRule = rules.filter(rule => {
-      const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
-      return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
-    }).at(-1);
+    const lastRule = lastDockerignoreRule(dockerignore, fixturePath);
     expect(lastRule?.startsWith("!")).toBe(true);
     // The exception also covers the next version without exposing other live evidence.
     const exception = lastRule!.slice(1);
@@ -146,9 +148,10 @@ describe("runner E2E Daytona image contract", () => {
       "test-fixtures/pi-acp/profile-v19-identity.json",
       "test/fixtures/copilot-profile-v16-identity.json",
     ]) {
-      expect(dockerignore).toContain(`!packages/paperclip-runner/${declaration}`);
+      expect(lastDockerignoreRule(dockerignore, `packages/paperclip-runner/${declaration}`)?.startsWith("!")).toBe(true);
       await expect(readFile(path.join(repositoryRoot, "packages/paperclip-runner", declaration), "utf8")).resolves.toBeTruthy();
     }
+    expect(lastDockerignoreRule(dockerignore, "packages/paperclip-runner/test-fixtures/pi-acp/private-live-session.json")?.startsWith("!")).toBe(false);
     for (const developmentOnlyInput of [
       "packages/paperclip-runner/devtools",
       "packages/paperclip-runner/docs",

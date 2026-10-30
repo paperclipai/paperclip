@@ -145,6 +145,8 @@ export const heartbeatsApi = {
       `/heartbeat-runs/${runId}/events?view=conversation&afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
       options,
     ),
+  taskPanelActivations: (runId: string, options?: RequestOptions) =>
+    api.get<Array<{ pluginKey: string; slotId: string }>>(`/heartbeat-runs/${encodeURIComponent(runId)}/events?view=plugin-panels`, options),
   events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,

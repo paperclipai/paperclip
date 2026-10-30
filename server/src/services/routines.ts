@@ -73,6 +73,7 @@ import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
+import { finalizeRoutineRun, syncRoutineRunStatusForIssue } from "./routine-run-status.js";
 import {
   instanceSettingsService,
   isTruthyRuntimeEnvValue,
@@ -89,8 +90,6 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
-const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
-const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -112,37 +111,6 @@ export function routineWebhookUrl(publicId: string): string {
   const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
   if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
   return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
-}
-
-type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
-
-function executionIssueTransientFailureReason(status: ExecutionIssueTransientFailureStatus) {
-  return `Execution issue moved to ${status}`;
-}
-
-function executionIssueTransientFailureStatusFromPayload(payload: unknown): ExecutionIssueTransientFailureStatus | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const transientFailure = (payload as Record<string, unknown>).transientFailure;
-  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
-  const record = transientFailure as Record<string, unknown>;
-  if (record.code !== EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE) return null;
-  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find((status) => record.status === status) ?? null;
-}
-
-function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const transientFailure = (payload as Record<string, unknown>).transientFailure;
-  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
-  const clearedAt = (transientFailure as Record<string, unknown>).clearedAt;
-  return typeof clearedAt === "string" ? clearedAt : null;
-}
-
-function legacyExecutionIssueTransientFailureStatus(
-  failureReason: string | null,
-): ExecutionIssueTransientFailureStatus | null {
-  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find(
-    (status) => failureReason === executionIssueTransientFailureReason(status),
-  ) ?? null;
 }
 
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
@@ -697,6 +665,22 @@ export function routineService(
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+
+
+  const scheduledTriggerEligibility = () => and(
+    eq(routineTriggers.kind, "schedule"),
+    eq(routineTriggers.enabled, true),
+    eq(routineTriggers.archived, false),
+    eq(routines.status, "active"),
+    eq(companies.status, "active"),
+    isNotNull(routineTriggers.nextRunAt),
+    isNotNull(routineTriggers.cronExpression),
+    isNotNull(routineTriggers.timezone),
+  );
+  const scheduledRoutineJoin = () => and(
+    eq(routineTriggers.routineId, routines.id),
+    eq(routineTriggers.companyId, routines.companyId),
+  );
 
   async function getRoutineById(id: string) {
     if (!isRoutineUuidInput(id)) return null;
@@ -1591,15 +1575,7 @@ export function routineService(
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
-    return executor
-      .update(routineRuns)
-      .set({
-        ...patch,
-        updatedAt: new Date(),
-      })
-      .where(eq(routineRuns.id, runId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    return finalizeRoutineRun(executor, runId, patch);
   }
 
   async function createWebhookSecret(
@@ -1812,6 +1788,11 @@ export function routineService(
         }
       }
 
+
+
+      if (input.trigger?.kind === "schedule" && input.nextRunAtOverride === undefined) {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+      }
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
       const latestRevisionResponsibleUserId = input.routine.latestRevisionId
@@ -2023,89 +2004,7 @@ export function routineService(
   let statusReconcileCursor: string | null = null;
 
   async function syncRunStatusForIssue(issueId: string, executor: Db = db) {
-    const issue = await executor
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        status: issues.status,
-        originKind: issues.originKind,
-        originRunId: issues.originRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-    if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
-    const run = await executor
-      .select({
-        id: routineRuns.id,
-        status: routineRuns.status,
-        failureReason: routineRuns.failureReason,
-        triggerPayload: routineRuns.triggerPayload,
-      })
-      .from(routineRuns)
-      .innerJoin(routines, and(eq(routines.id, routineRuns.routineId), eq(routines.companyId, issue.companyId)))
-      .where(and(eq(routineRuns.id, issue.originRunId), eq(routineRuns.companyId, issue.companyId)))
-      .then((rows) => rows[0] ?? null);
-    if (!run) return null;
-    if (issue.status === "done") {
-      const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
-        ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
-      const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-      return finalizeRun(issue.originRunId, {
-        status: "completed",
-        failureReason: null,
-        completedAt: new Date(),
-        ...(transientFailureStatus
-          ? {
-            triggerPayload: {
-              ...(run.triggerPayload ?? {}),
-              transientFailure: {
-                code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
-                status: transientFailureStatus,
-                reason: executionIssueTransientFailureReason(transientFailureStatus),
-                clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
-              },
-            },
-          }
-          : {}),
-      }, executor);
-    }
-    if (issue.status === "blocked" || issue.status === "cancelled") {
-      const failureReason = executionIssueTransientFailureReason(issue.status);
-      return finalizeRun(issue.originRunId, {
-        status: "failed",
-        failureReason,
-        completedAt: new Date(),
-        triggerPayload: {
-          ...(run.triggerPayload ?? {}),
-          transientFailure: {
-            code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
-            status: issue.status,
-            reason: failureReason,
-            recordedAt: new Date().toISOString(),
-          },
-        },
-      }, executor);
-    }
-    const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
-      ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
-    if (run.status === "failed" && transientFailureStatus) {
-      return finalizeRun(issue.originRunId, {
-        status: "issue_created",
-        failureReason: null,
-        completedAt: null,
-        triggerPayload: {
-          ...(run.triggerPayload ?? {}),
-          transientFailure: {
-            code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
-            status: transientFailureStatus,
-            reason: executionIssueTransientFailureReason(transientFailureStatus),
-            clearedAt: new Date().toISOString(),
-          },
-        },
-      }, executor);
-    }
-    return null;
+    return syncRoutineRunStatusForIssue(executor, issueId);
   }
 
 
@@ -3214,7 +3113,18 @@ export function routineService(
       }));
     },
 
-    tickScheduledTriggers: async (now: Date = new Date()) => {
+    nextScheduledTriggerAt: async (): Promise<number | null> => {
+      const [row] = await db.select({ at: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
+        .where(scheduledTriggerEligibility())
+        .orderBy(asc(routineTriggers.nextRunAt)).limit(1);
+
+      return row?.at?.getTime() ?? null;
+    },
+
+    tickScheduledTriggers: async (now: Date = new Date(), canContinue: () => boolean = () => true) => {
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
@@ -3228,15 +3138,12 @@ export function routineService(
           projectPausedAt: projects.pausedAt,
         })
         .from(routineTriggers)
-        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
-            eq(routineTriggers.kind, "schedule"),
-            eq(routineTriggers.enabled, true),
-            eq(routineTriggers.archived, false),
-            eq(routines.status, "active"),
-            isNotNull(routineTriggers.nextRunAt),
+            scheduledTriggerEligibility(),
             lte(routineTriggers.nextRunAt, now),
           ),
         )
@@ -3244,6 +3151,9 @@ export function routineService(
 
       let triggered = 0;
       for (const row of due) {
+
+
+        if (!canContinue()) break;
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
         // Suppress scheduled firings while the routine's project is paused. The tick is still

@@ -45,3 +45,17 @@ describe("task hosted search restriction", () => {
       settings: { disableCodexWebSearch: true, hostedSearchBillingMode: "unmetered" } } }).success).toBe(false);
   });
 });
+
+describe("implementation-independent GitHub credential broker", () => {
+  it("accepts capability data without an executable, script, or filesystem path", () => {
+    const operation = { ...prepare, githubBroker: { url: "https://core.example.test/api", token: "runtime-capability" } };
+    expect(environmentTaskOperationSchema.parse(operation)).toEqual(operation);
+  });
+  it.each(["invalid", "file:///tmp/broker", "https://user:password@core.example.test", "https://core.example.test?token=secret"])("rejects broker transport %s", url => {
+    expect(environmentTaskOperationSchema.safeParse({ ...prepare, githubBroker: { url, token: "runtime-capability" } }).success).toBe(false);
+  });
+  it("rejects executable delivery as part of this contract", () => {
+    expect(environmentTaskOperationSchema.safeParse({ ...prepare, githubBroker: {
+      url: "https://core.example.test", token: "runtime-capability", script: "run-this" } }).success).toBe(false);
+  });
+});

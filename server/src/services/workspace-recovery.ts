@@ -1,3 +1,7 @@
+import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
@@ -246,6 +250,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        await notifyNativeResultCommit(tx, input);
+        await notifyNativeWorkspaceFinalization(tx, input);
+        await notifyNativeStatusReassessment(tx, input);
         await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
           heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
           metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } });
@@ -265,6 +272,8 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       }
       const classification = classifyNativeWorkspaceFailure(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
+          ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
           ? new SystemRecoveryFailure("archive_unsafe", "service_required")
           : classification.code === "workspace_sync_out_unrecoverable"
@@ -311,7 +320,7 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
     eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
-    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)));
+    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
 }
 export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
   const cleanup = sql`(${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy' and exists (

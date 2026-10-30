@@ -168,6 +168,13 @@ function render(ui: ReactElement) {
   );
 }
 
+async function settleThreadLayout() {
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  });
+}
+
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
   const run = (id: string, status: string, minute: number) => ({
     runId: id, status, runtimeMode, agentId: "agent", agentName: "Assistant",
@@ -353,9 +360,7 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   const composer = container.querySelector('[data-testid="mock-editor"]');
   expect(composer).not.toBeNull();
-  await act(async () => {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
   expect(container.querySelector('[data-testid="task-chat-composer-dock"]')?.hasAttribute("inert")).toBe(false);
@@ -368,14 +373,21 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
 });
 
-it.each([true, false])("keeps cold-open messages readable while history is pending (mobile=%s)", (mobile) => {
+it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
   sidebarState.isMobile = mobile;
-  render(<TaskChatThread issueId="cold-issue" compactHistory initialHistoryPending
-    comments={createLongThreadComments()} historyControl={<button>More messages</button>} onAdd={async () => {}} />);
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), historyControl: <button>More messages</button>, onAdd: async () => {} };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await settleThreadLayout();
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.textContent).toContain("Thread message 1");
   expect(container.textContent).toContain("More messages");
-  expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  expect(editor).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
 });
 
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
@@ -413,6 +425,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const onAttachImage = vi.fn().mockReturnValue(new Promise(resolve => { resolveUpload = resolve; }));
   const props = { comments: [], onAdd, onAttachImage, conversationMode: true, draftKey: "agent-chat:company:agent" };
   render(<TaskChatThread {...props} issueId="" />);
+  await settleThreadLayout();
   const composer = container.querySelector('[data-testid="mock-editor"]');
   const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
   const file = new File(["notes"], "chat-notes.txt", { type: "text/plain" });
@@ -428,7 +441,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
   await act(async () => { resolveUpload({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: file.name }); });
   render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending={false} />);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   const chip = container.querySelector('[data-testid="task-chat-composer-attachments"] [data-slot="attachment"]');
   expect(chip?.getAttribute("data-state")).toBe("done");
   const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
@@ -579,7 +592,7 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(row).not.toBeNull();
   expect(row?.closest('[inert]')).not.toBeNull();
   show(false);
-  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
@@ -642,13 +655,14 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     nativeTranscriptState.hydratedRunIds = new Set();
   });
 
-  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+  it("reveals comments while a scheduled retry has no transcript to hydrate", async () => {
     renderThread({
       issueId: "issue-1",
       comments: createLongThreadComments(),
       onAdd: async () => {},
       linkedRuns: [retryRun],
     });
+    await settleThreadLayout();
 
     expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
     expect(
@@ -720,9 +734,7 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
         ts: "2026-08-25T18:00:01.000Z",
       }]);
       render(<TaskChatThread {...props} />);
-      await act(async () => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
+      await settleThreadLayout();
 
       expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
       expect(
@@ -1389,7 +1401,8 @@ describe("TaskChatThread runtime transcript selection", () => {
   });
 
 
-  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+  it.each((["matching", "document_only", "absent", "other_revision"] as const).flatMap(evidence =>
+    ["restore_unsafe_archive", "restore_invalid_metadata"].map(code => [evidence, code] as const)))("reports %s saved-plan evidence for %s without offering another provider turn", (evidence, code) => {
     if (evidence !== "absent") planState.data = planDocument();
     renderThread({
       issueId: "issue-1",
@@ -1402,7 +1415,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
         agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
         createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
-        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+        resultJson: { workspaceRestoreFailure: code, workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
           ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
         },
       }],

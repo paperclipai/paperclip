@@ -102,6 +102,14 @@ The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
 
+The explicit-only [Antigravity additional-agent journey](../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+converts the saved-subscription setup and two-turn file walkthrough into one
+local native cell. It measures agent creation through the ordinary UI,
+instruction-dependent downloaded bytes, same native conversation, durable Done
+lineage and owned runtime cleanup. Current support requires an attached
+self-hosted loopback macOS ARM64 candidate; fresh OAuth, Cloud/remote execution
+and global release qualification are separate gates.
+
 The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
 uses ordinary task APIs and retained native receipts to measure unattended
 receiver behavior. It is a separate manual qualification probe, not a registered
@@ -376,6 +384,12 @@ imply an application URL. Public projections can retain the reviewed URL in
 and startup evidence under Diagnostics. Optional `presentation` metadata in a
 retained campaign supplies its title, description, notes, and evidence links
 inside the shared report shell when the dashboard is regenerated.
+
+Standard runner Product E2E attempts also retain a sanitized `taskChat` recording
+for Test details: task briefs, complete saved messages, requests and answers,
+and native agent progress. Related task threads are separate; incomplete capture
+is labeled. This automatic capture runs before teardown on success and failure.
+See the [Product E2E evidence contract](../tests/runner-e2e/README.md#evidence-and-cleanup).
 
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)

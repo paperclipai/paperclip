@@ -1,3 +1,4 @@
+import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -367,7 +368,7 @@ export class PaperclipRunnerToolAuthority {
                     ...(descriptor.inputSchema.properties?.contentRef ?? {}),
                     description: this.binding.readRemoteTaskFile
                       ? "Path to the file on the execution host: workspace-relative or absolute within a location granted to this task, including its agent home."
-                      : "Workspace-relative source path. Absolute paths, URLs, traversal, and symlinks are rejected.",
+                      : "Workspace-relative source path under get_workspace.cwd. Create or copy the file there before registering; AGENT_HOME is for personal instructions and memory. Absolute paths, URLs, traversal, and symlinks are rejected.",
                   },
                 },
               }
@@ -1661,6 +1662,12 @@ export class PaperclipRunnerToolAuthority {
           executionPolicy: { ...normalizeIssueExecutionPolicy({ authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } }) },
           sourceTrust: buildLowTrustSourceTrust({ issueId, runId: this.binding.runId, agentId: this.binding.agentId }),
         } : {}),
+        ...(input.requiredQualityReview !== undefined ? {
+          executionPolicy: normalizeIssueExecutionPolicy({
+            ...(trust.kind === "low_trust_review" ? { authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } } : {}),
+            requiredQualityReview: requiredQualityReviewSchema.parse(input.requiredQualityReview),
+          }),
+        } : {}),
         initialPlan: nullableProviderId(input.initialPlan),
         title: requiredString(input.title),
         description: input.description === null || input.description === undefined
@@ -2079,6 +2086,7 @@ export class PaperclipRunnerToolAuthority {
       const updated = await issueService(tx).update(this.binding.issueId, {
         blockedByIssueIds,
         actorAgentId: this.binding.agentId,
+        actorRunId: this.binding.runId,
       }, tx);
       if (!updated) throw new Error("paperclip_runner_task_not_found");
       return {
@@ -2767,6 +2775,7 @@ export class PaperclipRunnerToolAuthority {
           sourceRunId: this.binding.runId,
           title: requiredString(input.title),
           summary: prompt,
+          ...(input.resolverPolicy === undefined ? {} : { resolverPolicy: input.resolverPolicy }),
           continuationPolicy: requiredString(input.continuationPolicy),
           payload: {
             ...normalizedPayload,

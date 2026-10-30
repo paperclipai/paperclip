@@ -137,6 +137,7 @@ import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/a
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import {
@@ -417,7 +418,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   async testEnvironment(context) {
     let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
     try {
-      profile = resolvePaperclipRunnerProviderProfile(context.config);
+      profile = resolvePaperclipRunnerProviderProfile(context.config, { companyId: context.companyId });
     } catch (error) {
       const profileError = error instanceof PaperclipRunnerProviderProfileError
         ? error
@@ -449,6 +450,10 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     }
     if (profile.provider === "acpx") {
       try {
+        if (profile.acpxAgent === "antigravity") {
+          const { testAntigravityConnection } = await import("../services/antigravity-connection-probe.js");
+          return await testAntigravityConnection(context, profile.model);
+        }
         if (profile.acpxAgent === "copilot") {
           const configured = context.config.env;
           const token = configured && typeof configured === "object" && !Array.isArray(configured)
@@ -488,6 +493,13 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
         });
       } catch (error) {
+        // The selected managed credential home must outlive an uncertain
+        // native retirement. Its caller retains writeback until proof arrives.
+        if (error instanceof NativeEnvironmentProbeCleanupError) throw error;
+        if (profile.acpxAgent === "antigravity") {
+          const { antigravityConnectionProbeFailure } = await import("../services/antigravity-connection-probe.js");
+          return antigravityConnectionProbeFailure(context.companyId, error);
+        }
         if (profile.acpxAgent === "copilot") {
           const details = error instanceof HttpError && error.details && typeof error.details === "object" && !Array.isArray(error.details)
             ? error.details as Record<string, unknown> : {};

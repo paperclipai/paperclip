@@ -49,7 +49,7 @@ describe("native warm workspace Git history", () => {
     await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
   });
 
-  it.each(["unchanged", "host_commit", "host_branch", "host_origin", "remote_commit", "remote_commit_corrupt_seed", "remote_commit_missing_seed", "remote_commit_cache_refused", "host_bytes_cache_refused", "remote_commit_missing_run_seed", "remote_commit_corrupt_run_seed", "nested_commit", "plain_nested_commit"] as const)(
+  it.each(["unchanged", "host_commit", "host_branch", "new_workspace_branch", "host_origin", "remote_commit", "remote_commit_corrupt_seed", "remote_commit_missing_seed", "remote_commit_cache_refused", "host_bytes_cache_refused", "remote_commit_missing_run_seed", "remote_commit_corrupt_run_seed", "nested_commit", "plain_nested_commit"] as const)(
     "checks Git identity before reusing a warm sandbox: %s", async (change) => {
       const invalidRunSeed = change === "remote_commit_missing_run_seed" || change === "remote_commit_corrupt_run_seed";
       const cacheRefused = change === "remote_commit_cache_refused" || change === "host_bytes_cache_refused" || invalidRunSeed;
@@ -60,7 +60,7 @@ describe("native warm workspace Git history", () => {
       process.env.PAPERCLIP_HOME = path.join(root, "home");
       process.env.PAPERCLIP_INSTANCE_ID = "test";
       const host = path.join(root, "host");
-      const remote = path.join(root, "remote");
+      let remote = path.join(root, "remote");
       async function initRepo(dir: string) {
         await mkdir(dir, { recursive: true });
         await git(dir, "init", "-b", "work");
@@ -116,8 +116,12 @@ describe("native warm workspace Git history", () => {
 
       if (change === "host_commit" || change === "nested_commit" || change === "plain_nested_commit") {
         await git(change === "nested_commit" || change === "plain_nested_commit" ? path.join(host, nestedPath) : host, "commit", "--allow-empty", "-m", "host only");
-      } else if (change === "host_branch") {
+      } else if (change === "host_branch" || change === "new_workspace_branch") {
         await git(host, "checkout", "-b", "other");
+        if (change === "new_workspace_branch") {
+          remote = path.join(root, "another-remote");
+          lease.metadata = {};
+        }
       } else if (change === "host_origin") {
         await git(host, "remote", "add", "origin", "https://github.com/paperclipai/new-source.git");
       } else if (change === "host_bytes_cache_refused") {
@@ -127,7 +131,7 @@ describe("native warm workspace Git history", () => {
         await git(remote, "-c", "user.name=Test", "-c", "user.email=test@paperclip.dev", "commit", "--allow-empty", "-m", "remote only");
       }
       if (change === "remote_commit_corrupt_seed" || change === "remote_commit_missing_seed") {
-        const cache = path.join(process.env.PAPERCLIP_HOME!, "instances", "test", "native-workspace-sync", "generations", "company", "workspace");
+        const cache = path.join(process.env.PAPERCLIP_HOME!, "instances", "test", "native-workspace-sync", "generations", "company", "shared-v1");
         const [generation] = (await readdir(cache)).filter(name => /^[a-f0-9]{64}$/.test(name));
         expect(generation).toBeDefined();
         const archive = path.join(cache, generation!, "workspace.tar");
@@ -135,7 +139,7 @@ describe("native warm workspace Git history", () => {
         if (change === "remote_commit_corrupt_seed") await writeFile(archive, "invalid cached archive");
       }
       if (cacheRefused) {
-        await rm(path.join(process.env.PAPERCLIP_HOME!, "instances", "test", "native-workspace-sync", "generations", "company", "workspace"), { recursive: true, force: true });
+        await rm(path.join(process.env.PAPERCLIP_HOME!, "instances", "test", "native-workspace-sync", "generations", "company", "shared-v1"), { recursive: true, force: true });
         vi.spyOn(workspaceSeedCache, "publishWorkspaceSeedGeneration").mockResolvedValue(false);
       }
       const hostRepo = change === "plain_nested_commit" ? path.join(host, nestedPath) : host;
@@ -160,17 +164,19 @@ describe("native warm workspace Git history", () => {
         },
       };
       const reuseEvents: import("@paperclipai/adapter-utils").AdapterRuntimeEvent[] = [];
-      const second = (await prepareNativeWorkspaceSync({ ...input, runId: "second", onEvent: async event => { reuseEvents.push(event); }, target: {
-        ...target, runner: secondRunner, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" },
+      const second = (await prepareNativeWorkspaceSync({ ...input, runId: "second", workspaceId: change === "new_workspace_branch" ? "another-workspace" : input.workspaceId, onEvent: async event => { reuseEvents.push(event); }, target: {
+        ...target, remoteCwd: remote, runner: secondRunner, sandboxLeaseAcquisition: { outcome: change === "new_workspace_branch" ? "created" : "resumed", providerLeaseId: "sandbox" },
       } }))!;
       try {
         if (change === "remote_commit") expect(packClone).not.toHaveBeenCalled();
+        if (change === "new_workspace_branch") expect(packClone).not.toHaveBeenCalled();
         if (cacheRefused) expect(packClone).toHaveBeenCalledTimes(invalidRunSeed ? 2 : 1);
         if (invalidRunSeed) expect(invalidatedRunSeed).toBe(true);
         if (change === "remote_commit_corrupt_seed" || change === "remote_commit_missing_seed") expect(packClone).toHaveBeenCalled();
         expect(second.mode).toBe(change === "unchanged" ? "adopt_remote" : "host_current");
         expect(summarizeStartupReuse(reuseEvents).layers.workspace).toEqual(change === "unchanged"
           ? { state: "reused", reason: "verified_reuse" }
+          : change === "new_workspace_branch" ? { state: "fresh", reason: "created" }
           : { state: "fresh", reason: "workspace_changed" });
         expect(await readFile(path.join(remoteRepo, "file.txt"), "utf8")).toBe(expectedContents);
         if (change === "host_bytes_cache_refused") expect(await readFile(path.join(remote, "extra.txt"), "utf8")).toBe("new host file\n");

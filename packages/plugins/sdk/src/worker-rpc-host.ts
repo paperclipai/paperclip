@@ -6,6 +6,7 @@ import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/s
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
@@ -353,6 +354,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
+    && (manifest?.capabilities.includes("environment.drivers.register") === true
+      || manifest?.capabilities.includes("workspaces.manage") === true);
+  const invocationTracer = createInvocationTracer(
+    canRecordSpans,
+    span => { void callHostRaw("span.record", span).catch(() => undefined); },
+  );
+  const { withSpan } = invocationTracer;
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -392,7 +401,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   /**
    * Send a typed JSON-RPC request to the host and await the response.
    */
-  function callHost<M extends WorkerToHostMethodName>(
+  function callHost<M extends WorkerToHostMethodName>(method: M, params: WorkerToHostMethods[M][0], timeoutMs?: number): Promise<WorkerToHostMethods[M][1]> {
+    const operation = method === "agents.getRuntimeIdentity" || method === "agents.getRuntime" ? "identity.read"
+      : method === "config.get" ? "config.read" : method === "entities.list" ? "progress.read"
+      : method === "entities.upsert" ? "progress.write" : undefined;
+    return operation ? withSpan(`plugin.host.${operation}`, () => callHostRaw(method, params, timeoutMs))
+      : callHostRaw(method, params, timeoutMs);
+  }
+
+  function callHostRaw<M extends WorkerToHostMethodName>(
     method: M,
     params: WorkerToHostMethods[M][0],
     timeoutMs?: number,
@@ -1528,21 +1545,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       tracer: {
+        withSpan,
+        now: invocationTracer.now,
+        isRecording: invocationTracer.isRecording,
+        recordSpan: invocationTracer.recordSpan,
         startSpan(
           name: string,
           options?: { attributes?: Record<string, string | number | boolean> },
         ) {
           // Read the active host trace context from the per-call invocation
-          // channel. A `traceparent` means a host span is active, so this span
-          // may record. No `traceparent` means tracing is off: the span is a
-          // no-op, so a lifecycle hook can always wrap work in a span.
-          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          // channel. Only providers permitted to record receipts collect spans;
+          // other plugins and tracing-off invocations keep no-op behavior.
+          const recordSpan = invocationTracer.captureRecorder();
+          const spanInvocation = invocationContextStorage.getStore();
+          const hasTraceContext = canRecordSpans();
           const attributes: Record<string, string | number | boolean> = {
             ...(options?.attributes ?? {}),
           };
           // Capture the real start time once when the span opens. The host uses
           // it as the span start time, so the span shows its true native width.
-          const startTimeMs = Date.now();
+          const spanNow = invocationTracer.clock();
+          const startTimeMs = spanNow();
           let status: { code: number; message?: string } | undefined;
           let ended = false;
           return {
@@ -1555,21 +1578,22 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             end(): void {
               if (ended) return;
               ended = true;
-              if (!hasTraceContext) return;
+              if (!hasTraceContext || invocationContextStorage.getStore()?.id !== spanInvocation?.id) return;
               // Capture the real end time once at the first end call. The host
               // uses the pair to record the span with its true wall-clock width.
-              const endTimeMs = Date.now();
+              const endTimeMs = spanNow();
               // Send the finished span to the host once. The host re-clamps the
               // name and the attributes, mints the parentage from its own
               // invocation record, and records the span through the real tracer.
               // Fire-and-forget: a span must never block or fail plugin work.
-              void callHost("span.record", {
+              const receipt = {
                 name,
                 attributes,
                 ...(status ? { status } : {}),
                 startTimeMs,
                 endTimeMs,
-              }).catch(() => undefined);
+              };
+              if (!recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
             },
           };
         },
@@ -1602,7 +1626,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
         done = idleDrain.begin();
       }
-      const invoke = () => dispatchMethod(method, params);
+      const invoke = () => withSpan("plugin.worker", () => dispatchMethod(method, params));
       const result = request.paperclipInvocation
         ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
         : await invoke();

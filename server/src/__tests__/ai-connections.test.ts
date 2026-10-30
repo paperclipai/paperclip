@@ -20,6 +20,7 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -30,7 +31,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -446,6 +447,61 @@ describe("managed AI connections", () => {
     expect(await service.credential(row)).toBe(auth);
   });
 
+  it("fences retained OpenAI credentials before reads, including callers holding the mutation lock", async () => {
+    const owner = "retained-openai-read-fence";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
+    retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
+    try {
+      await expect(service.runtimeCredential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await codexAdapter.withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+        await expect(service.runtimeCredential(row, { credentialLockHeld: true })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      });
+      expect(cleanup).not.toHaveBeenCalled();
+      retired.resolve(); await reconcileRetainedAiCleanup(scope);
+      expect(cleanup).toHaveBeenCalledOnce();
+      await expect(service.runtimeCredential(row)).resolves.toBe(auth);
+    } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope).catch(() => {}); }
+  });
+
+  it("retries retired Codex probe cleanup before the same account can launch again", async () => {
+    const owner = "retired-probe-retry", otherOwner = "retired-probe-other";
+    const auth = (user: string, hour: string) => JSON.stringify({ tokens: { account_id: user, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    for (const user of [owner, otherOwner]) {
+      await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "member" });
+      await service.save(companyId, user, { provider: "openai", method: "subscription", ownership: "personal", name: user, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth(user, "10"));
+    }
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    const stopped = deferredSignal();
+    const provider = vi.fn(async runtime => readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8"));
+    const merge = vi.spyOn(codexAdapter, "decideCodexAuthMerge").mockRejectedValue(new Error("fixture cleanup storage unavailable"));
+    let retained: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    try {
+      await expect(withManagedAiProbe(db, input, async runtime => {
+        retained = runtime;
+        await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth(owner, "11"));
+        throw new runnerProbe.NativeEnvironmentProbeCleanupError(stopped.promise, new Error("fixture probe interruption"), []);
+      })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(provider).not.toHaveBeenCalled(); expect(merge).not.toHaveBeenCalled();
+      stopped.resolve();
+      await vi.waitFor(() => expect(merge).toHaveBeenCalledOnce());
+      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(provider).not.toHaveBeenCalled(); expect(merge).toHaveBeenCalledTimes(2);
+      await expect(withManagedAiProbe(db, { ...input, responsibleUserId: otherOwner }, provider)).resolves.toBe(auth(otherOwner, "10"));
+      expect(await readFile(path.join(String(retained!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth(owner, "11"));
+      merge.mockRestore();
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "11"));
+      expect(await service.credential(row)).toBe(auth(owner, "11"));
+      await expect(access(retained!.home!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { stopped.resolve(); merge.mockRestore(); await retained?.cleanup().catch(() => {}); }
+  });
+
   it("keeps quota refresh outside a manual probe until its rotated credential is saved", async () => {
     const owner = "manual-probe-race";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -509,6 +565,62 @@ describe("managed AI connections", () => {
       const [after] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agentId));
       expect(after).toEqual(before);
     } finally { probe.mockRestore(); resolveBinary.mockRestore(); }
+  });
+
+  it("keeps the real Codex setup cleanup error and retries its original owner before another probe", async () => {
+    const owner = "native-codex-setup-retirement-retry";
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { provider: "codex" } };
+    let rejectRetirement!: (error: Error) => void, physical = false;
+    const retired = new Promise<void>((_resolve, reject) => { rejectRetirement = reject; });
+    void retired.catch(() => undefined);
+    let original: Parameters<typeof runnerProbe.probeNativeRunnerEnvironment>[0], retainedHome: string | undefined;
+    const directories: string[] = [];
+    const retry = vi.fn(async () => {
+      if (!physical) throw new Error("fixture original owner remains live");
+      await original.onCodexCredentialRefresh!(path.join(original.runtimeDirectory, "codex-home", "auth.json"));
+      await original.onCleanupConfirmed!();
+    });
+    const binary = vi.spyOn(nativeCodexRunner, "resolvePaperclipRunnerBinary").mockReturnValue(path.join(home, "fixture-runnerd"));
+    const probe = vi.spyOn(runnerProbe, "probeNativeRunnerEnvironment").mockImplementationOnce(async options => {
+      original = options; directories.push(options.runtimeDirectory);
+      await fs.mkdir(path.join(options.runtimeDirectory, "codex-home"), { mode: 0o700 });
+      await writeFile(path.join(options.runtimeDirectory, "codex-home", "auth.json"), auth("11"), { mode: 0o600 });
+      throw new runnerProbe.NativeEnvironmentProbeCleanupError(retired, new Error("fixture interrupted probe"), [], retry);
+    }).mockImplementation(async options => {
+      directories.push(options.runtimeDirectory);
+      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth("11"));
+      await options.onCleanupConfirmed!();
+      return { provider: "codex", providerDriver: "codex_app_server", effectiveModel: "gpt-5.6-sol", helloProbePassed: true };
+    });
+    const invoke = () => withManagedAiProbe(db, input, runtime => {
+      retainedHome ??= runtime.home;
+      return testNativeRunnerAuthentication({ companyId, adapterType: "paperclip_runner", config: runtime.config,
+        managedAiCredentialHome: path.join(runtime.home!, "provider") }, "codex", "gpt-5.6-sol");
+    });
+    try {
+      await expect(invoke()).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+      await expect(access(retainedHome!)).resolves.toBeUndefined();
+      rejectRetirement(new Error("fixture initial retirement proof failed"));
+      await Promise.resolve();
+      await expect(invoke()).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(probe).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce();
+      await expect(access(retainedHome!)).resolves.toBeUndefined();
+      physical = true;
+      expect((await invoke()).status).toBe("pass");
+      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(2);
+      expect(await service.credential(row)).toBe(auth("11"));
+      await expect(access(retainedHome!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      physical = true; rejectRetirement(new Error("fixture teardown"));
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id }).catch(() => {});
+      probe.mockRestore(); binary.mockRestore();
+      await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
+    }
   });
 
   it("rejects preparation when reconnect replaces the selected credential reference", async () => {
@@ -1099,6 +1211,41 @@ describe("managed AI connections", () => {
       await expect(access(transcript)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await Promise.all([resumed.cleanup(), peer.cleanup()]); }
   });
+  it("isolates the selected Google AI credential for pending native Antigravity preparation", async () => {
+    const owner = "antigravity-managed-key";
+    const token = "saved-antigravity-key";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(companyId, owner, { provider: "google", method: "api_key", ownership: "personal",
+      name: "Antigravity Google AI", apiKey: token, allAgents: true, agentIds: [] }, token);
+    await service.setDefault(companyId, owner, saved.grantId);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
+      binding: { provider: "google", method: "api_key", mode: "responsible_user" } as const,
+      config: { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model", env: {
+        GEMINI_API_KEY: "ambient-key", GOOGLE_API_KEY: "ambient-other-key", GEMINI_HOME: "/ambient/home",
+        GOOGLE_APPLICATION_CREDENTIALS: "/ambient/google.json", GOOGLE_CLOUD_ACCESS_TOKEN: "ambient-oauth-token",
+      } } };
+    const runtime = await prepareManagedAiRuntime(db, input);
+    const reopened = await prepareManagedAiRuntime(db, input);
+    try {
+      expect(runtime.attribution).toMatchObject({ provider: "google", method: "api_key", connectionId: saved.connectionId, grantId: saved.grantId });
+      expect(runtime.config).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: input.config.model,
+        env: { GEMINI_API_KEY: token, GOOGLE_API_KEY: "", GOOGLE_APPLICATION_CREDENTIALS: "", GOOGLE_CLOUD_ACCESS_TOKEN: "" } });
+      expect(runtime.config.env.GEMINI_HOME).toBe(path.join(runtime.home!, "provider"));
+      const settingsFile = path.join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "settings.json");
+      expect(JSON.parse(await readFile(settingsFile, "utf8"))).toEqual({ auth: { type: "gemini-api-key" } });
+      expect(await readFile(settingsFile, "utf8")).not.toContain(token);
+      expect((await stat(settingsFile)).mode & 0o777).toBe(0o600);
+      expect(managedAiSessionFingerprintConfig(runtime.config, runtime.home))
+        .toEqual(managedAiSessionFingerprintConfig(reopened.config, reopened.home));
+      expect(input.config.env.GEMINI_HOME).toBe("/ambient/home");
+      await expect(prepareManagedAiRuntime(db, { ...input, responsibleUserId: "bob" })).rejects.toThrow();
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
+      await expect(prepareManagedAiRuntime(db, input)).rejects.toThrow();
+    } finally { await Promise.all([runtime.cleanup(), reopened.cleanup()]); }
+    await expect(access(runtime.home!)).rejects.toThrow();
+    await expect(access(reopened.home!)).rejects.toThrow();
+  });
+
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));
     const command = path.join(root, "gemini");
@@ -2062,17 +2209,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const owner = `restart-${provider}`;
     const intent = { provider, method: "subscription", ownership: "personal", name: "Interrupted sign-in", allAgents: false, agentIds: [] } as const;
     await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: provider === "anthropic" ? "claude_local" : "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockRejectedValue(new Error("No credential yet"));
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockRejectedValue(new Error("No credential yet"));
     try {
       const login = localAiLoginService(db);
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "sign_in_required", error: "The server restarted during sign-in. Start sign-in again." });
       await expect(login.check(companyId, "bob", { ...intent, agentIds: [] }, id)).rejects.toThrow("not found");
-      reader.mockResolvedValue("completed-before-restart");
+      reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("fixture-local-token");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -2108,7 +2255,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { reader.mockRestore(); }
   });
   it.each(["anthropic", "openai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails");
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -2131,7 +2278,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it.each(["anthropic", "openai"] as const)("lets authenticated users connect only their own isolated %s login", async provider => {
     const owner = `self-hosted-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("isolated-fixture-token");
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "isolated-fixture-token", accountLabel: undefined });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

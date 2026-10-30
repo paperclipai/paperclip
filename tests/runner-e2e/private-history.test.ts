@@ -209,3 +209,21 @@ it("gives independent shared-manifest downloaders separate immutable receipts", 
     receipt, () => new BoundedHistoryPublisher(`${receipt}.retention.json`, runner))).rejects.toThrow("receipt retention failed");
   expect(receipts.size).toBe(3);
 });
+
+it("separates a complete private transfer from missing required PASS evidence in the immutable receipt", async () => {
+  const root = await temporary(), source = path.join(root, "source"), receipt = path.join(root, "transfer.json");
+  await mkdir(source); await writeFile(path.join(source, "result.json"), '{"status":"failed","failureClass":"permanent_infrastructure"}');
+  const config = configurationRunner(configurations());
+  const runner = async (args: string[]) => args[1] === "put-object" ? { stdout: '{"VersionId":"archive-version"}' } : config(args);
+  const evidenceCompleteness = { meaning: "available-files-and-transfer-only" as const, doesNotAttestFeatureOutcome: true as const,
+    cells: [{ executionId: "chat-features.runner-opencode.local.activity.agent-feedback", availableFileInventoryComplete: true as const,
+      requiredPassEvidenceComplete: false, missingRequiredEvidence: ["final-state.png"] }] };
+  let saved: unknown;
+  await retainPrivateTransfer({ operation: "upload", kind: "manual-report", runId: "12345", directory: source,
+    bucket: "private-bucket", evidenceCompleteness, publisher: new BoundedHistoryPublisher(receipt, runner) }, receipt,
+    () => new BoundedHistoryPublisher(`${receipt}.retention.json`, async args => {
+      saved = JSON.parse(await readFile(args[args.indexOf("--body") + 1]!, "utf8"));
+      return { stdout: '{"VersionId":"receipt-version"}' };
+    }));
+  expect(saved).toMatchObject({ evidenceCompleteness, transfer: { status: "complete" } });
+});

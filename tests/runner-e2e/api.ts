@@ -46,6 +46,12 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  async bytes(path: string): Promise<Buffer> {
+    const response = await this.request.get(path, this.sessionOptions());
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
+    return response.body();
+  }
+
   async post<T>(path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
     const response = await this.request.post(path, { data, ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new Error(await failureMessage(response, "POST"));

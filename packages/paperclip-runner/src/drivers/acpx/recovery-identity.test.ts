@@ -27,6 +27,17 @@ afterEach(async () => {
 
 describe("ACPX recovery identity", () => {
   it.each([
+    ["copilot", "../../../test/fixtures/copilot-profile-v74-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v75-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v76-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v77-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v78-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v79-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v80-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v32-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v33-identity.json"],
+    ["grok", "../../../test/fixtures/grok-profile-v10-identity.json"],
+    ["grok", "../../../test/fixtures/grok-profile-v11-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v10-identity.json"],
     ["copilot", "../../../test/fixtures/copilot-profile-v14-identity.json"],
     ["pi", "../../../test-fixtures/pi-acp/profile-v13-identity.json"],

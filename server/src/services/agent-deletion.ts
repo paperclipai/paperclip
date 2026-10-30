@@ -1,3 +1,11 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
   budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
@@ -26,7 +34,10 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   if (classifierHold) throw conflict("Wait for active prompt injection checks or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_prompt_injection_accounting_pending",
   });
+  await notifyExternalConversationSettlement(tx, { companyId });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)
@@ -42,6 +53,12 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   );
   await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
   await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+  await notifyScheduledRetryCancellation(tx, { companyId: companyId });
+  await notifyInstructionCommit(tx, { companyId: companyId });
+  await notifyDirectoryCleanup(tx, { companyId: companyId });
+  await notifyInstructionCollection(tx, { companyId: companyId });
+  await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
+  await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

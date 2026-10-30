@@ -1678,3 +1678,27 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
   });
 });
+
+describe("deliverable tool location guidance", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", workspaceRoot: "/task-workspace", apiToolsEnabled: false };
+  const db = new Proxy({} as ConstructorParameters<typeof PaperclipRunnerToolAuthority>[0], {
+    get() { throw new Error("Tool definitions must not query the database"); },
+  });
+  it.each(["local", "remote"] as const)("directs %s workspace-only deliverables to the task cwd", (executionTargetKind) => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind,
+      ...(executionTargetKind === "remote" ? { readRemoteWorkspaceFile: async () => Buffer.alloc(0) } : {}),
+    });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("get_workspace.cwd");
+    expect(description).toContain("AGENT_HOME");
+    expect(description).toContain("Create or copy");
+  });
+  it("preserves the granted-location reader contract", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind: "remote", readRemoteTaskFile: async () => Buffer.alloc(0) });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("absolute within a location granted to this task");
+    expect(description).toContain("including its agent home");
+  });
+});

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod acpx_candidate_admission;
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
 pub mod acpx_provider_backend;
@@ -369,3 +370,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(unix)]
+pub mod runtime_notifications;

@@ -1,3 +1,5 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { and, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, assets, environmentLeases, heartbeatRuns, issueAttachments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { reconstructWorkspaceSchema, type ExecutionReconciliation } from "@paperclipai/shared";
@@ -177,11 +179,14 @@ export async function reconstructNativeWorkspace(input: {
         ...(source.interveningExecutions.length ? { interveningExecutions: source.interveningExecutions } : {}) } };
     await markExecutionReconciliation(db, source.action, decision, input.actorId);
     const now = new Date();
+    await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
       resolutionNote: "workspace_reconstruction_authorized", nextAction: "Continue from saved sources. The original unexported edits are lost; verify the selected attachments before rebuilding. Do not repeat completed external actions or reset the original work limits.",
       evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({ workspaceReconstructionRequest: requestSha256 })}::jsonb`,
       wakePolicy: null, monitorPolicy: null,
     }).where(eq(issueRecoveryActions.id, source.action.id));
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
       blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
     const publication = await persistActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.actorId,

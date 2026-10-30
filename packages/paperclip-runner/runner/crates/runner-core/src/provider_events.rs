@@ -27,9 +27,12 @@ pub(crate) fn with_terminal_outcome(
     provider_events: Vec<NormalizedProviderEvent>,
     outcome_events: Vec<NormalizedProviderEvent>,
 ) -> Vec<NormalizedProviderEvent> {
-    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events
-        .into_iter()
-        .partition(|event| event.event_type == "run.result.proposed");
+    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events.into_iter().partition(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "run.result.proposed" | "session.failed"
+        )
+    });
     results
         .into_iter()
         .chain(provider_events)

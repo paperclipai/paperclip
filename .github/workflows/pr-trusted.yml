@@ -159,7 +159,7 @@ jobs:
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.typecheck_release_registry.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -330,7 +330,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -338,6 +338,9 @@ jobs:
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
+
+      - name: Verify repository-wide CLI guidance safety
+        run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
 
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
@@ -356,100 +359,12 @@ jobs:
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.general_tests.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Keep twelve duration-balanced server shards. Each shard overlaps
-          # at most two isolated fork workers; cases within a file stay serial.
-          # The chat fixture keeps three independent database-backed shards.
-          - group: general-server-without-chat
-            group_label: server (1/12)
-            shard_index: 0
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (2/12)
-            shard_index: 1
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (3/12)
-            shard_index: 2
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (4/12)
-            shard_index: 3
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (5/12)
-            shard_index: 4
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (6/12)
-            shard_index: 5
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (7/12)
-            shard_index: 6
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (8/12)
-            shard_index: 7
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (9/12)
-            shard_index: 8
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (10/12)
-            shard_index: 9
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (11/12)
-            shard_index: 10
-            shard_count: 12
-          - group: general-server-without-chat
-            group_label: server (12/12)
-            shard_index: 11
-            shard_count: 12
-          - group: general-chat
-            group_label: chat (1/3)
-            shard_index: 0
-            shard_count: 3
-          - group: general-chat
-            group_label: chat (2/3)
-            shard_index: 1
-            shard_count: 3
-          - group: general-chat
-            group_label: chat (3/3)
-            shard_index: 2
-            shard_count: 3
-          # workspaces-a was the slowest check in the fully-green PR run
-          # 31371439296 (2026-08-10) at 319s, with the ui project's single
-          # vitest invocation accounting for ~224s and the paperclipai CLI
-          # ~37s. Two shards use Vitest's native --shard on each project's
-          # file list (ui: 439 files, cli: 54), bringing each job to roughly
-          # half the suite time (~130s + setup) without a duration manifest.
-          - group: general-workspaces-a
-            group_label: workspaces-a (1/2)
-            shard_index: 0
-            shard_count: 2
-          - group: general-workspaces-a
-            group_label: workspaces-a (2/2)
-            shard_index: 1
-            shard_count: 2
-          # workspaces-b became the slowest check (499-593s) once the server
-          # shards were rebalanced: the db project alone was 168-250s of its
-          # 436-513s of vitest time (PR runs 38084171761, 38083084276 and
-          # 38083020834, 2026-10-10). The db project now runs as its own
-          # workspaces-c lane; the rest of workspaces-b is ~265-275s of
-          # vitest time, so both jobs land near 300-350s with setup.
-          - group: general-workspaces-b
-            group_label: workspaces-b
-          - group: general-workspaces-c
-            group_label: workspaces-c
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/12)","shard_index":0,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/12)","shard_index":1,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/12)","shard_index":2,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/12)","shard_index":3,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/12)","shard_index":4,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/12)","shard_index":5,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/12)","shard_index":6,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/12)","shard_index":7,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/12)","shard_index":8,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/12)","shard_index":9,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/12)","shard_index":10,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/12)","shard_index":11,"shard_count":12,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -516,7 +431,17 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
+      - name: Run grouped general test suites through Turbo
+        if: hashFiles('turbo.json', '.github/actions/run-ci-task/action.yml') != ''
+        uses: ./.github/actions/run-ci-task
+        with:
+          task: ${{ matrix.task }}
+          args: ${{ matrix.shard_count && format('["--shard-index","{0}","--shard-count","{1}"]', matrix.shard_index, matrix.shard_count) || '[]' }}
+          partition: ${{ strategy.job-index || 0 }}
+          force: ${{ needs.gate.outputs.profile_ci == 'true' || needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).mode != 'enabled' || fromJSON(needs.gate.outputs.plan).forceReason != null }}
+
       - name: Run grouped general test suites
+        if: hashFiles('turbo.json') == ''
         run: |
           if [ -n "${{ matrix.shard_count }}" ]; then
             pnpm test:run:general -- --group '${{ matrix.group }}' \
@@ -539,7 +464,7 @@ jobs:
   docker_context_integrity:
     name: Docker context integrity
     needs: gate
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.docker_context_integrity.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 15
 
@@ -594,77 +519,42 @@ jobs:
           retention-days: 14
 
   verify:
-    # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity]
+    needs: [gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
-
     steps:
-      - name: Fail if any split verify lane failed
+      - name: Validate every planned suite result
         env:
           FULL_CI: ${{ needs.gate.outputs.full_ci }}
-          POLICY_RESULT: ${{ needs.policy.result }}
-          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
-          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
-          RUNNER_VERIFICATION_RESULT: ${{ needs.verify_paperclip_runner.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
+          CI_PLAN: ${{ needs.gate.outputs.plan }}
+          CI_RESULTS: ${{ toJSON(needs) }}
         run: |
-          test "$POLICY_RESULT" = "success"
-          case "$FULL_CI" in
-            true)
-              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
-              test "$GENERAL_TESTS_RESULT" = "success"
-              test "$RUNNER_VERIFICATION_RESULT" = "success"
-              test "$BUILD_RESULT" = "success"
-              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
-              ;;
-            false)
-              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
-              test "$GENERAL_TESTS_RESULT" = "skipped"
-              test "$RUNNER_VERIFICATION_RESULT" = "skipped"
-              test "$BUILD_RESULT" = "skipped"
-              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
-              ;;
-            *)
-              echo "Invalid full_ci decision: $FULL_CI" >&2
-              exit 1
-              ;;
-          esac
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          const results = JSON.parse(process.env.CI_RESULTS);
+          assert.equal(results.gate.result, 'success', 'CI routing must succeed');
+          assert.equal(results.policy.result, 'success', 'Policy must succeed');
+          assert.ok(['true', 'false'].includes(process.env.FULL_CI), 'Valid scope required');
+          const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
+          if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
+          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","verify_serialized_server","canary_dry_run"]) {
+            if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
+            const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
+            assert.equal(results[job].result, selected ? 'success' : 'skipped', job);
+          }
+          NODE
 
   verify_paperclip_runner:
     name: Verify Paperclip Runner (${{ matrix.lane_label }})
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # check:all spent ~380s of its ~600s cache-warm step inside the
-          # runner package's vitest suite (run 35036001734, 2026-09-15); the
-          # Rust tests took ~160s and every remaining check ~60s combined,
-          # which made this single job the PR critical path once the test
-          # lanes were rebalanced. Split the vitest suite across two runners
-          # with Vitest's native --shard, the ~160s Rust tests into their own
-          # lane, and the remaining static checks into a fourth. The four
-          # lanes union to exactly check:all: check:static covers
-          # check:eval-kernel, check:protocol-without-vitest, and
-          # check:api-authority; check:runner covers the Rust half; and the
-          # two vitest shards cover the package vitest file list.
-          - lane_label: static checks
-            command: check:static
-          - lane_label: rust
-            command: check:runner
-            release_crate: true
-          - lane_label: vitest 1/2
-            command: test:typescript:vitest --shard=1/2
-          - lane_label: vitest 2/2
-            command: test:typescript:vitest --shard=2/2
-            release_crate: true
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest 1/2","command":"test:typescript:vitest --shard=1/2","task":"ci:runner-vitest"},{"lane_label":"vitest 2/2","command":"test:typescript:vitest --shard=2/2","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -843,13 +733,23 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
+      - name: Verify Runner Rust through Turbo
+        if: matrix.command == 'check:runner' && hashFiles('turbo.json') != ''
+        uses: ./.github/actions/run-ci-task
+        with:
+          task: ci:runner-rust
+          args: '[]'
+          partition: ${{ strategy.job-index || 0 }}
+          force: ${{ needs.gate.outputs.profile_ci == 'true' || needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).mode != 'enabled' || fromJSON(needs.gate.outputs.plan).forceReason != null }}
+
       - name: Verify Paperclip Runner
+        if: matrix.command != 'check:runner' || hashFiles('turbo.json') == ''
         # pnpm appends trailing args to the end of the script's shell chain,
         # so the vitest lanes' --shard lands on `vitest run`. Do not add a
         # `--` separator: pnpm forwards it literally and vitest would then
@@ -870,7 +770,7 @@ jobs:
   build:
     name: Build
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.build.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -1060,7 +960,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -1122,48 +1022,12 @@ jobs:
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_serialized_server.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Shards are balanced by recorded duration
-          # (scripts/serialized-shard-durations.json, refreshed 2026-09-12);
-          # round-robin used to cluster the heavy suites on one runner (291s
-          # vs 170-201s in run 32012408876, 2026-08-17). The suite total has
-          # since grown to ~1926s recorded: five shards ran ~390s of tests
-          # each while the rebalanced general/e2e lanes run ~210-260s, so
-          # nine shards level this lane to ~214s and keep it off the
-          # critical path.
-          - shard_index: 0
-            shard_count: 9
-            shard_label: 1/9
-          - shard_index: 1
-            shard_count: 9
-            shard_label: 2/9
-          - shard_index: 2
-            shard_count: 9
-            shard_label: 3/9
-          - shard_index: 3
-            shard_count: 9
-            shard_label: 4/9
-          - shard_index: 4
-            shard_count: 9
-            shard_label: 5/9
-          - shard_index: 5
-            shard_count: 9
-            shard_label: 6/9
-          - shard_index: 6
-            shard_count: 9
-            shard_label: 7/9
-          - shard_index: 7
-            shard_count: 9
-            shard_label: 8/9
-          - shard_index: 8
-            shard_count: 9
-            shard_label: 9/9
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1230,7 +1094,17 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
+      - name: Run serialized server test shard through Turbo
+        if: hashFiles('turbo.json', '.github/actions/run-ci-task/action.yml') != ''
+        uses: ./.github/actions/run-ci-task
+        with:
+          task: ci:serialized
+          args: ${{ format('["--shard-index","{0}","--shard-count","{1}"]', matrix.shard_index, matrix.shard_count) }}
+          partition: ${{ strategy.job-index || 0 }}
+          force: ${{ needs.gate.outputs.profile_ci == 'true' || needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).mode != 'enabled' || fromJSON(needs.gate.outputs.plan).forceReason != null }}
+
       - name: Run serialized server test shard
+        if: hashFiles('turbo.json') == ''
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
 
       - name: Upload CI profile timings
@@ -1247,7 +1121,7 @@ jobs:
   canary_dry_run:
     name: Canary Dry Run
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.canary_dry_run.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
 
@@ -1418,7 +1292,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -1462,48 +1336,12 @@ jobs:
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
     needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # The Playwright lane is pinned to workers=1 (tests/e2e/playwright.config.ts)
-          # because every spec shares one throwaway server and some toggle
-          # instance-level flags, so it can only be parallelized across runners.
-          # Each shard boots its own server, which keeps that isolation intact.
-          # The catalog has grown to ~1694s of serial spec time (mean of runs
-          # 35036001734 and 35024948947, 2026-09-15): with three shards and
-          # stale durations the worst shard ran 745s of specs while the best
-          # ran 277s. The former floors — chat-adapters-ui at ~442s and
-          # agent-chat at ~310s — are each split into two specs, so eight
-          # shards with refreshed durations level to ~212s each; the heaviest
-          # remaining single spec is chat-adapters-ui-messaging at ~242s.
-          - shard_index: 0
-            shard_count: 8
-            shard_label: 1/8
-          - shard_index: 1
-            shard_count: 8
-            shard_label: 2/8
-          - shard_index: 2
-            shard_count: 8
-            shard_label: 3/8
-          - shard_index: 3
-            shard_count: 8
-            shard_label: 4/8
-          - shard_index: 4
-            shard_count: 8
-            shard_label: 5/8
-          - shard_index: 5
-            shard_count: 8
-            shard_label: 6/8
-          - shard_index: 6
-            shard_count: 8
-            shard_label: 7/8
-          - shard_index: 7
-            shard_count: 8
-            shard_label: 8/8
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || '{"include":[{"shard_index":0,"shard_count":8,"shard_label":"1/8","task":"ci:e2e"},{"shard_index":1,"shard_count":8,"shard_label":"2/8","task":"ci:e2e"},{"shard_index":2,"shard_count":8,"shard_label":"3/8","task":"ci:e2e"},{"shard_index":3,"shard_count":8,"shard_label":"4/8","task":"ci:e2e"},{"shard_index":4,"shard_count":8,"shard_label":"5/8","task":"ci:e2e"},{"shard_index":5,"shard_count":8,"shard_label":"6/8","task":"ci:e2e"},{"shard_index":6,"shard_count":8,"shard_label":"7/8","task":"ci:e2e"},{"shard_index":7,"shard_count":8,"shard_label":"8/8","task":"ci:e2e"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1628,27 +1466,29 @@ jobs:
           retention-days: 14
 
   e2e:
-    # Preserve the legacy required-check name while the specs run sharded
-    # across the matrix above (same pattern as the `verify` aggregate).
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
-
     steps:
-      - name: Fail if any e2e shard failed
+      - name: Validate every planned suite result
         env:
           FULL_CI: ${{ needs.gate.outputs.full_ci }}
-          POLICY_RESULT: ${{ needs.policy.result }}
-          E2E_SHARDS_RESULT: ${{ needs.e2e_shards.result }}
+          CI_PLAN: ${{ needs.gate.outputs.plan }}
+          CI_RESULTS: ${{ toJSON(needs) }}
         run: |
-          test "$POLICY_RESULT" = "success"
-          case "$FULL_CI" in
-            true) test "$E2E_SHARDS_RESULT" = "success" ;;
-            false) test "$E2E_SHARDS_RESULT" = "skipped" ;;
-            *)
-              echo "Invalid full_ci decision: $FULL_CI" >&2
-              exit 1
-              ;;
-          esac
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          const results = JSON.parse(process.env.CI_RESULTS);
+          assert.equal(results.gate.result, 'success', 'CI routing must succeed');
+          assert.equal(results.policy.result, 'success', 'Policy must succeed');
+          assert.ok(['true', 'false'].includes(process.env.FULL_CI), 'Valid scope required');
+          const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
+          if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
+          for (const job of ["e2e_shards"]) {
+            if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
+            const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
+            assert.equal(results[job].result, selected ? 'success' : 'skipped', job);
+          }
+          NODE

@@ -77,6 +77,7 @@ import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js"
 
 import {
   probeNativeRunnerEnvironment,
+  NativeEnvironmentProbeCleanupError,
   parseAcpxTurnControlCapabilities,
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
@@ -123,6 +124,7 @@ it("attributes opened candidate sessions to the harness biller instead of the mo
   expect(provider("acpx", "pi", "openrouter/deepseek/deepseek-v4-flash-0731")).toBe("openrouter");
   expect(provider("acpx", "claude", "claude-sonnet-5")).toBe("anthropic");
   expect(provider("acpx", "codex", "gpt-5.6-sol")).toBe("openai");
+  expect(provider("acpx", "antigravity", "gemini-3.8-flash-low")).toBe("google");
   expect(provider("opencode", "codex", "openrouter/openai/gpt-6-astra")).toBe("openrouter");
   expect(provider("claude_managed", "codex", "claude-sonnet-5")).toBe("anthropic");
   expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
@@ -1996,14 +1998,16 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
-    expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
-      join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, "pi",
-    )).toEqual({ root: server, manifest: join(server, "package.json") });
+    for (const agent of ["pi", "antigravity"] as const) {
+      expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
+      )).toEqual({ root: server, manifest: join(server, "package.json") });
+    }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
-it.each((["copilot", "pi"] as const).flatMap(agent =>
+it.each((["copilot", "pi", "antigravity"] as const).flatMap(agent =>
   ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
   "admits the controller-selected $agent package authority in a $layout layout",
   async ({ agent, layout }) => {
@@ -2597,8 +2601,8 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
   const checkpoint = vi.fn();
   const releaseRoute = vi.fn();
   let currentRun = () => "";
-  const create = (closeGraceMs = 5_000, runId = "run-prepared") => createCapabilityRunnerdCodexTransport({ provider: "codex", runnerArtifact: artifact,
-    closeGraceMs,
+  const create = (closeGraceMs?: number, runId = "run-prepared") => createCapabilityRunnerdCodexTransport({ provider: "codex", runnerArtifact: artifact,
+    ...(closeGraceMs === undefined ? {} : { closeGraceMs }),
     stateDirectory: root, runtimeContext: runId === "run-prepared" ? context
       : mode === "removed-context" ? null : mode === "omitted-context" ? undefined : context,
     ...(mode === "rotated-recovery" || mode === "removed-context" || mode === "omitted-context" ? {
@@ -3489,9 +3493,10 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
     let finishRelease!: () => void;
     const releasing = new Promise<void>(resolve => { finishRelease = resolve; });
     const releaseError = new Error("setup registration release failed");
+    let releaseFails = mode === "late-release-error";
     const release = vi.fn(async () => {
       if (mode === "stuck-release") await releasing;
-      if (mode === "late-release-error") throw releaseError;
+      if (releaseFails) throw releaseError;
     });
     const registered = {
       connection: { mode: "listen" as const, listenAddress: "127.0.0.1", listenPort: 43127, listenPath: "/setup-probe" },
@@ -3554,9 +3559,24 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
         finishRelease();
         await vi.advanceTimersByTimeAsync(0);
         expect(release).toHaveBeenCalledOnce();
-        expect(cleanup).not.toHaveBeenCalled();
+        expect(failure).toBeInstanceOf(NativeEnvironmentProbeCleanupError);
+        if (mode === "late-release-error") {
+          await expect((failure as NativeEnvironmentProbeCleanupError).retired).rejects.toBe(releaseError);
+          expect(cleanup).not.toHaveBeenCalled();
+          expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+          releaseFails = false;
+          await (failure as NativeEnvironmentProbeCleanupError).retryCleanup!();
+          expect(release).toHaveBeenCalledTimes(2);
+          expect(cleanup).toHaveBeenCalledOnce();
+          await expect(stat(runtimeDirectory)).rejects.toThrow();
+        } else {
+          await (failure as NativeEnvironmentProbeCleanupError).retired;
+          expect(cleanup).toHaveBeenCalledOnce();
+          await expect(stat(runtimeDirectory)).rejects.toThrow();
+        }
       } else {
         expect(release).toHaveBeenCalledOnce();
+        if (failure instanceof NativeEnvironmentProbeCleanupError) await failure.retired;
         expect(cleanup).toHaveBeenCalledOnce();
         await expect(stat(runtimeDirectory)).rejects.toThrow();
       }
@@ -3725,7 +3745,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   }
 }, 15_000);
 
-it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
   const runtimeDirectory = join(root, "native-state");
   await mkdir(runtimeDirectory, { mode: 0o700 });
@@ -3744,6 +3764,7 @@ it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refr
   try {
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
+      ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
       environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
       timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
       ...(remote ? { workingDirectory: remoteWorkspace } : {}),
@@ -3764,7 +3785,7 @@ it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refr
         runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
         codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, "--request-log", calls,
           ...(mode === "missing-completion" ? ["--hold-turn"] : []),
-          ...(mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" ? ["--returned-model", "another-model"] : []),
+          ...(mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" ? ["--returned-model", "another-model"] : []),
           ...(mode === "missing-model" ? ["--returned-model", ""] : []),
           ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
         sourceCodexHome: sourceHome,
@@ -3787,18 +3808,19 @@ it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refr
         await rm(runtimeDirectory, { recursive: true, force: true });
       },
     });
-    if (mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+    if (mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
       const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
-      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, helloProbePassed: true });
+      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
       expect(refreshed).toBe(true);
       if (remote) expect(registrationReleased).toBe(true);
       expect(cleanupConfirmed).toBe(true);
       await expect(stat(runtimeDirectory)).rejects.toThrow();
       const requests = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       expect(requests.find(value => value.method === "thread/start").params).toMatchObject({ ...(remote ? { cwd: remoteWorkspace } : {}), permissions: "paperclip-runner-workspace-read-only", dynamicTools: [] });
-      expect(requests.find(value => value.method === "turn/start").params).toMatchObject({ effort: "low", permissions: "paperclip-runner-workspace-read-only" });
+      if (mode === "admission-only") expect(requests.some(value => value.method === "turn/start")).toBe(false);
+      else expect(requests.find(value => value.method === "turn/start").params).toMatchObject({ effort: "low", permissions: "paperclip-runner-workspace-read-only" });
     } else {
-      await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
+      await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
       if (mode === "late-remote-release-error") {
         expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
@@ -3812,11 +3834,11 @@ it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refr
         expect(cleanupConfirmed).toBe(true);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
       }
-      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "missing-model") {
+      if (mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "missing-model") {
         expect(cleanupConfirmed).toBe(true);
         await expect(stat(runtimeDirectory)).rejects.toThrow();
       }
-      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" || mode === "late-bootstrap" || mode.startsWith("late-remote-")) {
+      if (mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" || mode === "late-bootstrap" || mode.startsWith("late-remote-")) {
         const requests = (await readFile(calls, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
         expect(requests.some(value => value.method === "turn/start")).toBe(false);
       }
@@ -9416,6 +9438,25 @@ describe("cold process admission budget", () => {
       expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
     }
   });
+});
+
+it("retains the authenticated command failure without implicitly logging its structured result", async () => {
+  const result = { commandId: "command-2", commandType: "session.open", status: "failed",
+    result: { code: "command_execution_failed", message: "closed runtime failure" } };
+  let failure: unknown;
+  try {
+    await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,
+      isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "failed", result }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed" });
+  } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).toHaveProperty("message", `PRP command session.open failed: ${JSON.stringify(result)}`);
+  const structured = (failure as Error & { runnerCommandResult: unknown }).runnerCommandResult;
+  expect(structured).toEqual(result);
+  expect(structured).not.toBe(result);
+  expect(JSON.stringify(failure)).not.toContain("command_execution_failed");
+  result.result.message = "mutated after receipt";
+  expect(structured).toHaveProperty("result.message", "closed runtime failure");
 });
 
 

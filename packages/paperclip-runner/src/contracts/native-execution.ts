@@ -93,7 +93,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -709,8 +709,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot" && provider.agent !== "antigravity") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, copilot, or antigravity");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {

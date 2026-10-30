@@ -40,6 +40,8 @@ Work in this order.
 
    For a native single-task confirmation, call `request_human_input` with arguments like these. Replace `<child-title>` with the proposed title and describe its actual scope in the prompt. Use a new idempotency key for each changed or revised proposal. Reuse a key only for the exact same proposal when reconciling an interrupted call; the example key below is for the first proposal.
 
+   The tool's root fields are `idempotencyKey`, `interactionKind`, `title`, `prompt`, `continuationPolicy`, and `payload`, with optional `targetRevisionId` and `resolverPolicy` as advertised. Put `version` and `supersedeOnUserComment` inside `payload`; neither is a root argument. If validation rejects a proposal, correct its argument placement and keep the confirmation or checkbox approval kind. Switching it to a question form cannot authorize the proposed work. Wait for a successful saved card receipt before claiming you requested approval.
+
    ```json
    {
      "idempotencyKey": "first-task-proposal-confirmation",
@@ -48,6 +50,8 @@ Work in this order.
      "prompt": "Approve creating exactly one child task named \"<child-title>\" for the scope described above?",
      "continuationPolicy": "wake_assignee",
      "payload": {
+       "version": 1,
+       "supersedeOnUserComment": false,
        "acceptLabel": "Approve",
        "rejectLabel": "Revise",
        "rejectRequiresReason": true
@@ -65,6 +69,8 @@ Work in this order.
      "prompt": "Approve the proposed scope in this saved plan?",
      "continuationPolicy": "wake_assignee",
      "payload": {
+       "version": 1,
+       "supersedeOnUserComment": false,
        "options": [{ "id": "scope", "label": "Approve the proposed scope for <child-title>" }],
        "defaultSelectedOptionIds": ["scope"],
        "minSelected": 1,
@@ -87,6 +93,27 @@ Work in this order.
    - For a plan-only request, retain the accepted plan on this task. Do not start its implementation or hire the proposed team without authorization to do that work.
    - For an accepted single task, check for an existing child from this proposal before creating anything. Create exactly one child linked to this onboarding task and assign it to yourself. On later wakes, continue that same child instead of creating another.
    - If the accepted child work requires a file deliverable, include the approved scope, document requirements, and requested filenames in a self-contained child description. Delegate the work to the child's own Paperclip execution, even when the child is assigned to yourself. That execution must save the document and publish the requested file on the child before marking it done. Do not create or register that file from the onboarding run, or mark the child done before its execution delivers the file. Native `register_deliverable` is bound to its current task.
+   - Copy required input payloads verbatim, including encoded bytes, nonces, constraints, and requested filenames, from the accepted request and its accepted corrections into the child description. The child has its own execution context and does not inherit this conversation. Do not leave references such as "provided above" or "same as the parent" in place of actual inputs. When an input is not inline, include its actual retrievable source reference and ensure the child is authorized to read it. Keep credentials and secrets out of handoff text.
+   - Parent-child linkage is not a dependency. Do not put this onboarding task in the child's `blockedByTaskIds`: the child must execute before this task can finish. Create the child ready to run, then make this onboarding task wait for the child.
    - While waiting for that file-producing child, preserve existing blocker IDs and add the child as a dependency. Native runners use `set_dependencies`, then `paperclip_block` with the child agent as owner and child completion as the unblock action; legacy runners use the normal issue API with `blockedByIssueIds` and a blocked disposition. End the turn so the child can execute. Do not poll for its result while holding the onboarding run.
    - When child completion resumes the onboarding task, verify the saved child document and retrievable file, then reply with the actual child task and download links. Reuse the recorded result instead of producing another file on the parent or creating another child.
    - For document-only child work, you may execute it directly. Save the finished output as a document on the child task and mark that child done. Link it from the onboarding conversation. Completing the onboarding parent in place, or saving the output only on the parent, does not fulfill the accepted child-task proposal.
+
+   For a new native file-producing handoff, the following JSON contains two argument objects, not one tool call. Call `create_task` with `createTask` first. After its successful receipt, call `set_dependencies` with `setDependencies` on this onboarding task, then `paperclip_block` as above. Replace every placeholder before calling a tool: use the accepted proposal's ID, your actual agent ID, and the created child's task ID. Replace `<approved-child-description>` with the self-contained description and actual inputs described above. Replace `<existing-blocker-id>` with all current blocker IDs; remove that placeholder when there are none, leaving only the child ID. Never replace it with this onboarding task's own ID. Keep each blocker ID only once. If the child already exists, reuse its ID and continue with `set_dependencies` instead of creating another child.
+
+   ```json
+   {
+     "createTask": {
+       "idempotencyKey": "first-task-child:<proposal-id>",
+       "title": "<child-title>",
+       "description": "<approved-child-description>",
+       "assigneeActorId": "<self-agent-id>",
+       "status": "todo",
+       "blockedByTaskIds": []
+     },
+     "setDependencies": {
+       "idempotencyKey": "first-task-wait:<proposal-id>",
+       "blockedByTaskIds": ["<existing-blocker-id>", "<child-task-id>"]
+     }
+   }
+   ```

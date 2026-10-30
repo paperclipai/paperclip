@@ -629,10 +629,18 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
         p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
       from issues p where p.id = ${issues.id} and p.company_id = ${issues.companyId}
       union
-      select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
+      (select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
         p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
-      from issues p join privacy_ancestors c on p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
-      where p.visibility = 'private' or exists (select 1 from projects pp where pp.id = p.project_id and pp.company_id = p.company_id and pp.visibility = 'private')
+      from privacy_ancestors c
+      cross join lateral (
+        select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
+          p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+        from issues p where p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
+        limit 1
+      ) p
+      where c.privacy_parent_issue_id is not null
+        and (p.visibility = 'private' or exists (select 1 from projects pp where pp.id = p.project_id and pp.company_id = p.company_id and pp.visibility = 'private'))
+      limit 1)
     )
     select 1 from privacy_ancestors n
     where ${implicit} or ${grant} or ${projectMember}

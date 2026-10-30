@@ -541,7 +541,7 @@ async function removeConnection(
       .returning({ id: connectionTokenIssuances.id });
 
     const archived = await db.transaction(async (tx) => {
-      if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id);
+      if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)

@@ -1,3 +1,5 @@
+import { notifyTeamsAttemptRecovery } from "./chat-channels/microsoft-teams/attempt-recovery-work.js";
+import { notifyTeamsConsentExpiry, unusedTeamsConsentPhases } from "./chat-channels/microsoft-teams/consent-expiry-work.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -388,6 +390,8 @@ export function teamsFileTransferService(
     row: Row,
     patch: Partial<typeof chatTeamsFileTransfers.$inferInsert>,
   ): Promise<Row> {
+    await notifyTeamsConsentExpiry(tx, row.id);
+    await notifyTeamsAttemptRecovery(tx, row.id);
     const [next] = await tx
       .update(chatTeamsFileTransfers)
       .set({ ...patch, version: row.version + 1, updatedAt: now() })
@@ -533,6 +537,7 @@ export function teamsFileTransferService(
           binding,
         ),
       };
+      await notifyTeamsConsentExpiry(tx, id);
       const [row] = await tx
         .insert(chatTeamsFileTransfers)
         .values({
@@ -859,9 +864,32 @@ export function teamsFileTransferService(
     if (!row) fail();
     return summary(row);
   }
+  async function recoverTransfer(companyId: string, id: string, reason: "all" | "consent" | "attempts") {
+    return db.transaction(async (tx) => {
+      // Bound maintenance waits, including locks taken by atomic projection.
+      await tx.execute(sql`set local lock_timeout = '250ms'`);
+      const row = await locked(tx, companyId, id, true);
+      if (reason !== "consent" && (sending.includes(row.phase) || row.phase === "conflict") &&
+          row.attemptExpiresAt && row.attemptExpiresAt <= now()) {
+        await update(tx, row, {
+          phase: row.phase === "conflict" ? "conflict" : unknownPhase[row.phase],
+          attemptId: null,
+          attemptExpiresAt: null,
+          reason: row.phase === "conflict" ? row.reason : "worker_outcome_unknown",
+        });
+        return true;
+      }
+      if (reason !== "attempts" && unusedTeamsConsentPhases.includes(row.phase) && row.expiresAt <= now()) {
+        await update(tx, row, { phase: "expired", reason: "unused_consent_expired" });
+        return true;
+      }
+      return false;
+    });
+  }
   async function expireAndRecover(
     companyId: string,
     limit = 25,
+    reason: "all" | "attempts" = "all",
   ): Promise<TeamsFileRecoverySweepSummary> {
     if (!z.uuid().safeParse(companyId).success) fail();
     const size = Number.isSafeInteger(limit)
@@ -872,7 +900,8 @@ export function teamsFileTransferService(
       cursors = new Map();
       expiryRecoveryCursors.set(db, cursors);
     }
-    const cursor = cursors.get(companyId);
+    const cursorKey = `${companyId}:${reason}`;
+    const cursor = cursors.get(cursorKey);
     const cutoff = now();
     const eligible = and(
       eq(chatTeamsFileTransfers.companyId, companyId),
@@ -881,14 +910,10 @@ export function teamsFileTransferService(
           inArray(chatTeamsFileTransfers.phase, [...sending, "conflict"]),
           lte(chatTeamsFileTransfers.attemptExpiresAt, cutoff),
         ),
-        and(
-          inArray(chatTeamsFileTransfers.phase, [
-            "consent_pending",
-            "awaiting_consent",
-            "upload_pending",
-          ]),
+        reason === "all" ? and(
+          inArray(chatTeamsFileTransfers.phase, unusedTeamsConsentPhases),
           lte(chatTeamsFileTransfers.expiresAt, cutoff),
-        ),
+        ) : undefined,
       ),
     );
     let rows: Array<{ id: string }>;
@@ -927,45 +952,11 @@ export function teamsFileTransferService(
     for (const candidate of rows) {
       // Progress over rejected rows too. Neither corrupt evidence nor a held
       // publication lock can pin every later scan to the same oldest page.
-      cursors.set(companyId, candidate.id);
+      cursors.set(cursorKey, candidate.id);
       result.cursor = candidate.id;
       result.scanned++;
       try {
-        const recovered = await db.transaction(async (tx) => {
-          // The projection may need endpoint/conversation rows too. Bound
-          // only maintenance lock waits, including locks inside that callback.
-          await tx.execute(sql`set local lock_timeout = '250ms'`);
-          const row = await locked(tx, companyId, candidate.id, true);
-          if (
-            (sending.includes(row.phase) || row.phase === "conflict") &&
-            row.attemptExpiresAt &&
-            row.attemptExpiresAt <= now()
-          ) {
-            await update(tx, row, {
-              phase:
-                row.phase === "conflict" ? "conflict" : unknownPhase[row.phase],
-              attemptId: null,
-              attemptExpiresAt: null,
-              reason:
-                row.phase === "conflict"
-                  ? row.reason
-                  : "worker_outcome_unknown",
-            });
-            return true;
-          } else if (
-            ["consent_pending", "awaiting_consent", "upload_pending"].includes(
-              row.phase,
-            ) &&
-            row.expiresAt <= now()
-          ) {
-            await update(tx, row, {
-              phase: "expired",
-              reason: "unused_consent_expired",
-            });
-            return true;
-          }
-          return false;
-        });
+        const recovered = await recoverTransfer(companyId, candidate.id, reason);
         if (recovered) result.recovered++;
       } catch {
         // Keep the exact evidence and rollback any paired projection. Only
@@ -1168,7 +1159,10 @@ export function teamsFileTransferService(
     recordConsent,
     process,
     get,
-    expireAndRecover,
+    expireAndRecover: (companyId: string, limit = 25) => expireAndRecover(companyId, limit),
+    recoverAbandonedAttempts: (companyId: string, limit = 25) => expireAndRecover(companyId, limit, "attempts"),
+    recoverAbandonedAttempt: (companyId: string, id: string) => recoverTransfer(companyId, id, "attempts"),
+    expireUnusedConsent: (companyId: string, id: string) => recoverTransfer(companyId, id, "consent"),
     cancel,
     canCancelConflict,
     resolveInTransaction,

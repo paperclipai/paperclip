@@ -233,12 +233,21 @@ connection instructions, and agent identity. Their names are
 when a later setup step fails before the provider lifecycle trace starts.
 
 `task.execution_attempt` owns one invocation of the server executor, from its
-admission reads through preparation, provider dispatch, completion, reply persistence,
-and cleanup. It starts a new root trace with a link to the active trigger. It
+admission reads through preparation, provider dispatch, and inline settlement.
+Deferred native workspace finalization and reply persistence can finish after
+this root ends. It starts a new root trace with a link to the active trigger. It
 therefore follows the operator's root sampler even when the HTTP trigger was not
 sampled. Async-local ownership parents same-run preparation and nested phases to
 the current attempt. Concurrent runs have separate contexts. A phase invoked
 without a live matching attempt still starts an independent linked root.
+
+`task.workspace_finalization` owns each deferred native workspace finalization
+check. It starts when the background worker checks the run, including its
+admission and ownership checks, and ends when that check returns or fails.
+Workspace restore phases nest under this root using the same hashed run ID.
+It does not extend an earlier execution attempt or include time waiting for
+the background worker to run. Retries have separate roots. A check that finds
+no eligible work can end without a restore child.
 
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
@@ -327,6 +336,9 @@ attempt or owning phase:
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
 | `workspace_sync.seed_generation`, `.seed_lookup`, `.seed_replay`, `.seed_persist`, `.seed_publish`, `.seed_verify`, `.seed_extract`, `.seed_snapshot`, `.seed_cleanup` | Seed identity, cache lookup, replay, durable copies, publication, extraction/re-snapshot verification and temporary cleanup. Cache hits omit cold clone and verification work. |
+| `workspace_sync.seed_cache_copy`, `.seed_cache_sync`, `.seed_cache_hash` | Archive linking/copying, filesystem durability, and checksum work inside cache publication. These are children of seed publication, not additional elapsed time to add to that parent. |
+| `workspace_sync.seed_cache_capacity`, `.seed_cache_evict`, `.seed_cache_locked_publish` | Quota inventory, eviction planning/application, and the publication body after the company lock is acquired. Capacity may run before and inside the lock. A gap after seed verification and before locked publication can include lock acquisition; locked publication itself excludes that wait. Copy/sync/hash and the locked quota/eviction work are nested children. |
+| `workspace_sync.git_index_refresh` | Fully awaited stat-metadata refresh after restoring a fresh OpenCode sandbox checkout. It shares the inbound barrier and command timeout; dirty working-tree content stays unstaged. Recovery and retained sandboxes skip it. |
 | `workspace_sync.inbound_barrier`, `.stage_workspace`, `.transfer` | The inbound scheduler barrier, whole workspace task, and provider `syncIn` call (including provider guards, upload and post-upload extraction). Parallel tasks overlap; provider transfer/exec children give the finer transport split when available. |
 | `workspace_sync.progress` | Awaited progress/status reporting, including the existing lifecycle run-log writes. These are not file transfer work. |
 | `workspace_sync.run_read`, `.descriptor_directory`, `.descriptor_read`, `.archive_hash`, `.warm_stamp`, `.durable_seed_verify`, `.manifests_persist`, `.descriptor_write`, `.reference_write` | Saved run state, recovery descriptors, archive hashing, remote warm-stamp check, manifests and final descriptor/reference persistence. |
@@ -611,8 +623,9 @@ An unsampled HTTP request therefore cannot suppress an otherwise sampled
 background run. An operator who disables root sampling still gets no spans.
 Without an OTLP endpoint, tracing remains silent and does not export data.
 
-The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters, and
-`task.execution_attempt` for server preparation and settlement. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the three root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
+`task.execution_attempt` for server preparation and settlement, and
+`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 
@@ -642,7 +655,7 @@ task.provider_session
 │   │   ├── runner.session.bootstrap | runner.session.resume
 │   │   └── runner.turn.submit
 │   └── agent.turn
-│       ├── provider.turn.queue
+│       ├── runner.turn.submitted_to_started
 │       ├── provider.time_to_first_agent_event
 │       ├── tool.request.input_stream
 │       └── tool.execute
@@ -2040,3 +2053,50 @@ PostgreSQL benchmark with 114 mixed skills and at least 400 remote files. It
 reports one cold sample and ten warm samples (one in a new process), refresh and
 fetch counts, rebuilds, missing entries, and content checks. Upstream responses are
 deterministic fixtures; use real deployed run spans for user-facing latency.
+
+## Invocation and native turn attribution (v1)
+
+The existing opt-in OTLP endpoint gate also controls invocation timing. No new
+exporter is installed. Generic plugin timing uses `span.record`, still gated by
+`environment.drivers.register` or `workspaces.manage`, and the host-owned invocation ID. The host clamps
+names, attributes, status and timestamps again. A worker cannot choose a trace
+parent. Existing provider `startSpan` calls are retained as children of the
+worker receipt. `ctx.tracer.withSpan` supplies async-local nesting; it is optional
+for compatibility with older SDK fixtures. The host generates each child span's
+identity. Receipts share one invocation-wide budget of 256 nodes and 12 levels. The worker root supports up to 24 hours; short children keep their widths on long execute calls. Nested timestamps share one monotonic origin. Missing, invalid,
+expired and cross-invocation context cannot select another call's parent.
+
+| Boundary | Coverage | Owner and clock | Meaning / limit |
+| --- | --- | --- | --- |
+| Dispatch / receipt / return | `execution.plugin_dispatch` → `plugin.worker` | Host invocation; worker monotonic durations anchored to its epoch start | Outer minus worker time is an unattributed dispatch/scheduling remainder. It is not network latency. |
+| Repeated host reads | `plugin.host.identity.read`, `config.read`, `progress.read`, `progress.write` | Worker invocation, one span per awaited call, bounded by receipt budget | Round trip and host service together. Span count is call count; overlapping reads are not additive. |
+| Plugin coordination | `plugin.storage.queue`, `storage.execute`, `runtime.queue`, `runtime.prepare`, `runtime.reconcile`, `runtime.verify`, `workspace.prepare` | Invoking plugin, monotonic durations | The plugin keeps its locking and authorization owners. `plugin.reused` is boolean. |
+| Completed remote lifecycle | `plugin.remote.lifecycle`, linked to the host-owned observer | Bounded prior monotonic durations, up to ten minutes old | Independent lifecycle trace; never a child of a later polling request. The worker cannot supply link IDs. |
+| Remote operation receipt | `plugin.remote.request` → `plugin.remote.operation` | Remote monotonic offsets, checked against local round trip and parent bounds | Closed operation classes cover mount refresh, guest setup, process execution, scripts and cleanup. No remote wall-clock subtraction. |
+| Retained/cold transport | `runner.transport.attach`, `resume`, `cold_start`, `prepare`, `registration`, `provider_identity` | Controller process, current active context on every operation | A retained transport must not capture the preceding run's trace. These parents overlap their children. |
+| Command and provider admission | `runner.transport.turn_start`, `command_ack`, `started_event`; optional ACPX `runner.remote.turn_start` → `runner.sidecar.turn_start` → `status_read`, `prompt_started` | Local monotonic spans; remote numeric durations anchored at receipt | Command ACK proves durable command completion. ACPX `promptStarted` proves the runtime prompt-start barrier, not a model token or provider queue exit. SDK-internal work stays opaque. |
+| Durable events | `runner.event.persist` with bounded event kind | Host-local monotonic interval | Receipt through event transaction commit, before live publication. Duplicate receipts are not new provider starts. |
+| First event / first text | Existing `provider.time_to_first_agent_event`, `task.time_to_first_token`; `response.first_nonempty_text` | Durable event observations | First event can be a tool; text must be nonempty and pass the existing deliverable-text observer. |
+| Completion | `completion.request.first`, existing `tool.request.input_stream`, `completion.tool_accepted`, `completion.result_committed` | Same turn; provider tool identity retained only in memory | Input-stream end is the last observed argument update. `run.result.proposed` is the validated tool receipt; `completion.result_committed` follows the successful result transaction; the earlier `run.result.accepted` event alone does not prove persistence. Neither certifies response publication. |
+| Reply commit / publication | Existing response transaction/write/publish phases | Response owner, transaction and local publication | Keep separate from tool acceptance and first text. |
+| Input/context | `inputBytes`, `toolSchemaBytes`, `toolCount`, `contextReused`, `tokenDataAvailable` | Controller numeric/boolean metadata | Counts only. No prompts, instructions, tool arguments or credentials. Token/cache counters remain unavailable unless supplied by a provider with known semantics. Model/effort stay in existing effective run settings. |
+
+Remote receipt spans use their measured duration and causal bounds. Their absolute
+placement inside a round trip remains uncertain by transport/scheduling time.
+Never add parent and child widths, sum concurrent host reads, or label this
+remainder inference or network delay. Failure receipts carry status codes without
+exception text. Incomplete or malformed receipts are discarded without affecting
+execution. A receipt cap can omit further detail; it does not truncate work.
+
+The linked private implementation owns its remote stage names and protocol.
+Core contains generic operation semantics only. Before using this coverage to
+rank optimizations, deploy a compatible source set and inspect actual collector
+exports for parentage, concurrent ownership, widths and closed failure spans.
+Unit tests do not establish ingestion or a latency improvement.
+
+The shared ACPX instrumentation advances Grok source profile 13 to 14 and
+Copilot 84 to 85. Historical identities remain unchanged and decodable. Provider
+packages, models and permission defaults are unchanged; Pi's bound declaration
+is unchanged. These are source attestations, not evidence of fresh live provider
+qualification. Re-run compatibility qualification for the new identities before
+rollout.

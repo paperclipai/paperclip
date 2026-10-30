@@ -176,13 +176,23 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
   // Persist the exact intended child before the opening reply can dispatch any model work.
   await input.own({ kind: "issue", name: title });
   await page.getByRole("radio", { name: option.label }).last().click({ timeout: remaining() });
+  const childBrief = [
+    "Complete this child's approved scope in this order:",
+    "1. Decode the following base64 into connection-input.json in its workspace, using actual tools.",
+    `Exact input bytes: ${Buffer.from(proof.input).toString("base64")}`,
+    '2. Write connection-proof.json containing exactly {"nonce":string,"count":number,"total":number,"sha256":string}. Copy nonce, count the input values, sum them, and compute sha256 of the exact input bytes including the final newline.',
+    '3. Publish connection-proof.json on this child using register_deliverable with filename "connection-proof.json", workspace-relative contentRef "connection-proof.json", and correct byteSize and SHA-256 for that file.',
+    "4. Use write_document to save a connection-proof document on this child including the filename connection-proof.json, input nonce, result, and the file link returned by register_deliverable. A Markdown workspace note is not a Paperclip task document and does not replace this step.",
+    "5. Report completion with paperclip_finish using the current completion contract. Include verification for checks actually run and omit optional schema. Use deliverable:<attachmentId> from register_deliverable in evidence and any file artifacts. Keep local input paths in verification details, not completion evidence or artifacts. Correct rejected arguments using the tool feedback and retry before declaring a blocker.",
+    "Do not hire agents, create additional tasks, or access credentials or unrelated files.",
+  ].join("\n");
   await page.getByTestId("question-other-answer-composer").last().locator('[contenteditable="true"],textarea').first().fill([
     `I have one task in mind. Propose exactly one child task named "${title}" and wait for my approval before creating it or doing its work.`,
     "After approval, assign it to yourself and let its own Paperclip execution produce the result. Then verify and link its saved document and downloadable file in this onboarding conversation and complete both tasks.",
-    "The child's approved scope: decode the following base64 into connection-input.json in its workspace, using actual tools.",
-    `Exact input bytes: ${Buffer.from(proof.input).toString("base64")}`,
-    'Write connection-proof.json containing exactly {"nonce":string,"count":number,"total":number,"sha256":string}. Copy nonce, count the input values, sum them, and compute sha256 of the exact input bytes including the final newline.',
-    "Publish connection-proof.json on that child using register_deliverable with workspace-relative contentRef and correct byteSize and SHA-256. Save a connection-proof document on the child including the input nonce, result, and file link. Do not hire agents, create additional tasks, or access credentials or unrelated files.",
+    "When you create the child, copy the entire brief between BEGIN CHILD BRIEF and END CHILD BRIEF VERBATIM into create_task.description. Preserve every step, tool name, parameter instruction, and exact encoded input. Do not summarize or paraphrase it.",
+    "BEGIN CHILD BRIEF",
+    childBrief,
+    "END CHILD BRIEF",
   ].join("\n"), { timeout: remaining() });
   await page.getByRole("button", { name: opening[0]!.payload.submitLabel ?? "Continue", exact: true }).last().click({ timeout: remaining() });
 

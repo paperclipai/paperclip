@@ -1,6 +1,6 @@
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { inspectDurablePrpCheckpointHeader, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
@@ -195,4 +195,12 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
         eq(nativeRunnerCheckpoints.issueId, nativeRunFinalizations.issueId),
         eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId))))));
   return rows.map(row => row.runId);
+}
+
+/** Inspect only the bounded encrypted header. Protocol interpretation stays in Runner. */
+export function inspectNativeRunnerUpgradeHeader(binding: Binding, material: Record<string, unknown>) {
+  try {
+    const contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material);
+    return inspectDurablePrpCheckpointHeader(contents);
+  } catch { return null; }
 }
