@@ -22,6 +22,21 @@ bounded timeout diagnostics. Missing, stale, or incorrect metadata cannot grant
 or retain ownership. PID reuse, PID namespaces, and wall-clock changes do not
 decide whether a writer owns the lock.
 
+A timeout error (`ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT`) carries that holder
+evidence. `directoryMergeLockTimeoutDiagnosticsFor` reduces it to the closed
+agent-directory operation label, the owner state (`alive`, `dead`, `unknown`,
+`missing`, or `invalid`), whether this process knows of a local holder, whether
+the owner is this process or predates it, the owner's age, and the contender's
+wait in milliseconds (each capped at seven days). Unknown labels and invalid
+values are omitted. The record never includes the owner's PID or file paths.
+Run-failure reports use it for their `restoreLock*` fields. When the server
+reports an uncaught timeout to Sentry, the event gets this record as an
+event-local `directory_merge_lock` context and an
+`error_code=workspace_restore_lock_timeout` tag. The error message, which names
+the lock file, and default grouping are unchanged. An owner much older than the
+contender's wait points to a stuck holder; a recent owner points to contention.
+Reporting does not change acquisition, timeouts, or retries.
+
 An unchanged returned snapshot still acquires the target writer lock and runs
 both authorization/publication hooks. If every returned path, type, file hash,
 file mode and symlink target matches the baseline, there is no incoming delta.
