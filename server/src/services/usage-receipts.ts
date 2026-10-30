@@ -40,6 +40,8 @@ const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
+  producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {

@@ -21,6 +21,8 @@ struct Script {
     retention_limit: usize,
     release_file: PathBuf,
     receipt_file: PathBuf,
+    #[serde(default)]
+    accounting: bool,
 }
 
 #[derive(Default)]
@@ -86,11 +88,21 @@ fn workload(script: Script, shared: Shared) {
             digest = Sha256::digest(digest);
         }
         work = lock.lock().unwrap();
+        let (event_type, payload) = if script.accounting {
+            if step == 1 {
+                ("usage.reported", json!({"provider":"openai", "model":"test-model",
+                    "runDeltaAvailable":true, "runDelta":{"inputTokens":120,"outputTokens":10,"providerCostUsd":0.25}}))
+            } else {
+                ("turn.completed", json!({"status":"completed"}))
+            }
+        } else {
+            ("item.delta", json!({"text": format!("step={step} sha256={digest:x}\n")}))
+        };
         work.events.push_back(PolledEvent {
             executor_event_id: format!("fixture-step-{step}"),
-            event_type: "item.delta".to_owned(),
-            priority: EventPriority::P2,
-            payload: json!({"text": format!("step={step} sha256={digest:x}\n")}),
+            event_type: event_type.to_owned(),
+            priority: if script.accounting { EventPriority::P0 } else { EventPriority::P2 },
+            payload,
         });
         work.completed = step;
         work.peak_retained = work.peak_retained.max(work.events.len());

@@ -1,3 +1,6 @@
+import { createNativeUsageDelivery } from "./native-usage-delivery.js";
+import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
+export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
@@ -107,7 +110,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
 } from "../../adapters/index.js";
-import { usdToUnits, type NativeFinalizationResult } from "@paperclipai/shared";
+import type { NativeFinalizationResult } from "@paperclipai/shared";
 import type {
   DurablePrpControlPlane,
   HarnessRuntimeRequestResolution,
@@ -1752,12 +1755,13 @@ export async function synchronizeCompletedProviderPlan(input: {
   };
 }
 
-class SessionToolAuthorityEpoch {
+class SessionAuthorityEpoch {
   readonly runId: string;
   #authority: PaperclipRunnerToolAuthority;
   #revoked = false;
 
-  constructor(runId: string, authority: PaperclipRunnerToolAuthority, private readonly toolTrace?: NativeToolTrace) {
+  constructor(runId: string, authority: PaperclipRunnerToolAuthority, private readonly toolTrace?: NativeToolTrace,
+    private readonly onAccountingEvent?: (event: PrpEvent) => Promise<void>) {
     this.runId = runId;
     this.#authority = authority;
   }
@@ -1771,6 +1775,13 @@ class SessionToolAuthorityEpoch {
     if (this.#revoked) {
       throw new Error("native_tool_authority_epoch_revoked");
     }
+  }
+
+  async acceptAccountingEvent(event: PrpEvent) {
+    this.#assertCurrent();
+    if (event.runId !== this.runId) throw new Error("native_usage_run_binding_mismatch");
+    await this.onAccountingEvent?.(event);
+    this.#assertCurrent();
   }
 
   definitions() {
@@ -1793,7 +1804,7 @@ class SessionToolAuthorityEpoch {
   }
 }
 
-const sessionToolAuthorityEpochs = new Map<string, SessionToolAuthorityEpoch>();
+const sessionToolAuthorityEpochs = new Map<string, SessionAuthorityEpoch>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
@@ -8559,7 +8570,15 @@ async function executePaperclipNativeSessionWithinScope(
     for (const row of history) turnAccounting.observe(record(row.payload).prpEvent as PrpEvent);
   }
   let fallbackUsageRecorder: ReturnType<typeof createRunUsageRecorder> | undefined;
+  const producerOwnsUsage = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
+    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(input.execution.provider.kind);
+  const producerUsage = producerOwnsUsage ? await createNativeUsageDelivery(input.db, {
+    companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+    runnerInstanceId: effectiveRunnerInstanceId, provider: input.execution.provider,
+    billing: resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity),
+  }) : undefined;
   const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean) => {
+    if (producerOwnsUsage) return;
     const accountingUsage = normalizeNativeUsage(usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
     const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider) : undefined;
     complete = complete && accountingUsage !== undefined;
@@ -9178,6 +9197,7 @@ async function executePaperclipNativeSessionWithinScope(
       input.useRunnerd && input.backend === undefined
         ? await timeController("backend_setup", () => createRunnerdBackend({
             ...input,
+            onAccountingEvent: producerUsage?.capture,
             controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? {
               bootId: controller.bootId,
               runnerArtifact: restoredController ? { version: restoredController.runnerVersion, digest: restoredController.runnerDigest } : undefined,
@@ -9217,7 +9237,7 @@ async function executePaperclipNativeSessionWithinScope(
         persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution,
           nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote"), await recovered.session.snapshot());
         persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest!, "remote");
-        runnerdBackend = await createRunnerdBackend({ ...input, runnerInstanceId: effectiveRunnerInstanceId,
+        runnerdBackend = await createRunnerdBackend({ ...input, onAccountingEvent: producerUsage?.capture, runnerInstanceId: effectiveRunnerInstanceId,
           controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? { bootId: controller.bootId } : undefined,
           durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
       }
@@ -10261,151 +10281,6 @@ async function executePaperclipNativeSessionWithinScope(
   return adapterResult;
 }
 
-function numericUsageField(
-  usage: Record<string, unknown> | null,
-  keys: string[],
-): number | undefined {
-  if (!usage) return undefined;
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0)
-      return value;
-  }
-  return undefined;
-}
-
-function nativeUsageMeasurement(usage: Record<string, unknown>) {
-  const nestedUsage = record(usage.usage);
-  // An explicit partial delta must not fall through to a full session total.
-  if (Object.hasOwn(usage, "runDelta")) return record(usage.runDelta);
-  if (Object.hasOwn(nestedUsage, "runDelta")) return record(nestedUsage.runDelta);
-  const candidates = [
-    record(usage.runDelta),
-    record(nestedUsage.runDelta),
-    record(usage.total),
-    record(nestedUsage.total),
-    record(usage.cumulative),
-    record(nestedUsage.cumulative),
-    nestedUsage,
-    usage,
-  ];
-  return (
-    candidates.find(
-      (candidate) =>
-        numericUsageField(candidate, [
-          "inputTokens",
-          "input",
-          "promptTokens",
-          "outputTokens",
-          "output",
-          "completionTokens",
-        ]) !== undefined,
-    ) ?? usage
-  );
-}
-
-export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
-  if (provider.kind === "acpx") {
-    if (provider.agent === "cursor") return "cursor";
-    if (provider.agent === "copilot") return "github";
-    if (provider.agent === "pi") return "openrouter";
-  }
-  return "openai";
-}
-
-function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
-  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean }>();
-  const sequences = new Map<string, number>();
-  let currentTurn: string | undefined;
-  const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
-  const snapshot = () => {
-    if (turns.size === 0) return { usage: null, turnId: undefined, complete: false };
-    let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
-    let cost = 0n, costKnown = false, costIncomplete = false, complete = true;
-    for (const [turnId, turn] of turns) {
-      const normalized = normalizeNativeUsage(turn.usage);
-      complete &&= turnId !== "unattributed" && turn.terminal && normalized !== undefined;
-      inputTokens += (normalized?.inputTokens ?? 0) - (normalized?.cacheWriteTokens ?? 0);
-      outputTokens += normalized?.outputTokens ?? 0;
-      cacheReadTokens += normalized?.cachedInputTokens ?? 0;
-      cacheWriteTokens += normalized?.cacheWriteTokens ?? 0;
-      const price = nativeUsageCostUsd(turn.usage, provider);
-      if (price === undefined) costIncomplete = true;
-      else { cost += usdToUnits(price); costKnown = true; }
-    }
-    // A free empty attempt contributes no price evidence for later paid work.
-    // Keep an incomplete zero subtotal absent so complete aggregate tokens can
-    // still receive an estimate. Preserve positive known spend and true zero totals.
-    const retainCost = costKnown && (!costIncomplete || cost > 0n);
-    const runDelta = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
-      ...(retainCost ? { providerCostUsd: Number(cost) / 1_000_000_000 } : {}) };
-    const current = currentTurn ? turns.get(currentTurn) : undefined;
-    return { usage: { runDelta, accountingCostIncomplete: costIncomplete,
-      ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
-      turnId: current && normalizeNativeUsage(current.usage) ? currentTurn : undefined, complete };
-  };
-  return {
-    observe(event: PrpEvent) {
-      if (!event) return false;
-      const payload = record(event.payload);
-      const terminal = terminalTypes.includes(event.eventType);
-      if (payload.kind !== "usage" && event.eventType !== "turn.started" && !terminal) return false;
-      // Historical replay can revisit an earlier report after restoration.
-      // Re-persist its aggregate, but never rewind or count that report twice.
-      if (event.sourceInstanceId && Number.isSafeInteger(event.sourceSeq)) {
-        if (event.sourceSeq <= (sequences.get(event.sourceInstanceId) ?? -1)) return true;
-        sequences.set(event.sourceInstanceId, event.sourceSeq);
-      }
-      const key = event.turnId ?? "unattributed";
-      const turn = turns.get(key) ?? { usage: null, terminal: false };
-      if (event.eventType === "turn.started") {
-        currentTurn = event.turnId;
-        turn.usage = null;
-        turn.terminal = false;
-      } else if (payload.kind === "usage" && (!currentTurn || !turns.has(key))) currentTurn = event.turnId;
-      if (payload.kind === "usage") {
-        const usage = record(payload.usage);
-        turn.usage = Object.hasOwn(usage, "runDelta")
-          ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete } : null;
-      }
-      if (terminal) turn.terminal = true;
-      turns.set(key, turn);
-      return true;
-    },
-    snapshot,
-    finish(turnId: string | null) {
-      const turn = turnId ? turns.get(turnId) : undefined;
-      if (turn) turn.terminal = true;
-      return snapshot();
-    },
-  };
-}
-
-export function nativeUsageCostUsd(
-  usage: Record<string, unknown> | null,
-  provider?: NativeExecutionInput["provider"],
-) {
-  // The ACP normalization contract fills absent per-turn cost with zero and
-  // reports actual cost cumulatively. Until it carries an authoritative run
-  // delta with provenance, neither value is a candidate's billed USD receipt.
-  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
-  if (!usage) return undefined;
-  const measurement = nativeUsageMeasurement(usage);
-  const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
-  const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"])
-    ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"]));
-  // PRP currently defaults an absent providerCostUsd to zero. That zero is
-  // not proof of a free request when the runtime observed token consumption.
-  if (direct !== undefined && direct > 0) return direct;
-  const normalized = normalizeNativeUsage(usage);
-  if (direct === 0 && normalized && Object.values(normalized).every(value => value === 0)) return 0;
-  const cost = record(hasRunDelta ? measurement.cost : usage.cost);
-  const currency =
-    typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
-  if (currency !== "USD") return undefined;
-  return numericUsageField(cost, ["amount", "total"]);
-}
-
 /** Billing identity follows the selected runtime and resolved credentials.
  * Unknown authentication remains unknown; a provider name does not prove billing mode. */
 export function resolveNativeBilling(provider: NativeExecutionInput["provider"], env: NodeJS.ProcessEnv = {}, identity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">): Pick<AdapterExecutionResult, "provider" | "biller" | "billingType"> {
@@ -10438,33 +10313,6 @@ export function resolveNativeBilling(provider: NativeExecutionInput["provider"],
   return { provider: "openai", biller: billingType === "metered_api" ? inferOpenAiCompatibleBiller(env, "openai") : "unknown", billingType };
 }
 
-export function normalizeNativeUsage(usage: Record<string, unknown> | null, options: { inputIncludesCacheReads?: boolean } = {}) {
-  if (!usage || usage.runDeltaComplete === false || record(usage.usage).runDeltaComplete === false) return undefined;
-  const measurement = nativeUsageMeasurement(usage);
-  const cache = record(measurement.cache);
-  const count = (source: Record<string, unknown>, keys: string[]) => {
-    for (const key of keys) {
-      if (source[key] === undefined) continue;
-      const value = source[key];
-      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : NaN;
-    }
-    return undefined;
-  };
-  const input = count(measurement, ["inputTokens", "input", "promptTokens"]);
-  const outputTokens = count(measurement, ["outputTokens", "output", "completionTokens"]);
-  const cachedInputTokens = count(measurement, ["cachedInputTokens", "cacheReadInputTokens", "cacheReadTokens", "cachedReadTokens"]) ?? count(cache, ["read"]);
-  const cacheWriteTokens = count(measurement, ["cacheWriteTokens", "cacheCreationInputTokens", "cachedWriteTokens"]) ?? count(cache, ["write"]);
-  if (input === undefined || outputTokens === undefined
-    || ![input, outputTokens, cachedInputTokens ?? 0, cacheWriteTokens ?? 0].every(Number.isSafeInteger)) return undefined;
-  const inputTokens = input - (options.inputIncludesCacheReads ? cachedInputTokens ?? 0 : 0)
-    + (options.inputIncludesCacheReads ? 0 : cacheWriteTokens ?? 0);
-  if (!Number.isSafeInteger(inputTokens) || inputTokens < (cacheWriteTokens ?? 0)) return undefined;
-  return {
-    inputTokens, outputTokens,
-    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
-  };
-}
 
 function processEnvironment(
   environment: NodeJS.ProcessEnv,
@@ -11850,6 +11698,7 @@ export async function createRunnerdBackend(input: {
   casesEnabled?: boolean;
   db: Db;
   controllerPersistence?: { bootId: string; runnerArtifact?: { version: string; digest: string } };
+  onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
@@ -12165,13 +12014,14 @@ async function createRunnerdBackendWithinSessionClaim(
     syncIssueExternalObjects: input.syncIssueExternalObjects,
     enqueueWakeup: input.enqueueWakeup,
   });
-  const authorityEpoch = new SessionToolAuthorityEpoch(
+  const authorityEpoch = new SessionAuthorityEpoch(
     input.execution.binding.runId,
     authority,
     input.toolTrace,
+    input.onAccountingEvent,
   );
   let dynamicTools: Awaited<
-    ReturnType<SessionToolAuthorityEpoch["definitions"]>
+    ReturnType<SessionAuthorityEpoch["definitions"]>
   >;
   try {
     dynamicTools = await timeController("tool_authority", () => authorityEpoch.definitions());
@@ -12273,7 +12123,7 @@ async function createRunnerdBackendWithinSessionClaim(
       authority.binding.readRemoteTaskFile = file => owner.readWorkspaceFile(file.contentRef, file.byteSize);
       dynamicTools = await authorityEpoch.definitions();
     }
-    const executeTool = (call: Parameters<SessionToolAuthorityEpoch["execute"]>[0]) => {
+    const executeTool = (call: Parameters<SessionAuthorityEpoch["execute"]>[0]) => {
       const current = sessionToolAuthorityEpochs.get(sessionScopeId);
       if (!current) throw new Error("native_session_tool_authority_unavailable");
       return current.execute(call);
@@ -12368,7 +12218,7 @@ async function createRunnerdBackendWithinSessionClaim(
     };
     const backendOptions = {
       onSpawn: input.onSpawn, dynamicTools,
-      dynamicToolHandler: async (call: Parameters<SessionToolAuthorityEpoch["execute"]>[0]) => {
+      dynamicToolHandler: async (call: Parameters<SessionAuthorityEpoch["execute"]>[0]) => {
         await assertExternalNativeRunAuthority(input.db, externalExecution); return authorityEpoch.execute(call);
       },
       completionFeedback: async (result: PrpStructuredRunResult) => {
@@ -13709,7 +13559,7 @@ async function createRunnerdBackendWithinSessionClaim(
     markSpawned?.();
   }
   const executeCurrentToolAuthority = (
-    call: Parameters<SessionToolAuthorityEpoch["execute"]>[0],
+    call: Parameters<SessionAuthorityEpoch["execute"]>[0],
   ) => {
     const current = sessionToolAuthorityEpochs.get(sessionScopeId);
     if (!current) throw new Error("native_session_tool_authority_unavailable");
@@ -13757,6 +13607,11 @@ async function createRunnerdBackendWithinSessionClaim(
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
+        onAccountingEvent: input.onAccountingEvent ? async event => {
+          const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+          if (!current) throw new Error("native_session_authority_unavailable");
+          await current.acceptAccountingEvent(event);
+        } : undefined,
         onCredentialsUpdated: (event) => appendNativeCredentialUpdate(input.db, {
           companyId: input.execution.binding.companyId,
           agentId: input.execution.binding.agentId,

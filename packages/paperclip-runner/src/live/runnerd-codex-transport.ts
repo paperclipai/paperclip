@@ -1240,6 +1240,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
+  onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -5239,6 +5240,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
       recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
+        await this.options.onAccountingEvent?.(event);
         if (event.eventType === "auth.credentials.updated") {
           await this.options.onCredentialsUpdated?.(event);
         }
@@ -5691,6 +5693,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
       recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
+        await this.options.onAccountingEvent?.(event);
         if (event.eventType === "auth.credentials.updated") {
           await this.options.onCredentialsUpdated?.(event);
         }

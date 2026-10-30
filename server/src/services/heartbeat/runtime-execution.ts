@@ -495,9 +495,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     adapterFinalizeOutcome = status;
   };
 
-  const usageRecorder = await measureRunPhase("execution.usage_startup", () =>
+  const producerOwnsUsage = nativeRuntimeResolution.kind === "native" && agent.adapterType === "paperclip_runner"
+    && executionTarget?.kind === "remote" && nativeExecution !== null && nativeExecution !== undefined
+    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(nativeExecution.provider.kind);
+  const usageRecorder = producerOwnsUsage ? undefined : await measureRunPhase("execution.usage_startup", () =>
     createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType }));
-  input.effects.onUsageCaptureReady(usageRecorder.persistFailure);
+  input.effects.onUsageCaptureReady(usageRecorder?.persistFailure ?? (async () => {}));
   let adapterResult: AdapterExecutionResult;
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
@@ -632,7 +635,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onEvent: onAdapterEvent,
               instructionWorkingCopy: nativeInstructionWorkingCopy(),
 
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: usageRecorder ? async receipt => { await usageRecorder.capture(receipt); } : undefined,
               preparationSpans: nativeRunnerPreparationSpans,
               // Bootstrap with executable/home discovery while keeping
               // configured provider values and the server-selected
@@ -834,7 +837,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onLog,
               onMeta: onAdapterMeta,
               onEvent: onAdapterEvent,
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: usageRecorder ? async receipt => { await usageRecorder.capture(receipt); } : undefined,
               onExecutionPhase: executionControl.phases.enter,
               startupTraceContext: getStartupTraceContext(),
               onRuntimeProgress: async (progress) => {
@@ -913,8 +916,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
 
     if (parseObject(adapterResult.executionRecovery).providerWorkStarted !== false) {
-      const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
-      adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+      if (usageRecorder) {
+        const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
+        adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+      }
     } else {
       // Stop may already own the terminal result. Preserve its metadata
       // while durably recording the proof needed to release admission.

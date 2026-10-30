@@ -278,3 +278,48 @@ This is protocol and persistence evidence. The separate
 `everyday-workflows.runner-codex.daytona.recover-controller` Product E2E cell
 qualifies the actual Daytona/provider path, including completion and workspace
 finalization. Neither test substitutes for the other's failure boundary.
+
+## Required native usage acceptance
+
+Built-in native remote Runner execution accepts structured accounting before
+its PRP transport ACK. `usage.reported`, turn-start, and turn-terminal facts
+produce immutable `run_usage_receipts` rows. The receipt stores only structured
+usage and turn identity. It does not depend on output logs or raw trace capture.
+The source UUID derives from the run and Runner identity. Source event IDs and
+sequences remain stable across receiver replacement. Repeated delivery checks
+the saved fact and does not create another receipt for the same report.
+
+A failed receipt transaction rejects acceptance. The remote Runner keeps its
+outbox report and reconnects through its existing protocol lifecycle. A lost
+commit response can replay the same immutable receipt. A replacement receiver
+restores accepted per-turn aggregation from Postgres, then accepts pending
+reports from the same producer. The existing source fence prevents a retired
+producer from replacing the current source's usage. Missing or partial usage
+keeps accounting pending; it does not produce a zero-cost charge.
+
+The native session authority epoch supplies the current run's accounting owner
+to reused warm transports. The usual controller checkpoint and generation checks
+still control transport acknowledgement and attachment. Ledger settlement,
+pricing, reservations, and budget enforcement retain their existing owners.
+No accounting receipt directory is created for this supported remote path.
+
+Local native execution, legacy adapters, and external Dot/Muse execution retain
+their existing recorder behavior. This change does not establish disposable-web
+accounting durability for those paths. Server-originated model calls keep their
+existing admission and settlement records. No S3 accounting spool is introduced.
+The independent run-log/trace storage change can consume its own persisted
+sources; output acceptance is not accounting acceptance.
+
+Run the focused PostgreSQL/Runner experiment with:
+
+```sh
+pnpm exec vitest run server/src/services/native-runtime/native-usage-delivery.integration.test.ts --maxWorkers=1
+```
+
+The provider fixture emits a real PRP usage report through the durable Rust
+Runner. A PostgreSQL trigger fails receipt insertion. The test removes the first
+receiver directory, replaces its accounting owner, reconnects the same Runner,
+and independently reads the receipt and ledger. The provider is controlled;
+no paid provider request is made. Additional cases cover lost commit responses,
+replay conflicts, per-turn aggregation, partial usage, source replacement, and
+budget holds. Optional log and trace callbacks are absent from the experiment.
