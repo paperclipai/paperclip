@@ -1,3 +1,5 @@
+import { connectionIntentService } from "../services/connection-intents.js";
+import { findSatisfiedToolConnection } from "../services/satisfied-connection-intents.js";
 import { budgetService, computeObservedSpend } from "../services/budgets.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
@@ -326,6 +328,67 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         },
       };
     }
+    async function readinessFixture(personal: boolean) {
+      const f = await fixture(personal);
+      await db.insert(toolConnectionInstalls).values({
+        companyId: f.company.id,
+        connectionId: f.connection.connectionId,
+        targetType: "agent",
+        targetId: f.agent.id,
+      }).onConflictDoNothing();
+      return f;
+    }
+    it.each([false, true])("recognizes permitted Browser Use readiness (personal=%s)", async (personal) => {
+      const f = await readinessFixture(personal);
+      const ready = await connectionIntentService(db).usableConnectionForAgent({
+        companyId: f.company.id,
+        agentId: f.agent.id,
+        responsibleUserId: actor.actorId,
+        serviceSlug: "browser-use-cloud",
+      });
+      expect(ready?.id).toBe(f.connection.connectionId);
+      const satisfied = await findSatisfiedToolConnection(db,
+        { ...f.issue, status: "in_progress", assigneeUserId: null },
+        {
+          id: randomUUID(),
+          companyId: f.company.id,
+          issueId: f.issue.id,
+          kind: "connection_intent",
+          status: "pending",
+          addresseeUserId: actor.actorId,
+          sourceRunId: f.run.id,
+          payload: {
+            version: 1,
+            serviceSlug: "browser-use-cloud",
+            serviceName: "Browser Use Cloud",
+            requestingAgentId: f.agent.id,
+            requestingAgentName: f.agent.name,
+            phase: "requested",
+          },
+        });
+      expect(satisfied?.id).toBe(f.connection.connectionId);
+    });
+    it.each(["uninstalled", "disabled", "revoked", "unhealthy"] as const)("keeps Browser Use readiness blocked when %s", async (mode) => {
+      const f = await readinessFixture(true);
+      if (mode === "uninstalled") {
+        await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.connectionId));
+      }
+      if (mode === "disabled") {
+        await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.connectionId));
+      }
+      if (mode === "revoked") {
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+      }
+      if (mode === "unhealthy") {
+        await db.update(toolConnections).set({ healthStatus: "error" }).where(eq(toolConnections.id, f.connection.connectionId));
+      }
+      expect(await connectionIntentService(db).usableConnectionForAgent({
+        companyId: f.company.id,
+        agentId: f.agent.id,
+        responsibleUserId: actor.actorId,
+        serviceSlug: "browser-use-cloud",
+      })).toBeNull();
+    });
     it("wakes the app worker from request-service commits and restores durable poll and lease deadlines", async () => {
       const f = await fixture();
       const background = browserUseService(db, f.request);

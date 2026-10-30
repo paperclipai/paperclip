@@ -59,6 +59,12 @@ company installations, new-agent defaults, legacy connection-wide include
 cleanup, and access-extension audit records.
 These fixtures do not qualify an agent-authenticated request or a live provider.
 
+[Browser Use connection tests](../../server/src/__tests__/browser-use-connection.test.ts)
+verify that an installed, permitted personal or organization connection is ready
+for an agent and can satisfy an existing connection intent. Removed installs,
+disabled connections, revoked grants and attention-health errors remain blocked.
+These PostgreSQL fixtures do not prove live provider access or a rendered card.
+
 [Runtime assignment tests](../../server/src/__tests__/agent-runtime-assignments.test.ts)
 use PostgreSQL to verify committed assignment notifications, bounded snapshots,
 rollback, and concurrent AI adoption. The owning lifecycle plugin can read

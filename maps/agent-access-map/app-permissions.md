@@ -26,6 +26,14 @@ Capability ID: `app-permissions/agent-access`.
 
 Review: `operation-reviewed`.
 
+Native Browser Use readiness recognizes the existing `rest_api` connector through
+`isBrowserUseConnection`; unrelated REST transports gain no new access. The
+responsible-user identity, active grant, installation, allowed-tool and health
+checks still apply. PostgreSQL [service regressions](../../server/src/__tests__/browser-use-connection.test.ts)
+verify personal and organization readiness, pending-intent satisfaction, and
+removed-install/disabled/revoked/attention-health denial. This is service-fixture
+evidence, not an agent-authenticated HTTP or live provider qualification.
+
 ### `get-tool-connections-grants`
 
 API: `present` — `GET /api/tool-connections/{connectionId}/grants`; JSON REST.
