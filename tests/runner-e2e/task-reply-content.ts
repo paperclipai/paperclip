@@ -1,11 +1,8 @@
-import { unified } from "unified";
-import remarkParse from "remark-parse";
-import remarkGfm from "remark-gfm";
+import { markdownReplyContent } from "../../ui/src/lib/markdown-reply-content.js";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "../../ui/src/lib/company-routes.js";
-import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../../ui/src/lib/issue-reference.js";
+import { parseIssueReferenceFromHref } from "../../ui/src/lib/issue-reference.js";
 
 export type ReplyContentPart = { text: string } | { href: string; label?: string; decorated?: boolean };
-type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
 
 function normalized(parts: ReplyContentPart[], pageUrl: string, source = false) {
   const result: ReplyContentPart[] = [];
@@ -43,23 +40,8 @@ export function taskReplyContentMatches(
     const displayed = observation.content.map(part => "text" in part ? part.text : part.label!).join("").replace(/\s+/g, " ").trim();
     if (displayed !== observation.body.replace(/\s+/g, " ").trim()) return false;
   }
-  const parts: ReplyContentPart[] = [];
-  const inlineLabel = (node: MarkdownNode): boolean => ["text", "inlineCode", "strong", "emphasis", "delete"].includes(node.type)
-    && (node.children ?? []).every(inlineLabel);
-  const labelText = (node: MarkdownNode): string => node.value ?? (node.children ?? []).map(labelText).join("");
-  function visit(node: MarkdownNode): boolean {
-    if (node.type === "text" || node.type === "inlineCode") { parts.push({ text: node.value ?? "" }); return true; }
-    if (node.type === "break") { parts.push({ text: " " }); return true; }
-    if (node.type === "link" && node.url && (node.children ?? []).every(inlineLabel)) { parts.push({ href: node.url, label: labelText(node) }); return true; }
-    if (!["root", "paragraph", "heading", "blockquote", "list", "listItem", "strong", "emphasis", "delete"].includes(node.type)) return false;
-    for (const child of node.children ?? []) if (!visit(child)) return false;
-    if (!["strong", "emphasis", "delete"].includes(node.type)) parts.push({ text: " " });
-    return true;
-  }
-  const parser = unified().use(remarkParse).use(remarkGfm);
-  const tree = parser.runSync(parser.parse(markdown)) as MarkdownNode;
-  remarkLinkIssueReferences({ knownPrefixes: observation.knownCompanyPrefixes })(tree);
-  if (!visit(tree)) return false;
+  const parts = markdownReplyContent(markdown, observation.knownCompanyPrefixes);
+  if (!parts) return false;
   const pageUrl = observation.pageUrl ?? observation.origin ?? "https://reply.invalid";
   const expected = normalized(parts, pageUrl, true);
   const actual = normalized(observation.content ?? [{ text: observation.body }], pageUrl);
