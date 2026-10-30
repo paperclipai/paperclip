@@ -213,6 +213,158 @@ async function dialApprovedAddress(input: {
  * only then complete the TLS handshake. Verifying before the handshake keeps
  * even a ClientHello off an internal service.
  */
+
+function configuredRemoteHttpProxy(hostname: string, useTls: boolean, port: number): URL | undefined {
+  const normalizedHost = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const noProxy = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
+
+  const bypass = noProxy.split(",").some((item) => {
+    let rule = item.trim().toLowerCase();
+    if (!rule) return false;
+    if (rule === "*") return true;
+
+    let rulePort: number | undefined;
+    if (rule.startsWith("[")) {
+      const end = rule.indexOf("]");
+      if (end < 0) return false;
+      const suffix = rule.slice(end + 1);
+      rule = rule.slice(1, end);
+      if (suffix) {
+        if (!/^:\d+$/.test(suffix)) return false;
+        rulePort = Number(suffix.slice(1));
+      }
+    } else if (rule.includes(":") && rule.indexOf(":") === rule.lastIndexOf(":")) {
+      const separator = rule.lastIndexOf(":");
+      const candidatePort = rule.slice(separator + 1);
+      if (!/^\d+$/.test(candidatePort)) return false;
+      rulePort = Number(candidatePort);
+      rule = rule.slice(0, separator);
+    }
+
+    if (rulePort !== undefined && rulePort !== port) return false;
+    rule = rule.replace(/^\./, "");
+    return normalizedHost === rule || normalizedHost.endsWith(`.${rule}`);
+  });
+
+  if (bypass) return undefined;
+
+  const value = useTls
+    ? process.env.HTTPS_PROXY || process.env.https_proxy
+      || process.env.HTTP_PROXY || process.env.http_proxy
+    : process.env.HTTP_PROXY || process.env.http_proxy
+      || process.env.HTTPS_PROXY || process.env.https_proxy;
+
+  if (!value) return undefined;
+
+  const proxyUrl = new URL(value);
+  if (proxyUrl.protocol !== "http:") {
+    throw new Error("Pinned remote HTTP transport currently requires an http:// proxy URL");
+  }
+  return proxyUrl;
+}
+
+async function establishHttpProxyTunnel(
+  socket: Socket,
+  address: string,
+  port: number,
+  proxyUrl: URL,
+  timeoutMs: number,
+  signal: AbortSignal | null,
+): Promise<void> {
+  const targetHost = isIP(address) === 6 ? `[${address}]` : address;
+  const authority = `${targetHost}:${port}`;
+
+  let proxyAuth = "";
+  if (proxyUrl.username || proxyUrl.password) {
+    const credentials =
+      `${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`;
+    proxyAuth = "Proxy-Authorization: Basic " +
+      Buffer.from(credentials).toString("base64") + "\r\n";
+  }
+
+  const request =
+    `CONNECT ${authority} HTTP/1.1\r\n` +
+    `Host: ${authority}\r\n` +
+    "Proxy-Connection: Keep-Alive\r\n" +
+    proxyAuth +
+    "\r\n";
+
+  await new Promise<void>((resolve, reject) => {
+    let response = Buffer.alloc(0);
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      socket.removeListener("data", onData);
+      socket.removeListener("error", onError);
+      socket.removeListener("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // This helper owns the CONNECT handshake, so close the proxy socket
+      // immediately when the handshake fails or is cancelled.
+      socket.destroy();
+      reject(error);
+    };
+
+    const onData = (chunk: Buffer) => {
+      response = Buffer.concat([response, chunk]);
+      if (response.length > 16384) {
+        fail(new Error("HTTP proxy CONNECT response exceeded 16 KiB"));
+        return;
+      }
+
+      const headerEnd = response.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+
+      const header = response.subarray(0, headerEnd).toString("latin1");
+      const statusLine = header.split("\r\n", 1)[0] ?? "";
+
+      if (!/^HTTP\/1\.[01]\s+200(?:\s|$)/i.test(statusLine)) {
+        fail(new Error(`HTTP proxy CONNECT rejected: ${statusLine}`));
+        return;
+      }
+
+      const remainder = response.subarray(headerEnd + 4);
+      settled = true;
+      cleanup();
+
+      if (remainder.length > 0) socket.unshift(remainder);
+      resolve();
+    };
+
+    const onError = (error: Error) => fail(error);
+    const onClose = () => fail(new Error("HTTP proxy closed before CONNECT completed"));
+    const onAbort = () => fail(
+      signal?.reason instanceof Error ? signal.reason : new Error("HTTP proxy CONNECT aborted"),
+    );
+
+    socket.on("data", onData);
+    socket.on("error", onError);
+    socket.on("close", onClose);
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    timer = setTimeout(
+      () => fail(new Error(`HTTP proxy CONNECT timed out for ${authority}`)),
+      timeoutMs,
+    );
+    timer.unref?.();
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+
+    socket.write(request);
+  });
+}
+
+
 async function openVerifiedSocket(input: {
   address: string;
   approvedSet: Set<string>;
@@ -224,27 +376,60 @@ async function openVerifiedSocket(input: {
 }): Promise<Socket | TLSSocket> {
   const { address, approvedSet, port, hostname, useTls, signal, options } = input;
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+
+  const proxyUrl = options.socketFactory
+    ? undefined
+    : configuredRemoteHttpProxy(hostname, useTls, port);
+  const proxyHost = proxyUrl?.hostname.replace(/^\[|\]$/g, "");
+
+  if (proxyUrl && (!proxyHost || isIP(proxyHost) === 0)) {
+    throw new Error(
+      "Configure the HTTP proxy with an IP address when Paperclip uses a custom DNS resolver",
+    );
+  }
+
   const factory = options.socketFactory
-    ?? ((target) => netConnect({ host: target.address, port: target.port }));
+    ?? ((target) => netConnect({
+      host: proxyUrl ? proxyHost! : target.address,
+      port: proxyUrl ? Number(proxyUrl.port || "80") : target.port,
+    }));
 
   const raw = factory({ address, port, hostname, useTls });
 
   try {
-    await once(raw, "connect", { signal, timeoutMs: connectTimeoutMs, what: "connect to" });
+    await once(raw, "connect", {
+      signal,
+      timeoutMs: connectTimeoutMs,
+      what: proxyUrl ? "connect to HTTP proxy" : "connect to",
+    });
+
+    if (proxyUrl) {
+      await establishHttpProxyTunnel(
+        raw, address, port, proxyUrl, connectTimeoutMs, signal,
+      );
+    }
   } catch (error) {
-    // A connect timeout used to leave the half-open socket behind, because
-    // nothing above this point owns it yet.
     raw.destroy();
     if (signal?.aborted) throw error;
     throw new UnreachableAddressError(error);
   }
 
   const peer = raw.remoteAddress ? normalizeIpAddress(raw.remoteAddress) : null;
-  const peerDenied = peer && (
+
+  // In proxy mode, CONNECT targets the already-approved IP literal.
+  // The socket peer is therefore the configured proxy, not the remote server.
+  const peerDenied = peer && !proxyUrl && (
     isAlwaysDeniedLinkLocalIp(peer)
     || (!options.allowPrivateNetwork && isPrivateOrReservedIp(peer))
   );
-  if (!peer || peerDenied || !approvedSet.has(peer)) {
+
+  const peerMatches = peer && (
+    proxyUrl
+      ? peer === normalizeIpAddress(proxyHost!)
+      : approvedSet.has(peer)
+  );
+
+  if (!peer || peerDenied || !peerMatches) {
     raw.destroy();
     throw options.error(
       "Remote MCP connection resolved to an address that was not approved",
@@ -253,6 +438,7 @@ async function openVerifiedSocket(input: {
   }
 
   if (!useTls) return raw;
+
 
   const secure = tlsConnect({
     socket: raw,
