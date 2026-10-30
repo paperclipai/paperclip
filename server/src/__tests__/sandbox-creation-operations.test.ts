@@ -12,6 +12,9 @@ import { agents, builtInManagedResources, companies, createDb, environmentLeases
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
+import { HttpError } from "../errors.js";
+import * as secretOwner from "../services/secrets.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -248,6 +251,67 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(calls).toHaveBeenCalledTimes(count);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull(); expect(creates).toBe(1);
     expect(await readdir(spool)).toEqual([]);
+  });
+  async function savedCreationCredential() {
+    const secrets = secretOwner.secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `creation-key-${randomUUID()}`, provider: "local_encrypted", value: "fixture-private-key",
+    });
+    await secrets.createBinding({ companyId, secretId: secret.id, targetType: "environment", targetId: environmentId, configPath: "apiKey" });
+    await db.update(plugins).set({ manifestJson: sql`jsonb_set(${plugins.manifestJson}, '{environmentDrivers,0,configSchema}',
+      '{"type":"object","properties":{"apiKey":{"type":"string","format":"secret-ref"}}}'::jsonb)` }).where(eq(plugins.id, pluginId));
+    await db.update(environments).set({ config: { provider: "creation-fixture", image: "fixture", reuseLease: false, apiKey: secret.id } })
+      .where(eq(environments.id, environmentId));
+    loseReply = true;
+    await expect(acquire()).rejects.toThrow("Lost provider reply");
+    return secret;
+  }
+  it("retains a deleted creation credential as quiet manual reconciliation across restart", async () => {
+    const secret = await savedCreationCredential();
+    await secretOwner.secretService(db).remove(secret.id);
+    const inspectCalls = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease").length;
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(sandboxCreationOperations)).toEqual([
+      expect.objectContaining({ state: "needs_reconciliation" }),
+    ]);
+    expect(await db.select().from(environmentLeases)).toEqual([]);
+    expect(inspectCalls()).toBe(0);
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    const restarted = runtime();
+    await restarted.flushDeferredOrphanCleanups(); await restarted.flushDeferredOrphanCleanups();
+    expect(inspectCalls()).toBe(0); expect(creates).toBe(1); expect(destroys).toBe(0);
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const ownerId = randomUUID();
+    const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
+    // An installed plugin is a separate blocker until its worker proves quiet.
+    expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
+      .toEqual({ version: 1, backgroundWork: "present" });
+    expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none",
+      async () => ({ backgroundWork: "none", pluginIds: [pluginId] })))
+      .toEqual({ version: 1, backgroundWork: "none" });
+    expect(await readdir(spool)).toEqual([]);
+  });
+  it("retries a temporary creation credential resolution failure without losing ownership", async () => {
+    await savedCreationCredential();
+    const original = secretOwner.secretService;
+    const resolution = vi.fn(async () => { throw new HttpError(503, "Temporary credential provider failure"); });
+    const owner = vi.spyOn(secretOwner, "secretService").mockImplementation(client => ({
+      ...original(client), resolveSecretValueForSandboxCleanup: resolution,
+    }));
+    try {
+      await due(); await runtime().flushDeferredOrphanCleanups();
+      expect(resolution).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([
+        expect.objectContaining({ state: "pending", nextAttemptAt: expect.any(Date) }),
+      ]);
+      expect(await nextEnvironmentCleanupAt(db)).toBeGreaterThan(Date.now());
+      expect(vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease")).toHaveLength(0);
+    } finally { owner.mockRestore(); }
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "cleanup_pending" })]);
+    expect(await db.select().from(environmentLeases)).toHaveLength(1);
+    expect(creates).toBe(1); expect(destroys).toBe(0); expect(await readdir(spool)).toEqual([]);
   });
   it("makes unsupported uncertain outcomes explicit without another creation", async () => {
     loseReply = true; await expect(acquire()).rejects.toThrow();

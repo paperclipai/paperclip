@@ -1,3 +1,4 @@
+import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations } from "./sandbox-creation-operations.js";
 import { dueRunLeaseReleaseCondition, pendingRunLeaseReleaseCondition } from "./environment-lease-release-state.js";
@@ -4073,8 +4074,19 @@ export function environmentRuntimeService(
             !options.pluginWorkerManager.getWorker(operation.pluginId)?.supportedMethods.includes("environmentInspectLease")) {
             throw new Error("Sandbox creation recovery worker is unavailable");
           }
-          const resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
-            operation.config as SandboxEnvironmentConfig, { issueId: operation.issueId });
+          let resolved: SandboxEnvironmentConfig;
+          try {
+            resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
+              operation.config as SandboxEnvironmentConfig, { issueId: operation.issueId });
+          } catch (error) {
+            // Only the secret owner's permanent absence results stop recovery.
+            // Database/provider failures still retain the operation and retry.
+            const code = error instanceof HttpError ? (error.details as { code?: string } | undefined)?.code : undefined;
+            if (error instanceof HttpError && error.status === 404 &&
+              (code === "secret_deleted" || code === "version_missing" ||
+                (error.details === undefined && error.message === "Secret not found"))) return null;
+            throw error;
+          }
           const credentialHashes = operation.metadata.creationCredentialHashes as Record<string, string> | undefined;
           for (const [path, expected] of Object.entries(credentialHashes ?? {})) {
             const actual = readConfigValueAtPath({ ...resolved }, path);
