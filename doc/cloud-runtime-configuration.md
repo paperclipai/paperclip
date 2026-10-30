@@ -43,8 +43,12 @@ Managed Cloud validates effective S3 storage after publishing the canonical
 snapshot, before signing-key initialization, telemetry, authentication or app
 construction. Cloud requires S3 and a nonblank bucket; an authoritative absent
 configuration needs explicit environment storage settings. Raw saved snapshots
-cannot obtain a bucket from a schema default. A legacy S3 file must name its
-bucket before its one-time import; omission or blank values fail before seeding.
+cannot obtain a bucket from a schema default. Every legacy Cloud file must name its
+bucket before its one-time import, even if its saved provider is local disk and
+an environment bucket is present. Omission or blank values fail before seeding;
+environment overlays are not saved as operator choices. Correct that file before
+import, or use the existing absent-file/null-snapshot environment-only setup.
+Ordinary self-hosted file defaults remain unchanged.
 Already-canonical nonblank values, including `paperclip`, remain authoritative.
 Prior normalization cannot reliably distinguish an operator's deliberate name
 from a historical default, so this release does not invent retrospective

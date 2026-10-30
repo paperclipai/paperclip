@@ -115,6 +115,12 @@ describe("managed cloud configuration boundary", () => {
     await expect(readLegacyCloudRuntimeConfig()).rejects.toThrow(/storage.s3.bucket/);
   });
 
+  it.each([undefined, "", "   "].flatMap(bucket => [undefined, "environment-bucket"].map(environmentBucket => ({ bucket, environmentBucket }))))("rejects a legacy local-disk file with no explicit bucket before an S3 environment overlay (%j)", async ({ bucket, environmentBucket }) => {
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", environmentBucket);
+    writeConfig({ provider: "local_disk", s3: { bucket } });
+    await expect(readLegacyCloudRuntimeConfig()).rejects.toThrow(/storage.s3.bucket/);
+  });
+
   it("accepts an explicitly supplied default bucket name in a real file", async () => {
     vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
     writeConfig({ provider: "s3", s3: { bucket: "paperclip" } });
