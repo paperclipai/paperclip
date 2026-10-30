@@ -206,14 +206,14 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
               capture: async (_id, _label, file) => {
                 const directory = path.join(outputDir, "private-stories", id);
                 await mkdir(directory, { recursive: true, mode: 0o700 });
-                await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file));
+                await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
             else await runAgentJourney(id, ready, session!, campaignId, evidence, { deadlineAt,
               directory: path.join(outputDir, "private-stories", id),
               capture: async (_id, _label, file) => {
                 const directory = path.join(outputDir, "private-stories", id);
                 await mkdir(directory, { recursive: true, mode: 0o700 });
-                await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file));
+                await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
           } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
           else await taskProperties(ready, session!, campaignId, evidence);
@@ -226,7 +226,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.status = "passed";
         const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
         await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
-        await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}.png`));
+        await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}.png`), deadlineAt);
         result.screenshots = [{ id, label: productJourneys.find(j => j.id === id)!.label, file: `${id}.png` }];
       } catch (error) {
         const failure = journeyFailure(error);
@@ -242,7 +242,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             if (url.origin === ready.api.origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname)) {
               const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
               await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
-              await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`));
+              await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`), deadlineAt);
               result.screenshots = [{ id: `${id}-failed`, label: "Failed journey screen", file: `${id}-failed.png` }];
             }
           } catch { /* Preserve the original failure when its page is unavailable. */ }

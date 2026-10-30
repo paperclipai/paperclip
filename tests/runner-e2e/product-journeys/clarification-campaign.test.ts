@@ -29,7 +29,7 @@ const identity = { kind: 'cloud', targetId: 'qa', origin: 'https://qa.example.te
 const context = { identity, company: { id: 'company', issuePrefix: 'QA' }, user: { id: 'board', name: 'QA' },
   api: { origin: identity.origin }, startingState: 'recipe', capabilities: ['company', 'board-user', 'task-write', 'agent'],
   agent: { id: 'agent', name: 'QA', provider: 'opencode', model: 'model', runtimeMode: 'native' }, environmentId: 'daytona',
-  page: { url: () => identity.origin + '/QA/issues/QA-1', locator: () => ({ isVisible: async () => true, screenshot: async () => {} }) } };
+  page: { url: () => identity.origin + '/QA/issues/QA-1', locator: () => ({ waitFor: async () => {}, isVisible: async () => true, screenshot: async () => {} }) } };
 export const provider = { version: 1, async acquire() { return {
   async authenticate() {}, async prepare() { return context; }, async identity() { return identity; },
   async collect() { return ${JSON.stringify(receipts)}; }, async own() {}, async release() { return 'released'; }, async stop() {}
