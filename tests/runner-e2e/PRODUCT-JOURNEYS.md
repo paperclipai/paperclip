@@ -184,6 +184,11 @@ pending named builtin command or process execution before sending the follow-up.
 Paperclip semantic tools, including completion/block/progress calls, cannot
 satisfy this boundary even if a provider labels them builtin execute or wraps
 their names with a native prefix. Unnamed or ambiguous builtin calls fail closed.
+The observed older PRP v1 builtin `bash` shape is also supported when its
+operation is `unknown` and `readOnly` is explicitly false; other unknown
+operations cannot satisfy the boundary. If all owned work settles before an
+active boundary is observed, the journey fails immediately rather than polling
+until the campaign deadline.
 The same command must remain active after exactly one user message is saved.
 The task page and composer are ready before observing the boundary, so navigation is outside the
 submission window. The longer bounded command leaves room for remote persistence.

@@ -22,6 +22,14 @@ export function activeFollowupStory(campaignId: string) {
   };
 }
 
+/** Once owned work has settled, an unobserved live boundary cannot arrive. */
+export async function observeActiveFollowupCommand(taskRuns: Row[], loadEvents: (runId: string) => Promise<Row[]>) {
+  if (taskRuns.length > 0 && taskRuns.every(run => run.status === "succeeded"))
+    throw new JourneyError("failed", "followup_native_command_not_active");
+  const run = taskRuns.find(run => run.status === "running");
+  return { run, boundary: run ? activeFollowupBoundary(run, await loadEvents(run.id)) : null };
+}
+
 /** The same browser/API/native story runs against managed and attached targets. */
 export async function runActiveFollowup(context: JourneyContext, session: TargetSession, campaignId: string,
   evidence: JourneyEvidence, options: { deadlineAt: number; directory: string }) {
@@ -57,8 +65,8 @@ export async function runActiveFollowup(context: JourneyContext, session: Target
   await expect(context.page.getByTestId("task-chat-composer-input").last()).toBeVisible();
   const beforeComments = (await read()).comments;
   const active = await waitFor(options.deadlineAt, async () => {
-    const state = await read(), run = state.taskRuns.find(run => run.status === "running");
-    return { state, run, boundary: run ? activeFollowupBoundary(run, await events(run.id)) : null };
+    const state = await read();
+    return observeActiveFollowupCommand(state.taskRuns, events);
   }, value => Boolean(value.boundary), "followup_native_command_not_active");
   const before = active.boundary!;
   await submitTaskReply(context.page, story.followup);

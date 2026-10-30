@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalProviderEventsFromCodex, canonicalProviderEventsFromAcpxRuntimeEvent, canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
 import { activeFollowupBoundary, activeFollowupOutcome, sameActiveFollowupBoundary } from "./active-followup-evidence.js";
-import { activeFollowupStory } from "./active-followup-flow.js";
+import { activeFollowupStory, observeActiveFollowupCommand } from "./active-followup-flow.js";
 import { journeyRequiredChecks } from "./success-contract.js";
 import { parseTargetConfig, preparationPreview, agentJourneyRunCountValid } from "./catalog.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -16,6 +16,20 @@ function event(seq: number, type: string, payload = {}): Record<string, any> {
 const command = { schema: "paperclip.tool.execution.v1", executionId: "wait", transport: "builtin", operation: "execute", name: "bash", status: "running" };
 const events = () => [event(1, "turn.started"), event(2, "tool.execution.started", command)];
 const boundary = () => activeFollowupBoundary(run, events())!;
+// Synthetic identity and filler rows; the v1 operation/transport/name/readOnly
+// shape and native/source sequence positions match observed deployment metadata.
+function legacyEvents(change: Record<string, unknown> = {}): Record<string, any>[] {
+  const rows: Record<string, any>[] = Array.from({ length: 81 }, (_, index) => ({ seq: index + 1, eventType: "adapter.message" }));
+  const bind = (seq: number, sourceSeq: number, type: string, payload: Record<string, unknown>) => {
+    const row = event(seq, type, payload);
+    row.protocolSchemaVersion = 1; row.sourceSeq = sourceSeq;
+    Object.assign(row.payload.prpEvent, { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceSeq });
+    return row;
+  };
+  rows[70] = bind(71, 9, "turn.started", { status: "inProgress" });
+  rows[80] = bind(81, 12, "tool.execution.started", { ...command, namespace: null, operation: "unknown", readOnly: false, ...change });
+  return rows;
+}
 const outcome = () => ({ issueId: "issue", agentId: "agent", before: boundary(), after: boundary(),
   runs: [{ ...run, status: "succeeded" }], expectedReply: "Friday UPDATED", marker: "UPDATED", replies: [{ runId: "run", body: "Friday UPDATED" }],
   storedFollowupCount: 1, queuedCommentCount: 0, finalIssueStatus: "done" });
@@ -75,6 +89,35 @@ describe("deployment-independent active follow-up", () => {
     for (const name of [null, "", " ", "unknown", "tool", "tool call", "tool_call", "tool-call"]) {
       expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, shell.eventType, { ...shell.payload, name })])).toBeNull();
     }
+  });
+  it("recognizes the observed legacy v1 builtin bash shape without admitting unknown operations generally", () => {
+    const before = activeFollowupBoundary(run, legacyEvents());
+    expect(before).toMatchObject({ runId: "run", executionId: "wait", startedSeq: 81, sourceSeq: 12 });
+    for (const change of [{ name: "unknown" }, { name: "custom-command" }, { name: "paperclip_finish" }, { name: "paperclip_block" },
+      { name: "paperclip_report_progress" }, { name: "functions.paperclip_finish" }, { readOnly: true }, { readOnly: undefined },
+      { transport: "process" }, { namespace: "paperclip" }]) expect(activeFollowupBoundary(run, legacyEvents(change))).toBeNull();
+    for (const field of ["companyId", "agentId", "runId", "sourceEventId", "sourceInstanceId", "sourceSeq", "protocolSchemaVersion"]) {
+      const rows = legacyEvents(); rows[80]![field] = "foreign";
+      expect(activeFollowupBoundary(run, rows)).toBeNull();
+    }
+    expect(activeFollowupBoundary(run, [events()[0]!, event(2, "tool.execution.started", { ...command, operation: "unknown", readOnly: false })])).toBeNull();
+    const after = legacyEvents();
+    after.push(event(82, "tool.execution.progressed", { ...after[80]!.payload.prpEvent.payload }));
+    expect(sameActiveFollowupBoundary(before!, activeFollowupBoundary(run, after))).toBe(true);
+    after.push(event(83, "tool.execution.completed", { ...after[80]!.payload.prpEvent.payload, status: "completed" }));
+    expect(activeFollowupBoundary(run, after)).toBeNull();
+  });
+  it("fails promptly after owned work settles without an observed active boundary", async () => {
+    let eventReads = 0;
+    const load = async () => { eventReads++; return legacyEvents(); };
+    for (const taskRuns of [[{ ...run, status: "succeeded" }], [{ ...run, status: "succeeded" }, { ...run, id: "second", status: "succeeded" }]])
+      await expect(observeActiveFollowupCommand(taskRuns, load)).rejects.toMatchObject({ outcome: "failed", code: "followup_native_command_not_active" });
+    expect(eventReads).toBe(0);
+    for (const taskRuns of [[], [{ ...run, status: "queued" }], [{ ...run, status: "succeeded" }, { ...run, id: "second", status: "queued" }]])
+      expect((await observeActiveFollowupCommand(taskRuns, load)).boundary).toBeNull();
+    expect(eventReads).toBe(0);
+    expect((await observeActiveFollowupCommand([run], load)).boundary).toMatchObject({ runId: "run", startedSeq: 81 });
+    expect(eventReads).toBe(1);
   });
   it("proves the same execution remains active after the user message is stored", () => {
     expect(sameActiveFollowupBoundary(boundary(), boundary())).toBe(true);
