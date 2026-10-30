@@ -12588,6 +12588,7 @@ export function issueService(db: Db) {
         order?: "asc" | "desc";
         limit?: number | null;
         humanOnly?: boolean;
+        companyId?: string;
       },
     ) => {
       const order = opts?.order === "asc" ? "asc" : "desc";
@@ -12598,6 +12599,7 @@ export function issueService(db: Db) {
           : null;
 
       const conditions = [eq(issueComments.issueId, issueId)];
+      if (opts?.companyId) conditions.push(eq(issueComments.companyId, opts.companyId));
       if (opts?.humanOnly) conditions.push(or(
         eq(issueComments.authorType, "user"),
         and(isNull(issueComments.authorType), isNotNull(issueComments.authorUserId)),

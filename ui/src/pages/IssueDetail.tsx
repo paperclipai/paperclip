@@ -1,3 +1,5 @@
+import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
+import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hooks/useConversationHistoryPages";
 import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
 import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
@@ -1283,6 +1285,7 @@ type IssueDetailChatTabProps = {
   attachments: IssueAttachment[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
+  commentsOlderError?: boolean;
   onLoadOlderComments: () => void;
   onRefreshLatestComments: () => Promise<unknown> | void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
@@ -1439,6 +1442,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   attachments,
   hasOlderComments,
   commentsLoadingOlder,
+  commentsOlderError = false,
   onLoadOlderComments,
   onRefreshLatestComments,
   onWorkModeChange,
@@ -1531,11 +1535,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       : undefined,
   });
   const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
-  const inputFacts = useQuery({
-    queryKey: [...queryKeys.issues.activity(issueQueryRef), "comment-inputs", inputCommentIds],
-    queryFn: () => activityApi.inputFactsForIssue(issueQueryRef, inputCommentIds),
-    enabled: !!issueId && !historyExpanded && inputCommentIds.length > 0,
-  });
+  const inputFacts = useIssueIdBatches(
+    [...queryKeys.issues.activity(issueQueryRef), "comment-inputs"], inputCommentIds,
+    ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
+  );
   const {
     data: liveRuns,
     isFetched: liveRunsFetched,
@@ -1659,7 +1662,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       )) {
         // After a reconnect, several turns may have completed beyond the small
         // window. Reconcile watched runs once against authoritative summaries.
-        recent = await activityApi.runsForIssue(issueQueryRef);
+        recent = conversationMode
+          ? await activityApi.runsByIdsForIssue(issueQueryRef, [...new Set([...previous.map(run => run.runId), ...recent.map(run => run.runId)])])
+          : await activityApi.runsForIssue(issueQueryRef);
         reconciledFullHistory = true;
         const existingRunIds = new Set(recent.map((run) => run.runId));
         previous = previous.filter((run) => existingRunIds.has(run.runId));
@@ -1680,7 +1685,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
     placeholderData: historyExpanded ? queryClient.getQueryData<RecentIssueRunWindow>([...queryKeys.issues.runs(issueQueryRef), "recent-window"])?.runs : undefined,
   });
-  const linkedRuns = Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs;
+  const observedRunIds = useMemo(() => [...new Set([
+    ...comments.flatMap(comment => [comment.createdByRunId, comment.derivedCreatedByRunId]),
+    ...(inputFacts.data ?? []).flatMap(event => [event.runId, event.details?.targetRunId]),
+  ].filter((id): id is string => typeof id === "string" && isUuidLike(id)))].sort(), [comments, inputFacts.data]);
+  const commentRuns = useIssueIdBatches(
+    [...queryKeys.issues.runs(issueQueryRef), "comment-window"], observedRunIds,
+    ids => activityApi.runsByIdsForIssue(issueQueryRef, ids), !!issueId && !!conversationMode && !historyExpanded,
+  );
+  const linkedRuns = useMemo(() => [...new Map([
+    ...(Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs ?? []),
+    ...(conversationMode && !historyExpanded ? commentRuns.data ?? [] : []),
+  ].map(run => [run.runId, run])).values()], [linkedRunHistory, conversationMode, historyExpanded, commentRuns.data]);
   const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true;
   const resolvedActivity = useMemo(
     () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
@@ -2578,7 +2594,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [resolvedActivity],
   );
 
-  const loadOlderButton = hasOlderComments ? (
+  const scrollingHistory = conversationMode ? {
+    hasMore: !!hasOlderComments,
+    loading: commentsLoadingOlder,
+    error: commentsOlderError,
+    load: onLoadOlderComments,
+  } : undefined;
+  const loadOlderButton = !conversationMode && hasOlderComments ? (
     <div className="flex justify-center">
       <Button
         type="button"
@@ -2621,8 +2643,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           <ThreadComponent
             {...(!classicTaskInterfaceEnabled ? {
               compactHistory: !historyExpanded,
-              onExpandHistory,
-              historyControl: !historyExpanded && (hasEarlierMessages || hasEarlierRuns) ? (
+              onExpandHistory: conversationMode ? undefined : onExpandHistory,
+              scrollingHistory,
+              historyControl: conversationMode ? null : !historyExpanded && (hasEarlierMessages || hasEarlierRuns) ? (
                 <Button type="button" variant="ghost" size="sm" onClick={onExpandHistory}>
                   More messages
                 </Button>
@@ -2646,6 +2669,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               initialMetadataPending ||
               activityPending ||
               linkedRunsPending ||
+              (conversationMode && observedRunIds.length > 0 && commentRuns.isPending) ||
               inputFacts.isLoading ||
               !runtimeSelectionKnown)
             }
@@ -2654,6 +2678,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               activityError ||
               (!historyExpanded && inputFacts.isError) ||
               linkedRunsError ||
+              (conversationMode && commentRuns.isError) ||
               liveRunsError ||
               (activeRunQueryEnabled && activeRunError)
             }
@@ -2662,6 +2687,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               void refetchActivity();
               if (!historyExpanded && inputCommentIds.length) void inputFacts.refetch();
               void refetchLinkedRuns();
+              if (conversationMode && observedRunIds.length) void commentRuns.refetch();
               void refetchLiveRuns();
               if (activeRunQueryEnabled) void refetchActiveRun();
             }}
@@ -3345,13 +3371,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     enabled: !!issueId,
   });
-  const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
+  const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
     issueId,
     // Classic settings can resolve before the personal workspace preference.
     // Do not persist full-history expansion for a surface we have not chosen.
-    Boolean(conversation || (taskInterfaceSettingsLoaded && classicTaskInterfaceEnabled)),
+    Boolean(!conversation && !coreIssueQuery.data?.conversationAgentId && taskInterfaceSettingsLoaded && classicTaskInterfaceEnabled),
     coreIssueQuery.data,
+    Boolean(conversation || coreIssueQuery.data?.conversationAgentId),
   );
+  const paginatedConversation = Boolean(conversation || coreIssueQuery.data?.conversationAgentId);
   const issueQuery = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
@@ -3452,13 +3480,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       InfiniteData<IssueComment[], string | null>
     >(issueId ?? "pending"),
   });
+  const earlierChatComments = useConversationHistoryPages(issueId, paginatedConversation, recentComments.data?.oldestCommentId, recentComments.data?.comments ?? []);
   const commentAnchor = location.hash.startsWith("#comment-")
     ? location.hash.slice("#comment-".length)
     : null;
   const linkedCommentId = commentAnchor && isUuidLike(commentAnchor) ? commentAnchor.trim() : null;
   const windowComments = useMemo(
-    () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
-    [commentPages?.pages, recentComments.data?.comments],
+    () => mergeWindowComments(recentComments.data?.comments ?? [], paginatedConversation
+      ? earlierChatComments.data?.pages.flatMap(page => page.comments) ?? []
+      : flattenIssueCommentPages(commentPages?.pages), acknowledgedComments),
+    [paginatedConversation, earlierChatComments.data?.pages, commentPages?.pages, recentComments.data?.comments, acknowledgedComments],
   );
   const linkedComment = useQuery({
     queryKey: [...queryKeys.issues.comments(issueId!), "linked", linkedCommentId],
@@ -4305,6 +4336,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKeys.issues.comments(ref),
           (current) => current && { ...current, pages: removeIssueCommentFromPages(current.pages, commentId) },
         );
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+          current?.filter(comment => comment.id !== commentId),
+        );
+        queryClient.setQueryData<InfiniteData<ConversationHistoryPage, string | null>>(
+          queryKeys.issues.earlierComments(ref), current => current && {
+            ...current, pages: current.pages.map(page => ({ ...page, comments: page.comments.filter(comment => comment.id !== commentId) })),
+          },
+        );
         queryClient.setQueryData<IssueRecentComments>(
           [...queryKeys.issues.comments(ref), "recent"],
           (current) => {
@@ -4356,6 +4395,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(current.pages, comment),
               }
             : current,
+        );
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+          current?.map(existing => existing.id === comment.id ? comment : existing),
+        );
+        queryClient.setQueryData<InfiniteData<ConversationHistoryPage, string | null>>(
+          queryKeys.issues.earlierComments(ref), current => current && {
+            ...current, pages: current.pages.map(page => ({ ...page, comments: page.comments.map(existing => existing.id === comment.id ? comment : existing) })),
+          },
         );
         queryClient.setQueryData<IssueRecentComments>(
           [...queryKeys.issues.comments(ref), "recent"],
@@ -5091,6 +5138,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
       }
+      if (paginatedConversation) retainComment(comment);
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId ?? comment.issueId),
         (current) =>
@@ -5514,6 +5562,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
       }
       if (comment) {
+        if (paginatedConversation) retainComment(comment);
         if (context?.optimisticCommentId)
           commentRenderKeys.current.set(
             comment.id,
@@ -6699,10 +6748,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const attachmentsInitialLoading =
     attachmentsLoading && attachments === undefined;
-  const loadOlderComments = useCallback(() => {
-    void fetchOlderComments();
-  }, [fetchOlderComments]);
+  const loadOlderComments = useCallback(() => paginatedConversation
+    ? earlierChatComments.load() : fetchOlderComments(), [paginatedConversation, earlierChatComments.load, fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
+    if (paginatedConversation) {
+      await recentComments.refetch();
+      return;
+    }
     // Refetch page 0 first so comments that arrived after initial load are
     // visible, then load every remaining older page. The chat thread is
     // paginated and virtualized, so "latest" must be resolved against the
@@ -6732,7 +6784,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [issueId, queryClient, refetchComments]);
+  }, [issueId, queryClient, refetchComments, paginatedConversation, recentComments.refetch]);
   useEffect(() => {
     if (
       !shouldPrefetchOlderComments &&
@@ -8512,8 +8564,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   documents={issue.documentSummaries ?? []}
                   workProducts={workProducts ?? issue.workProducts ?? []}
                   attachments={attachments ?? []}
-                  hasOlderComments={hasOlderComments}
-                  commentsLoadingOlder={commentsLoadingOlder}
+                  hasOlderComments={paginatedConversation && !historyExpanded
+                    ? (earlierChatComments.data ? earlierChatComments.hasNextPage : recentComments.data?.hasMore) ?? false
+                    : hasOlderComments}
+                  commentsOlderError={paginatedConversation && earlierChatComments.isError}
+                  commentsLoadingOlder={paginatedConversation ? earlierChatComments.isFetching : commentsLoadingOlder}
                   onLoadOlderComments={loadOlderComments}
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}

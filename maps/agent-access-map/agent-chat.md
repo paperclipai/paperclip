@@ -64,7 +64,9 @@ Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
-- `GET /api/issues/{id}/comments`.
+- `GET /api/issues/{id}/recent-comments` (20 contiguous comments for a standing chat).
+- `GET /api/issues/{id}/comments` (cursor pages for older history).
+- `GET /api/issues/{id}/runs?runIds=...` (at most 100 requested IDs, constrained to the accessible issue and company).
 - `POST /api/issues/{id}/comments`.
 - `GET /api/issues/{id}/decision-receipts` (own standing-chat board read).
 - `GET /api/issues/{id}/chat-handoffs` (own standing-chat board read, paginated).

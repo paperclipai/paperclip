@@ -1460,6 +1460,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 });
 
 describe("LiveUpdatesProvider visible issue comment hydration", () => {
+  it("keeps a live chat reply separate from fetched pages and the observed cursor", async () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    client.setQueryData(queryKeys.issues.detail("PAP-759"), {
+      id: "issue-1", identifier: "PAP-759", conversationAgentId: "agent-1",
+    });
+    const recentKey = [...queryKeys.issues.comments("PAP-759"), "recent"];
+    client.setQueryData(recentKey, { comments: [], latestCommentId: "observed", hasMore: true });
+    const comment = { id: "new-reply", issueId: "issue-1", body: "A saved live reply" };
+    getCommentMock.mockResolvedValueOnce(comment);
+    await __liveUpdatesTestUtils.hydrateVisibleIssueComment(client, "/PAP/issues/PAP-759", {
+      entityType: "issue", entityId: "issue-1", action: "issue.comment_added", details: { commentId: comment.id },
+    }, { isForegrounded: true });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(client.getQueryData(queryKeys.issues.acknowledgedComments(ref))).toEqual([comment]);
+      expect(client.getQueryData(queryKeys.issues.comments(ref))).toBeUndefined();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [...queryKeys.issues.comments(ref), "recent"] });
+    }
+    expect(client.getQueryData(recentKey)).toMatchObject({ latestCommentId: "observed", hasMore: true });
+    client.clear();
+  });
+
   it("hydrates the visible issue comments cache with only the new comment", async () => {
     getCommentMock.mockResolvedValueOnce({
       id: "comment-2",
