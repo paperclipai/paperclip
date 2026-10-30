@@ -163,6 +163,12 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+/** The display name of a budget scope, as budget incidents show it. */
+export async function budgetScopeName(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<string> {
+  const scope = await resolveScopeRecord(db, scopeType, scopeId);
+  return normalizeScopeName(scopeType, scope.name);
+}
+
 // Keep a large dashboard from filling the database pool with queued reads.
 async function mapBudgetReads<T, R>(rows: T[], read: (row: T) => Promise<R>): Promise<R[]> {
   const result: R[] = [];
@@ -915,6 +921,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       incidentId: string,
       input: BudgetIncidentResolutionInput,
       actorUserId: string,
+      options: { activityDetails?: Record<string, unknown> } = {},
     ): Promise<BudgetIncident> => {
       const incident = await db
         .select()
@@ -998,6 +1005,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           amount: input.amount ?? null,
           scopeType: incident.scopeType,
           scopeId: incident.scopeId,
+          ...options.activityDetails,
         },
       });
 
@@ -1144,7 +1152,12 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     evaluateCostEvent: (event: typeof costEvents.$inferSelect) => mutate(event.companyId, service => service.evaluateCostEvent(event)),
     getInvocationBlock: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
       mutate(companyId, service => service.getInvocationBlock(companyId, agentId, context)),
-    resolveIncident: (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) =>
-      mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId)),
+    resolveIncident: (
+      companyId: string,
+      incidentId: string,
+      input: BudgetIncidentResolutionInput,
+      actorUserId: string,
+      options?: { activityDetails?: Record<string, unknown> },
+    ) => mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId, options)),
   };
 }

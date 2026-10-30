@@ -13,7 +13,7 @@ import { Input } from "./ui/input";
 
 /**
  * Inline verbs for the cards whose server actions now work in place (PAP-749
- * plan §2, Rule 7): Retry on a failed run, and Raise budget / Keep paused on a
+ * plan §2, Rule 7): Retry on a failed run, and Raise limit / Keep paused on a
  * budget stop. Each verb calls the same endpoint as its native page, so the
  * activity log and the authorization checks are the same.
  */
@@ -106,7 +106,7 @@ function parseDollarInput(value: string) {
 }
 
 /**
- * Raise budget / Keep paused on a budget card. "Keep paused" records that the
+ * Raise limit / Keep paused on a budget card. "Keep paused" records that the
  * pause continues; it never says that work started again (PAP-749 plan §2,
  * Rule 6). A warning does not pause work, so its second verb dismisses it.
  */
@@ -134,7 +134,7 @@ export function BudgetAlertActions({
       budgetsApi.resolveIncident(companyId, item.subject.id, input),
     onSuccess: (_result, input) => {
       toasts?.pushToast({
-        title: input.action === "keep_paused" ? (isWarning ? "Warning dismissed" : "Kept paused") : "Budget raised",
+        title: input.action === "keep_paused" ? (isWarning ? "Warning dismissed" : "Kept paused") : "Limit raised",
         body: item.subject.title ?? undefined,
         tone: "success",
       });
@@ -155,7 +155,7 @@ export function BudgetAlertActions({
       </p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <label className="text-xs font-medium text-muted-foreground" htmlFor={`attention-budget-${item.id}`}>
-          New budget (USD)
+          New limit (USD)
         </label>
         <Input
           id={`attention-budget-${item.id}`}
@@ -165,7 +165,7 @@ export function BudgetAlertActions({
           className="sm:max-w-40"
         />
       </div>
-      {tooLow && <p className="text-xs text-destructive">The new budget must be more than the current spend.</p>}
+      {tooLow && <p className="text-xs text-destructive">The new limit must be more than the current spend.</p>}
       <ActionsFooter leading={leading}>
         <Button
           type="button"
@@ -183,7 +183,7 @@ export function BudgetAlertActions({
           onClick={() => { if (amount !== null) resolve.mutate({ action: "raise_budget_and_resume", amount }); }}
         >
           {resolve.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
-          {isWarning ? "Raise budget" : "Raise budget & resume"}
+          {isWarning ? "Raise limit" : "Raise limit & resume"}
         </Button>
       </ActionsFooter>
     </div>

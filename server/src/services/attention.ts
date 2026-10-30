@@ -389,7 +389,7 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
  * archive or snooze a card for themselves. Withdraw needs a source with a real
  * withdraw or cancel: interactions, decisions and approvals. A hire approval is
  * rejected, not withdrawn, so its pending agent still gets a decision. Budget
- * cards use Raise budget and Keep paused; reviews, blockers, recovery and
+ * cards use Raise limit and Keep paused; reviews, blockers, recovery and
  * operator alerts have no request to withdraw.
  */
 export function attentionCloseModes(
@@ -843,37 +843,47 @@ function budgetObservedPercent(amountObserved: number, amountLimit: number) {
 }
 
 /**
+ * The configured escalation owners that are still active members of the
+ * company. A removed or inactive owner sends cards on to the next step instead
+ * of hiding them on a list nobody reads (PAP-749 plan §1, special conditions).
+ */
+async function activeMemberUserIds(db: Db, companyId: string, userIds: Array<string | null | undefined>) {
+  const candidates = [...new Set(userIds.filter((value): value is string => Boolean(value)))];
+  if (candidates.length === 0) return new Set<string>();
+  const rows = await db
+    .select({ principalId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, "user"),
+      inArray(companyMemberships.principalId, candidates),
+      eq(companyMemberships.status, "active"),
+    ));
+  return new Set(rows.map((row) => row.principalId));
+}
+
+/**
  * Company-level facts the feed needs once per request: the issue prefix for
- * href building and the default decision owner for the audience post-pass
- * (PAP-749 task 1d-lite).
+ * href building and the company's escalation owners for the audience
+ * post-pass: the default decision owner (task 1d-lite) and the budget owner
+ * (task 1d).
  */
 export async function loadCompanyAttentionConfig(db: Db, companyId: string) {
   const row = await db
     .select({
       issuePrefix: companies.issuePrefix,
       defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
+      budgetOwnerUserId: companies.budgetOwnerUserId,
     })
     .from(companies)
     .where(eq(companies.id, companyId))
     .then((rows) => rows[0] ?? null);
-  // A removed or inactive owner sends cards to Unassigned instead of hiding
-  // them on a list nobody reads (PAP-749 plan §1, special conditions).
-  const ownerUserId = row?.defaultDecisionOwnerUserId ?? null;
-  const ownerIsActive = ownerUserId
-    ? await db
-      .select({ id: companyMemberships.id })
-      .from(companyMemberships)
-      .where(and(
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, ownerUserId),
-        eq(companyMemberships.status, "active"),
-      ))
-      .then((rows) => rows.length > 0)
-    : false;
+  const active = await activeMemberUserIds(db, companyId, [row?.defaultDecisionOwnerUserId, row?.budgetOwnerUserId]);
+  const activeOrNull = (userId: string | null | undefined) => (userId && active.has(userId) ? userId : null);
   return {
     prefix: row?.issuePrefix ?? "PAP",
-    defaultDecisionOwnerUserId: ownerIsActive ? ownerUserId : null,
+    defaultDecisionOwnerUserId: activeOrNull(row?.defaultDecisionOwnerUserId),
+    budgetOwnerUserId: activeOrNull(row?.budgetOwnerUserId),
   };
 }
 
@@ -1261,6 +1271,11 @@ export type AttentionAudienceInput = {
   reviewParticipantUserId?: string | null;
   /** Company-operations alert (failed run, budget, agent error, join request, board-owned recovery). */
   companyScoped?: boolean;
+  /**
+   * A company alert that the budget owner also gets as a personal card (a
+   * budget hard stop; PAP-749 plan §1, Rule 3). It still shows in Company.
+   */
+  escalatesToBudgetOwner?: boolean;
 };
 
 /**
@@ -1275,34 +1290,62 @@ export type IssueAudienceContext = {
   instigatorUserId: string | null;
   /** The card's own issue status; the stale rule reads it, the resolver does not. */
   issueStatus?: string | null;
+  /**
+   * The decision owner of the card's own project (task 1d), when it is still
+   * an active member; the first escalation owner of Rule 2 step 5.
+   */
+  projectOwnerUserId?: string | null;
 };
 
 const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
 
 /**
- * Company-level audience configuration (PAP-749 plan §1, Rule 2 step 5). Task
- * 1d-lite ships only the default decision owner; the fuller escalation owners
- * (project owner, budget owner) arrive with task 1d.
+ * Company-level audience configuration (PAP-749 plan §1, Rule 2 step 5): the
+ * default decision owner (task 1d-lite) and the budget owner (task 1d). The
+ * project owner is per issue, on {@link IssueAudienceContext}.
  */
 export type AttentionAudienceCompanyConfig = {
   /** The company's default decision owner, or `null` when none is set. */
   defaultDecisionOwnerUserId?: string | null;
+  /** The company's budget owner, or `null` when none is set. */
+  budgetOwnerUserId?: string | null;
 };
 
 /**
+ * The escalation owner for a card (Rule 2 step 5): the project's decision
+ * owner, else the company's default decision owner, else nobody.
+ */
+function escalationOwnerAudience(
+  ctx: IssueAudienceContext | null,
+  companyConfig: AttentionAudienceCompanyConfig,
+): AttentionAudience | null {
+  if (ctx?.projectOwnerUserId) return { kind: "user", userId: ctx.projectOwnerUserId, reason: "project_owner" };
+  if (companyConfig.defaultDecisionOwnerUserId) {
+    return { kind: "user", userId: companyConfig.defaultDecisionOwnerUserId, reason: "escalation_owner" };
+  }
+  return null;
+}
+
+/**
  * Compute where a card shows (PAP-749 plan §1, Rule 2). Apply the first step in
- * the table that yields a user; otherwise, if the company configured a default
- * decision owner, the card goes to that owner (step 5); failing that it goes to
- * the claimable Unassigned pool (step 6). Placement only — the resolver policy
- * still gates who may act.
+ * the table that yields a user; otherwise the card goes to an escalation owner
+ * (step 5: the project's decision owner, then the company's default decision
+ * owner); failing that it goes to the claimable Unassigned pool (step 6).
+ * Placement only — the resolver policy still gates who may act.
  */
 export function resolveAttentionAudience(
   input: AttentionAudienceInput,
   ctx: IssueAudienceContext | null,
   companyConfig: AttentionAudienceCompanyConfig = {},
 ): AttentionAudience {
-  // Company-operations alerts belong to the operator "Company" view, never a person.
-  if (input.companyScoped) return { kind: "company", userId: null, reason: "none" };
+  // Company-operations alerts belong to the operator "Company" view. A budget
+  // hard stop also goes to the budget owner, and Company still shows it (Rule 3).
+  if (input.companyScoped) {
+    if (input.escalatesToBudgetOwner && companyConfig.budgetOwnerUserId) {
+      return { kind: "user", userId: companyConfig.budgetOwnerUserId, reason: "budget_owner", alsoInCompany: true };
+    }
+    return { kind: "company", userId: null, reason: "none" };
+  }
   // Step 1: an explicit addressee always wins, even on an automated task.
   if (input.addresseeUserId) return { kind: "user", userId: input.addresseeUserId, reason: "addressee" };
   // Source-specific owners that stand in for an explicit recipient.
@@ -1315,13 +1358,10 @@ export function resolveAttentionAudience(
   if (ctx?.assigneeUserId) return { kind: "user", userId: ctx.assigneeUserId, reason: "assignee" };
   // Step 4: the instigator — the human who created the original work, up the parent chain.
   if (ctx?.instigatorUserId) return { kind: "user", userId: ctx.instigatorUserId, reason: "instigator" };
-  // Step 5 (task 1d-lite): the company's default decision owner, when set, so an
-  // ownerless card lands on a real person's "For you" list instead of waiting in
-  // Unassigned. The UI renders `escalation_owner` as "You are the default
-  // decision owner". The fuller project/budget owners arrive with task 1d.
-  if (companyConfig.defaultDecisionOwnerUserId) {
-    return { kind: "user", userId: companyConfig.defaultDecisionOwnerUserId, reason: "escalation_owner" };
-  }
+  // Step 5: an escalation owner, so an ownerless card lands on a real person's
+  // "For you" list instead of waiting in Unassigned.
+  const escalation = escalationOwnerAudience(ctx, companyConfig);
+  if (escalation) return escalation;
   // Step 6: no owner — the card goes to the claimable Unassigned pool.
   return { kind: "pool", userId: null, reason: "none" };
 }
@@ -1345,7 +1385,8 @@ export function audienceMatchesView(
     case "unassigned":
       return audience.kind === "pool";
     case "company":
-      return audience.kind === "company";
+      // A critical incident with a personal owner still shows here (Rule 3).
+      return audience.kind === "company" || audience.alsoInCompany === true;
   }
 }
 
@@ -1435,9 +1476,10 @@ export function resolveAttentionStale(input: {
 /**
  * Where an old card goes so it never disappears (Rule 10 and recommendation
  * (e)). An Unassigned card with no owner for 7 days moves to Company. A
- * required card (approval or governed request) waiting 30 days moves to the
- * default decision owner, or to Company when there is none. Placement only: the
- * card stays pending and its gate stays closed.
+ * required card (approval or governed request) waiting 30 days moves to its
+ * escalation owner (the project's decision owner, else the default decision
+ * owner), or to Company when there is none. Placement only: the card stays
+ * pending and its gate stays closed.
  */
 export function escalateStaleAudience(input: {
   audience: AttentionAudience;
@@ -1445,16 +1487,16 @@ export function escalateStaleAudience(input: {
   required: boolean;
   now: number;
   companyConfig?: AttentionAudienceCompanyConfig;
+  /** The card's issue context, for its project's decision owner. */
+  ctx?: IssueAudienceContext | null;
 }): AttentionAudience {
   const age = input.now - timestamp(input.since);
   if (input.audience.kind === "pool" && age >= ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS * DAY_MS) {
     return { kind: "company", userId: null, reason: "none" };
   }
   if (input.required && input.audience.kind === "user" && age >= ATTENTION_STALE_AFTER_DAYS * DAY_MS) {
-    const owner = input.companyConfig?.defaultDecisionOwnerUserId ?? null;
-    return owner
-      ? { kind: "user", userId: owner, reason: "escalation_owner" }
-      : { kind: "company", userId: null, reason: "none" };
+    return escalationOwnerAudience(input.ctx ?? null, input.companyConfig ?? {})
+      ?? { kind: "company", userId: null, reason: "none" };
   }
   return input.audience;
 }
@@ -1564,6 +1606,7 @@ export async function resolveIssueAudienceContextMap(
     conversationUserId: string | null;
     assigneeUserId: string | null;
     issueStatus: string;
+    projectId: string | null;
   }>();
 
   let frontier = starts;
@@ -1578,6 +1621,7 @@ export async function resolveIssueAudienceContextMap(
         conversationUserId: issues.conversationUserId,
         assigneeUserId: issues.assigneeUserId,
         createdByUserId: issues.createdByUserId,
+        projectId: issues.projectId,
         humanCreated: humanCreatedIssueCondition(),
       })
       .from(issues)
@@ -1592,11 +1636,33 @@ export async function resolveIssueAudienceContextMap(
           conversationUserId: row.conversationUserId,
           assigneeUserId: row.assigneeUserId,
           issueStatus: row.status,
+          projectId: row.projectId,
         });
       }
     }
     frontier = rows.map((row) => row.parentId).filter((id): id is string => Boolean(id));
   }
+
+  // Task 1d: the decision owner of each start issue's own project, kept only
+  // while that person is an active member (one query for all projects).
+  const projectIds = [...new Set([...starterContext.values()]
+    .map((context) => context.projectId)
+    .filter((id): id is string => Boolean(id)))];
+  const projectOwnerRows = projectIds.length > 0
+    ? await db
+      .select({ id: projects.id, decisionOwnerUserId: projects.decisionOwnerUserId })
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))
+    : [];
+  const activeProjectOwners = await activeMemberUserIds(
+    db,
+    companyId,
+    projectOwnerRows.map((row) => row.decisionOwnerUserId),
+  );
+  const projectOwnerById = new Map(projectOwnerRows.map((row) => [
+    row.id,
+    row.decisionOwnerUserId && activeProjectOwners.has(row.decisionOwnerUserId) ? row.decisionOwnerUserId : null,
+  ]));
 
   const result = new Map<string, IssueAudienceContext>();
   for (const start of starts) {
@@ -1617,6 +1683,7 @@ export async function resolveIssueAudienceContextMap(
       assigneeUserId: context?.assigneeUserId ?? null,
       instigatorUserId,
       issueStatus: context?.issueStatus ?? null,
+      projectOwnerUserId: context?.projectId ? projectOwnerById.get(context.projectId) ?? null : null,
     });
   }
   return result;
@@ -2432,7 +2499,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             ? "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
-            { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
+            { id: "raise_budget_and_resume", label: "Raise limit", description: "Raise the budget limit and resume paused work." },
             { id: "keep_paused", label: "Keep paused", description: "Dismiss or keep the budget stop in place." },
           ),
           inlineResolvable: true,
@@ -2451,7 +2518,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             amountLimit: incident.amountLimit,
             images: [],
           },
-        }), { issueId: null, companyScoped: true }, {
+        }), {
+          issueId: null,
+          companyScoped: true,
+          // A hard stop pauses work, so the budget owner also gets it (task 1d).
+          escalatesToBudgetOwner: incident.thresholdType === "hard",
+        }, {
           // Spend creeping upward inside one incident is not a new choice.
           content: { status: incident.status },
           since: incident.createdAt,
@@ -2532,6 +2604,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       );
       const audienceConfig: AttentionAudienceCompanyConfig = {
         defaultDecisionOwnerUserId: companyConfig.defaultDecisionOwnerUserId,
+        budgetOwnerUserId: companyConfig.budgetOwnerUserId,
       };
       const currentItems: AttentionItem[] = [];
       for (const item of dedupedItems) {
@@ -2557,6 +2630,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           required: item.required,
           now,
           companyConfig: audienceConfig,
+          ctx,
         });
         currentItems.push(item);
       }
@@ -3023,7 +3097,7 @@ const WITHDRAWABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<Atte
 
 /** Where to go instead, for cards with no request to withdraw (PAP-749 Rules 6-7). */
 const WITHDRAW_UNSUPPORTED_TEXT: Partial<Record<AttentionSourceKind, string>> = {
-  budget_alert: "Budget cards are not withdrawn. Raise the budget or keep it paused, or archive the card for yourself.",
+  budget_alert: "Budget cards are not withdrawn. Raise the limit or keep it paused, or archive the card for yourself.",
   recovery_action: "Cancel this recovery on its task, where you also choose the task's next status.",
   failed_run: "A failed run is not a request. Retry the task, or archive the card for yourself.",
   agent_error_alert: "Fix the agent on its page, or archive the alert for yourself.",

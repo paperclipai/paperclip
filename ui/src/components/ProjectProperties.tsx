@@ -17,6 +17,7 @@ import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Separator } from "@/components/ui/separator";
+import { NativeSelect } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Trash2 } from "lucide-react";
@@ -46,6 +47,7 @@ export type ProjectConfigFieldKey =
   | "description"
   | "status"
   | "visibility"
+  | "decision_owner"
   | "goals"
   | "env"
   | "workspace_storage_provider"
@@ -264,6 +266,12 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
+  });
+  // PAP-749 task 1d: members populate the decision owner picker.
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
+    queryFn: () => accessApi.listMembers(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && Boolean(onUpdate || onFieldUpdate),
   });
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
@@ -508,6 +516,31 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                 : "Everyone in the company can discover this project. Individually private tasks keep their own access rules."}
             </p>
             {project.visibility === "private" ? <ProjectAccessMembers project={project} canManage={canManagePrivacy} /> : null}
+          </div>
+        </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Decision owner" state={fieldState("decision_owner")} />} alignStart>
+          <div className="space-y-1">
+            <NativeSelect
+              aria-label="Decision owner"
+              data-testid="project-decision-owner"
+              value={project.decisionOwnerUserId ?? ""}
+              disabled={!onUpdate && !onFieldUpdate}
+              onChange={(event) =>
+                commitField("decision_owner", { decisionOwnerUserId: event.target.value === "" ? null : event.target.value })
+              }
+            >
+              <option value="">Company default</option>
+              {(companyMembers?.members ?? [])
+                .filter((member) => member.user?.id)
+                .map((member) => (
+                  <option key={member.user!.id} value={member.user!.id}>
+                    {member.user!.name || member.user!.email || member.user!.id}
+                  </option>
+                ))}
+            </NativeSelect>
+            <p className="text-(length:--text-micro) text-muted-foreground">
+              A Needs You card on this project's work that names no person goes to this user's For you list.
+            </p>
           </div>
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}

@@ -206,6 +206,25 @@ const OBLIGATIONS: AttentionItem[] = [
   }),
 ];
 
+// Escalation owners (PAP-749 task 1d): the budget owner's hard stop, which
+// Company still shows to everyone, and a card that reached Scott as the
+// project's decision owner.
+const BUDGET_OWNER_STOP = card("budget-owned", "budget_alert", "Research team budget hard stop", "Budget hard stop was reached.",
+  { kind: "user", userId: SCOTT, reason: "budget_owner", alsoInCompany: true }, {
+    severity: "high",
+    inlineResolvable: true,
+    relatedIssue: null,
+    decisionVerbs: [{ id: "raise_budget_and_resume", label: "Raise limit", description: null }, { id: "keep_paused", label: "Keep paused", description: null }],
+    subject: {
+      kind: "budget_incident", id: "budget-incident-owned", companyId, title: "Research team budget hard stop", identifier: null, status: "open", href: "/PAP/costs",
+      metadata: { thresholdType: "hard", amountObserved: 50_000, amountLimit: 50_000 },
+    },
+  });
+const ESCALATION_OWNER_CARDS: AttentionItem[] = [
+  BUDGET_OWNER_STOP,
+  card("project-owned", "issue_thread_interaction", "Confirm the Platform migration plan", "No person on the task; you own the Platform project's decisions.", forScott("project_owner"), WITHDRAWABLE),
+];
+
 const COUNTS: AttentionViewCounts = { mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length, archived: ARCHIVED.length };
 const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS, archived: ARCHIVED };
 
@@ -215,12 +234,14 @@ function NeedsYouViews({
   counts = COUNTS,
   staleOpen: initialStaleOpen = false,
   expandedId: initialExpandedId = null,
+  viewerId = SCOTT,
 }: {
   initialView?: AttentionPersonalView;
   items?: Record<AttentionPersonalView, AttentionItem[]>;
   counts?: AttentionViewCounts;
   staleOpen?: boolean;
   expandedId?: string | null;
+  viewerId?: string;
 }) {
   const [view, setView] = useState<AttentionPersonalView>(initialView);
   // Claim, Close… verbs and Withdraw all stale only hide rows locally here.
@@ -249,7 +270,7 @@ function NeedsYouViews({
       onWithdraw={hide}
       onTransfer={hide}
       onRestore={view === "archived" ? hide : undefined}
-      currentUserId={SCOTT}
+      currentUserId={viewerId}
       userLabelMap={USER_LABELS}
       onClaim={hide}
       evidence={attentionObligationEvidence(obligations, item)}
@@ -266,7 +287,7 @@ function NeedsYouViews({
         open={staleOpen}
         onToggle={() => setStaleOpen((open) => !open)}
         onWithdrawAll={(entries) => setHidden((currentHidden) => new Set([...currentHidden, ...entries.map((entry) => entry.id)]))}
-        currentUserId={SCOTT}
+        currentUserId={viewerId}
         userLabelMap={USER_LABELS}
       >
         {stale.map(row)}
@@ -345,6 +366,31 @@ export const Archived: Story = { args: { initialView: "archived" } };
  */
 export const OneObligation: Story = {
   args: { items: { ...ITEMS, mine: OBLIGATIONS }, counts: { ...COUNTS, mine: 2 }, expandedId: "ob-run" },
+};
+
+/**
+ * Escalation owners (PAP-749 task 1d): Scott owns budget escalation, so the
+ * budget hard stop is in his For you ("You own budget escalation") with Raise
+ * limit and Keep paused; a card on the Platform project reached him as the
+ * project's decision owner.
+ */
+export const EscalationOwners: Story = {
+  args: { items: { ...ITEMS, mine: ESCALATION_OWNER_CARDS }, counts: { ...COUNTS, mine: 2 }, expandedId: "budget-owned" },
+};
+
+/**
+ * The same hard stop in Dotta's Company view: Company still shows it to every
+ * operator, as "For @Scott", and Raise limit / Keep paused wait behind "This is
+ * for @Scott. Continue?".
+ */
+export const BudgetOwnerCardInCompany: Story = {
+  args: {
+    viewerId: DOTTA,
+    initialView: "company",
+    items: { ...ITEMS, company: [BUDGET_OWNER_STOP, ...COMPANY_CARDS] },
+    counts: { ...COUNTS, company: COMPANY_CARDS.length + 1 },
+    expandedId: "budget-owned",
+  },
 };
 
 /** Nothing waits in the pool, so For you shows no banner. */

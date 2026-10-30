@@ -244,13 +244,24 @@ export type AttentionAudienceReason =
   | "assignee"
   | "instigator"
   | "requester"
+  /** The company's default decision owner (task 1d-lite). */
   | "escalation_owner"
+  /** The decision owner of the card's project (task 1d). */
+  | "project_owner"
+  /** The company's budget owner, on a budget hard stop (task 1d). */
+  | "budget_owner"
   | "none";
 
 export interface AttentionAudience {
   kind: AttentionAudienceKind;
   userId: string | null;
   reason: AttentionAudienceReason;
+  /**
+   * A company alert that also has a personal owner (PAP-749 plan §1, Rule 3):
+   * the card shows in {@link userId}'s "For you" list and in the Company view.
+   * Only a budget hard stop with a budget owner sets it today.
+   */
+  alsoInCompany?: boolean;
   /**
    * The person who transferred the card to {@link userId} ("Route to @x"),
    * when the addressee came from a transfer (PAP-749 plan §6, Rule 12). The

@@ -118,6 +118,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     spentMonthlyCents: companies.spentMonthlyCents,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
+    budgetOwnerUserId: companies.budgetOwnerUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,

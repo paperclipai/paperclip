@@ -23,6 +23,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     logoUrl: null,
     defaultResponsibleUserId: null,
     defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

@@ -3,6 +3,7 @@ import {
   activityLog,
   agents,
   approvals,
+  budgetIncidents,
   companies,
   decisions,
   inboxDismissals,
@@ -19,6 +20,7 @@ import {
   type AttentionReceipt,
   type AttentionReceiptOutcome,
   type AttentionSourceKind,
+  type BudgetScopeType,
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
@@ -33,6 +35,7 @@ import {
   type AttentionAudienceInput,
 } from "./attention.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { budgetScopeName } from "./budgets.js";
 import { deferrableInteractionCondition } from "./issue-question-context.js";
 
 /**
@@ -49,8 +52,15 @@ const RECEIPT_LIMIT = 20;
 const RECEIPT_SCAN_LIMIT = 200;
 export const ATTENTION_RECEIPT_DISMISSAL_PREFIX = "attention:receipt:";
 
-/** Sources a person can answer, withdraw or transfer for somebody else. */
-export type AttentionHandledSourceKind = Extract<AttentionSourceKind, "issue_thread_interaction" | "approval" | "decision">;
+/**
+ * Sources a person can answer, withdraw or transfer for somebody else. A
+ * budget card is for a person only when it is a hard stop with a budget owner
+ * (task 1d).
+ */
+export type AttentionHandledSourceKind = Extract<
+  AttentionSourceKind,
+  "issue_thread_interaction" | "approval" | "decision" | "budget_alert"
+>;
 
 /** The card a person is about to act on, and who it is for right now. */
 export type AttentionHandledFor = {
@@ -129,6 +139,27 @@ export async function resolveAttentionCardAudience(
     title = approvalTitle(row.type, row.payload);
     since = row.updatedAt;
     required = true;
+  } else if (source.sourceKind === "budget_alert") {
+    // The budget owner's card is the open hard stop (PAP-749 task 1d). It has
+    // no issue; everything else about a budget card is a Company alert.
+    const [row] = await db
+      .select({
+        scopeType: budgetIncidents.scopeType,
+        scopeId: budgetIncidents.scopeId,
+        thresholdType: budgetIncidents.thresholdType,
+        status: budgetIncidents.status,
+        createdAt: budgetIncidents.createdAt,
+      })
+      .from(budgetIncidents)
+      .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.id, source.sourceId)))
+      .limit(1);
+    if (!row || row.status !== "open") return null;
+    const hard = row.thresholdType === "hard";
+    input = { issueId: null, companyScoped: true, escalatesToBudgetOwner: hard };
+    const scopeName = await budgetScopeName(db, row.scopeType as BudgetScopeType, row.scopeId);
+    title = `${scopeName} budget ${hard ? "hard stop" : "warning"}`;
+    since = row.createdAt;
+    required = false;
   } else {
     const [row] = await db
       .select({ originIssueId: decisions.originIssueId, title: decisions.title, createdAt: decisions.createdAt })
@@ -145,13 +176,18 @@ export async function resolveAttentionCardAudience(
     resolveIssueAudienceContextMap(db, companyId, [input.issueId]),
     loadCompanyAttentionConfig(db, companyId),
   ]);
-  const companyConfig = { defaultDecisionOwnerUserId: config.defaultDecisionOwnerUserId };
+  const companyConfig = {
+    defaultDecisionOwnerUserId: config.defaultDecisionOwnerUserId,
+    budgetOwnerUserId: config.budgetOwnerUserId,
+  };
+  const ctx = input.issueId ? contexts.get(input.issueId) ?? null : null;
   const audience = escalateStaleAudience({
-    audience: resolveAttentionAudience(input, input.issueId ? contexts.get(input.issueId) ?? null : null, companyConfig),
+    audience: resolveAttentionAudience(input, ctx, companyConfig),
     since,
     required,
     now,
     companyConfig,
+    ctx,
   });
   return { audience, issueId: input.issueId, title };
 }
@@ -332,9 +368,11 @@ export function attentionReceiptService(db: Db) {
             : null,
           href: receipt.sourceKind === "approval"
             ? `/${prefix}/approvals/${receipt.sourceId}`
-            : issueHref && receipt.sourceKind === "issue_thread_interaction"
-              ? `${issueHref}#interaction-${receipt.sourceId}`
-              : issueHref,
+            : receipt.sourceKind === "budget_alert"
+              ? `/${prefix}/costs`
+              : issueHref && receipt.sourceKind === "issue_thread_interaction"
+                ? `${issueHref}#interaction-${receipt.sourceId}`
+                : issueHref,
           createdAt: createdAt.toISOString(),
           expiresAt: new Date(createdAt.getTime() + ATTENTION_RECEIPT_DAYS * DAY_MS).toISOString(),
         });

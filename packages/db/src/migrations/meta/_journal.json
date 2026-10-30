@@ -2913,6 +2913,13 @@
       "when": 1793357221827,
       "tag": "0417_minor_major_mapleleaf",
       "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1793365859393,
+      "tag": "0418_petite_silhouette",
+      "breakpoints": true
     }
   ]
 }

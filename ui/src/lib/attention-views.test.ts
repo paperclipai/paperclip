@@ -41,6 +41,16 @@ describe("attention views (PAP-749 task 1b)", () => {
       .toEqual({ kind: "mine", text: "You are the default decision owner" });
   });
 
+  it("names the project and budget escalation owners (PAP-749 task 1d)", () => {
+    expect(describeAttentionAudience(item({ kind: "user", userId: "riley", reason: "project_owner" }), "riley"))
+      .toEqual({ kind: "mine", text: "You own this project's decisions" });
+    const budgetStop = item({ kind: "user", userId: "scott", reason: "budget_owner", alsoInCompany: true }, "budget_alert");
+    expect(describeAttentionAudience(budgetStop, "scott")).toEqual({ kind: "mine", text: "You own budget escalation" });
+    // Company still shows the hard stop to everyone else, as "For @scott".
+    expect(describeAttentionAudience(budgetStop, "dotta")).toEqual({ kind: "other", userId: "scott" });
+    expect(attentionItemClaimable(budgetStop)).toBe(false);
+  });
+
   it("names the other person on a card that is not yours", () => {
     expect(describeAttentionAudience(item({ kind: "user", userId: "dotta", reason: "addressee" }), "scott"))
       .toEqual({ kind: "other", userId: "dotta" });

@@ -208,6 +208,21 @@ async function main() {
       for (const item of gated) console.log(`  separate gate: ${item.sourceKind} "${item.subject.title}" (obligationKey ${item.obligationKey})`);
     }
 
+    // Task 1d: escalation owners. Cards whose "Why me?" is a project or budget
+    // owner, and where the budget hard stop shows for each person.
+    console.log("\n=== Escalation owners (task 1d) ===");
+    const nameById = new Map([...idByEmail].map(([email, id]) => [id, Object.keys(DEMO_EMAILS).find((key) => DEMO_EMAILS[key] === email)!]));
+    for (const [name, email] of Object.entries(DEMO_EMAILS)) {
+      const userId = idByEmail.get(email);
+      if (!userId) continue;
+      const mine = await svc.list(company.id, { userId, view: "mine", all: true, allowUnscopedAll: true });
+      const company_ = await svc.list(company.id, { userId, view: "company", all: true, allowUnscopedAll: true });
+      const owned = mine.items.filter((item) => ["project_owner", "budget_owner", "escalation_owner"].includes(item.audience.reason));
+      const hardStop = company_.items.find((item) => item.sourceKind === "budget_alert" && item.subject.metadata?.thresholdType === "hard");
+      console.log(`${name}: ${owned.length} escalation card(s) in For you; Company shows the hard stop: ${hardStop ? `yes (for ${hardStop.audience.userId ? `@${nameById.get(hardStop.audience.userId)}` : "operators"})` : "no"}`);
+      for (const item of owned) console.log(`  - ${item.audience.reason.padEnd(16)} ${item.sourceKind}: ${item.subject.title} [${item.decisionVerbs.map((verb) => verb.label).join(" / ")}]`);
+    }
+
     // Per-source-kind breakdown for Scott's mine view, to show the composition.
     const scottId = idByEmail.get(DEMO_EMAILS.Scott);
     if (scottId) {

@@ -71,6 +71,15 @@
  * one card with Retry; the run moves from Company to Scott with the task. A
  * task with a configured human review stage plus an approval stays two cards,
  * because the review is an independent quality gate.
+ *
+ * Project and budget escalation owners (PAP-749 task 1d): the "Platform"
+ * project names Dotta as its decision owner, so its ownerless card goes to
+ * Dotta's "For you" ("You own this project's decisions") before the company's
+ * default decision owner. Scott is the budget owner, so the budget hard stop is
+ * also in Scott's "For you" ("You own budget escalation", with Raise limit /
+ * Keep paused) while every person's Company view still shows it; the 90%
+ * warning stays in Company only. Toggle with SEED_PROJECT_DECISION_OWNER and
+ * SEED_BUDGET_OWNER (scott|dotta|riley|none). Riley still starts with no cards.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -163,6 +172,12 @@ async function main() {
   console.log(`[seed] cards created: ${summary.cardCount} (see group breakdown above)`);
   console.log(
     `[seed] default decision owner: ${summary.defaultDecisionOwner ?? "cleared (Unassigned)"} — toggle with SEED_DEFAULT_DECISION_OWNER`,
+  );
+  console.log(
+    `[seed] budget owner: ${summary.budgetOwner ?? "cleared (Company only)"} — toggle with SEED_BUDGET_OWNER`,
+  );
+  console.log(
+    `[seed] Platform project decision owner: ${summary.projectDecisionOwner ?? "cleared"} — toggle with SEED_PROJECT_DECISION_OWNER`,
   );
   await (db as unknown as { $client: { end: (o?: { timeout?: number }) => Promise<void> } }).$client.end({ timeout: 5 });
   process.exit(0);
@@ -283,6 +298,24 @@ async function seed(db: Db) {
     console.log(`[seed] default decision owner: ${defaultDecisionOwnerKey} (${defaultDecisionOwnerId}) — ownerless cards route to this user's For you`);
   } else {
     console.log('[seed] default decision owner: cleared — ownerless cards go to Unassigned. Set SEED_DEFAULT_DECISION_OWNER=dotta to compare.');
+  }
+
+  // --- budget owner and project decision owner (PAP-749 task 1d) -----------
+  // Defaults: Scott owns budget escalation and Dotta owns the Platform
+  // project's decisions. "none" clears either one, so the hard stop stays in
+  // Company only and the Platform card falls back to the default decision
+  // owner or Unassigned.
+  const ownerFromEnv = (name: string, fallback: string) => {
+    const key = (process.env[name] ?? fallback).trim().toLowerCase();
+    return { key, id: key && key !== "none" ? userIds[key] ?? null : null };
+  };
+  const budgetOwner = ownerFromEnv("SEED_BUDGET_OWNER", "scott");
+  const projectDecisionOwner = ownerFromEnv("SEED_PROJECT_DECISION_OWNER", "dotta");
+  if (budgetOwner.id) {
+    await companyService(db).update(companyId, { budgetOwnerUserId: budgetOwner.id });
+    console.log(`[seed] budget owner: ${budgetOwner.key} (${budgetOwner.id}) — the budget hard stop is also in this user's For you`);
+  } else {
+    console.log("[seed] budget owner: cleared — the budget hard stop is in Company only");
   }
 
   // --- agents --------------------------------------------------------------
@@ -428,6 +461,29 @@ async function seed(db: Db) {
   card("Claimed", "ownerless card Dotta claimed (in Dotta's For you, not in Unassigned)");
 
   // =========================================================================
+  // GROUP: Project owner (task 1d) — agent-created work with no human signal
+  //        in a project that names a decision owner.
+  // =========================================================================
+  const platformProjectId = await createProject(db, companyId, worker!.id, {
+    name: "Platform",
+    description: "Its decision owner gets the project's ownerless cards.",
+    decisionOwnerUserId: projectDecisionOwner.id,
+  });
+  const platformIssue = await issuesSvc.create(companyId, {
+    title: "Agent-created Platform work (no addressee)", status: "todo", priority: "medium",
+    projectId: platformProjectId, createdByAgentId: worker!.id,
+  } as never) as { id: string };
+  await makeInteraction(platformIssue, "request_confirmation", { prompt: "Confirm the Platform migration plan. No explicit human owner." }, {
+    title: "Platform: confirm the migration plan", actorAgentId: worker!.id,
+  });
+  card(
+    "Project owner",
+    projectDecisionOwner.id
+      ? `ownerless Platform card in ${projectDecisionOwner.key}'s For you ("You own this project's decisions")`
+      : "ownerless Platform card (no project decision owner: default owner or Unassigned)",
+  );
+
+  // =========================================================================
   // GROUP: Company — failed run after retries, agent error, budget hard stop,
   //        budget warning at 90%, join request, recovery that stopped.
   // =========================================================================
@@ -450,7 +506,9 @@ async function seed(db: Db) {
   // budget hard stop (agent-scoped so it does not pause the whole demo company)
   await budgetService(db).upsertPolicy(companyId, { scopeType: "agent", scopeId: hardStopAgent!.id, amount: 100_00, warnPercent: 80, hardStopEnabled: true, notifyEnabled: true } as never, scott);
   await costService(db).createEvent(companyId, { agentId: hardStopAgent!.id, provider: "anthropic", model: "claude-opus-4-8", usageKind: "agent", costCents: 100_00, occurredAt: now() } as never);
-  card("Company", "budget hard stop (100%) incident");
+  card("Company", budgetOwner.id
+    ? `budget hard stop (100%) incident — also in ${budgetOwner.key}'s For you as the budget owner`
+    : "budget hard stop (100%) incident");
 
   // budget warning at ~90%
   await budgetService(db).upsertPolicy(companyId, { scopeType: "agent", scopeId: warnAgent!.id, amount: 100_00, warnPercent: 80, hardStopEnabled: false, notifyEnabled: true } as never, scott);
@@ -754,14 +812,21 @@ async function seed(db: Db) {
     users: DEMO_USERS.map((u) => ({ name: u.name, email: u.email, role: u.role })),
     cardCount,
     defaultDecisionOwner: defaultDecisionOwnerId ? defaultDecisionOwnerKey : null,
+    budgetOwner: budgetOwner.id ? budgetOwner.key : null,
+    projectDecisionOwner: projectDecisionOwner.id ? projectDecisionOwner.key : null,
   };
 }
 
 // --- small helpers ---------------------------------------------------------
 
-async function createProject(db: Db, companyId: string, leadAgentId: string): Promise<string> {
+async function createProject(
+  db: Db,
+  companyId: string,
+  leadAgentId: string,
+  overrides: { name?: string; description?: string; decisionOwnerUserId?: string | null } = {},
+): Promise<string> {
   const [project] = await db.insert(projects).values({
-    companyId, name: "Needs You Demo", description: "Holds the demo issues.", status: "in_progress", leadAgentId,
+    companyId, name: "Needs You Demo", description: "Holds the demo issues.", status: "in_progress", leadAgentId, ...overrides,
   }).returning();
   return (project as { id: string }).id;
 }

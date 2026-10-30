@@ -89,9 +89,11 @@ export function CompanySettings() {
     }
   });
 
-  // Members populate the default decision owner picker. Ownerless "Needs You"
-  // cards route to that user's "For you" list; clearing it sends them to the
-  // claimable Unassigned pool (PAP-749 task 1d-lite).
+  // Members populate the default decision owner and budget owner pickers.
+  // Ownerless "Needs You" cards route to the default decision owner's "For
+  // you" list; clearing it sends them to the claimable Unassigned pool
+  // (PAP-749 task 1d-lite). A budget hard stop also goes to the budget owner,
+  // and Company keeps showing it (task 1d).
   const membersQuery = useQuery({
     queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
     queryFn: () => accessApi.listMembers(selectedCompanyId!),
@@ -105,6 +107,22 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const budgetOwnerMutation = useMutation({
+    mutationFn: (budgetOwnerUserId: string | null) =>
+      companiesApi.update(selectedCompanyId!, { budgetOwnerUserId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  const memberOptions = (membersQuery.data?.members ?? [])
+    .filter((member) => member.user?.id)
+    .map((member) => (
+      <option key={member.user!.id} value={member.user!.id}>
+        {member.user!.name || member.user!.email || member.user!.id}
+      </option>
+    ));
 
   const governanceMutation = useMutation({
     mutationFn: (next: InteractionResolverGovernance) =>
@@ -392,13 +410,7 @@ export function CompanySettings() {
             }
           >
             <option value="">Unassigned (no default owner)</option>
-            {(membersQuery.data?.members ?? [])
-              .filter((member) => member.user?.id)
-              .map((member) => (
-                <option key={member.user!.id} value={member.user!.id}>
-                  {member.user!.name || member.user!.email || member.user!.id}
-                </option>
-              ))}
+            {memberOptions}
           </NativeSelect>
         </Field>
         {decisionOwnerMutation.isError && (
@@ -406,6 +418,29 @@ export function CompanySettings() {
             {decisionOwnerMutation.error instanceof Error
               ? decisionOwnerMutation.error.message
               : "Failed to update default decision owner"}
+          </span>
+        )}
+        <Field
+          label="Budget owner"
+          hint="A budget hard stop also goes to this user's For you list, with Raise limit and Keep paused. The Company view still shows it to every operator."
+        >
+          <NativeSelect
+            data-testid="company-settings-budget-owner"
+            value={selectedCompany.budgetOwnerUserId ?? ""}
+            disabled={budgetOwnerMutation.isPending || membersQuery.isLoading}
+            onChange={(e) =>
+              budgetOwnerMutation.mutate(e.target.value === "" ? null : e.target.value)
+            }
+          >
+            <option value="">No budget owner (Company view only)</option>
+            {memberOptions}
+          </NativeSelect>
+        </Field>
+        {budgetOwnerMutation.isError && (
+          <span className="text-xs text-destructive">
+            {budgetOwnerMutation.error instanceof Error
+              ? budgetOwnerMutation.error.message
+              : "Failed to update budget owner"}
           </span>
         )}
       </div>

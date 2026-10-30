@@ -19,6 +19,10 @@ export const projects = pgTable(
     personalOwnerUserId: text("personal_owner_user_id"),
     status: text("status").notNull().default("backlog"),
     leadAgentId: uuid("lead_agent_id").references(() => agents.id),
+    // PAP-749 task 1d: the project's decision owner. A card on this project's
+    // work that names no person goes to this user's "For you" list before the
+    // company's default decision owner. Placement only; it grants no authority.
+    decisionOwnerUserId: text("decision_owner_user_id"),
     targetDate: date("target_date"),
     color: text("color"),
     icon: text("icon"),

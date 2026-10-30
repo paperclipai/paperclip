@@ -6,6 +6,11 @@ describe("attention audience reason text", () => {
     expect(attentionAudienceReasonText("escalation_owner")).toBe("You are the default decision owner");
   });
 
+  it("names the project and budget escalation owners", () => {
+    expect(attentionAudienceReasonText("project_owner")).toBe("You own this project's decisions");
+    expect(attentionAudienceReasonText("budget_owner")).toBe("You own budget escalation");
+  });
+
   it("has no line for an unaddressed card", () => {
     expect(attentionAudienceReasonText("none")).toBeNull();
   });

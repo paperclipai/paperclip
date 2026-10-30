@@ -46,6 +46,13 @@ show Snoozed/Archived curtains. Your own cards say **Why me?**, a different pers
 addressee and removes it from everyone else's pool (`attention.claimed` activity).
 For you shows "N cards need an owner" while the pool has cards; that count is
 not in the badge.
+Escalation owners catch cards that name no person: a project's **Decision owner**
+(Project → Configuration) first, then the company's **Default decision owner**
+(Company Settings → Decisions), else Unassigned. The company's **Budget owner**
+gets each budget hard stop in For you ("You own budget escalation", with Raise
+limit / Keep paused) while Company still shows it to every operator as "For
+@owner"; a different person's Raise limit or Keep paused leaves the owner a
+receipt. An owner who is no longer an active member is skipped.
 Every card carries `closeModes` for one close API
 (`POST /companies/:companyId/attention/:sourceKind/:sourceId/close`):
 **Withdraw** closes an interaction, decision or approval for everyone through
@@ -164,6 +171,13 @@ cover the shared active-request predicate with Mine, the 30-day, closed-task,
 decision-deadline and 7-day Unassigned stale rules, stale approval escalation
 without withdrawal, fingerprint-only resurfacing of dismissed and snoozed cards,
 and the idempotent closed-task sweep.
+[Escalation owner tests](../../server/src/__tests__/attention-escalation-owners.test.ts)
+cover project decision owners ahead of the default owner, skipping an inactive
+owner, the budget owner's hard stop in For you and in everyone's Company view
+(one badge card), Company only without a budget owner, and the budget owner's
+receipt; the [project](../../server/src/__tests__/project-decision-owner-route.test.ts)
+and [company](../../server/src/__tests__/company-default-decision-owner-route.test.ts)
+route tests cover the active-member 422 and board-only writes.
 [Obligation tests](../../server/src/__tests__/attention-obligations.test.ts)
 cover the approval/review and blocked-task/failed-run joins, the separate human
 review gate, placement with the blocked task's person, one count per obligation,
@@ -174,7 +188,7 @@ and the view switch, banner, Why me?, For @name and Claim; the
 [classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
 plus the Archived view with Restore, Change time and Decision history on both pages.
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
-show For you, Unassigned, Company, Archived, a different person's cards and one card for each obligation.
+show For you, Unassigned, Company, Archived, a different person's cards, one card for each obligation and the escalation owners (including the budget owner's hard stop in another person's Company view).
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.

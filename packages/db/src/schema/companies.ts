@@ -22,6 +22,10 @@ export const companies = pgTable(
     // deliberately NOT reused for this — the plan forbids routing by
     // responsibility, so decision ownership is its own setting.
     defaultDecisionOwnerUserId: text("default_decision_owner_user_id"),
+    // PAP-749 task 1d: the budget owner. A budget hard stop also goes to this
+    // user's "For you" list (Raise limit / Keep paused) while the Company view
+    // keeps showing it. Placement only; it grants no authority.
+    budgetOwnerUserId: text("budget_owner_user_id"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),

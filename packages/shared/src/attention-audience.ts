@@ -13,9 +13,12 @@ export const ATTENTION_AUDIENCE_REASON_TEXT: Record<AttentionAudienceReason, str
   assignee: "Assigned to you",
   instigator: "You created the original task",
   requester: "You requested this",
-  // Task 1d-lite: the company's default decision owner is the only escalation
-  // owner so far. Task 1d adds project and budget owners with their own reasons.
+  // Escalation owners (Rule 2 step 5): the project's decision owner comes
+  // before the company's default decision owner; the budget owner gets budget
+  // hard stops.
   escalation_owner: "You are the default decision owner",
+  project_owner: "You own this project's decisions",
+  budget_owner: "You own budget escalation",
   none: null,
 };
 

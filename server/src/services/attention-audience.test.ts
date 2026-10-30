@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   audienceMatchesView,
+  escalateStaleAudience,
   resolveAttentionAudience,
   type AttentionAudienceInput,
   type IssueAudienceContext,
@@ -139,6 +140,74 @@ describe("resolveAttentionAudience — default decision owner (PAP-749 task 1d-l
     expect(audienceMatchesView(audience, "mine", "scott")).toBe(true);
     expect(audienceMatchesView(audience, "unassigned", "scott")).toBe(false);
     expect(audienceMatchesView(audience, "company", "scott")).toBe(false);
+  });
+});
+
+describe("resolveAttentionAudience — project and budget owners (PAP-749 task 1d)", () => {
+  it("routes an ownerless card to its project's decision owner before the company default", () => {
+    expect(resolveAttentionAudience(input(), ctx({ projectOwnerUserId: "riley" }), { defaultDecisionOwnerUserId: "scott" }))
+      .toEqual({ kind: "user", userId: "riley", reason: "project_owner" });
+  });
+
+  it("keeps earlier chain steps ahead of the project owner", () => {
+    expect(resolveAttentionAudience(input(), ctx({ instigatorUserId: "dotta", projectOwnerUserId: "riley" })))
+      .toEqual({ kind: "user", userId: "dotta", reason: "instigator" });
+  });
+
+  it("falls back to the default decision owner, then Unassigned, without a project owner", () => {
+    expect(resolveAttentionAudience(input(), ctx({ projectOwnerUserId: null }), { defaultDecisionOwnerUserId: "scott" }))
+      .toEqual({ kind: "user", userId: "scott", reason: "escalation_owner" });
+    expect(resolveAttentionAudience(input(), ctx({ projectOwnerUserId: null })))
+      .toEqual({ kind: "pool", userId: null, reason: "none" });
+  });
+
+  it("gives a budget hard stop to the budget owner and keeps it in Company", () => {
+    const audience = resolveAttentionAudience(
+      input({ issueId: null, companyScoped: true, escalatesToBudgetOwner: true }),
+      null,
+      { budgetOwnerUserId: "scott", defaultDecisionOwnerUserId: "dotta" },
+    );
+    expect(audience).toEqual({ kind: "user", userId: "scott", reason: "budget_owner", alsoInCompany: true });
+    expect(audienceMatchesView(audience, "mine", "scott")).toBe(true);
+    expect(audienceMatchesView(audience, "mine", "dotta")).toBe(false);
+    // Critical incidents always show in Company, for every operator (Rule 3).
+    expect(audienceMatchesView(audience, "company", "scott")).toBe(true);
+    expect(audienceMatchesView(audience, "company", "dotta")).toBe(true);
+    expect(audienceMatchesView(audience, "unassigned", "dotta")).toBe(false);
+  });
+
+  it("leaves a budget hard stop in Company only when no budget owner is set", () => {
+    expect(resolveAttentionAudience(
+      input({ issueId: null, companyScoped: true, escalatesToBudgetOwner: true }),
+      null,
+      { defaultDecisionOwnerUserId: "dotta" },
+    )).toEqual({ kind: "company", userId: null, reason: "none" });
+  });
+
+  it("never gives other company alerts to the budget owner", () => {
+    expect(resolveAttentionAudience(
+      input({ issueId: null, companyScoped: true }),
+      null,
+      { budgetOwnerUserId: "scott" },
+    )).toEqual({ kind: "company", userId: null, reason: "none" });
+  });
+
+  it("escalates a required card waiting 30 days to its project owner, then the default owner", () => {
+    const now = Date.parse("2026-10-30T00:00:00Z");
+    const since = new Date(now - 31 * 86_400_000);
+    const audience = { kind: "user" as const, userId: "dotta", reason: "requester" as const };
+    expect(escalateStaleAudience({
+      audience, since, required: true, now,
+      companyConfig: { defaultDecisionOwnerUserId: "scott" },
+      ctx: ctx({ projectOwnerUserId: "riley" }),
+    })).toEqual({ kind: "user", userId: "riley", reason: "project_owner" });
+    expect(escalateStaleAudience({
+      audience, since, required: true, now,
+      companyConfig: { defaultDecisionOwnerUserId: "scott" },
+      ctx: ctx(),
+    })).toEqual({ kind: "user", userId: "scott", reason: "escalation_owner" });
+    expect(escalateStaleAudience({ audience, since, required: true, now, ctx: ctx() }))
+      .toEqual({ kind: "company", userId: null, reason: "none" });
   });
 });
 

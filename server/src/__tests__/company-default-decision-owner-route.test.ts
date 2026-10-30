@@ -59,6 +59,7 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: false,
     createdAt: now,
     updatedAt: now,
@@ -164,6 +165,80 @@ describe("PATCH /api/companies/:companyId defaultDecisionOwnerUserId", () => {
     const res = await request(app)
       .patch("/api/companies/company-1")
       .send({ defaultDecisionOwnerUserId: "user-2" });
+
+    expect(res.status).toBe(400);
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+});
+
+// PAP-749 task 1d: the budget owner setting follows the same rules.
+describe("PATCH /api/companies/:companyId budgetOwnerUserId", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.clearAllMocks();
+    mockCompanyService.getById.mockResolvedValue(createCompany());
+  });
+
+  it("sets an active member as the budget owner and logs the change", async () => {
+    mockAccessService.getMembership.mockResolvedValue({ status: "active" });
+    mockCompanyService.update.mockResolvedValue({ ...createCompany(), budgetOwnerUserId: "user-2" });
+    const app = await createApp(BOARD);
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ budgetOwnerUserId: "user-2" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.budgetOwnerUserId).toBe("user-2");
+    expect(mockAccessService.getMembership).toHaveBeenCalledWith("company-1", "user", "user-2");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.updated",
+      details: { budgetOwnerUserId: "user-2" },
+    }));
+  });
+
+  it("clears the budget owner without a membership lookup", async () => {
+    mockCompanyService.update.mockResolvedValue(createCompany());
+    const app = await createApp(BOARD);
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ budgetOwnerUserId: null });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.getMembership).not.toHaveBeenCalled();
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", { budgetOwnerUserId: null }, expect.anything());
+  });
+
+  it("rejects a budget owner who is not an active member with 422", async () => {
+    mockAccessService.getMembership.mockResolvedValue({ status: "suspended" });
+    const app = await createApp(BOARD);
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ budgetOwnerUserId: "outsider" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Budget owner must be an active member");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let agents change the budget owner", async () => {
+    mockAgentService.getById.mockResolvedValue({ id: "agent-1", companyId: "company-1", role: "ceo" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ budgetOwnerUserId: "user-2" });
 
     expect(res.status).toBe(400);
     expect(mockCompanyService.update).not.toHaveBeenCalled();

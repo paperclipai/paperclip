@@ -35,6 +35,13 @@ export interface Company {
    * to route cards.
    */
   defaultDecisionOwnerUserId: string | null;
+  /**
+   * PAP-749 task 1d: the budget owner. A budget hard stop also goes to this
+   * user's "For you" list, with Raise limit / Keep paused, while the Company
+   * view still shows it. `null` leaves the hard stop in Company only.
+   * Placement only, like {@link defaultDecisionOwnerUserId}.
+   */
+  budgetOwnerUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
