@@ -1,30 +1,36 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { acpxReleaseAttestation } from "./acpx-release-attestations.mjs";
+import { ACPX_RELEASE_ATTESTATIONS, acpxReleaseAttestation } from "./acpx-release-attestations.mjs";
 
 const root = new URL("../", import.meta.url);
 const readJson = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const manifest = await readJson("acpx-profiles.json");
 const distributions = await readJson("cursor-distributions.json");
 const antigravityDistributions = await readJson("antigravity-distributions.json");
-const contract = await readJson("cursor-contract.json");
 const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
 // Every profile's commandDigest attests its upstream release, so it changes only
 // when that release changes. Installation verifies installed-command digests.
 const check = process.argv.includes("--check");
-let attestationsChanged = false;
+const writes = new Map();
 for (const agent of Object.keys(manifest.profiles)) {
   const attestation = await acpxReleaseAttestation(agent, fileURLToPath(root));
-  if (!attestation || manifest.profiles[agent].commandDigest === attestation.commandDigest) continue;
+  if (!attestation) continue;
+  // A release declaration may carry its own copy of the digest; keep it in step.
+  const { path, digestField } = ACPX_RELEASE_ATTESTATIONS[agent];
+  const declaration = digestField ? await readJson(path) : null;
+  if (manifest.profiles[agent].commandDigest === attestation.commandDigest
+    && (!declaration || declaration[digestField] === attestation.commandDigest)) continue;
   assert.ok(!check, `${agent} commandDigest no longer matches its upstream release attestation. `
     + "Run `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`; an upstream change keeps the profile version.");
   manifest.profiles[agent].commandDigest = attestation.commandDigest;
-  attestationsChanged = true;
+  writes.set("acpx-profiles.json", manifest);
+  if (declaration) writes.set(path, { ...declaration, [digestField]: attestation.commandDigest });
 }
-if (attestationsChanged) await writeFile(new URL("acpx-profiles.json", root), `${JSON.stringify(manifest, null, 2)}\n`);
+for (const [path, value] of writes) await writeFile(new URL(path, root), `${JSON.stringify(value, null, 2)}\n`);
+const contract = await readJson("cursor-contract.json");
 const entries = Object.entries(manifest.profiles);
 for (const [agent, profile] of entries) {
   assert.match(agent, /^[a-z]+$/);

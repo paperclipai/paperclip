@@ -109,6 +109,26 @@ for (const [name, agents, edit] of [
   }
 });
 
+test("the generator refreshes a release declaration's own digest with the profile", async t => {
+  const relocated = relocatedPackage(t);
+  const path = join(relocated, "cursor-contract.json"); const contract = JSON.parse(readFileSync(path, "utf8"));
+  contract.modes = [...contract.modes, "review"];
+  writeFileSync(path, `${JSON.stringify(contract, null, 2)}\n`);
+  const stale = generate(relocated, "--check");
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /cursor commandDigest no longer matches its upstream release attestation/u);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), contract, "check mode writes nothing");
+  const refreshed = generate(relocated);
+  assert.equal(refreshed.status, 0, refreshed.stderr);
+  const { commandDigest } = await acpxReleaseAttestation("cursor", relocated);
+  assert.notEqual(commandDigest, manifest.profiles.cursor.commandDigest);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).commandDigest, commandDigest);
+  assert.equal(JSON.parse(readFileSync(join(relocated, "acpx-profiles.json"), "utf8")).profiles.cursor.commandDigest, commandDigest);
+  assert.match(readFileSync(join(relocated, "src/drivers/acpx/generated-profiles.ts"), "utf8"), new RegExp(commandDigest));
+  assert.match(readFileSync(join(relocated, "runner/crates/runner-core/src/generated_acpx_profiles.rs"), "utf8"), new RegExp(commandDigest));
+  assert.equal(generate(relocated, "--check").status, 0);
+});
+
 test("the generator refuses a stale attestation in check mode and refreshes it otherwise", async t => {
   const relocated = relocatedPackage(t);
   const launcher = join(relocated, "src/providers/grok/launcher.cjs");
