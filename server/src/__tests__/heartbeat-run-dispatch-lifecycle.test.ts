@@ -1,9 +1,9 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDatabaseWorkSignals } from "@paperclipai/db";
-import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
-import { notifyRunDispatch } from "../run-dispatch-notifications.js";
-import { registerRunDispatchWork } from "./dispatch-work.js";
+import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
+import { registerRunDispatchWork } from "../services/heartbeat/dispatch-work.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {

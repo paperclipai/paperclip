@@ -78,6 +78,7 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   async function completed(id: string) {
     await vi.waitFor(async () => expect((await status(id))?.status).toBe("succeeded"), { timeout: 10_000 });
     await heartbeat.drainActiveRunExecutions();
+    expect((await status(id)).stdoutExcerpt).toContain("dispatch-proof");
   }
   it("keeps fresh empty, configured idle and retained terminal history quiet", async () => {
     await start(); await quiet();
