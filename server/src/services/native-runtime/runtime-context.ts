@@ -5,15 +5,12 @@ import { measureRunPhase } from "../execution-preparation-timing.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
-import { isBrowserUseConnection } from "../browser-use-client.js";
-import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
-import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   resolvePaperclipDesiredSkillNames,
@@ -33,6 +30,7 @@ import { agentInstructionsService, agentInstructionsBundleMode } from "../agent-
 import { agentInstructionRevisionService } from "../agent-instruction-revisions.js";
 import { toolAccessService } from "../tool-access.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
+import { projectRuntimeMcpAssignment } from "../runtime-mcp-assignment.js";
 
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
@@ -245,26 +243,12 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   // do not stop unrelated work because an assigned app needs attention.
   const githubBotConnectionIds = await githubBotConnectionIdsForRun(input.db, input.agent.companyId, input.agent.id, input.runId);
   const spekoConnectionIds = hasVoiceConnection ? new Set((await spekoToolsForSession(input.db, { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId, issueId: runIdentity?.issueId ?? null, identityContextId: runIdentity?.activeIdentityContextId })).map(tool => tool.connectionId)) : new Set<string>();
-  const availableConnectionIds = new Set(resolvedInstalledConnections.filter((connection) =>
-    permitted.has(connection.id)
-    && connection.status === "active"
-    && connection.enabled
-    && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
-      || connection.credentialPolicy === "per_user"
-      || !isToolConnectionAttentionHealth(connection.healthStatus))
-    && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
-  ).map((connection) => connection.id));
-  const assignment = {
-    version: 1,
-    agentId: input.agent.id,
-    connections: [...availableConnectionIds].sort(),
-    tools: effective.allowedTools
-      .filter((tool) => availableConnectionIds.has(tool.connectionId))
-      .map((tool) => tool.id)
-      .sort(),
-  };
-  const assignmentDigest = sha256(JSON.stringify(assignment));
-  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
+  const assignment = projectRuntimeMcpAssignment({ agentId: input.agent.id,
+    connections: resolvedInstalledConnections, allowedTools: effective.allowedTools,
+    permittedConnectionIds: permitted, identityContextActive: Boolean(runIdentity?.activeIdentityContextId),
+    githubBotConnectionIds, spekoConnectionIds });
+  return { assignmentSetId: `sha256:${assignment.digest}`, digest: assignment.digest,
+    bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
