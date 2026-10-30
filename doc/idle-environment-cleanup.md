@@ -77,9 +77,11 @@ Current company binding and run authority are checked again at attachment.
 Declared secret-reference fields retain only their references and nonsecret value
 hashes. Recovery refuses lookup under a changed credential value; it records manual
 reconciliation instead of treating a missing resource in a new account as proof.
-A missing or deleted saved secret, or a missing saved secret version, also records
-manual reconciliation before provider lookup. Temporary secret/database provider
-failures retain the pending operation and its retry deadline.
+A missing, deleted, disabled, or archived saved secret, a missing or inactive saved version,
+or an explicitly disabled/coming-soon provider vault also records manual
+reconciliation before provider lookup. Admin-disabled credentials require operator
+reconciliation; recovery does not reactivate or use them. Temporary secret-provider
+or database failures retain the pending operation and its retry deadline.
 
 Recovery never resumes partially prepared execution. It asks a capable provider to
 inspect the stable creation identity, validates its ownership envelope, and transfers

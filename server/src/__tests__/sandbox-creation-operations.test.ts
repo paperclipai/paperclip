@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, builtInManagedResources, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
+import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
@@ -252,10 +252,10 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(await nextEnvironmentCleanupAt(db)).toBeNull(); expect(creates).toBe(1);
     expect(await readdir(spool)).toEqual([]);
   });
-  async function savedCreationCredential() {
+  async function savedCreationCredential(providerConfigId?: string) {
     const secrets = secretOwner.secretService(db);
     const secret = await secrets.create(companyId, {
-      name: `creation-key-${randomUUID()}`, provider: "local_encrypted", value: "fixture-private-key",
+      name: `creation-key-${randomUUID()}`, provider: "local_encrypted", providerConfigId, value: "fixture-private-key",
     });
     await secrets.createBinding({ companyId, secretId: secret.id, targetType: "environment", targetId: environmentId, configPath: "apiKey" });
     await db.update(plugins).set({ manifestJson: sql`jsonb_set(${plugins.manifestJson}, '{environmentDrivers,0,configSchema}',
@@ -266,9 +266,18 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await expect(acquire()).rejects.toThrow("Lost provider reply");
     return secret;
   }
-  it("retains a deleted creation credential as quiet manual reconciliation across restart", async () => {
-    const secret = await savedCreationCredential();
-    await secretOwner.secretService(db).remove(secret.id);
+  it.each(["deleted", "disabled", "archived", "version-disabled", "vault-disabled", "vault-coming-soon"] as const)(
+    "retains a %s creation credential as quiet manual reconciliation across restart", async state => {
+    const secrets = secretOwner.secretService(db);
+    const vault = state.startsWith("vault-") ? await secrets.createProviderConfig(companyId, {
+      provider: "local_encrypted", displayName: "Creation vault", status: "ready", config: {},
+    }) : undefined;
+    const secret = await savedCreationCredential(vault?.id);
+    if (state === "deleted") await secrets.remove(secret.id);
+    else if (state === "disabled" || state === "archived") await secrets.update(secret.id, { status: state });
+    else if (state === "version-disabled") await db.update(companySecretVersions).set({ status: "disabled" })
+      .where(eq(companySecretVersions.secretId, secret.id));
+    else await secrets.updateProviderConfig(vault!.id, { status: state === "vault-disabled" ? "disabled" : "coming_soon" });
     const inspectCalls = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease").length;
     await due(); await runtime().flushDeferredOrphanCleanups();
     expect(await db.select().from(sandboxCreationOperations)).toEqual([

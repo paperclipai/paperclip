@@ -4079,12 +4079,16 @@ export function environmentRuntimeService(
             resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
               operation.config as SandboxEnvironmentConfig, { issueId: operation.issueId });
           } catch (error) {
-            // Only the secret owner's permanent absence results stop recovery.
-            // Database/provider failures still retain the operation and retry.
+            // Missing or explicitly inactive saved credentials need an operator.
+            // Temporary database/provider failures still retain retry ownership.
             const code = error instanceof HttpError ? (error.details as { code?: string } | undefined)?.code : undefined;
-            if (error instanceof HttpError && error.status === 404 &&
-              (code === "secret_deleted" || code === "version_missing" ||
-                (error.details === undefined && error.message === "Secret not found"))) return null;
+            if (error instanceof HttpError && (
+              (error.status === 404 && (code === "secret_deleted" || code === "version_missing" ||
+                (error.details === undefined && error.message === "Secret not found"))) ||
+              (error.status === 422 && (code === "secret_inactive" || code === "version_inactive" ||
+                (error.details === undefined && (error.message === "Provider vault is disabled" ||
+                  error.message === "Provider vault is locked while coming soon"))))
+            )) return null;
             throw error;
           }
           const credentialHashes = operation.metadata.creationCredentialHashes as Record<string, string> | undefined;
