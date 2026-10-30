@@ -220,6 +220,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Install pinned Claude test CLI
+        if: matrix.group == 'general-workspaces-b'
+        run: bash scripts/install-claude-test-cli.sh
+
       - name: Run grouped general test suites
         run: |
           if [ -n "${{ matrix.shard_count }}" ]; then
