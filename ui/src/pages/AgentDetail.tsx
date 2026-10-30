@@ -1904,7 +1904,6 @@ export function AgentOverview({
   skillNames: string[];
   agentRouteId: string;
 }) {
-  const navigate = useNavigate();
   const agentRef = agentRouteRef(agent);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
@@ -1913,6 +1912,7 @@ export function AgentOverview({
     enabled: hasHumanCreator,
   });
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
+  const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
   const activity = useQuery({
     queryKey: ["agent-overview-activity", agent.companyId, agent.id],
     queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: 200 }),
@@ -1934,36 +1934,40 @@ export function AgentOverview({
           value={activity.isLoading ? "–" : activityThisWeek}
           label="Activity"
           description="Events this week"
-          onClick={() => navigate(agentDetailHref(agentRef, "activity"))}
+          to={agentDetailHref(agentRef, "activity")}
         />
         <AgentMetricTile
           icon={PlayCircle}
           value={runsThisWeek.length}
           label="Runs"
           description={`${recentFailures} failed in the last 2 days`}
-          onClick={() => navigate(agentDetailHref(agentRef, "runs"))}
+          to={agentDetailHref(agentRef, "runs")}
         />
         <AgentMetricTile
           icon={ReceiptText}
           value={formatCents(spent)}
           label="Costs"
           description="Month to date"
-          onClick={() => navigate(agentDetailHref(agentRef, "costs"))}
+          to={agentDetailHref(agentRef, "costs")}
         />
         <AgentMetricTile
           icon={Gauge}
           value={budgetPercent === null ? "–" : `${budgetPercent}%`}
           label="Budget used"
           description={budgetPercent === null ? "No monthly budget set" : `of ${formatCents(budget)} this month`}
-          onClick={() => navigate(agentDetailHref(agentRef, "budgets"))}
+          to={agentDetailHref(agentRef, "budgets")}
         />
         <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile">
           <div className="flex flex-col pb-3">
             <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="text-muted-foreground">{creatorLabel ? "Created by" : "Created"}</span>
-              <span className="min-w-0 truncate text-foreground">
-                {creatorLabel ? `${creatorLabel} · ${formatDate(agent.createdAt)}` : formatDate(agent.createdAt)}
-              </span>
+              <span className="text-muted-foreground">{creatorLabel || creatorFailed ? "Created by" : "Created"}</span>
+              {creatorFailed ? (
+                <span className="text-destructive">Could not load creator</span>
+              ) : (
+                <span className="min-w-0 truncate text-foreground">
+                  {creatorLabel ? `${creatorLabel} · ${formatDate(agent.createdAt)}` : formatDate(agent.createdAt)}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
               <span className="shrink-0 text-muted-foreground">Direct reports</span>

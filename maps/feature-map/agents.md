@@ -85,14 +85,26 @@ resource allocation waits for approval.
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+The agent nav has two sections: **Agent** (Overview, Identity at
+`/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,
+Permissions / Trust, Advanced) and **Audit** (Activity, Runs, Costs, Budgets),
+which render inside the agent, filtered to it. Skills, Tools, Channels, API Keys
+and Revisions are not in the nav but still open by URL. Edit the name and title
+in place in the header (Enter or blur saves, Escape cancels). Assign task is the
+header's one button; Run now, Pause/Resume, Clear error, **Agent history** (a
+dialog listing revisions with a confirmed Restore), Duplicate, Copy ID, Reset
+sessions and Terminate are in the actions menu. On Identity, **Advanced
+settings** → **Load profile** saves an external root and entry file only after
+reading the entry file back, and reverts with an inline error otherwise.
 
 Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
 [YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
 runtime setting, and adapter key; save, reload, and check the ordinary settings
-and Revisions. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
+and Agent history. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
 and a concurrent settings edit. Errors must retain the draft; stale saves return
-a conflict. Unchanged secret markers must preserve their stored values. Navigating
-away with a draft must show the existing unsaved-change guard. **Reload saved**
+a conflict. Unchanged secret markers must preserve their stored values. Following
+a link away from a draft must open the Discard unsaved changes? dialog; Back/Forward
+keeps the browser confirmation. **Reload saved**
 discards the draft. Also edit instruction text, skill pins, direct tool installs,
 channel settings/resources, permissions/trust/project boundaries, secret operations,
 and API key operations. Verify each result in its owning tab. Revision restore is
@@ -137,7 +149,7 @@ profile/roster and its position in the Agents sidebar, then open a new task or C
 
 ### `agent-api-keys`
 
-Open `/agents/:agentId/api-keys` → **API Keys** with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
+Open `/agents/:agentId/api-keys` → **API Keys** (by URL; it is not in the agent nav) with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
 
 ### `managed-agent-cli`
 

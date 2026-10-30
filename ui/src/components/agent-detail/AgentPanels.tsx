@@ -1,5 +1,6 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
+import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
 export const agentTableHeadClass =
@@ -65,19 +66,18 @@ export function AgentMetricTile({
   value,
   label,
   description,
-  onClick,
+  to,
 }: {
   icon: LucideIcon;
   value: ReactNode;
   label: string;
   description: ReactNode;
-  onClick?: () => void;
+  to: string;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex min-h-(--agent-detail-tile-min-h) min-w-0 flex-col rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset) text-left transition-colors outline-none hover:bg-(--agent-detail-tile-hover) focus-visible:ring-2 focus-visible:ring-ring"
+    <Link
+      to={to}
+      className="flex min-h-(--agent-detail-tile-min-h) min-w-0 flex-col rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset) text-left no-underline transition-colors outline-none hover:bg-(--agent-detail-tile-hover) focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span className="flex items-center justify-between gap-3">
         <span className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">{value}</span>
@@ -85,7 +85,7 @@ export function AgentMetricTile({
       </span>
       <span className="mt-1 text-sm text-muted-foreground">{label}</span>
       <span className="mt-1.5 text-xs text-muted-foreground/70">{description}</span>
-    </button>
+    </Link>
   );
 }
 
