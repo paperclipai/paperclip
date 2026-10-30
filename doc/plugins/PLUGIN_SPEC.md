@@ -40,12 +40,19 @@ Managed Cloud provisions only plugins selected from the current release image
 catalog. A Cloud tenant token or managed configuration keeps this image-only
 policy active. Without an explicit selected package list, Cloud selects no
 packages and cannot fall back to local installs. An explicit operator-managed
-list also keeps this policy active outside Cloud. The database registration's plugin key, package name, version and
+list also keeps this policy active outside Cloud. The database registration's
+plugin key, package name, version and
 approved manifest identify that package. Its legacy `packagePath` remains for
 local/self-hosted compatibility; Cloud never uses that path to locate code.
 Workers, plugin migrations and UI files resolve through the same current-image
 package resolver. Cloud does not install npm dependencies, build packages, use
 the development UI proxy, or fall back to a server home directory.
+
+Prebuilt workers use the current release's baked CLI `tsx` loader for the SDK's
+workspace TypeScript dependencies. The loader is located from the owning server
+package in both regular and bundled server layouts. Missing loaders and loader
+links outside the release's CLI or root `node_modules` fail activation. This
+loads image-supplied code without installing dependencies or building packages.
 
 Equivalent packages at different image roots reuse the existing registration,
 configuration, approval status and company scopes without rewriting its stored

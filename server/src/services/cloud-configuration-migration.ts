@@ -140,6 +140,7 @@ export function cloudConfigurationMigrationService(db: CloudConfigurationDb, opt
     },
     async qualify(input: {
       installs: readonly ResolvedBundledPlugin[];
+      catalogRoot?: string;
       loadManifest: (packageRoot: string) => Promise<PaperclipPluginManifestV1 | null>;
       expectedPackageEvidenceDigest?: string;
       imageCatalogUnavailable?: boolean;

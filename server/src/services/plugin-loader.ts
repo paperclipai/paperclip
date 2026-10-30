@@ -1,3 +1,4 @@
+import { resolveBundledPluginRuntimeLoader } from "./bundled-plugin-runtime.js";
 import { finishServiceShutdown } from "../shutdown.js";
 /**
  * PluginLoader — discovery, installation, and runtime activation of plugins.
@@ -2349,10 +2350,9 @@ export function pluginLoader(
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (!prebuiltOnly && activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (prebuiltOnly) {
+        workerOptions.execArgv = ["--import", resolveBundledPluginRuntimeLoader()];
+      } else if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 

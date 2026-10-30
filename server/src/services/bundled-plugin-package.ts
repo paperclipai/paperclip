@@ -106,4 +106,3 @@ export function createBundledPluginPackageResolver(installs: readonly ResolvedBu
     },
   };
 }
-

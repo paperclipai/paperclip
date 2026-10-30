@@ -20,6 +20,7 @@ export type CloudPackageEvidence = z.infer<typeof cloudPackageEvidenceSchema>;
 export async function inspectCloudPackages(input: {
   installs: readonly ResolvedBundledPlugin[];
   registrations: readonly BundledPluginRegistration[];
+  catalogRoot?: string;
   loadManifest: (packageRoot: string) => Promise<PaperclipPluginManifestV1 | null>;
 }) {
   const started = performance.now();
@@ -41,7 +42,7 @@ export async function inspectCloudPackages(input: {
     try {
       resolver.assertActivation({ packageRoot: install.localPath });
       stage = "unverified_package_integrity";
-      evidence.packageDigest = install.distribution ? distributionBundleDigest(install.localPath) : cloudBundledPackageDigest(install.localPath);
+      evidence.packageDigest = install.distribution ? distributionBundleDigest(install.localPath) : cloudBundledPackageDigest(install.localPath, { catalogRoot: input.catalogRoot });
       if (install.distribution && evidence.packageDigest !== install.distribution.digest) {
         blockers.push({ code: "package_integrity_mismatch", pluginKey: install.pluginKey, reason: "Current package bytes do not match the verified distribution digest" });
         continue;

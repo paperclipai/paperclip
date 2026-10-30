@@ -110,11 +110,18 @@ prevent future maintenance releases from establishing their own evidence.
 
 The package evidence digest covers selected packages, not container image bytes.
 Distribution packages reuse and reverify their catalog digest. Builtin packages
-have a bounded inventory of physical file bytes, modes, and contained symlink
-text, including standalone pnpm dependency trees. Dangling or escaping links,
-special files, more than 10,000 entries, depth above 32, or more than 256 MiB per
-package fail verification. Inventory work is synchronous and linear in selected
-package bytes. It runs only during startup before the application is constructed
+have a bounded inventory of physical file bytes, modes, and logical symlink
+targets, including standalone pnpm dependency trees. With the selected catalog
+root, inventory may follow links only into that provider, the catalog SDK,
+`packages/shared`, and the current image's root `node_modules`. Reached pnpm
+package units include their sibling dependency links; unrelated root packages
+are not scanned. Canonical directory/file deduplication bounds cycles, and
+logical root labels preserve the digest when identical image bytes relocate.
+Dangling or escaping links, special files, more than 50,000 entries, depth above
+32, metadata above 128 KiB, or more than 256 MiB per package fail verification.
+The measured cached Cloud Daytona closure has about 22,253 entries and 130 MB;
+that artifact predates this change and is not a complete current release proof.
+Inventory work is synchronous and linear in selected package bytes. It runs only during startup before the application is constructed
 or in the explicit operator process, with no idle polling. The report includes
 `packageInspectionDurationMs`. Packages must remain immutable throughout a check.
 
@@ -126,6 +133,13 @@ reconstruct from the database, and start a real plugin worker from the replaceme
 image fixture. They also cover concurrent migration, commit failure and retry,
 database failure, stale sources, durable external blockers, package mismatch,
 maintenance reconciliation, and changes during manifest inspection.
+
+The bundled-plugin registration suite also has an actual prebuilt Daytona case.
+Build its standalone package with the normal SDK linker before running that case;
+it is skipped when the provider build is absent. It qualifies the real linked
+SDK/shared package graph and uses the production loader and worker manager for
+credential-free initialize/health calls. The runtime-path tests also invoke the
+production server bundler to verify its preserved module locations.
 
 Set `PAPERCLIP_CLOUD_CONFIGURATION_TEST_DATABASE_URL` only to an owned disposable
 PostgreSQL database when embedded PostgreSQL is unavailable. The suite applies

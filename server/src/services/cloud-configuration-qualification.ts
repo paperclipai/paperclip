@@ -29,5 +29,5 @@ export async function qualifyCloudConfigurationForCurrentImage(db: Db, options: 
     prebuiltOnly: true, enableLocalFilesystem: false, enableNpmDiscovery: false,
     assertPackageActivation: resolver.assertActivation, resolvePackageRoot: resolver.resolve,
   });
-  return service.qualify({ installs, loadManifest: (root) => loader.loadManifest(root), expectedPackageEvidenceDigest: options.expectedPackageEvidenceDigest });
+  return service.qualify({ installs, catalogRoot, loadManifest: (root) => loader.loadManifest(root), expectedPackageEvidenceDigest: options.expectedPackageEvidenceDigest });
 }

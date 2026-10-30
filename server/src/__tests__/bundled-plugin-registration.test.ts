@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { execFileSync } from "node:child_process";
-import { rmSync, mkdirSync, writeFileSync, cpSync, readFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, cpSync, readFileSync, existsSync, mkdtempSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, closeRegisteredClients, companies, createDb, plugins } from "@paperclipai/db";
@@ -9,6 +9,11 @@ import { eq } from "drizzle-orm";
 import type { PluginRecord } from "@paperclipai/shared";
 import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { pluginLoader, type PluginRuntimeServices } from "../services/plugin-loader.js";
+import { linkSdkInto } from "../../../scripts/link-plugin-dev-sdk.mjs";
+import { fileURLToPath } from "node:url";
+import { createBundledPluginPackageResolver } from "../services/bundled-plugin-package.js";
+import { inspectCloudPackages } from "../services/cloud-package-qualification.js";
+import { resolveBundledPluginInstalls } from "../services/bundled-plugins.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginUiStaticRoutes } from "../routes/plugin-ui-static.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -129,6 +134,60 @@ describePostgres("bundled image registration in PostgreSQL", () => {
       expect(await manager.call(row.id, "health", {})).toMatchObject({ status: "ok", details: { source: expect.stringContaining(image.packageRoot), configs: {} } });
     } finally { await manager.stopAll(); }
   });
+
+  it("qualifies and initializes the current release SDK/shared exports through the baked loader", async () => {
+    const image = fixture();
+    const catalogRoot = fileURLToPath(new URL("../../../packages/plugins", import.meta.url));
+    const provider = mkdtempSync(path.join(catalogRoot, "sandbox-providers", "image-sdk-proof-"));
+    roots.push(provider);
+    cpSync(image.packageRoot, provider, { recursive: true });
+    linkSdkInto(provider);
+    writeFileSync(path.join(provider, "dist", "worker.js"), 'import { definePlugin, runWorker } from "@paperclipai/plugin-sdk"; runWorker(definePlugin({ async setup() {}, async onHealth() { return { status: "ok", message: "Current image SDK/shared loaded" }; } }), import.meta.url);');
+    const installs = [{ key: "sdk-proof", pluginKey: image.manifest.id, localPath: provider }];
+    const resolver = createBundledPluginPackageResolver(installs);
+    const manager = createPluginWorkerManager();
+    const loader = pluginLoader(db, {
+      prebuiltOnly: true, resolvePackageRoot: resolver.resolve, assertPackageActivation: resolver.assertActivation,
+      enableLocalFilesystem: false, enableNpmDiscovery: false,
+    }, { ...runtime().services, workerManager: manager } as unknown as PluginRuntimeServices);
+    const registry = pluginRegistryService(db);
+    try {
+      await loader.installPlugin({ localPath: provider });
+      const installed = (await registry.getByKey(image.manifest.id))!;
+      await registry.updateStatus(installed.id, { status: "ready" });
+      const registration = (await registry.getById(installed.id))!;
+      expect((await inspectCloudPackages({ installs, catalogRoot, registrations: [registration], loadManifest: (root) => loader.loadManifest(root) })).blockers).toEqual([]);
+      expect((await loader.loadSingle(installed.id)).success).toBe(true);
+      expect(await manager.call(installed.id, "health", {})).toMatchObject({ status: "ok", message: "Current image SDK/shared loaded" });
+    } finally { await manager.stopAll(); }
+  }, 90_000);
+
+  it.skipIf(!existsSync(fileURLToPath(new URL("../../../packages/plugins/sandbox-providers/daytona/dist/worker.js", import.meta.url))))("qualifies and initializes the actual prebuilt Daytona release package", async () => {
+    const catalogRoot = fileURLToPath(new URL("../../../packages/plugins", import.meta.url));
+    const installs = resolveBundledPluginInstalls(["daytona"], { catalogRoot, env: {}, enforceCatalogRoot: true, distributionPlugins: [] });
+    const resolver = createBundledPluginPackageResolver(installs);
+    const manager = createPluginWorkerManager();
+    const services = { ...runtime().services, workerManager: manager } as unknown as PluginRuntimeServices;
+    const loader = pluginLoader(db, {
+      localPluginDir: "/lost/release/home/plugins", prebuiltOnly: true,
+      resolvePackageRoot: resolver.resolve, assertPackageActivation: resolver.assertActivation,
+      enableLocalFilesystem: false, enableNpmDiscovery: false,
+    }, services);
+    const registry = pluginRegistryService(db);
+    vi.stubEnv("DAYTONA_API_KEY", "");
+    try {
+      await loader.installPlugin({ localPath: installs[0]!.localPath });
+      const installed = (await registry.getByKey(daytonaManifest.id))!;
+      await registry.update(installed.id, { packagePath: "/lost/release/home/daytona" });
+      await registry.updateStatus(installed.id, { status: "ready" });
+      const registration = (await registry.getById(installed.id))!;
+      const inspected = await inspectCloudPackages({ installs, catalogRoot, registrations: [registration], loadManifest: (root) => loader.loadManifest(root) });
+      expect(inspected.blockers).toEqual([]);
+      expect(inspected.packages[0]?.packageDigest).toMatch(/^sha256:/);
+      expect((await loader.loadSingle(installed.id)).success).toBe(true);
+      expect(await manager.call(installed.id, "health", {})).toMatchObject({ status: "ok", message: "Daytona sandbox provider plugin healthy" });
+    } finally { await manager.stopAll(); vi.unstubAllEnvs(); }
+  }, 90_000);
 
   it("registers the same package concurrently from two roots without replacing the winner", async () => {
     const first = fixture(); const second = fixture();
