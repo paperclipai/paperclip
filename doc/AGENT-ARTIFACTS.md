@@ -31,6 +31,9 @@ Named JSON file outputs and explicit publication requests require the same
 verified delivery evidence as other file outputs. A saved summary document does
 not replace a requested downloadable JSON file. Reading JSON inputs or discussing
 their contents inline does not by itself require a file attachment.
+JSON output intent is recognized from a direct filename or an explicit output
+destination. Ambiguous descriptions of input files joined by `to` remain text
+requests; use `as`, `into`, or an explicit output file when an artifact is required.
 
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:

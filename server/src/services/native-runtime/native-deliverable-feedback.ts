@@ -121,12 +121,10 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
             ? /\b(as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*["'`*]*(?:[^\s]*\/)?$/iu
             : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
           const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
-          const fileConversion = json && destinationMatch?.[1].toLowerCase() === "to"
-            && [...beforeDestination.matchAll(file)].some(source => /\.[a-z0-9]{1,16}$/iu.test(source[0]));
           const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
-            || !inputReference.test(beforeDestination) || fileConversion);
+            || !inputReference.test(beforeDestination));
           if (json) {
-            const directObject = /^\s*(?:(?:a|an|the)\s+)?(?:(?:new|separate|downloadable|attached)\s+)*([\p{L}\p{N}_-]+\s+)?["'`*]*(?:[^\s]*\/)?$/iu.exec(prefix);
+            const directObject = /^\s*(?:(?:a|an|the|my|your|our|their|his|her|its|this|that)\s+(?:(?:new|separate|downloadable|attached)\s+)*([\p{L}\p{N}_-]+\s+)?|(?:(?:new|separate|downloadable|attached)\s+)*)["'`*]*(?:[^\s]*\/)?$/iu.exec(prefix);
             if (!destination && (!directObject || inputReference.test(directObject[1] ?? ""))) return false;
           } else if (!destination && inputReference.test(prefix)) return false;
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
