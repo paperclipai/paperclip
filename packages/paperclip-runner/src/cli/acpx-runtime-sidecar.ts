@@ -72,6 +72,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -232,7 +233,7 @@ async function receiveLine(line: string): Promise<void> {
       request.command,
     );
     if (blocked) throw blocked;
-    response(request.id, true, await dispatch(request));
+    response(request.id, true, await dispatch(request, request.params.performance === true ? performance.now() : 0));
   } catch (error) {
     const normalized =
       error instanceof Error ? error : new Error(String(error));
@@ -255,6 +256,7 @@ async function receiveLine(line: string): Promise<void> {
 
 async function dispatch(
   request: AcpxSidecarRequest,
+  receivedAt = 0,
 ): Promise<Record<string, unknown>> {
   if (request.command === "initialize") {
     if (initializedModel)
@@ -419,8 +421,13 @@ async function dispatch(
     });
     activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
+    const timed = request.params.performance === true;
+    const timingStart = receivedAt;
+    let statusMs = 0;
+    const statusStart = timed ? performance.now() : 0;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
+      if (timed) statusMs = performance.now() - statusStart;
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
         text: boundedText(request.params.message, "message", 1024 * 1024),
@@ -438,8 +445,9 @@ async function dispatch(
     void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
+    const promptStart = timed ? performance.now() : 0;
     await runtimeTurn.promptStarted;
-    return { turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
+    return { ...(timed ? {timing:{statusMs, statusOffsetMs:statusStart-timingStart, promptMs:performance.now()-promptStart, promptOffsetMs:promptStart-timingStart, sidecarMs:performance.now()-timingStart}} : {}), turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
   }
   if (request.command === "turn.steer") {
     const control = parseAcpxTurnControl(request.params);
@@ -1248,11 +1256,13 @@ function safeOutput(value: unknown): Record<string, unknown> {
   };
 }
 
+// Generated from the sidecar schema's closed session.open parameter set.
+const OPEN_PARAMS: ReadonlySet<string> = new Set(GENERATED_ACPX_SIDECAR_OPEN_PARAMS);
+
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "claudeEffort", "grokEffort", "grokDisableWebSearch", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity", "candidateAdmission"]);
-  if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
+  if (Object.keys(value).some(key => !OPEN_PARAMS.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const model = requiredText(value.model, "model");
   const candidateAdmission = value.candidateAdmission === undefined ? undefined
     : parseAcpxCandidateStartupAdmission(value.candidateAdmission, { agent: String(value.agent), model, normalizedSessionId: String(value.normalizedSessionId) });
@@ -1306,7 +1316,8 @@ function parseOpenParams(
 
 function parseProviderPolicy(value: unknown): { readOnly: boolean } {
   const policy = record(value);
-  if (typeof policy.readOnly !== "boolean" || Object.keys(policy).some(key => key !== "readOnly")) {
+  if (typeof policy.readOnly !== "boolean"
+    || Object.keys(policy).some(key => !(GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS as readonly string[]).includes(key))) {
     throw new Error("providerPolicy requires only an explicit readOnly boolean");
   }
   return { readOnly: policy.readOnly };

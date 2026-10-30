@@ -465,6 +465,16 @@ impl AcpxProviderSession {
         message: &str,
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_timed(turn_id, message, working_directory, false)
+    }
+
+    pub fn start_turn_timed(
+        &mut self,
+        turn_id: &str,
+        message: &str,
+        working_directory: &Path,
+        performance: bool,
+    ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
         if self.runtime_retired {
             return Err(LocalRunnerError::invalid(
@@ -555,7 +565,7 @@ impl AcpxProviderSession {
         }
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::TurnStart,
-            json!({"turnId":turn_id,"message":message}),
+            json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),

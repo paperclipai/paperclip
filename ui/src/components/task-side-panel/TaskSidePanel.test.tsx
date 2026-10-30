@@ -11,6 +11,7 @@ import {
   taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
+  taskPanelPluginTab,
   readTaskSidePanelState,
   writeTaskSidePanelState,
 } from "@/lib/task-side-panel-state";
@@ -28,12 +29,9 @@ class ResizeObserverStub {
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div>Plugin viewer {context.entityId}</div>,
+  PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div data-plugin-viewer>Plugin viewer {context.entityId}</div>,
 }));
-vi.mock("@/hooks/useTaskPluginPanels", () => ({
-  taskPluginPanelId: (panel: TaskPluginPanel) => `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`,
-}));
-const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
+const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", autoOpen: true, slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
 vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
 vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
@@ -106,7 +104,7 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
-  TaskDocumentPanel: ({ documentKey, issueId, revisionId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
+  TaskDocumentPanel: ({ documentKey, issueId, revisionId, documentIssueId, currentIssueId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; documentIssueId?: string; currentIssueId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-gallery-owner={documentIssueId} data-current-task={currentIssueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
 }));
 
 vi.mock("./TaskWorkspaceFilePanel", () => ({
@@ -193,6 +191,50 @@ describe("TaskSidePanel", () => {
       />
     );
   }
+
+  it("offers idle plugin views in the launcher without opening them automatically", async () => {
+    await render(panel({ pluginPanels: [{ ...pluginPanel, runId: undefined, autoOpen: false }] }));
+    expect(container.textContent).not.toContain("Plugin viewer");
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const item = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find(item => item.textContent?.includes("Live view"));
+    expect(item).not.toBeUndefined();
+    await act(async () => item!.click());
+    expect(container.textContent).toContain(`Plugin viewer ${pluginPanel.entityId}`);
+  });
+
+  it.each([false, true])("restores a saved manual view after discovery (different assignee=%s)", async differentAssignee => {
+    const tab = taskPanelPluginTab(pluginPanel);
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [tab], activeTabId: tab.id },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: 1,
+    });
+    await render(panel({ pluginPanels: differentAssignee
+      ? [{ ...pluginPanel, entityId: "assigned-agent", runId: undefined, autoOpen: false }] : [], pluginPanelsLoading: true }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(panel({ pluginPanels: [{ ...pluginPanel, runId: undefined, autoOpen: false }] }));
+    expect(container.textContent).toContain(`Plugin viewer ${pluginPanel.entityId}`);
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+  });
+
+  it("focuses an already open manual panel when activity starts and keeps it mounted after the run", async () => {
+    const manual = { ...pluginPanel, autoOpen: false };
+    await render(panel({ pluginPanels: [manual] }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const item = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find(item => item.textContent?.includes("Live view"));
+    await act(async () => item!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('#side-panel-tab-properties')?.click());
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Live view");
+    const viewer = container.querySelector("[data-plugin-viewer]");
+    expect(viewer).not.toBeNull();
+    await render(panel({ pluginPanels: [{ ...manual, runId: undefined }] }));
+    expect(container.querySelector("[data-plugin-viewer]")).toBe(viewer);
+  });
 
   it("adds the active plugin panel, preserves manual dismissal, and removes inactive plugin panels", async () => {
     await render(panel({ pluginPanels: [pluginPanel] }));
@@ -295,10 +337,15 @@ describe("TaskSidePanel", () => {
     await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" } }));
     const document = container.querySelector("[data-document-owner]");
     expect(document?.getAttribute("data-document-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-gallery-owner")).toBe("task-b");
+    expect(document?.getAttribute("data-current-task")).toBe("task-1");
     expect(document?.getAttribute("data-revision-id")).toBe("b-v1");
     expect(document?.hasAttribute("data-initial-document")).toBe(false);
     expect(container.textContent).not.toContain("Origin task document must not leak");
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("document:task-b:plan:b-v1");
+    routeFixture.location.hash = "#document-local";
+    await render(panel());
+    expect(container.querySelector("[data-gallery-owner]")?.getAttribute("data-gallery-owner")).toBe("task-b");
   });
 
   it("preserves explicitly saved Coordinator tabs when a decision link adds its document", async () => {

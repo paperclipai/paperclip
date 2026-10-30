@@ -20,12 +20,17 @@ task, or sends a hidden follow-up.
 
 ## Run the first slice
 
-Follow the installation steps in [README.md](README.md#local-commands). The current
-profile is local native Codex using the catalog's recorded default model and an
+Follow the installation steps in [README.md](README.md#local-commands). The Codex
+subscription profile uses the catalog's recorded default model and an
 explicit `CODEX_AUTH_JSON` login. Load that login privately into the launcher
 environment; do not print it or save it in tracked configuration. The existing
 subscription fixture stages only `auth.json` in the disposable company login slot
 and removes it with the isolated instance.
+
+The local native OpenCode profile uses the current production-qualified model
+and `OPENROUTER_API_KEY` through the existing encrypted company-secret fixture.
+Each of the two journeys has a cell for each original profile. These four cells
+remain unchanged; the TestOps profile below adds one separately named backlog cell.
 
 ```sh
 pnpm test:e2e:runner:typecheck
@@ -33,14 +38,43 @@ pnpm test:e2e:runner:unit
 pnpm test:e2e:runner -- --list --suite chat-features
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.create-backlog --max-automatic-retries 0
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.delegate-announcement --max-automatic-retries 0
+pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.delegate-announcement --max-automatic-retries 0
 ```
 
-Run creation first and inspect its packaged report before delegation. For initial
+Run creation first and inspect its packaged report before delegation. For the original Codex
 acceptance, run each cell three times against fresh fixtures on the same definition
 revision. Keep every attempt, including failures; a retry does not erase one. A
-fixture or product correction starts a new three-sample measurement. Both cells
+fixture or product correction starts a new three-sample measurement. All cells
 are explicit-only and excluded from `--all`; this does not implement or qualify
 the rest of the YAML inventory.
+
+## OpenCode TestOps integration acceptance
+
+The additional explicit cell
+`chat-features.runner-opencode-deepseek-1017.local.create-backlog` runs the same backlog
+query, public fixture and saved-state oracle on native OpenCode with
+`openrouter/deepseek/deepseek-v4.1-flash-1017`. It requires only the selected
+`OPENROUTER_API_KEY` profile credential. The launcher stores an encrypted secret
+reference for the disposable agents; no key belongs in catalog data or chat.
+This selected model is a qualification candidate. Other OpenCode suites keep
+their existing model, and delegation is not registered for this profile.
+
+```sh
+pnpm test:e2e:runner -- --id chat-features.runner-opencode-deepseek-1017.local.create-backlog --max-automatic-retries 0
+```
+
+Use a separately named TestOps integration-acceptance plan and launch for this
+single cell. It retains one human request, one accounted controller work run,
+120-second turns, a seven-minute attempt, the five-minute stable-state bound
+and zero automatic retries. Morgan is created as fixture context but must not
+execute the saved backlog task. Existing setup probes and unknown usage remain
+reported separately. The original 244-scenario campaign, failed attempts and
+Codex measurements are not reset or regraded by this measurement.
+
+The existing normalized result, JUnit and packaged report carry the outcome to
+the execution integration. Catalog selection and provider-free oracle checks
+do not establish an AWS model pass or a successful TestOps upload. Accept this
+integration only after the real AWS execution and its TestOps result agree.
 
 ## Bounds and grading
 
@@ -59,6 +93,16 @@ probes fall outside heartbeat usage and budget accounting; detailed setup tokens
 and cost are unavailable. These limits are not an absolute inference or cash cap.
 Subscription cost coverage must remain explicit in the report.
 
+An obsolete CEO assignment can leave a cancelled queue entry when the CEO creates
+a task and then assigns it to Morgan. Grader v2 distinguishes that entry from
+provider work only when the dispatch gate records `issue_assignee_changed`, an
+explicitly null start time, no native issue, and its unchanged stale-queue stop
+receipt. The entry must belong to this company and the one task now assigned to
+Morgan. It stays in the full observation and final ledger, with its events and an
+explicit provider-log omission reason. Active, unrelated, or unproved cancellations
+still fail. The three successful work runs, worker output, completion delivery,
+and original deadlines remain required. Backlog creation still permits no task wake.
+
 Because this subscription currently reports unpriced usage, setup explicitly sets
 `unpricedUsagePolicy: allow` on the disposable company and both agents through the
 public budget API and verifies all three policies. The 500-cent hard stops remain
@@ -74,6 +118,8 @@ on failures. Setup evidence records fixture IDs, synthetic brief, readiness and
 saved budgets. Ordinary Product E2E evidence packaging, redaction, cleanup, failure
 classification and dashboards own the result. The definition digest includes the
 query, defaults, flow and grader sources.
+Individual saved-state checks are also recorded when the journey fails, so the
+report shows partial progress without turning it into a passing workflow.
 
 The grader rejects duplicate tasks, wrong owners/projects/companies, early execution,
 missing audit attribution, missing or stale deliverables, extra human nudges and
@@ -134,3 +180,71 @@ in the history. Across the original final-definition batch and this recheck,
 backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
+
+## TestOps-backed AWS backlog cell
+
+The dedicated `Chat feature TestOps` workflow accepts only the shipped default
+branch and the fixed OpenCode backlog cell. `evaluate` is the default operation
+and requires TestOps' `ALLURE_JOB_RUN_ID`. A protected reporting job verifies the
+project, singleton plan, assigned public workflow, selected case and current
+GitHub run before any build or provider access. The evaluated process receives
+no TestOps token. It retains the original one-query, one-work-run, 120-second
+turn, 420-second attempt, 300-second settled-state and zero-retry limits.
+
+Two metadata operations prepare that route. `bootstrap` registers the actual
+public CI job through pinned `allurectl` with an empty results directory and
+reconciles only the dedicated case and singleton plan. It produces no passing
+test result. After the registered job and protected case/plan/job identifiers
+are verified, `launch-plan` sends one TestOps plan-run request and exits.
+The TestOps job then dispatches `evaluate`; an operator must not dispatch a
+second evaluation manually. Missing or ambiguous registration and selection
+metadata stops before inference.
+
+The workflow reuses the existing AWS fleet and strict private evidence storage.
+Its shipped-main authority is separate from manual candidate approval. Original
+logs, provider records and failure evidence remain private. The reporting adapter
+exports only a source/run-bound normalized result, JUnit and screenshots already
+marked by the owned fixture screenshot producer with matching file hashes.
+A separate protected reporting job converts that projection to the exact TestOps
+case. Failed grades and cleanup failures remain failed.
+
+Reporting setup uses the master-only `runner-e2e-testops-reporting` environment,
+with the existing reporting token delivered through the reviewed sealed-box
+bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
+`CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
+`CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
+No arbitrary source, model, case, retry or budget input is accepted.
+
+The initial `launch-plan` administrator operation also requires a protected
+`CHAT_TESTOPS_LAUNCH_RUN_NUMBER`. After registration, the trusted operator creates
+this variable once with the reviewed next workflow run number and reads it back.
+The launcher compares GitHub's actual run number, attempt, workflow, source and
+actors before any TestOps mutation. A later dispatch or replay cannot reuse that
+approved number. Missing or uncertain metadata stops; an uncertain request needs
+reconciliation rather than a new send. The nonce and launch search provide
+additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
+this one-time administrator fence. The operation parameter identifier and launch
+nonce are also protected configuration, not dispatch inputs.
+
+`CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
+integration. The launcher verifies its project, type and enabled state, then binds
+only the newly registered public job to it. It never changes integration settings
+or credentials. Since the job response does not expose that association, only the
+real TestOps-to-GitHub dispatch can qualify it.
+
+After `allurectl watch` finishes, the same protected reporter checks the actual
+TestOps job-run, launch, selected case, result source/status and attachment
+metadata. Processing reads are bounded to 12 polls, five-second gaps and a
+120-second processing deadline. Unknown or missing results remain unverified.
+The check downloads no attachment content and claims no server-side attachment
+byte hash. Its closed receipt is retained separately. An upload success alone
+is not a passing feature result, and verifying an original failure cannot turn
+that failure into a pass.
+
+Build and worker installs use the existing reviewed report-lock policy. Only its
+committed input or output lock is accepted; its authenticated correction is the
+only allowed normalization. Dependency manifests, patch inputs and policy must
+remain unchanged. Installs are frozen with lifecycle scripts disabled. The
+credential-free build rechecks that boundary before packaging, and the worker
+matches the source/lock receipt before installing. Arbitrary resolver drift is
+rejected before provider access.

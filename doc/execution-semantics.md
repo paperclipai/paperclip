@@ -710,6 +710,22 @@ The directory merge still preserves host-only
 file changes under its existing rules. A changed host branch requires recovery.
 An intentional reset to an ancestor exports a full Git bundle so restore keeps
 the actual sandbox tip; an empty delta is reserved for an unchanged tip.
+A full Git bundle from a shallow repository still omits history before its
+shallow boundaries. When a delta import cannot satisfy its history, sandbox
+restore exports those boundaries with the full bundle. The host unpacks it in
+a temporary bare repository and uses Git's shallow fetch protocol to import it.
+This preserves existing host ancestry and connectivity checks. File restore and
+the normal concurrent-work merge must still finish before run finalization.
+The boundary metadata has a 64 KiB transfer/read budget and at most 256 unique
+commits. Duplicate entries do not repeat host Git probes. Boundary inspection
+has a separate 15-second budget; cloning, unpacking and import share 60 seconds
+without charging probe time. Oversized or malformed metadata fails before import
+with a distinct non-retryable metadata classification. It requires file recovery
+and never uses the unsafe-archive omission path to complete an accepted result.
+The sandbox producer uses a dedicated exit status which the command client retains
+and the export owner converts back to the typed metadata error. Bounded API
+projections and cancelled-preservation selection use the shared failure allowlist;
+task chat retains its recovery notice without offering another provider turn.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the
@@ -1116,6 +1132,18 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
+A native continuation may replay the same plain confirmation or checkbox key
+after receiving its accepted response. Only the run's persisted, identity-bound
+response can nominate that replay. The interaction service returns the original
+accepted record when the creator and complete request still match and no newer
+confirmation exists.
+It preserves the original source run and creates no new request or wake. Changed
+scope and all downstream execution gates still require their ordinary authority.
+The native tool receipt remains recoverable. Reuse of an accepted cross-run
+receipt rechecks the original outcome and newer confirmations before returning it.
+Governed tool, secret, connection, and quality-review confirmations keep their
+separate lifecycle rules and do not use this replay path.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
@@ -1504,8 +1532,11 @@ Every continuation carries the triggering request, ordered user direction, inter
 ### Remote runner process evidence
 
 A failed remote health request does not prove that runnerd stopped. Read-only
-process checks retry transient transport failures up to three times within one
-30-second budget. Missing or changed identity, an unknown process generation,
+process checks retry transient transport failures within one 30-second budget,
+with backoff from 250 milliseconds to two seconds between failed reads. Fast
+failures do not exhaust that budget after three attempts. Each read uses at
+most ten seconds of the remaining budget. Signals still have one attempt when
+their acknowledgement is lost. Missing or changed identity, an unknown process generation,
 and exhausted health reads retain uncertainty. They do not authorize a signal,
 replacement launch, or provider replay. Confirmed predecessor exit permits the
 transport to attempt recovery within its existing reconnect deadline. Repeated
@@ -1576,6 +1607,13 @@ and obtains a fresh stop receipt. An interrupted legacy run does not need an
 accepted native result. A successful `workspace_recovery` operation and matching
 recovery record prove persistence; adapter output or a user repair note cannot.
 The failed run and unknown external effects remain historical facts.
+A reusable lease can also owe native copyback: the export-repair action must
+select its exact immutable descriptor and the finalizer's accepted successful
+result under the same company, task, run and completion contract. Lease reuse
+policy alone does not discharge that persistence obligation. Ordinary reusable
+sources without this proof remain ineligible. The preservation owner still
+requires an independently stopped, exclusively bound allocation and no host writer;
+it saves files and resumes the existing finalizer without another provider turn.
 
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery

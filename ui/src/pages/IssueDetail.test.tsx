@@ -38,6 +38,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -103,6 +104,7 @@ const mockActivityApi = vi.hoisted(() => ({
   recentForIssue: vi.fn(),
   inputFactsForIssue: vi.fn(),
   runsForIssue: vi.fn(),
+  runsByIdsForIssue: vi.fn(),
   recentRunsForIssue: vi.fn(),
 }));
 
@@ -161,6 +163,11 @@ const mockRouteParams = vi.hoisted(() => ({
 const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
 const mockIssuePropertiesRender = vi.hoisted(() => vi.fn());
 const mockTaskSidePanelRender = vi.hoisted(() => vi.fn());
+const mockTaskPluginPanels = vi.hoisted(() => ({ panels: [] as import("@/hooks/useTaskPluginPanels").TaskPluginPanel[], isLoading: false }));
+vi.mock("@/hooks/useTaskPluginPanels", async importOriginal => ({
+  ...await importOriginal<typeof import("@/hooks/useTaskPluginPanels")>(),
+  useTaskPluginPanels: () => mockTaskPluginPanels,
+}));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbToolbar = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbPanelControl = vi.hoisted(() => vi.fn());
@@ -1333,6 +1340,7 @@ describe("IssueDetail", () => {
 
   beforeEach(() => {
     Object.assign(coordinatorPreference, { enabled: false, loaded: true });
+    mockTaskPluginPanels.panels = []; mockTaskPluginPanels.isLoading = false;
     localStorage.clear();
     sessionStorage.clear();
     mockPanelState.panelVisible = true;
@@ -1350,6 +1358,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.getCore.mockImplementation((id) => mockIssuesApi.get(id));
     mockIssuesApi.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, hasMore: false });
     mockActivityApi.recentRunsForIssue.mockResolvedValue([]);
+    mockActivityApi.runsByIdsForIssue.mockResolvedValue([]);
     mockActivityApi.recentForIssue.mockResolvedValue([]);
     mockActivityApi.inputFactsForIssue.mockResolvedValue([]);
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1574,6 +1583,26 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull());
     expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
+  });
+
+  it("keeps a cold Coordinator task compact when Classic settings arrive before the workspace preference", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    coordinatorPreference.loaded = false;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false, enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
+    await flushReact();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+
+    Object.assign(coordinatorPreference, { enabled: true, loaded: true });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({ compactHistory: true }));
+    expect(mockIssuesApi.recentComments).toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(false);
   });
 
   it("does not post after the account changes while comment queries cancel", async () => {
@@ -1898,6 +1927,59 @@ describe("IssueDetail", () => {
       expect(props?.historyControl).toBeNull();
       expect(props?.compactHistory).toBe(false);
     });
+  });
+
+  it("opens chats compactly and pages backward without expanding all history", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
+    const latest = createIssueComment({ id: "10000000-0000-4000-8000-000000000020", body: "Recent chat reply" });
+    mockIssuesApi.getCore.mockResolvedValue(chat);
+    mockIssuesApi.get.mockResolvedValue(chat);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [latest], latestCommentId: latest.id, oldestCommentId: latest.id, hasMore: true });
+    mockIssuesApi.listComments.mockResolvedValue([]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      compactHistory: true, historyControl: null, scrollingHistory: { hasMore: true, loading: false },
+    }));
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    await act(async () => { await mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onRefreshLatestComments(); });
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    await act(async () => { await mockIssueChatThreadRender.mock.calls.at(-1)?.[0].scrollingHistory.load(); });
+    await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1" && options.order === "desc" && options.after === latest.id && options.limit === 50)).toBe(true));
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].compactHistory).toBe(true);
+  });
+
+  it.each([false, true])("keeps chat paging after sending (earlier pages loaded: %s)", async loaded => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
+    const latest = createIssueComment({ id: "10000000-0000-4000-8000-000000000020" });
+    const sent = createIssueComment({ id: "10000000-0000-4000-8000-000000000021", body: "Send before scrolling" });
+    const rows = Array.from({ length: 100 }, (_, index) => createIssueComment({
+      id: `20000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      body: `Earlier ${index}`, createdAt: new Date(100_000 - index * 1000),
+    }));
+    mockIssuesApi.getCore.mockResolvedValue(chat); mockIssuesApi.get.mockResolvedValue(chat);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [latest], latestCommentId: latest.id, oldestCommentId: latest.id, hasMore: true });
+    mockIssuesApi.addComment.mockResolvedValue(sent);
+    mockIssuesApi.listComments.mockImplementation(async (_ref, options) => options.order === "asc" ? [sent]
+      : options.after === rows[49].id ? rows.slice(50) : rows.slice(0, 50));
+    await act(async () => renderIssueView());
+    const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    await waitForAssertion(() => expect(props().scrollingHistory?.hasMore).toBe(true));
+    if (loaded) {
+      await act(async () => { await props().scrollingHistory.load(); });
+      await waitForAssertion(() => expect(props().comments.some((comment: IssueComment) => comment.id === rows[49].id)).toBe(true));
+    }
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [sent, latest], latestCommentId: sent.id, oldestCommentId: latest.id, hasMore: true });
+    await act(async () => { await props().onAdd(sent.body); });
+    await waitForAssertion(() => expect(props().scrollingHistory?.hasMore).toBe(true));
+    await act(async () => { await props().scrollingHistory.load(); });
+    await waitForAssertion(() => expect(mockIssuesApi.listComments.mock.calls.some(([ref, options]) => ref === "PAP-1"
+      && options.order === "desc" && options.limit === 50 && options.after === (loaded ? rows[49].id : latest.id))).toBe(true));
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
   });
 
   it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {
@@ -2366,6 +2448,36 @@ describe("IssueDetail", () => {
       expect(content!.className).toContain("-mt-4");
       expect(content!.className).toContain("md:-mt-6");
     });
+  });
+
+  it.each([
+    { coordinator: false, mobile: false }, { coordinator: false, mobile: true },
+    { coordinator: true, mobile: false }, { coordinator: true, mobile: true },
+  ])("keeps dismissed plugin panes closed (coordinator=$coordinator, mobile=$mobile)", async ({ coordinator, mobile }) => {
+    coordinatorPreference.enabled = coordinator;
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    const task = createIssue();
+    mockIssuesApi.get.mockResolvedValue(task);
+    const manual = { entityId: "agent-1", runId: "run-1", autoOpen: false,
+      slot: { pluginKey: "example.view", id: "screen", displayName: "Live view" } } as import("@/hooks/useTaskPluginPanels").TaskPluginPanel;
+    mockTaskPluginPanels.panels = [manual];
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => expect(mockOpenPanel).toHaveBeenCalled());
+    const props = mockOpenPanel.mock.calls.at(-1)![0]?.props.children?.props as {
+      accountScope: string; dismissedPluginPanelKeys: Set<string>;
+    };
+    props.dismissedPluginPanelKeys.add(taskPluginPanelActivationKey(manual, props.accountScope, task));
+    mockPanelState.panelVisible = false;
+    mockSidebarState.isMobile = mobile;
+    mockTaskPluginPanels.panels = [{ ...manual, autoOpen: true }];
+    mockSetPanelVisible.mockClear();
+    await act(async () => { renderIssueView(); }); await flushReact();
+    expect(mockSetPanelVisible).not.toHaveBeenCalledWith(true);
+    expect(container.querySelector('[data-testid="mobile-task-side-panel"]')).toBeNull();
+    mockTaskPluginPanels.panels = [{ ...manual, runId: "run-2", autoOpen: true }];
+    await act(async () => { renderIssueView(); }); await flushReact();
+    expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+    if (mobile) expect(container.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
   });
 
   it("does not register a redundant breadcrumb side-panel toggle in Streamlined UI", async () => {
@@ -6707,6 +6819,7 @@ describe("IssueDetail", () => {
         comments: [earlier, comment], latestCommentId: comment.id, hasMore: true,
       });
       queryClient.setQueryData(queryKeys.issues.comments(ref), { pages: [[comment, earlier]], pageParams: [null] });
+      queryClient.setQueryData(queryKeys.issues.earlierComments(ref), { pages: [{ comments: [comment, earlier], nextCursor: earlier.id }], pageParams: [comment.id] });
       queryClient.setQueryData([...queryKeys.issues.comments(ref), "linked", comment.id], comment);
     }
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
@@ -6741,6 +6854,11 @@ describe("IssueDetail", () => {
       finishStaleRead({ comments: [earlier, comment], latestCommentId: comment.id, hasMore: true });
       await staleRead;
     });
+    for (const ref of refs) {
+      const history = queryClient.getQueryData<{ pages: { comments: IssueComment[]; nextCursor: string }[] }>(queryKeys.issues.earlierComments(ref))!;
+      expect(history.pages[0].nextCursor).toBe(earlier.id);
+      expect(history.pages[0].comments.find(row => row.id === comment.id)).toEqual(action === "delete" ? deleted : undefined);
+    }
     await waitForAssertion(() => {
       for (const ref of refs) {
         const recent = queryClient.getQueryData<IssueRecentComments>([...queryKeys.issues.comments(ref), "recent"]);

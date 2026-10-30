@@ -946,6 +946,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          controllerBootId: null,
+          controllerLeaseExpiresAt: null,
+          executionStage: null,
           runtimeModeResolverVersion:
             lockedRun.runtimeModeResolverVersion ??
             nativeRuntimeResolution.resolverVersion,
@@ -1055,6 +1058,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
+      workspaceGitIndexRefresh: nativeExecution?.provider.kind === "opencode",
       onCheckpoint: input.workspace.onCheckpoint,
       onPhase: input.workspace.onPhase,
       onEvent: onAdapterEvent,

@@ -19,7 +19,7 @@ import { describeError } from "../api/errors";
 import { loadStructuredDraft, saveStructuredDraft } from "../lib/composer-draft";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
-import { parseDocumentAnnotationHash } from "../lib/document-annotation-hash";
+import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "../lib/document-annotation-hash";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { useDraftOwner } from "../hooks/useDraftOwner";
@@ -28,6 +28,7 @@ import { FoldCurtain } from "./FoldCurtain";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "./IssueDocumentAnnotations";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import { DocumentMarkdownBody } from "./DocumentMarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { Button } from "@/components/ui/button";
@@ -112,12 +113,19 @@ function renderFoldableBody(
   body: string,
   className?: string,
   externalReferences?: MarkdownExternalReferenceMap,
+  galleryTarget?: { documentKey: string; revisionId?: string; currentIssueId?: string },
 ) {
   return (
     <FoldCurtain>
-      <MarkdownBody className={className} softBreaks={false} externalReferences={externalReferences}>
-        {body}
-      </MarkdownBody>
+      {galleryTarget ? (
+        <DocumentMarkdownBody {...galleryTarget} className={className} softBreaks={false} externalReferences={externalReferences}>
+          {body}
+        </DocumentMarkdownBody>
+      ) : (
+        <MarkdownBody className={className} softBreaks={false} externalReferences={externalReferences}>
+          {body}
+        </MarkdownBody>
+      )}
     </FoldCurtain>
   );
 }
@@ -355,8 +363,10 @@ function AccountIssueDocumentsSection({
   const [highlightDocumentKey, setHighlightDocumentKey] = useState<string | null>(null);
   const [revisionMenuOpenKey, setRevisionMenuOpenKey] = useState<string | null>(null);
   const [selectedRevisionIds, setSelectedRevisionIds] = useState<Record<string, string | null>>({});
-  const [handledRevisionHash, setHandledRevisionHash] = useState<string | null>(null);
+  const [handledRevisionHash, setHandledRevisionHash] = useState<{ target: string; latestRevisionId: string | null } | null>(null);
   const documentHashTarget = useMemo(() => parseDocumentAnnotationHash(location.hash), [location.hash]);
+  const revisionTarget = documentHashTarget?.revisionId
+    ? buildDocumentAnnotationHash({ ...documentHashTarget, image: undefined }) : null;
   const revisionsQueryDocumentKey = revisionMenuOpenKey ?? (documentHashTarget?.revisionId ? documentHashTarget.documentKey : null);
   const [diffViewKey, setDiffViewKey] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -896,9 +906,10 @@ function AccountIssueDocumentsSection({
   }, [documentSubject.legacyPlanDocument, documentHashTarget, sortedDocuments]);
 
   useEffect(() => {
-    if (!documentHashTarget?.revisionId || handledRevisionHash === location.hash) return;
+    if (!documentHashTarget?.revisionId) return;
     const doc = sortedDocuments.find((entry) => entry.key === documentHashTarget.documentKey);
     if (!doc) return;
+    if (handledRevisionHash?.target === revisionTarget && handledRevisionHash.latestRevisionId === doc.latestRevisionId) return;
     if (revisionsQueryFailed) {
       setError("Could not load the reviewed revision. Try opening the link again.");
       return;
@@ -910,8 +921,8 @@ function AccountIssueDocumentsSection({
       }
       return;
     }
-    if (previewRevision(doc, documentHashTarget.revisionId)) setHandledRevisionHash(location.hash);
-  }, [activeDocumentRevisions, documentHashTarget, getDocumentRevisions, handledRevisionHash, isFetchingDocumentRevisions, location.hash, previewRevision, revisionsQueryFailed, sortedDocuments]);
+    if (previewRevision(doc, documentHashTarget.revisionId)) setHandledRevisionHash({ target: revisionTarget!, latestRevisionId: doc.latestRevisionId });
+  }, [activeDocumentRevisions, documentHashTarget, getDocumentRevisions, handledRevisionHash, isFetchingDocumentRevisions, previewRevision, revisionTarget, revisionsQueryFailed, sortedDocuments]);
 
   useEffect(() => {
     return () => {
@@ -1112,7 +1123,7 @@ function AccountIssueDocumentsSection({
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
-            {renderFoldableBody(documentSubject.legacyPlanDocument.body, documentBodyContentClassName, externalReferences)}
+            {renderFoldableBody(documentSubject.legacyPlanDocument.body, documentBodyContentClassName, externalReferences, { documentKey: "plan" })}
           </div>
         </div>
       ) : null}
@@ -1136,7 +1147,11 @@ function AccountIssueDocumentsSection({
             ? selectedHistoricalRevision.title ?? ""
             : activeDraft?.title ?? currentRevision.title ?? "";
           const waitingForLinkedRevision = documentHashTarget?.documentKey === doc.key
-            && Boolean(documentHashTarget.revisionId) && handledRevisionHash !== location.hash;
+            && Boolean(documentHashTarget.revisionId)
+            && (handledRevisionHash?.target !== revisionTarget || handledRevisionHash.latestRevisionId !== doc.latestRevisionId);
+          const galleryRevisionId = selectedHistoricalRevision?.id
+            ?? (documentHashTarget?.documentKey === doc.key && documentHashTarget.revisionId === doc.latestRevisionId
+              ? documentHashTarget.revisionId : undefined);
           const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
           const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
           const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
@@ -1411,7 +1426,7 @@ function AccountIssueDocumentsSection({
                       // Loading and error copy must never become editor input
                       // or annotation content. A blocked draft stays editable.
                       const renderedDocumentBody = waitingForLinkedRevision && !activeDraft ? null : isHistoricalPreview ? (
-                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences)
+                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences, { documentKey: doc.key, revisionId: galleryRevisionId, currentIssueId: issue?.id })
                       ) : activeDraft ? (
                         <MarkdownEditor
                           value={displayedBody}
@@ -1433,7 +1448,7 @@ function AccountIssueDocumentsSection({
                           onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
                         />
                       ) : (
-                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences)
+                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences, { documentKey: doc.key, revisionId: galleryRevisionId, currentIssueId: issue?.id })
                       );
 
                       return documentSubject.annotations && (!waitingForLinkedRevision || activeDraft) ? (

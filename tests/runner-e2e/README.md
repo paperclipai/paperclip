@@ -277,6 +277,14 @@ See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
 
+The explicit-only [Antigravity additional-agent journey](ANTIGRAVITY-AGENT-JOURNEY.md)
+protects ordinary picker discovery, reuse of a saved personal Google subscription,
+native Test and genuine setup readiness, an Instructions-only file proof and a
+same-task follow-up. Its one local macOS ARM64 cell attaches to an already running
+self-hosted test target and preserves the supplied account. It has separate
+non-paying preflight, owned-resource recovery and normal report commands. Saved
+reuse is separate from the fresh-connection suite and global release qualification.
+
 The [public MCP suite](PUBLIC-MCP.md) adds explicit paid assistant/plugin journeys
 with authenticated browser consent, real MCP tool use and independently graded
 team execution. Select `--suite public-mcp`; it is excluded from `--all`.

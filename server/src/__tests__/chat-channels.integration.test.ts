@@ -2984,6 +2984,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
+      const f = await publicationRetryFixture();
+      await db.update(chatEndpoints).set({ botDisplayName: "Fresh Review Bot" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      const submit = (await githubBotToolsForSession(db, f.session)).find(tool => tool.upstreamToolName === "submit_review")!;
+      expect(submit.parametersSchema).toMatchObject({ properties: {
+        summary: { description: expect.stringContaining("Review body only") },
+        rationale: { description: expect.stringContaining("Do not repeat the summary") },
+      } });
+      const assessment = { ...f.assessment, summary: "## Fresh Review Bot — 2/5\n\n## Fresh Review Bot — 3/5\n\nAdvisory review\n\n### Findings\n\nKeep this section." };
+      const result = await f.service.execute(f.session, "submit_review", assessment, "formatted-summary");
+      expect(result).toMatchObject({ status: "processed", score: 3 });
+      const body = [...f.responseComments.values()][0].body;
+      expect(body).toMatch(/^## Fresh Review Bot — 3\/5\n\nAdvisory review/);
+      expect(body.match(/^## Fresh Review Bot — /gm)).toHaveLength(1);
+      expect(body).toContain("### Findings\n\nKeep this section.");
+      expect(body).toContain(f.assessment.rationale);
+      expect(body).toContain(`Reviewed commit: \`${f.head}\``);
+      expect(f.responseComments.size).toBe(1);
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(review.assessment?.summary).toBe(assessment.summary);
+    });
     it("preserves the published GitHub assessment during passive-response maintenance", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
@@ -6972,7 +6993,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.wakeup).not.toHaveBeenCalled();
       const allowed = { ...payload, sender: { id: 42, login: "octocat", type: "User" }, issue: { ...payload.issue, user: payload.sender } };
       await send(allowed);
-      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length).toBe(1);
+      // A transient `chat_endpoints` row lock defers admission with a retry
+      // floor of 1000 ms (`chat-channels/inbound/wakeups.ts`), so allow one
+      // deferred retry instead of the 1000 ms poll default.
+      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
       const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
       const comments = await readIssueCommentsByIssueId(conversation.issueId!);
       expect(comments).toHaveLength(1);
@@ -16294,7 +16318,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
           generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
         expect(f.requests).toEqual([]);
-        expect(coordinator.nextWakeAt()!).toBeLessThan(Date.now() + 90_000);
+        // The checkpoint commits before this coordinator pass rearms its deadline.
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return next !== null && next < Date.now() + 90_000;
+        }, { timeout: 5000 }).toBe(true);
       } finally { release?.(); await pending; await coordinator.stop(); }
     });
 

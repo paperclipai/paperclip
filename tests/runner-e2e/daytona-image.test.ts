@@ -11,56 +11,55 @@ import {
 } from "./daytona-image-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+function lastDockerignoreRule(dockerignore: string, fixturePath: string) {
+  return dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#")).filter(rule => {
+    const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
+    return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+  }).at(-1);
+}
 
 describe("runner E2E Daytona image contract", () => {
-  it("retains the active Copilot identity declaration in the Docker context", async () => {
-    const [generator, dockerignore] = await Promise.all([
-      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"), "utf8"),
-      readFile(path.join(repositoryRoot, ".dockerignore"), "utf8"),
-    ]);
-    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
-    expect(fixture).toBeDefined();
-    const fixturePath = `packages/paperclip-runner/${fixture}`;
-    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(fixturePath);
-    await expect(readFile(path.join(repositoryRoot, fixturePath), "utf8")).resolves.toContain('"commandDigest"');
-    // Docker's last matching rule wins, including the parent-directory exclusion.
-    const rules = dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#"));
-    const lastRule = rules.filter(rule => {
-      const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
-      return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
-    }).at(-1);
-    expect(lastRule?.startsWith("!")).toBe(true);
-    // The exception also covers the next version without exposing other live evidence.
-    const exception = lastRule!.slice(1);
-    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-profile-v999-identity.json", exception)).toBe(true);
-    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-live-denial-2026-09-28.json", exception)).toBe(false);
+  // ACPX generation recomputes these release attestation inputs in the image build.
+  const attestationInputs = [
+    "acpx-profiles.json",
+    "scripts/acpx-release-attestations.mjs",
+    "scripts/generate-acpx-profiles.mjs",
+    "src/drivers/acpx/copilot-closure-pins.ts",
+    "src/drivers/acpx/pi-closure-pins.ts",
+    "src/drivers/acpx/pi-node-pins.ts",
+    "src/providers/grok/launcher.cjs",
+  ].map(input => `packages/paperclip-runner/${input}`);
+
+  it("retains the ACPX release attestation inputs in the Docker context", async () => {
+    const dockerignore = await readFile(path.join(repositoryRoot, ".dockerignore"), "utf8");
+    for (const input of attestationInputs) {
+      await expect(readFile(path.join(repositoryRoot, input), "utf8")).resolves.toBeTruthy();
+      // Docker's last matching rule wins, including the parent-directory exclusion.
+      expect(lastDockerignoreRule(dockerignore, input)?.startsWith("!") ?? true, input).toBe(true);
+      expect(DAYTONA_IMAGE_INPUT_PATHS.some(inputPath => input === inputPath || input.startsWith(`${inputPath}/`)), input).toBe(true);
+    }
   });
 
-  it("invalidates the image content ID when the active Copilot identity changes", async () => {
-    const generator = await readFile(
-      path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"),
-      "utf8",
-    );
-    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
-    expect(fixture).toBeDefined();
-    const fixturePath = `packages/paperclip-runner/${fixture}`;
-    const root = await mkdtemp(path.join(tmpdir(), "paperclip-daytona-copilot-identity-"));
+  it("invalidates the image content ID when a release attestation input changes", async () => {
+    const manifestPath = "packages/paperclip-runner/acpx-profiles.json";
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-daytona-attestation-"));
     const options = {
       repositoryRoot: root,
-      inputPaths: DAYTONA_IMAGE_INPUT_PATHS.filter(inputPath => inputPath === fixturePath),
+      inputPaths: DAYTONA_IMAGE_INPUT_PATHS.filter(inputPath => inputPath === manifestPath),
       baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
       frontendDigest: `sha256:${"c".repeat(64)}`,
     } as const;
     try {
-      await mkdir(path.dirname(path.join(root, fixturePath)), { recursive: true });
-      await writeFile(path.join(root, fixturePath), '{"commandDigest":"before"}\n');
+      expect(options.inputPaths).toEqual([manifestPath]);
+      await mkdir(path.dirname(path.join(root, manifestPath)), { recursive: true });
+      await writeFile(path.join(root, manifestPath), '{"commandDigest":"before"}\n');
       const before = await computeDaytonaImageContentId(options);
       expect(await computeDaytonaImageContentId(options)).toBe(before);
-      const withoutCopilot = { ...options, inputPaths: [] };
-      const unrelatedBefore = await computeDaytonaImageContentId(withoutCopilot);
-      await writeFile(path.join(root, fixturePath), '{"commandDigest":"after"}\n');
+      const withoutManifest = { ...options, inputPaths: [] };
+      const unrelatedBefore = await computeDaytonaImageContentId(withoutManifest);
+      await writeFile(path.join(root, manifestPath), '{"commandDigest":"after"}\n');
       expect(await computeDaytonaImageContentId(options)).not.toBe(before);
-      expect(await computeDaytonaImageContentId(withoutCopilot)).toBe(unrelatedBefore);
+      expect(await computeDaytonaImageContentId(withoutManifest)).toBe(unrelatedBefore);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -142,13 +141,7 @@ describe("runner E2E Daytona image contract", () => {
     expect(dockerignore).toContain("packages/paperclip-runner/dist");
     expect(dockerignore).toContain("packages/paperclip-runner/runner/target");
     expect(await readFile(path.join(repositoryRoot, ".github/docker-context-checks.Dockerfile"), "utf8")).toContain("node packages/paperclip-runner/scripts/generate-acpx-profiles.mjs --check");
-    for (const declaration of [
-      "test-fixtures/pi-acp/profile-v19-identity.json",
-      "test/fixtures/copilot-profile-v16-identity.json",
-    ]) {
-      expect(dockerignore).toContain(`!packages/paperclip-runner/${declaration}`);
-      await expect(readFile(path.join(repositoryRoot, "packages/paperclip-runner", declaration), "utf8")).resolves.toBeTruthy();
-    }
+    expect(lastDockerignoreRule(dockerignore, "packages/paperclip-runner/test-fixtures/pi-acp/private-live-session.json")?.startsWith("!")).toBe(false);
     for (const developmentOnlyInput of [
       "packages/paperclip-runner/devtools",
       "packages/paperclip-runner/docs",
@@ -263,22 +256,10 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
       "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
       "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
-      "packages/paperclip-runner/scripts/copilot-profile-identity.mjs",
+      "packages/paperclip-runner/scripts/acpx-release-attestations.mjs",
+      "packages/paperclip-runner/scripts/generate-acpx-profiles.mjs",
       "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
       "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
-      "packages/paperclip-runner/test/fixtures/copilot-profile-v12-identity.json",
-      "packages/paperclip-runner/test/fixtures/copilot-profile-v14-identity.json",
-      "packages/paperclip-runner/test/fixtures/copilot-profile-v21-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v24-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v25-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v26-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v35-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v40-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v42-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v46-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v47-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v48-identity.json",
-  "packages/paperclip-runner/test/fixtures/copilot-profile-v49-identity.json",
       "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
       "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
       "packages/paperclip-runner/cursor-distributions.json",

@@ -645,8 +645,13 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     const available = await seedArchive(healthy.root, { name: `${dueAt - 7 * DAY_MS - 1}-${randomUUID()}` });
     await startEvidence({ isSessionBusy: scope => scope === busy.scope }); await settled(dueAt);
     await vi.advanceTimersByTimeAsync(dueAt - Date.now());
-    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100); expect(await exists(available)).toBe(false); });
-    expect(await exists(held)).toBe(true); expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await exists(available)).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    });
+    expect(await exists(held)).toBe(true);
     await quiet(60_000);
   });
 

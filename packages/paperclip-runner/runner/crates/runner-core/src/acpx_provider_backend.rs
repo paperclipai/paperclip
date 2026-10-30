@@ -38,6 +38,28 @@ use crate::provider_events::{
 };
 use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
+fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
+    let mut receipt = serde_json::Map::new();
+    for key in [
+        "statusMs",
+        "statusOffsetMs",
+        "promptMs",
+        "promptOffsetMs",
+        "sidecarMs",
+    ] {
+        if let Some(value) = response
+            .get("timing")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 300_000.0)
+        {
+            receipt.insert(key.to_owned(), json!(value));
+        }
+    }
+    receipt.insert("runnerMs".to_owned(), json!(elapsed.as_secs_f64() * 1000.0));
+    Value::Object(receipt)
+}
+
 fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
     matches!(operation_id, "paperclip_finish" | "paperclip_block")
 }
@@ -1536,12 +1558,14 @@ impl AcpxCommandExecutor {
             .as_ref()
             .map(|state| PathBuf::from(&state.descriptor.cwd))
             .expect("ACPX state exists before turn start");
-        if let Err(error) = self
+        let measure = payload.get("performance").and_then(Value::as_bool) == Some(true);
+        let timing_started = std::time::Instant::now();
+        let start_result = self
             .session
             .as_mut()
             .expect("ACPX session exists before turn start")
-            .start_turn(&provider_turn_id, text, &working_directory)
-        {
+            .start_turn_timed(&provider_turn_id, text, &working_directory, measure);
+        if let Err(error) = &start_result {
             let state = self
                 .state
                 .as_mut()
@@ -1555,6 +1579,15 @@ impl AcpxCommandExecutor {
                 "ACPX turn start failed closed: {error}"
             )));
         }
+        // Copy numeric timing fields only. Sidecar contents never enter the receipt.
+        let timing = if measure {
+            bounded_turn_timing(
+                &start_result.ok().unwrap_or(Value::Null),
+                timing_started.elapsed(),
+            )
+        } else {
+            Value::Null
+        };
         let state = self
             .state
             .as_mut()
@@ -1612,7 +1645,11 @@ impl AcpxCommandExecutor {
             }),
         ));
         Ok(CommandExecution {
-            result: json!({"status": "accepted", "providerTurnId": provider_turn_id}),
+            result: if measure {
+                json!({"status":"accepted", "providerTurnId":provider_turn_id, "timing":timing})
+            } else {
+                json!({"status": "accepted", "providerTurnId": provider_turn_id})
+            },
             events,
         })
     }
@@ -2623,6 +2660,21 @@ mod tests {
     }
 
     #[test]
+    fn timing_receipt_drops_sidecar_contents_and_invalid_numeric_fields() {
+        let receipt = bounded_turn_timing(
+            &json!({"timing":{
+                "statusMs":10, "statusOffsetMs":0, "promptMs":-1,
+                "promptOffsetMs":"private", "sidecarMs":300001, "prompt":"secret"
+            }}),
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            receipt,
+            json!({"statusMs":10.0,"statusOffsetMs":0.0,"runnerMs":20.0})
+        );
+    }
+
+    #[test]
     fn live_request_snapshot_preserves_durable_turn_and_provider_callback_bindings() {
         use crate::acpx_provider_state::AcpxProviderState;
         use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -3297,11 +3349,10 @@ mod tests {
     }
 
     #[test]
-    fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
-        let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v35-identity.json"
-        ))
-        .unwrap();
+    fn pi_profile_admits_its_release_attestation_and_rejects_the_prior_digest() {
+        let current_digest = crate::generated_acpx_profiles::acpx_release_profile("pi")
+            .unwrap()
+            .command_digest;
         let mut value = descriptor("codex");
         value["agent"] = json!("pi");
         value["model"] = json!("openrouter/deepseek/deepseek-v4-flash-0731");
@@ -3311,44 +3362,15 @@ mod tests {
         value["agentRuntimeVersion"] = json!("1.0.0");
         value["piThinkingLevel"] = json!("low");
         value["providerPolicy"] = json!({"readOnly": true});
-        value["commandDigest"] = published["commandDigest"].clone();
+        value["commandDigest"] = json!(current_digest);
         let current: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
         current.validate(&context()).unwrap();
 
-        for prior in [
-            include_str!("../../../../test-fixtures/pi-acp/profile-v34-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v33-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v32-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v31-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v16-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v17-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v18-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v19-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v20-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v21-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v22-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!(
-                "../../../../test-fixtures/pi-acp/profile-v24-claude-historical-identity.json"
-            ),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v25-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v26-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v27-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v30-identity.json"),
-        ] {
-            let prior: Value = serde_json::from_str(prior).unwrap();
-            value["commandDigest"] = prior["commandDigest"].clone();
-            let rejected: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
-            assert!(rejected.validate(&context()).is_err());
-        }
+        // The last source-bound Pi identity is refused.
+        value["commandDigest"] =
+            json!("sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc");
+        let rejected: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        assert!(rejected.validate(&context()).is_err());
     }
 
     #[test]

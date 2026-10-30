@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
@@ -109,7 +110,7 @@ export function activityService(db: Db) {
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
@@ -427,7 +428,8 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
@@ -478,6 +480,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (

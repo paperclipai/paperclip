@@ -222,6 +222,16 @@ Core permits read-only suspension proof for the exact saved identity of a
 successful warm run after its reuse lease is retained or superseded. This does
 not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
+An explicit reset to a different normalized session can retire a warm owner
+whose close failed only because it could not prove checkpoint suspension. Core
+requires the exact lease-bound task's `executionStopped: true` receipt, a
+successful `complete` handoff, and settled Core tool results first. It then
+collects stopped instruction files before it releases the in-memory owner. The old checkpoint remains evidence;
+it is not reused by the new session. A failed handoff, failed file collection,
+unsettled Core tool result, other close error, or continuation of the same
+session still blocks replacement.
+A controller restart is not required for this stopped-owner reset path.
+
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection
 precedes in-memory session selection so a replacement cannot inherit the stopped
@@ -268,3 +278,27 @@ credential helpers, or command proxies can implement the same semantics.
 Deploy the updated Core and plugin together. A configured
 GitHub connection on an older task provider returns an explicit upgrade error.
 Unconfigured providers continue ordinary work without authenticated GitHub access.
+
+Managed GitHub command providers must retain the qualified provider executable
+and arguments. Supply helper discovery through the task environment instead of
+wrapping that executable. Claude ACPX preserves explicit `BASH_ENV`, `ZDOTDIR`,
+`GH_CONFIG_DIR`, and `PAPERCLIP_GITHUB_LAUNCHER_DIR` selectors across the sidecar
+boundary. It does not forward GitHub tokens or broker capabilities to the provider.
+The helper reads the current task capability at invocation, including after warm
+reuse. These selectors must come from the trusted environment owner.
+Reference helpers mark only their child operation and reject re-entry before resolving
+another executable or capturing credentials. A PATH shim that calls a helper's
+absolute path fails with `launcher_recursion_rejected` (exit 126), preventing
+recursive process growth. Offline Git fixtures must resolve the native binary
+outside managed helper paths and exclude runtime shell startup hooks.
+
+
+The pure launch factory exports `RUNNER_GITHUB_LAUNCHER_VERSION = 1` for this
+contract. A provider must check it as well as the host broker schema and its
+Launcher capability before advertising managed GitHub commands. The installed
+Runner must match the factory's source revision.
+
+The helper projection is marked by the controller-owned
+`PAPERCLIP_GITHUB_LAUNCHER_DIR`. Task overrides cannot supply that marker or the
+shell selectors. Run preparation strips stored bindings before secret resolution,
+and configured task-environment projections reject the shell selectors too.

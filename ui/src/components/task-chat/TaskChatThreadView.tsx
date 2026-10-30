@@ -21,7 +21,7 @@ import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
-import { TaskMessageScroller } from "./TaskMessageScroller";
+import { TaskMessageScroller, type ScrollingHistory } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
@@ -33,6 +33,7 @@ import { CoordinatorChatPendingQuestion } from "@/components/coordinator/Coordin
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
 interface TaskChatThreadViewProps {
+  scrollingHistory?: ScrollingHistory;
   items: TaskChatItem[];
   /**
    * Content rendered above the first message INSIDE the scroll viewport (the
@@ -303,6 +304,7 @@ export function taskChatItemSpacingClass(
  * TaskChatItem[] onto the primitives inside the auto-follow scroller.
  */
 export function TaskChatThreadView({
+  scrollingHistory,
   items,
   header,
   onApprovalDecision,
@@ -433,7 +435,7 @@ export function TaskChatThreadView({
   if (!scroll) return body;
 
   return (
-    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)}>
+    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)} scrollingHistory={scrollingHistory}>
       {body}
     </TaskMessageScroller>
   );

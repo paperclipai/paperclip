@@ -39,10 +39,14 @@ only index HTML and history/pointer JSON; it does not upload evidence or change
 retained campaign bundles.
 
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
-two natural-language task scenarios into local native Product E2E cells. They
+two natural-language task scenarios into local native Codex subscription and
+OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
-state/provenance checks. The broader YAML catalog remains planning inventory.
+state/provenance checks. A separately selected native OpenCode/DeepSeek1017
+backlog cell measures TestOps integration acceptance with the same oracle and
+original bounds. Its source registration is not an AWS or TestOps pass. The
+broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 125-second controller outage,
@@ -101,6 +105,14 @@ or that a real Slack interaction completes.
 The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
+
+The explicit-only [Antigravity additional-agent journey](../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+converts the saved-subscription setup and two-turn file walkthrough into one
+local native cell. It measures agent creation through the ordinary UI,
+instruction-dependent downloaded bytes, same native conversation, durable Done
+lineage and owned runtime cleanup. Current support requires an attached
+self-hosted loopback macOS ARM64 candidate; fresh OAuth, Cloud/remote execution
+and global release qualification are separate gates.
 
 The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
 uses ordinary task APIs and retained native receipts to measure unattended

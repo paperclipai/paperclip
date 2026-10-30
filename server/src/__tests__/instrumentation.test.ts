@@ -386,6 +386,24 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
     }
   });
 
+  it("exports an earlier lifecycle as a separate trace linked to its observer",async()=>{
+    const {api,sdk}=otelSdk!;
+    const exporter=new sdk.InMemorySpanExporter();
+    const provider=new sdk.BasicTracerProvider({spanProcessors:[new sdk.SimpleSpanProcessor(exporter)]});
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const {recordProviderPluginSpan}=await import("../instrumentation.js");
+      const parent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"b7ad6b7169203331",traceFlags:1};
+      const end=Date.now()-100;
+      recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent,linked:true,attributes:{},startTimeMs:end-500,endTimeMs:end});
+      const span=exporter.getFinishedSpans()[0]!;
+      expect(span.parentSpanContext).toBeUndefined();
+      expect(span.spanContext().traceId).not.toBe(parent.traceId);
+      expect(span.links[0].context).toMatchObject(parent);
+      expect(Math.round(hrTimeToMs(span.duration as [number,number]))).toBe(500);
+    } finally {api.trace.disable();}
+  });
+
   it("opens and ends the span now when the timestamp pair is absent", async () => {
     const { api, sdk } = otelSdk!;
     const exporter = new sdk.InMemorySpanExporter();
@@ -412,4 +430,21 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
       api.trace.disable();
     }
   });
+});
+
+it("gives a linked lifecycle an explicit root context and a host-owned observer link",async()=>{
+ const root={},active={};const end=vi.fn();
+ const startSpan=vi.fn(()=>({end,setStatus:vi.fn(),spanContext:()=>({traceId:"a".repeat(32),spanId:"b".repeat(16),traceFlags:1})}));
+ const setSpanContext=vi.fn(()=>active);
+ vi.doMock("node:module",()=>({createRequire:()=>()=>({ROOT_CONTEXT:root,context:{active:()=>active},trace:{getTracer:()=>({startSpan}),setSpanContext}})}));
+ try {
+  const {recordProviderPluginSpan}=await importFreshInstrumentation();
+  const parent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"b7ad6b7169203331",traceFlags:1};
+  recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent,linked:true,attributes:{},startTimeMs:100,endTimeMs:500});
+  expect(startSpan).toHaveBeenCalledWith("plugin.remote.lifecycle",{attributes:{},startTime:100,links:[{context:{...parent,isRemote:true}}]},root);
+  expect(setSpanContext).not.toHaveBeenCalled();expect(end).toHaveBeenCalledWith(500);
+  startSpan.mockClear();
+  recordProviderPluginSpan({name:"plugin.remote.lifecycle",parent:{...parent,traceFlags:0},linked:true,attributes:{},startTimeMs:100,endTimeMs:500});
+  expect(startSpan).not.toHaveBeenCalled();
+ } finally {vi.doUnmock("node:module");vi.resetModules();}
 });

@@ -20,12 +20,13 @@ import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./nativ
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
+import { buildAntigravityJourneySuite } from "./antigravity-journey-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
-import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -1609,9 +1610,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
     groups: ["chat", "native"],
     profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
-      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] }))],
-    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 2,
-    definitionMetadata: { version: 1, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+      chatFeatureProfile(nativeProfile({ id: "runner-opencode-deepseek-1017", label: "Native OpenCode DeepSeek 1017",
+        provider: "opencode", model: CHAT_FEATURE_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local"],
+        modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-feature-testops:deepseek-v4.1-flash-1017" } }))],
+    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
+    excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
+    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
       instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
       unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
       maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
@@ -1829,6 +1835,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
   buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
+  buildAntigravityJourneySuite(runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -1904,8 +1911,8 @@ export function buildRunnerMatrix(
                 ]),
               ],
               requiredCredentials: [
-                ...(["provider_connection", "github_review_journey"].includes(task.flow) ? [] : [profile.credential]),
-                ...(!["provider_connection", "github_review_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
+                ...(["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) ? [] : [profile.credential]),
+                ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
                 ...(task.requiredCredentials ?? []),
               ],
             }))

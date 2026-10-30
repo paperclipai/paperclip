@@ -16,6 +16,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
+    for (const name of [key, key.toLowerCase()]) {
+      const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
+      expect(createIssueSchema.safeParse({title:"Task",assigneeAdapterOverrides:overrides}).success).toBe(false);
+      expect(updateIssueSchema.safeParse({assigneeAdapterOverrides:overrides}).success).toBe(false);
+    }
+  });
   it("retains an optional nonnegative integer version for prepared-task promotion", () => {
     expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
     expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();

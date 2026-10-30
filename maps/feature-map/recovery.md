@@ -287,8 +287,10 @@ historical provider outage or successful hosted task recovery.
 
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
-exercise timeout recovery with a real listening process, unchanged ownership,
-and rejected identity evidence. The Runner restart tests require positive exit
+exercise timeout and repeated gateway-failure recovery with a real listening
+process, unchanged ownership, and rejected identity evidence. Read-only probes
+use their shared deadline with bounded backoff; fast failures do not exhaust a
+three-attempt limit. Signal requests remain single-attempt. The Runner restart tests require positive exit
 evidence before replacement. The executor regressions also retire a real child
 during its metadata read, keep unknown adopted-process ownership held, and reject
 launch before detachment when Node is unavailable. The diagnostic tests cover
@@ -399,7 +401,18 @@ For a source with a retained-file protection marker, exercise recovery through
 the assembled environment runtime. Its exact preservation owner may reopen the
 stopped allocation to read saved files; ordinary resume stays blocked. Reject a
 changed claim, missing stop intent, wrong lease or wrong environment before a
-provider call. Verify saved and newer local files, one preservation receipt, and
+provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
+the exact accepted result and completion contract; reject a rejected or unselected
+result, another allocation owner, and an active host writer. Verify no provider
+turn or wake is created, then finalize the original result once. Reject malformed
+or oversized Git metadata through native finalization: the run must fail and
+retain its file-recovery barrier, rather than successfully omitting the export.
+Exercise both an oversized sender file and an oversized transfer report. Verify
+one rejected export, no payload read after rejection, and unchanged host files.
+Reload a large-result run and its activity: the failure code and task recovery
+notice remain visible, and metadata repair offers no new provider turn. These database
+and filesystem controls do not qualify a deployed provider.
+Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
 

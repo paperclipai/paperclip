@@ -1086,6 +1086,14 @@ async function main() {
   }
 
   if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST && executions.some(execution => execution.task.flow === "provider_connection")) throw new Error("Provider connection campaign has no budgeted routing qualification");
+  if (executions.some(execution => execution.task.flow === "antigravity_agent_journey")) {
+    if (options.connectionConfig || options.githubReviewConfig || options.provisionGitHubRepository) throw new Error("Use --antigravity-journey-config for the Antigravity journey.");
+    const { runAntigravityJourneyCampaign } = await import("./antigravity-journey-launch.js");
+    await runAntigravityJourneyCampaign({ executions, catalog: runnerMatrix, configFile: options.antigravityJourneyConfig, repositoryRoot,
+      preflight: options.antigravityJourneyPreflight, recoverFile: options.antigravityJourneyRecover });
+    return;
+  }
+  if (options.antigravityJourneyConfig || options.antigravityJourneyPreflight || options.antigravityJourneyRecover) throw new Error("Antigravity journey options require its explicit registered cell.");
   if (executions.some(execution => execution.task.flow === "github_review_journey")) {
     if (options.connectionConfig) throw new Error("Use --github-review-config for the GitHub journey.");
     const { runGitHubReviewCampaign } = await import("./github-review-launch.js");

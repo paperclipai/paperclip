@@ -102,6 +102,13 @@ The [remote continuity regression](../../doc/testing-native-remote-continuity.md
 uses a real Linux runner and deterministic provider. Live provider acceptance is
 a separate check.
 
+In a fresh sandbox workspace, fetch a different published branch with depth one,
+then save a local result and finish. Verify export imports the shallow history,
+retains host-only edits, and completes finalization without another provider turn.
+Repeat when the host already has that branch history; its ancestry must remain
+available. The filesystem sandbox regression covers transfer and merge behavior,
+not live provider acceptance.
+
 For a plugin computer, complete a task, let its warm session suspend, then send
 two follow-ups within the next warm window. Verify the first resumes the saved
 session and the second keeps the same provider history without an identity
@@ -163,6 +170,15 @@ controls do not establish live provider acceptance.
 
 ### `adapter-setup`
 
+Cloud-managed instances load adapters from the release image. Saved external
+registrations cannot replace built-ins or supply UI parser code. Install,
+reinstall, reload, remove, and override operations remain platform-managed.
+The [fixture loader controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+exercise real packages, import side effects, both managed-instance signals and
+self-hosted compatibility. The [route authorization controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+check managed denials before package or registration access. These are local
+controls, not live Cloud provider qualification.
+
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
 Claude native setup uses the existing Anthropic API-key or subscription connection
@@ -177,6 +193,16 @@ version. Local, SSH and explicit custom commands retain operator management.
 Cloud onboarding must not offer shell commands the customer cannot run.
 
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
+
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+checks a saved personal subscription, prompt-free native Test and exact low model,
+then independently correlates two actual downloaded outputs, accepted/committed
+Done lineage, native conversation continuity and owned runtime retirement. Its
+first settlement is captured before follow-up reopening; a later coordinator
+assessment cannot erase that historical Done decision. A failed finish must not
+mark prior completed file operations failed. The current local macOS ARM64
+candidate scope leaves fresh authorization, remote targets and release
+qualification unproven.
 
 For Legacy Codex, assign a service secret such as `SLACK_BOT_TOKEN` through agent
 configuration and run a task that checks its presence without printing its value.
@@ -322,7 +348,7 @@ revised-source live onboarding and follow-up proof.
   `/company/settings/connections` configures decision/fast-response models,
   not the general model-account library.
 
-- The run log is instance database data; it is not the opt-out first-party Telemetry system or operator-configured OpenTelemetry tracing.
+- Structured run events stay in the instance database. Optional stdout/stderr and raw trace payload storage can use S3; see [run evidence storage](../../doc/run-evidence-storage.md). Both are separate from first-party Telemetry and operator OpenTelemetry export.
 - Authentication/model discovery does not establish tool, image, steering, or resumption capability parity.
 - Use [recovery](./recovery.md) for interrupted runs and [execution environments](./execution-environments.md) for local/SSH/sandbox differences.
 

@@ -26,6 +26,7 @@ import {
   agentTaskSessions,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issues,
 } from "@paperclipai/db";
 import { notFound } from "../../errors.js";
@@ -238,7 +239,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
           then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'cancellation', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'cancellation') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
@@ -354,6 +355,9 @@ const heartbeatRunLogAccessColumns = {
   ...heartbeatRunReadAccessColumns,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  status: heartbeatRuns.status,
+  logBytes: heartbeatRuns.logBytes,
 } as const;
 
 const heartbeatRunIssueControlColumns = {

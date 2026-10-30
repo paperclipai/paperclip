@@ -58,7 +58,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(hookEnv.parent).toBeNull();
     expect(hookEnv.child.BASH_ENV).toContain(relocated);
     const command = spawnSync("bash", ["-c", 'printf "%s" "$1"; exit 7', "bash", "literal ' $() value"], {
-      env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
+      env: { ...process.env, ...hookEnv.child }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
     expect(command.stdout).toBe("literal ' $() value");
     expect(command.status).toBe(7);
@@ -71,7 +71,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       ], { env: probeEnv, encoding: "utf8" }).trim();
       expect(await fs.readFile(hookEnv.child.BASH_ENV, "utf8")).toContain("/proc/self/oom_score_adj");
       expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
-        env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
+        env: { ...process.env, ...hookEnv.child }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       }).trim()).toBe(expectedScore);
       expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
     }

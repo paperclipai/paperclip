@@ -5,7 +5,10 @@ only company, agents and project context through public APIs. Both agents use
 production role instructions; evaluator outcomes are never injected. Real browser
 submission, task audits, worker document provenance, completion delivery and
 reload readback establish the outcome. The existing fixture registry, subscription
-credential staging and whole-company cleanup own setup and teardown.
+credential staging and whole-company cleanup own setup and teardown. The explicit
+OpenCode backlog cell instead uses an encrypted OpenRouter profile secret
+reference. It preserves the same fixture and oracle without registering
+OpenCode delegation or changing the other suites' model.
 
 [Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
 fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
@@ -17,6 +20,17 @@ context may seed the graph; independent setup is labeled as recipe provenance.
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+[Antigravity additional-agent setup](ANTIGRAVITY-AGENT-JOURNEY.md) instead reuses
+an existing same-user personal default Google subscription on an attached local
+macOS ARM64 candidate. That prerequisite does not seed the measured new agent or
+task: both are created through ordinary visible controls. The attempt journals
+owned resources before task dispatch, preserves the supplied company/account/grant,
+and exposes bounded read-only preflight and ownership-checked recovery. Native
+Test is prompt-free; exactly two work turns are admitted. Independent actual
+downloaded bytes, effective model/conversation, accepted/committed Done lineage
+and local physical retirement determine the outcome. No fresh OAuth or
+managed-local bootstrap is claimed.
 
 The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
 authenticated browser session. `RunnerApi.setBrowserSession` binds that session
