@@ -55,6 +55,14 @@ Automated: [Studio](../../ui/src/pages/SkillStudio.test.tsx) covers UI behavior;
 
 Manual: Create or fork a disposable skill, edit instructions, save, and reload. Run a bounded test, respond to any question, and inspect the output. Verify the saved version matches what was tested and failed saves retain the draft.
 
+For managed skills, open the same file in two Studio sessions. Save through one,
+then save the other's stale draft. It must receive a conflict, retain its text,
+and offer **Load latest saved file** with discard confirmation. File reads and
+mutation results identify the committed version. Managed content has no server
+source-directory repair flow. The [domain regression](../../server/src/__tests__/managed-skill-content.test.ts)
+and [process qualification](../../server/src/__tests__/ephemeral-skills-process.test.ts)
+cover fresh-home recovery; remote Runner staging remains a separate live proof.
+
 Version history lists file metadata without downloading archives. Opening a diff
 fetches only its selected versions; restoring fetches the chosen version. The
 [library UI regression](../../ui/src/pages/CompanySkills.test.tsx) checks deferred

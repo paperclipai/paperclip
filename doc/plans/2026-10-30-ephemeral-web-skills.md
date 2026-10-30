@@ -1,0 +1,63 @@
+# Skills on ephemeral web servers
+
+## Accepted contract
+
+Given the same database, object storage, secrets, and supported application
+artifacts, a replacement server must discover, read, edit, and deliver protected
+installed skill versions without its predecessor's files or process memory.
+Disk is permitted for disposable scratch, verified caches, and execution delivery.
+Managed authoring and library operations address immutable content, not a mutable
+installed directory. Git remains the authoring source for repository skills;
+installed revisions and run pins govern delivery. Linked local sources remain an
+explicit self-hosted compatibility boundary.
+
+Current, pinned, active/recovering, and authored versions retain durable bytes.
+Unused historical Git versions keep the existing expiry/exact-commit policy.
+Legacy conversion may use one maintenance window. Compatible later upgrades and
+rollback use the same remote state. Other web-server persistence, Railway traffic
+handoff, and production volume removal are outside this slice.
+
+## Delivery and acceptance
+
+1. Introduce managed ownership and content publication without installed paths;
+   preserve access, atomic metadata/version publication, idempotency, conflicts,
+   and active-run retention. Update Studio and API consumers.
+2. Separate selection/pinning from materialization; restore exact runtime digests.
+   Add bounded legacy conversion and disk-independent eligibility diagnostics.
+3. Prove cold A → B → C replacements, concurrent writers, uncertain commits,
+   offline upstream, corrupt/missing objects, access, retention and idle behavior.
+   Run required checks and qualify one disposable staging tenant with a real
+   remote agent. Finish with a reviewable PR and exact revision/evidence links.
+
+## Canonical work and progress
+
+- Worktree: `/Users/dotta/.codex/worktrees/d084/paperclip`
+- Branch: `codex/skills-ephemeral-web`
+- Approved plan: this chat, “Skills on ephemeral web servers,” nine sections.
+- Implemented managed create/read/edit/delete-file/fork/rename/restore publication,
+  immutable catalog installation/reset, Studio version conflict recovery, durable
+  pre-materialization selection and exact pinned-runtime rehydration. Source
+  disconnect retains immutable content and access provenance.
+- Added bounded installation conversion, eligibility and independent version
+  verification to existing migration tooling; conversion requires retired writers.
+- Independent OS-process A → B → C qualification passed using owned Docker
+  PostgreSQL and RustFS S3 fixtures. Real HTTP routes covered saves, supporting
+  executable content, uncertain commit receipts, stale concurrent saves and upload
+  crashes. This is not hosted Runner qualification.
+- Studio tests: 14 passed, including draft preservation and confirmed reload.
+- Workspace typecheck and build passed. Map checks and UI token gates passed.
+  Broader compatibility coverage passed 362 cases; follow-up runs passed migration,
+  policy, package, project access and retained-run cases after updating old model
+  expectations. Final focused checks and the full repository suite are running.
+- One-connection tests now exercise package acquisition before the publication
+  transaction. Fork reassignment also uses the transaction's database handle.
+- Host embedded Postgres cannot initialize: exhausted kernel semaphore pool.
+  Owned Docker fixtures are `paperclip-skills-ephemeral-pg` (port 61006) and
+  `paperclip-skills-ephemeral-s3` (port 61007). No unrelated databases changed.
+- Disposable staging tenant created through normal onboarding:
+  https://ephemeral-skills-qa-oct-30.staging.paperclip.app
+  Agent `dfd238b5-5e5d-43ef-b34a-cb5bff2267f3` (Skills Qualification), paused.
+  Model setup and candidate deployment remain; no live run claimed.
+- Remaining: finish repository checks and PR review, candidate deployment and
+  fresh-home remote Runner
+  qualification including compatible rollback. No PR or deployment claimed yet.

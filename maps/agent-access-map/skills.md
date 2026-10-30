@@ -29,6 +29,15 @@ covers separate actors and revoked project access; the
 [package regression](../../server/src/__tests__/skill-package-store.test.ts) covers
 company isolation and warm-cache behavior. This does not claim live agent qualification.
 
+Managed ownership remains in the existing `workspace` policy category. Immutable
+content references do not grant authority: publication rechecks policy and source
+access, and delivery/recovery rechecks the company's skill visibility. File reads
+and mutations return `versionId`; content requests may supply `expectedVersionId`
+and receive `409` on a stale base. Existing idempotent agent receipt shapes remain.
+Detached assignments do not release active/recovering execution pins. These are
+source-reviewed contracts; the independent-process board fixture is not agent
+credential or hosted Runner qualification.
+
 ## `discovery`
 
 Capability ID: `skills/discovery`.

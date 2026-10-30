@@ -2626,6 +2626,24 @@ and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
 
+## Version-based skill authoring and delivery
+
+Managed content uses `managed-skill-content.ts`: prepare and verify outside the
+publication transaction, then compare the captured head and publish version,
+projections, audit and applicable receipt together. `skill-execution-content.ts`
+owns disposable filesystem bindings. Do not write managed installed directories
+or infer missing content from an absent cache. Keep linked-local behavior explicit.
+
+The [conversion and qualification guide](skill-ephemeral-web-servers.md) documents
+bounded eligibility/verification commands and the one-time writer maintenance
+boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
+`ephemeral-skills-process.test.ts` requires independent disposable Postgres and
+S3 fixtures and starts separate Node processes. The optional
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
+On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
+for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
+collected during builds as hosted performance evidence.
+
 ## App-Shipped Skills Catalog
 
 Skill-library reads still reconcile bundled releases, folders, and direct local
