@@ -74,7 +74,7 @@ import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
-import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage, type LiveFixtureValues } from "./live-fixtures.js";
+import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage, waitForFixtureDaytonaProvider, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, persistedFinalRunMessage, type MatcherResult } from "./matchers.js";
 import { readRegisteredArtifacts } from "./registered-artifact.js";
 import {
@@ -611,8 +611,13 @@ for (const execution of executions) {
     const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
     const onCompanyCreated = async (id: string) => {
       const admission = kimiCandidateAdmissionForExecution(execution, id);
-      if (admission) await restartIsolatedPaperclipServer({ api, requestId: `kimi-startup-${nonce}`,
-        kimiCandidateAdmission: admission, deadlineAt: startedAtMs + deadlineMs });
+      if (admission) {
+        await restartIsolatedPaperclipServer({ api, requestId: `kimi-startup-${nonce}`,
+          kimiCandidateAdmission: admission, deadlineAt: startedAtMs + deadlineMs });
+        if (execution.environment.id === "daytona") {
+          await waitForFixtureDaytonaProvider(api, { companyId: id, deadlineAt: startedAtMs + deadlineMs });
+        }
+      }
       if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
     };
     const api = new RunnerApi(request);

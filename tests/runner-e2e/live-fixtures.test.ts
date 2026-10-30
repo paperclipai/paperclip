@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { transformSync } from "esbuild";
+import * as fixtureReadiness from "./live-fixtures.js";
 import { describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -509,5 +512,70 @@ describe("managed setup runtime cost coverage", () => {
     expect(incomplete.costSource).toBe("provider_cost_unavailable");
     expect(incomplete).not.toHaveProperty("estimatedListCostUsd");
     expect(incomplete.leaseCount).toBe(3);
+  });
+});
+
+describe("Daytona fixture readiness after candidate startup", () => {
+  const companyId = "11111111-2222-4333-8444-555555555555";
+  const pluginId = "22222222-2222-4333-8444-555555555555";
+  const pluginKey = "paperclip.daytona-sandbox-provider";
+  const waitReady = () => (fixtureReadiness as unknown as {
+    waitForFixtureDaytonaProvider: (api: Pick<RunnerApi, "get">, input: { companyId: string; deadlineAt: number }) => Promise<void>;
+  }).waitForFixtureDaytonaProvider;
+  function candidateCompanyCallback(execution: unknown, api: unknown, restart: () => Promise<void>, deadlineAt: number) {
+    const source = readFileSync(new URL("./runner.spec.ts", import.meta.url), "utf8");
+    const start = source.indexOf("    const onCompanyCreated = async (id: string) => {");
+    const end = source.indexOf("    const api = new RunnerApi(request);", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const js = transformSync(source.slice(start, end), { loader: "ts", format: "cjs" }).code;
+    return new Function("kimiCandidateAdmissionForExecution", "execution", "api", "nonce", "startedAtMs", "deadlineMs", "trace", "saveTrace", "restartIsolatedPaperclipServer", "waitForFixtureDaytonaProvider", js + ";return onCompanyCreated;")(
+      () => ({}), execution, api, "fixture", 0, deadlineAt, undefined, async () => {}, restart, waitReady(),
+    ) as (id: string) => Promise<void>;
+  }
+  function apiAt(readiness: () => boolean, mismatch = false) {
+    const calls: string[] = [];
+    return {
+      calls,
+      async get<T>(route: string): Promise<T> {
+        calls.push(route);
+        if (route.endsWith("/dashboard")) return { pluginId, worker: { status: readiness() ? "running" : "starting" } } as T;
+        return { sandboxProviders: { daytona: readiness() ? { status: "supported", source: "plugin", pluginKey, pluginId: mismatch ? "foreign" : pluginId, supportsRunExecution: true } : { status: "unsupported" } } } as T;
+      },
+      async post() { calls.push("ENV_POST"); if (!readiness()) throw new Error("environment POST422: plugin worker starting"); return { id: "environment" }; },
+    };
+  }
+  it("awaits real public provider readiness before the environment POST after HTTP restart ACK", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      let running = false; setTimeout(() => { running = true; }, 1_000);
+      const api = apiAt(() => running);
+      const callback = candidateCompanyCallback({ environment: { id: "daytona" } }, api, async () => {}, 5_000);
+      const outcome = (async () => { await callback(companyId); return api.post(); })().then(value => ({ ok: true, value }), error => ({ ok: false, error: error.message }));
+      await vi.advanceTimersByTimeAsync(1_250);
+      expect(await outcome).toMatchObject({ ok: true, value: { id: "environment" } });
+      expect(api.calls.filter(x => x === "ENV_POST")).toHaveLength(1);
+      expect(api.calls.some(x => x.endsWith("/dashboard"))).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("leaves local candidate restart sequencing free of Daytona readiness requests", async () => {
+    const api = apiAt(() => false);
+    await candidateCompanyCallback({ environment: { id: "local" } }, api, async () => {}, Date.now() + 5_000)(companyId);
+    expect(api.calls).toEqual([]);
+  });
+  it("does not admit a DB-ready provider whose live worker never runs", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      const api = apiAt(() => false);
+      const result = waitReady()(api, { companyId, deadlineAt: 1_000 }).then(() => null, error => error);
+      await vi.advanceTimersByTimeAsync(1_100);
+      const error = await result;
+      expect(error).toMatchObject({ failureClass: "candidate_failure" });
+      expect(api.calls).not.toContain("ENV_POST");
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects a different advertised plugin identity before creating an environment", async () => {
+    const api = apiAt(() => true, true);
+    await expect(waitReady()(api, { companyId, deadlineAt: Date.now() + 5_000 })).rejects.toThrow(/plugin identity/);
+    expect(api.calls).not.toContain("ENV_POST");
   });
 });
