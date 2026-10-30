@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,21 +11,18 @@ test("production runner catches the filesystem regression that raw Vitest select
   const repo = process.cwd();
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ci-vr-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const directory of ["ui/src", "server/src/__tests__", "server/scripts", "bin"]) mkdirSync(path.join(root, directory), { recursive: true });
+  for (const directory of ["ui/src", "server/src/__tests__", "server/scripts"]) mkdirSync(path.join(root, directory), { recursive: true });
   symlinkSync(path.join(repo, "node_modules"), path.join(root, "node_modules"), "dir");
   const write = (file, body) => writeFileSync(path.join(root, file), body);
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
   write(".gitignore", "node_modules/\nselection.json\n");
   write("package.json", '{"name":"selection-regression","private":true,"type":"module"}');
-  write("bin/package.json", '{"type":"commonjs"}');
   write("vitest.config.mjs", 'export default {test:{projects:["ui"]}}');
   write("ui/vitest.config.mjs", 'export default {test:{name:"@paperclipai/ui",include:["src/**/*.test.mjs"]}}');
   write("ui/src/leaf.mjs", "export const value = 42;\n");
   write("ui/src/import.test.mjs", 'import {test,expect} from "vitest"; import {value} from "./leaf.mjs"; test("value",()=>expect(value).toBe(42));');
+  write("ui/src/import.test.mjs.test.mjs", 'throw new Error("UNSELECTED_FILE: substring filters must not execute this file");');
   write("ui/src/contract.test.mjs", 'import {test,expect} from "vitest"; import {readFileSync} from "node:fs"; test("filesystem contract",()=>expect(readFileSync(new URL("./leaf.mjs",import.meta.url),"utf8")).not.toContain("FORBIDDEN_MARKER"));');
-  // Dispatch pnpm exec to the installed real Vitest; never mock test outcomes.
-  write("bin/pnpm", `#!${process.execPath}\nconst {spawnSync}=require('node:child_process');const args=process.argv.slice(2);if(args[0]!=='exec'||args[1]!=='vitest')process.exit(2);const r=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(path.join(repo, "node_modules/vitest/vitest.mjs"))},...args.slice(2)],{stdio:'inherit'});process.exit(r.status??1);`);
-  chmodSync(path.join(root, "bin/pnpm"), 0o755);
   git("init", "-q"); git("add", ".");
   const commit = () => git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid", "commit", "-qam", "fixture");
   commit();
@@ -36,12 +33,15 @@ test("production runner catches the filesystem regression that raw Vitest select
     write("selection.json", JSON.stringify(manifest));
     return spawnSync(process.execPath, [path.join(repo, "scripts/run-vitest-stable.mjs"), "--mode", "general", "--group", "general-workspaces-a", "--shard-index", "0", "--shard-count", "1"], {
       cwd: root, encoding: "utf8", timeout: 60000,
-      env: { ...process.env, PATH: `${root}/bin:${process.env.PATH}`, PAPERCLIP_CI_TEST_SELECTION: path.join(root, "selection.json"),
+      env: { ...process.env, PAPERCLIP_CI_TEST_SELECTION: path.join(root, "selection.json"),
         PAPERCLIP_CI_SELECTION_HASH: selectionHash(manifest) },
     });
   };
   const baseline = run(["ui/src/import.test.mjs", "ui/src/contract.test.mjs"]);
   assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+  const missing = run(["ui/src/leaf.mjs"]);
+  assert.equal(missing.status, 1, "an existing source file is not an executable test specification");
+  assert.match(missing.stdout + missing.stderr, /Selected files must match/);
   write("ui/src/leaf.mjs", `${readFileSync(path.join(root, "ui/src/leaf.mjs"), "utf8")}// FORBIDDEN_MARKER\n`);
   commit();
   const graph = await selectProjectTests({ root, project: "@paperclipai/ui", changed: ["ui/src/leaf.mjs"] });

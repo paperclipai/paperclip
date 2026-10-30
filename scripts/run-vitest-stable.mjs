@@ -379,7 +379,7 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-async function runVitest(args, label, testShard = null) {
+async function runVitest(args, label, testShard = null, exactFiles = false) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -437,7 +437,9 @@ async function runVitest(args, label, testShard = null) {
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
   await new Promise((resolve, reject) => {
-    const child = spawn("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
+    const command = exactFiles ? process.execPath : "pnpm";
+    const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
+    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...args], {
       cwd: repoRoot,
       env: invocationEnv("vitest", env),
       stdio: "inherit",
@@ -696,7 +698,7 @@ try {
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
           : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"];
       await runVitest(["--project", project, ...serverArgs, ...files],
-        `selected ${project}: ${files.length} files`);
+        `selected ${project}: ${files.length} files`, null, true);
     }
   } else if (options.mode === generalModeName || options.mode === allModeName) {
     if (options.group) {

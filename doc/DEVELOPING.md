@@ -223,7 +223,8 @@ jobs; empty lanes allocate none. Serialized files remain serialized, and chat's
 line shards, native Runner lanes, Rust, builds, typechecking and E2E retain their
 existing selection/execution rules. The job summary reports files and jobs
 selected per lane, and the `vitest-selection` artifact records the manifest and
-dependency audit.
+dependency audit. Selected jobs execute exact Vitest test specifications, so
+similarly named `.test.ts` and `.test.tsx` files cannot overlap between shards.
 
 Missing/deleted/renamed files, non-source inputs, unrecognized graph inputs,
 setup/config changes, failed dependency installs, graph errors and timeouts use
@@ -231,7 +232,8 @@ the complete original task plan. Source mutations during dependency setup also
 disable narrowing. A published manifest must match the checked-out
 merge SHA, its plan hash and the expected shard/project ownership. Missing or
 invalid manifests fail selected jobs and the required aggregate; they cannot
-turn reduced matrices green. Turbo hashes the selected file assignment through
+turn reduced matrices green. Failed-job retries download the original artifact
+ID saved with the plan, even when GitHub increments the run attempt. Turbo hashes the selected file assignment through
 `PAPERCLIP_CI_SELECTION_HASH`, so a passing subset cannot satisfy a full run or a
 different selection.
 
