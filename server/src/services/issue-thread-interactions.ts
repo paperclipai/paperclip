@@ -111,6 +111,7 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { logger } from "../middleware/logger.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -525,6 +526,10 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
     issue.status === "in_review" &&
     isRequestConfirmationLikeKind(interaction.kind) &&
     (await isIssueReviewVerdictInteraction(tx, { issue, interaction }));
+  const isMergedPullRequestSweepConfirmation =
+    actor.systemId === "system:pr-merged" &&
+    actor.resolutionDetails?.source === "merged_pull_request_sweep" &&
+    getMergeConfirmationPullRequestReferences(interaction).length > 0;
 
   assertInteractionResolutionAllowed(interaction, actor);
   if (actor.agentId && isNativeCompletionReview(interaction)) {
@@ -536,7 +541,10 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
       issueExecutionRunId: issue.executionRunId,
     })) throw conflict("This completion review is no longer current or assigned to this agent.");
   }
-  if (!isReviewVerdict) return;
+  const mergeSweepCanResolveReviewVerdict =
+    isMergedPullRequestSweepConfirmation &&
+    (issue.reviewPolicy ?? "anyone") === "anyone";
+  if (!isReviewVerdict || mergeSweepCanResolveReviewVerdict) return;
 
   const verdictActor = actor.agentId
     ? { type: "agent" as const, id: actor.agentId }
@@ -3006,6 +3014,12 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.kind, "request_confirmation"),
             eq(issueThreadInteractions.status, "pending"),
           ),
+        )
+        // A stable order lets one forbidden confirmation fail independently
+        // without preventing later eligible confirmations from being handled.
+        .orderBy(
+          asc(issueThreadInteractions.createdAt),
+          asc(issueThreadInteractions.id),
         );
 
       const candidates = rows.flatMap((row) => {
@@ -3099,13 +3113,22 @@ export function issueThreadInteractionService(
             },
           });
         } catch (error) {
-          if (
-            error &&
-            typeof error === "object" &&
-            "status" in error &&
-            error.status === 409
-          )
+          const status =
+            error && typeof error === "object" && "status" in error
+              ? error.status
+              : undefined;
+          if (status === 409) continue;
+          if (status === 403) {
+            logger.warn(
+              {
+                err: error,
+                issueId: candidate.issue.id,
+                interactionId: candidate.interaction.id,
+              },
+              "Merged pull-request confirmation could not be accepted",
+            );
             continue;
+          }
           throw error;
         }
         if (resolved.interaction.status !== "accepted") continue;
