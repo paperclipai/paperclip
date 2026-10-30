@@ -238,7 +238,15 @@ test("a receipts outage leaves message paging available with one independent ret
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(1);
 });
 
-test("successive older pages hydrate each message and run id only once", async ({ page }) => {
+test("successive older pages hydrate each message and run id only once", async ({ page, request }) => {
+  const fixture = await longChatFixture(request, "metadata");
+  await request.put(`/api/companies/${fixture.company.id}/workspace-preferences/me`, { data: { coordinatorWorkspaceEnabled: true } });
+  const chatPath = `/${fixture.company.issuePrefix}/chats/${fixture.agent.id}`;
+  const nativeIds: string[] = [];
+  page.on("response", response => {
+    const match = new URL(response.url()).pathname.match(/^\/api\/heartbeat-runs\/([^/]+)\/events$/);
+    if (match && response.status() === 200) nativeIds.push(match[1]);
+  });
   const seen: Record<string, string[]> = { commentIds: [], runIds: [] };
   page.on("request", request => {
     const url = new URL(request.url());
@@ -247,9 +255,17 @@ test("successive older pages hydrate each message and run id only once", async (
   });
   await page.goto(chatPath); await ready(page);
   const initial = Object.fromEntries(Object.entries(seen).map(([key, ids]) => [key, new Set(ids)]));
+  const initialNative = new Set(nativeIds);
   await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(70);
+  await expect.poll(() => new Set(nativeIds.filter(id => !initialNative.has(id))).size).toBe(25);
+  await page.waitForTimeout(200);
+  const firstPageNative = new Set(nativeIds);
+  const firstPageReads = nativeIds.length;
   await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(120);
   await expect.poll(() => seen.commentIds.filter(id => !initial.commentIds.has(id)).length).toBe(100);
+  await expect.poll(() => new Set(nativeIds.filter(id => !firstPageNative.has(id))).size).toBe(25);
+  await page.waitForTimeout(200);
+  expect(nativeIds.slice(firstPageReads).filter(id => firstPageNative.has(id))).toEqual([]);
   for (const [key, ids] of Object.entries(seen)) {
     const historical = ids.filter(id => !initial[key].has(id));
     expect(new Set(historical).size).toBe(historical.length);

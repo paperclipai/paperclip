@@ -61,6 +61,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   const historyReadsRef = useRef(new Map<string, AbortSignal>());
   const refreshByRunRef = useRef(new Map<string, (force?: boolean) => void>());
   const previousCompanyRef = useRef(options.companyId);
+  const refreshContextRef = useRef<readonly unknown[]>([]);
   useEffect(() => {
     if (previousCompanyRef.current === options.companyId) return;
     previousCompanyRef.current = options.companyId;
@@ -89,10 +90,14 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
 
 
   useEffect(() => {
+    const context = [retryGeneration, visible, options.enabled, options.companyId, stream.healthy, stream.epoch];
+    const refreshExisting = context.some((value, index) => value !== refreshContextRef.current[index]);
+    refreshContextRef.current = context;
     if (!visible || options.enabled === false) return;
+    const changedModes = new Set<string>();
     for (const run of nativeRuns) {
       const mode = Boolean(run.conversationOnly);
-      if (conversationOnlyByRunRef.current.get(run.id) !== mode) { cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id); }
+      if (conversationOnlyByRunRef.current.get(run.id) !== mode) { changedModes.add(run.id); cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id); }
       conversationOnlyByRunRef.current.set(run.id, mode);
     }
     let cancelled = false;
@@ -196,7 +201,8 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         if (force) pendingRefresh.add(run.id);
         void refreshRun(run);
       });
-      void refreshRun(run);
+      if (refreshExisting || changedModes.has(run.id) || isLive(run.status)
+        || hydratedStatusByRun.get(run.id) !== run.status || errorsByRun.has(run.id) || sequence(run.id).needsCatchup) void refreshRun(run);
     }
     return () => {
       cancelled = true;
