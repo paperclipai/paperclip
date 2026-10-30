@@ -9,6 +9,19 @@ For the adapter-author guide see
 [`docs/adapters/creating-an-adapter.md`](../../docs/adapters/creating-an-adapter.md)
 and the in-repo notes at [`packages/adapters/AUTHORING.md`](../adapters/AUTHORING.md).
 
+## Sandbox bridge deadlines
+
+Command-managed bridge control operations (queue reads, input delivery, setup,
+and cleanup) have a host-enforced deadline of at most 30 seconds per shell
+command. A shorter configured timeout still applies. These operations cannot
+inherit the agent run's hours-long lifetime or wait forever on a provider that
+ignores its timeout. Long-lived agent session commands keep their own limits.
+
+A control timeout reports a transport failure. It does not prove that the
+remote command stopped and does not replay an uncertain write. The process
+session closes failed input delivery and uses its existing shutdown path;
+normal execution settlement must still verify termination.
+
 ## No-remote-git contract
 
 The local execution-workspace cwd is the only persistence boundary across

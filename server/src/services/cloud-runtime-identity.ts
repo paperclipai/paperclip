@@ -231,7 +231,7 @@ function decodeJsonPart(part: string, label: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function publicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
+export function cloudRuntimePublicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
   const raw = nonEmpty(env.PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS);
   if (!raw) throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is not configured");
   let parsed: unknown;
@@ -276,7 +276,7 @@ function verifyClaims(input: {
   ) {
     throw new Error("Cloud runtime identity protected header is invalid");
   }
-  const key = publicKeyForKid(input.env, header.kid);
+  const key = cloudRuntimePublicKeyForKid(input.env, header.kid);
   const signature = Buffer.from(encodedSignature, "base64url");
   const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
   if (!verify(null, signingInput, key, signature)) {
@@ -449,6 +449,8 @@ export const CLOUD_CONTROL_ACTIONS = [
   "task-drain:read",
   "task-drain:start",
   "task-drain:stop",
+  "lifecycle:read",
+  "lifecycle:unarchive-primary",
 ] as const;
 export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
 
@@ -521,7 +523,7 @@ export function verifyCloudControlAssertion(input: {
   ) {
     throw new Error("Cloud control protected header is invalid");
   }
-  const key = publicKeyForKid(env, header.kid);
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
   const signature = Buffer.from(encodedSignature, "base64url");
   const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
   if (!verify(null, signingInput, key, signature)) {

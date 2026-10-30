@@ -2,16 +2,20 @@ import { afterEach, expect, it, vi } from "vitest";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
-it("lists and caches public OpenRouter models without sending credentials", async () => {
+it("lists and caches public OpenRouter models in popularity order without sending credentials", async () => {
   const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [
+    { id: "z-ai/glm-5", name: "Z.AI GLM" },
     { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet" }, { id: 42 },
   ] }) });
   vi.stubGlobal("fetch", fetch);
   const { listOpenRouterModels } = await import("./openrouter-models.js");
-  expect(await listOpenRouterModels()).toEqual([{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Claude Sonnet" }]);
+  expect(await listOpenRouterModels()).toEqual([
+    { id: "openrouter/z-ai/glm-5", label: "Z.AI GLM" },
+    { id: "openrouter/anthropic/claude-sonnet-4.5", label: "Claude Sonnet" },
+  ]);
   await listOpenRouterModels();
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(fetch).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models", { signal: expect.any(AbortSignal) });
+  expect(fetch).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models?sort=most-popular", { signal: expect.any(AbortSignal) });
   await listOpenRouterModels(true);
   expect(fetch).toHaveBeenCalledTimes(2);
 });

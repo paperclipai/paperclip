@@ -78,6 +78,12 @@ in the generated contract. Its `legacy_inherited_restriction` dimension is
 restriction. It is `false` for canonical new writes. This dimension describes
 policy provenance. It does not contain user content or an identifier.
 
+Emit `interaction.resolved` only after the complete decision transaction commits.
+Conversational answers include the card outcome, source-message reference, and
+activity audit in that transaction. A rollback or matching retry must not emit
+a resolution event. This changes emission timing only: message text, comment IDs,
+and user IDs remain in the instance database and are not added to telemetry.
+
 Use `trackInteractionCreated()` and `trackInteractionResolved()` from
 `events.ts` to emit these events. The generated contract remains the authority
 for their exact dimensions and optionality.
@@ -168,7 +174,9 @@ For stable event work:
    should have a stable helper API.
 7. Update tests for helper behavior, including raw pass-through for enum-like
    values when that is the intended boundary.
-8. Update this README only when the contributor workflow, source-of-truth
+8. Keep the telemetry transport contract assertions in `client.test.ts`, which
+   owns the emitted-envelope, retry, and payload-size boundaries.
+9. Update this README only when the contributor workflow, source-of-truth
    pointers, or durable invariants change. Do not add an event catalog here.
 
 Before opening a pull request, verify that the emitted code, typed helpers, and
@@ -196,3 +204,13 @@ When a new event carries only enums, booleans, counts, or coarse buckets and
 no token material or PII, assign it to `operational_enum_count` in
 `EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
 `RETENTION_DAYS` and document it here.
+
+## GitHub-synced skills
+
+The legacy import endpoint retains `skill.imported` with its existing `source_type`.
+For source-managed GitHub skills, `skill_ref` is omitted, including public sources:
+the saved repository may be private and its key contains user-authored names.
+Source discovery, selection, and refresh add no first-party telemetry events.
+Repository URLs, paths, commits, connection IDs, names, and file contents stay out
+of these telemetry dimensions. Review this suppression in privacy review alongside
+changes to the legacy import caller; the event schema and envelope are unchanged.

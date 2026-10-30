@@ -1,3 +1,6 @@
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { workspaceOperations } from "@paperclipai/db";
@@ -95,6 +98,22 @@ function readRuntimeControlOwner(metadata: unknown): RuntimeControlOwnerStamp | 
  * so it is safe to terminalize immediately instead of waiting out the staleness window.
  */
 const liveRuntimeControlOperationIds = new Set<string>();
+
+type NativeFinalizationActivityScope = {
+  operationId: string;
+  companyId: string;
+  runId: string;
+  issueId: string;
+};
+// Presentation-only positive proof. Persisted running rows can outlive a crash;
+// this registry only exists while this process awaits the actual export callback.
+const liveNativeFinalizationOperations = new Map<string, NativeFinalizationActivityScope>();
+
+export function isNativeWorkspaceFinalizationOperationActive(scope: NativeFinalizationActivityScope): boolean {
+  const active = liveNativeFinalizationOperations.get(scope.operationId);
+  return Boolean(active && active.companyId === scope.companyId
+    && active.runId === scope.runId && active.issueId === scope.issueId);
+}
 
 /**
  * Whether the process that stamped an operation is still alive on this host. A dead owner can
@@ -460,6 +479,18 @@ export function workspaceOperationService(db: Db) {
         },
 
         async recordOperation(recordInput) {
+          async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
+            if (recordInput.phase !== "workspace_finalize" || !input.heartbeatRunId) return write(db);
+            return db.transaction(async tx => {
+              await notifyNativeResultCommit(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              return write(tx as unknown as Db);
+            });
+          }
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
           };
@@ -505,7 +536,7 @@ export function workspaceOperationService(db: Db) {
           if (runtimeControlAction) liveRuntimeControlOperationIds.add(id);
 
           try {
-            await db.insert(workspaceOperations).values({
+            await writeState(database => database.insert(workspaceOperations).values({
               id,
               companyId: input.companyId,
               executionWorkspaceId,
@@ -523,7 +554,7 @@ export function workspaceOperationService(db: Db) {
               ) as Record<string, unknown> | null,
               startedAt,
               updatedAt: startedAt,
-            });
+            }));
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
             throw insertError;
@@ -579,8 +610,24 @@ export function workspaceOperationService(db: Db) {
           };
 
           const timeoutMs = recordInput.timeoutMs ?? defaultRuntimeControlTimeoutMs(runtimeControlAction);
+          const runWithActivity = async () => {
+            const nativeFinalization = recordInput.phase === "workspace_finalize"
+              && recordInput.metadata?.owningService === "native_workspace_finalizer"
+              && input.heartbeatRunId && input.issueId;
+            if (nativeFinalization) liveNativeFinalizationOperations.set(id, {
+              operationId: id, companyId: input.companyId,
+              runId: input.heartbeatRunId!, issueId: input.issueId!,
+            });
+            try {
+              return await recordInput.run(reportProgress);
+            } finally {
+              // Join the underlying callback, even if the recorder's timeout
+              // already fired. A deadline cannot prove physical export stopped.
+              liveNativeFinalizationOperations.delete(id);
+            }
+          };
           const settle = async () => {
-            if (!timeoutMs || timeoutMs <= 0) return await recordInput.run(reportProgress);
+            if (!timeoutMs || timeoutMs <= 0) return await runWithActivity();
             const timeout = new Promise<never>((_resolve, reject) => {
               timeoutTimer = setTimeout(
                 () => reject(new WorkspaceOperationTimeoutError(timeoutMs, runtimeControlAction)),
@@ -588,7 +635,7 @@ export function workspaceOperationService(db: Db) {
               );
               timeoutTimer.unref?.();
             });
-            return await Promise.race([recordInput.run(reportProgress), timeout]);
+            return await Promise.race([runWithActivity(), timeout]);
           };
 
           try {
@@ -598,7 +645,7 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", result.stderr ?? null);
             const finalized = await logStore.finalize(handle);
             const finishedAt = new Date();
-            const row = await db
+            const row = await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -618,14 +665,17 @@ export function workspaceOperationService(db: Db) {
               })
               .where(eq(workspaceOperations.id, id))
               .returning()
-              .then((rows) => rows[0] ?? null);
+              .then((rows) => rows[0] ?? null));
             if (!row) throw notFound("Workspace operation not found");
             return toWorkspaceOperation(row);
           } catch (error) {
-            await append("stderr", error instanceof Error ? error.message : String(error));
+            // The log file is best-effort once the operation has failed: a log write error (for
+            // example ENOSPC on a full disk) must neither strand this row in `running` nor replace
+            // the operation's own error. The excerpt still records the message.
+            await append("stderr", error instanceof Error ? error.message : String(error)).catch(() => undefined);
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
-            await db
+            await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -652,7 +702,7 @@ export function workspaceOperationService(db: Db) {
                 finishedAt,
                 updatedAt: finishedAt,
               })
-              .where(eq(workspaceOperations.id, id));
+              .where(eq(workspaceOperations.id, id)));
             throw error;
           } finally {
             // Releasing the in-process claim before the request unwinds is what lets the very

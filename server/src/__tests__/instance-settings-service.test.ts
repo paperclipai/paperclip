@@ -7,6 +7,26 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps Notebook off for legacy or invalid settings and round-trips explicit operator choices", () => {
+    for (const stored of [undefined, null, {}, { enableApps: true },
+      { enablePaperclipNotebook: "true" }, { enablePaperclipNotebook: 1 },
+      { enablePaperclipNotebook: true, enableCases: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).enablePaperclipNotebook).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enablePaperclipNotebook: true });
+    const restored = normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)));
+    expect(restored).toMatchObject({ enablePaperclipNotebook: true, enableMemoryConnectors: false });
+    const disabled = applyExperimentalSettingsPatch(restored, { enablePaperclipNotebook: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(disabled))).enablePaperclipNotebook).toBe(false);
+  });
+  it("keeps OpenAI Dot opt-in and persists its setting independently of its prerequisites", () => {
+    expect(normalizeExperimentalSettings({}).enableOpenAiDot).toBe(false);
+    const enabled = applyExperimentalSettingsPatch({}, { enableOpenAiDot: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)))).toMatchObject({
+      enableOpenAiDot: true, enablePublicMcp: false,
+    });
+    expect(applyExperimentalSettingsPatch(enabled, { enableOpenAiDot: false }).enableOpenAiDot).toBe(false);
+  });
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
     for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
       expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
@@ -16,10 +36,16 @@ describe("instance settings service", () => {
     const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
     expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
   });
+  it("keeps GitHub review bots independent across legacy normalization and persistence", () => {
+    expect(normalizeExperimentalSettings({ enableChatConnectors: true })).toMatchObject({ enableChatConnectors: true, enableGitHubReviewBots: false });
+    const saved = applyExperimentalSettingsPatch({}, { enableGitHubReviewBots: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(saved)))).toMatchObject({ enableChatConnectors: false, enableGitHubReviewBots: true });
+  });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
       enableNativeRunner: false,
+      enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
@@ -32,22 +58,33 @@ describe("instance settings service", () => {
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
       enableNewestFirstIssueThread: true,
+      enablePipelines: true,
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
+      enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
       enableIsolatedWorkspacesByDefault: false,
       enableStreamlinedLeftNavigation: true,
       enableStreamlinedUi: true,
       enableApps: true,
+    enableMcpAggregators: true,
       enableAgentChat: false,
+      enablePublicMcp: false,
+      enableOpenAiDot: false,
+      enableMuse: false,
+      enableGrokBot: false,
+      enableCombinedInboxTasks: false,
+      enableArtifactsV1: false,
       enableChatConnectors: false,
+      enableGitHubReviewBots: false,
+      enableMemoryConnectors: false,
+      enablePaperclipNotebook: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
-      enablePipelines: false,
       enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
@@ -56,6 +93,7 @@ describe("instance settings service", () => {
       enableSummaries: false,
       enableStatusCards: false,
       enableDecisions: false,
+      enableFastResponses: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
@@ -85,7 +123,7 @@ describe("instance settings service", () => {
   it("keeps Apps on for empty, legacy, and explicitly disabled stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableApps).toBe(true);
     expect(normalizeExperimentalSettings({}).enableApps).toBe(true);
-    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableCases: true }).enableApps).toBe(true);
     expect(normalizeExperimentalSettings({ enableApps: false }).enableApps).toBe(true);
   });
 

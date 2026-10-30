@@ -314,6 +314,8 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         workspaceLocalDir: tempWorkspaceDir,
         workspaceRemoteDir: managedRemoteCwd,
         timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
+        // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+        workspaceRestoreRetryDelaysMs: [],
         assets: [
           {
             key: "config-seed",

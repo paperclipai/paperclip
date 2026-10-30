@@ -3,12 +3,18 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
+  agents,
   applyPendingMigrations,
+  companies,
   createDb,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 
 describe("P6-18 / MIG-01..04 native finalization migration", () => {
   it("repairs only later duplicates and preserves legacy event bytes and cursors", async () => {
@@ -125,6 +131,128 @@ describe("P6-18 / MIG-01..04 native finalization migration", () => {
       await expect(db.insert(heartbeatRunEvents).values({
         companyId, runId, agentId, seq: 5, eventType: "must-conflict",
       })).rejects.toThrow();
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
+
+  it("clears recovery state left on committed, unleased finalizations", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-recovery-backfill-");
+    const migration = await readFile(
+      new URL("../../../packages/db/src/migrations/0376_clear_committed_native_recovery_state.sql", import.meta.url),
+      "utf8",
+    );
+    const db = createDb(temporary.connectionString);
+    try {
+      const [company] = await db.insert(companies).values({ name: "Backfill", issuePrefix: "BKF" }).returning();
+      const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Backfill agent" }).returning();
+      const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Backfill", status: "done" }).returning();
+      const history = [{ disposition: "resume_dead_runner" }];
+      const fixtures = [
+        { key: "committed", phase: "committed", leaseOwner: null, recoveryState: "resuming_session" },
+        { key: "leased", phase: "committed", leaseOwner: "native-finalizer:live", recoveryState: "resuming_session" },
+        { key: "observed", phase: "observed", leaseOwner: null, recoveryState: "resuming_session" },
+        { key: "terminal", phase: "terminal_failure", leaseOwner: null, recoveryState: "blocked" },
+      ];
+      const runIds = new Map<string, string>();
+      for (const fixture of fixtures) {
+        const [run] = await db.insert(heartbeatRuns).values({
+          companyId: company!.id, agentId: agent!.id, status: "succeeded", runtimeMode: "native", nativeIssueId: issue!.id,
+        }).returning();
+        runIds.set(fixture.key, run!.id);
+        await db.insert(nativeRunFinalizations).values({
+          runId: run!.id, companyId: company!.id, issueId: issue!.id, phase: fixture.phase, leaseOwner: fixture.leaseOwner,
+          recoveryState: fixture.recoveryState, recoveryRequestId: "restart-request", recoveryHistory: history,
+        });
+      }
+      for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
+      const rows = new Map((await db.select().from(nativeRunFinalizations)).map((row) => [row.runId, row]));
+      expect(rows.get(runIds.get("committed")!)).toMatchObject({ recoveryState: null, recoveryRequestId: null, recoveryHistory: history });
+      expect(rows.get(runIds.get("leased")!)).toMatchObject({ recoveryState: "resuming_session", recoveryRequestId: "restart-request" });
+      expect(rows.get(runIds.get("observed")!)).toMatchObject({ recoveryState: "resuming_session", recoveryRequestId: "restart-request" });
+      expect(rows.get(runIds.get("terminal")!)).toMatchObject({ recoveryState: "blocked", recoveryRequestId: "restart-request" });
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
+  it("clears process identity only on old settled native runs whose sandbox confirmed termination", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-process-backfill-");
+    const migration = await readFile(
+      new URL("../../../packages/db/src/migrations/0377_clear_settled_native_run_process_identity.sql", import.meta.url),
+      "utf8",
+    );
+    const db = createDb(temporary.connectionString);
+    try {
+      const [company] = await db.insert(companies).values({ name: "Process backfill", issuePrefix: "PBF" }).returning();
+      const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Process backfill agent" }).returning();
+      const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Process backfill", status: "in_progress" }).returning();
+      const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const checkpoint = { sessionCheckpoint: { providerSessionId: "thread" } };
+      type Fixture = {
+        key: string; status?: string; runtimeMode?: string; finishedAt?: Date; phase?: string | null;
+        profile?: Record<string, unknown>; providerEvent?: boolean;
+        leases?: Array<"stopped" | "unconfirmed" | "local">;
+      };
+      const fixtures: Fixture[] = [
+        { key: "failed" },
+        { key: "cancelled", status: "cancelled" },
+        { key: "timed_out", status: "timed_out", phase: "terminal_failure" },
+        { key: "interrupted", status: "interrupted", phase: null },
+        { key: "provider_event", profile: {}, providerEvent: true },
+        { key: "recent", finishedAt: new Date(Date.now() - 60 * 60 * 1000) },
+        { key: "succeeded", status: "succeeded" },
+        { key: "running", status: "running" },
+        { key: "legacy", runtimeMode: "legacy" },
+        { key: "retryable", phase: "retryable_failure" },
+        { key: "finalizing", phase: "workspace_finalizing" },
+        { key: "no_evidence", profile: {} },
+        { key: "unconfirmed", leases: ["stopped", "unconfirmed"] },
+        { key: "local", leases: ["local"] },
+        { key: "no_lease", leases: [] },
+      ];
+      const runIds = new Map<string, string>();
+      for (const fixture of fixtures) {
+        const [run] = await db.insert(heartbeatRuns).values({
+          companyId: company!.id, agentId: agent!.id, status: fixture.status ?? "failed",
+          runtimeMode: fixture.runtimeMode ?? "native", nativeIssueId: issue!.id,
+          finishedAt: fixture.finishedAt ?? old, runnerProfileJson: fixture.profile ?? checkpoint,
+          processPid: 4242, processGroupId: 4242, processStartedAt: old,
+        }).returning();
+        runIds.set(fixture.key, run!.id);
+        if (fixture.phase !== null) {
+          await db.insert(nativeRunFinalizations).values({
+            runId: run!.id, companyId: company!.id, issueId: issue!.id, phase: fixture.phase ?? "committed",
+          });
+        }
+        if (fixture.providerEvent) {
+          await db.insert(heartbeatRunEvents).values({
+            companyId: company!.id, runId: run!.id, agentId: agent!.id, seq: 1, eventType: "session.started",
+          });
+        }
+        for (const kind of fixture.leases ?? ["stopped"]) {
+          const [lease] = await db.insert(environmentLeases).values({
+            companyId: company!.id, issueId: issue!.id, heartbeatRunId: run!.id,
+            provider: kind === "local" ? "local" : "sandbox-fixture",
+            providerLeaseId: kind === "local" ? null : `${fixture.key}-${kind}`,
+            status: "released", releasedAt: old, cleanupStatus: "success",
+          }).returning();
+          if (kind === "stopped") {
+            await db.update(environmentLeases).set({ metadata: {
+              remoteExecutionTermination: remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId, state: "destroyed" }),
+            } }).where(eq(environmentLeases.id, lease!.id));
+          }
+        }
+      }
+      for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
+      const rows = new Map((await db.select().from(heartbeatRuns)).map((row) => [row.id, row]));
+      const cleared = new Set(["failed", "cancelled", "timed_out", "interrupted", "provider_event"]);
+      for (const fixture of fixtures) {
+        const row = rows.get(runIds.get(fixture.key)!)!;
+        expect({ key: fixture.key, processPid: row.processPid, processGroupId: row.processGroupId, startedAt: row.processStartedAt === null })
+          .toEqual(cleared.has(fixture.key)
+            ? { key: fixture.key, processPid: null, processGroupId: null, startedAt: true }
+            : { key: fixture.key, processPid: 4242, processGroupId: 4242, startedAt: false });
+      }
     } finally {
       await temporary.cleanup();
     }

@@ -1,7 +1,10 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  applyPendingMigrations,
   agents,
   companySecretBindings,
   companySecrets,
@@ -28,7 +31,8 @@ import { accessService } from "../services/access.js";
 import { grantsForHumanRole } from "../services/company-member-roles.js";
 import { backfillPrincipalAccessCompatibility } from "../services/principal-access-compatibility.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ACCESS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createCompanyWithOwner(db: ReturnType<typeof createDb>) {
@@ -61,8 +65,9 @@ describeEmbeddedPostgres("access service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-service-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -85,6 +90,7 @@ describeEmbeddedPostgres("access service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -342,6 +348,7 @@ describeEmbeddedPostgres("access service", () => {
       credentialPolicy: "per_user",
       status: "active",
       enabled: true,
+      healthCheckedAt: new Date(),
     }).returning().then((rows) => rows[0]!);
     const definition = await db.insert(userSecretDefinitions).values({
       companyId: company.id,
@@ -372,9 +379,15 @@ describeEmbeddedPostgres("access service", () => {
       agentId: agent.id,
       createdByUserId: member.principalId,
     });
-    await accessService(db).archiveMember(company.id, member.id, {
-      reassignment: { assigneeUserId: owner.principalId },
-    });
+    const health = await startToolHealthWorker(db, company.id);
+    try {
+      await health.expectDeadline(connection.healthCheckedAt!.getTime() + 900_000);
+      await accessService(db).archiveMember(company.id, member.id, {
+        reassignment: { assigneeUserId: owner.principalId },
+      });
+      await health.expectDeadline(null);
+      await health.expectQuiet();
+    } finally { await health.stop(); }
 
     expect(await db.select().from(connectionGrantDelegations)).toHaveLength(0);
     expect(await db.select().from(connectionGrantMembers)).toHaveLength(0);
@@ -879,7 +892,7 @@ describeEmbeddedPostgres("access service", () => {
       .toHaveLength(1);
   });
 
-  it("allows owner and admin role-default grants to manage environments", async () => {
+  it("allows owner, admin, and operator role-default grants to manage environments", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const access = accessService(db);
     const roles = ["admin", "operator", "viewer"] as const;
@@ -919,8 +932,48 @@ describeEmbeddedPostgres("access service", () => {
 
     await expect(access.canUser(company.id, owner.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, admin.principalId, "environments:manage")).resolves.toBe(true);
-    await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(false);
+    await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, viewer.principalId, "environments:manage")).resolves.toBe(false);
+  });
+
+  it("allows default operators to edit agents and company work without administering membership", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const operator = await access.ensureMembership(company.id, "user", `operator-${randomUUID()}`, "operator");
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Operator-editable agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      operator.principalId,
+      grantsForHumanRole("operator"),
+      owner.principalId,
+    );
+
+    for (const permissionKey of [
+      "agents:create", "agents:configure", "skills:create", "environments:manage",
+      "users:invite", "tasks:assign", "tools:manage_connections",
+      "tools:manage_profiles", "tools:manage_runtime", "tools:use", "tools:admin",
+      "tools:view_audit", "audit:view_agent_actions",
+    ] as const) {
+      await expect(access.canUser(company.id, operator.principalId, permissionKey)).resolves.toBe(true);
+    }
+    for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+      await expect(access.canUser(company.id, operator.principalId, permissionKey)).resolves.toBe(false);
+    }
+    await expect(access.decide({
+      actor: { type: "board", userId: operator.principalId, source: "session" },
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: company.id, agentId: agent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_direct_change" });
+
+    const otherCompany = await createCompanyWithOwner(db);
+    await expect(access.canUser(otherCompany.company.id, operator.principalId, "agents:configure")).resolves.toBe(false);
   });
 
   it("backfills pre-upgrade human memberships with missing role grants without replacing custom grants", async () => {

@@ -3,6 +3,7 @@ import {
   activeHoursWindowSchema,
   isValidTimeZone,
   isWithinActiveHours,
+  nextActiveHoursStart,
   parseHmToMinutes,
 } from "./active-hours.js";
 
@@ -71,5 +72,24 @@ describe("active hours", () => {
     }
     expect(isValidTimeZone("America/New_York")).toBe(true);
     expect(isValidTimeZone("Not/A_Timezone")).toBe(false);
+  });
+});
+
+describe("nextActiveHoursStart", () => {
+  const window = { start: "09:00", end: "18:00", timezone: "UTC" };
+
+  it("returns the next opening when outside the window", () => {
+    expect(nextActiveHoursStart(window, new Date("2026-07-15T22:00:00.000Z"))?.toISOString())
+      .toBe("2026-07-16T09:00:00.000Z");
+  });
+
+  it("returns the rounded-up minute when already inside the window", () => {
+    expect(nextActiveHoursStart(window, new Date("2026-07-15T12:00:30.000Z"))?.toISOString())
+      .toBe("2026-07-15T12:01:00.000Z");
+  });
+
+  it("returns null for a window that never opens", () => {
+    expect(nextActiveHoursStart({ start: "09:00", end: "09:00", timezone: "UTC" }, new Date("2026-07-15T12:00:00.000Z")))
+      .toBeNull();
   });
 });

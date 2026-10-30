@@ -10,6 +10,11 @@ export interface ExecutionContinuationEnvelope {
   };
   originCommentIds: string[];
   objective: string;
+  objectiveSource?: {
+    kind: "comment" | "description" | "title";
+    id: string;
+    revision: string | null;
+  };
   messages: Array<{
     id: string;
     authorType: string;
@@ -21,6 +26,15 @@ export interface ExecutionContinuationEnvelope {
     updatedAt: string;
     deleted: boolean;
     sourceTrust: unknown;
+  }>;
+  /** Only direct human resolutions, projected from server-owned resolver columns. */
+  humanResponses?: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    resolvedByUserId: string;
+    resolvedAt: string;
+    result: unknown;
   }>;
   interactionOutcomes: Array<{
     id: string;
@@ -44,6 +58,9 @@ export interface ExecutionContinuationEnvelope {
     operationId: string;
     result: unknown;
   }>;
+  /** Verified snapshots attached separately to the new workspace. Paths are
+   * relative to the new working directory and include a provenance record. */
+  recoveredFiles?: Array<{ operationId: string; sourceRunId: string; path: string }>;
   unresolvedInteractionIds: string[];
   coverage: {
     kind: "full_task_history" | "task_history_delta";

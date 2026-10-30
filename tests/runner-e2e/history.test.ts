@@ -31,6 +31,9 @@ import {
 import { renderRunnerHistoryIndex } from "./history-index.js";
 import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
+import { connectionCheckpoints, type ConnectionEvidence } from "./connection-evidence.js";
+import { githubJourneyCheckpoints, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
+import { antigravityEvidenceFixture } from "./antigravity-journey-test-fixtures.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -63,11 +66,159 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
     finishedAt: "2026-08-28T00:00:01.000Z",
     durationMs: 1_000,
     cleanup: "passed",
+    ...(execution.task.flow === "provider_connection" ? { providerConnection: { version: 1, outcome: status, phase: "finished", assisted: false, authFreshness: "signed-in", target: { mode: "attach", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), deploymentMode: "local_trusted" }, entry: "agent", method: "api-key", checkpoints: Object.fromEntries(connectionCheckpoints.map(key => [key, true])), waits: [] } satisfies ConnectionEvidence } : {}),
+    ...(execution.task.flow === "github_review_journey" ? { githubReviewJourney: {
+      version: 1, outcome: status, phase: "finished", setupId: "fixture", hosting: "self-hosted",
+      targetCommit: "a".repeat(40), assisted: false, dependencies: [],
+      checkpoints: Object.fromEntries(githubJourneyCheckpoints.map(key => [key, true])),
+      cleanup: { endpoint: true, pullRequest: true, branch: true, app: true },
+    } satisfies GitHubReviewJourneyEvidence } : {}),
+    // Synthetic campaign calibration must satisfy the same strict retained
+    // contract as a live result; it is never provider qualification evidence.
+    ...(execution.task.flow === "antigravity_agent_journey" ? {
+      issueId: "task", runIds: ["run-first", "run-second"],
+      antigravityJourney: { ...antigravityEvidenceFixture(), outcome: status },
+      screenshots: [{ id: "persisted", label: "Synthetic Antigravity persistence calibration", file: "synthetic-persisted.png", sha256: "a".repeat(64) }],
+    } : {}),
   } satisfies RunnerE2EResult;
 }
 
 describe("runner E2E campaign history", () => {
+  it("retains the supervisor trace outcome independently of the worker export through regeneration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-finalized-trace-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const attempt: RunnerE2EResult = { ...result(execution, "failed"), failureClass: "permanent_infrastructure",
+      tracing: { projectId: "11111111-1111-4111-8111-111111111111", traceId: "a".repeat(32), spanId: "b".repeat(16),
+        status: "accepted", verification: "unverified", nativeConfiguration: "configured",
+        finalization: { spanId: "c".repeat(16), status: "accepted", outcome: "failed", verification: "unverified" } },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "finalized-trace", generatedAt: attempt.finishedAt,
+      expected: [execution.id], results: [attempt], attempts: [attempt] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root, historyFile: null });
+    const rebuilt = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(rebuilt.results[0].tracing).toEqual(attempt.tracing);
+    expect(rebuilt.accounting.attempts[0].tracing).toEqual(attempt.tracing);
+    expect(rebuilt.failed).toBe(1);
+    expect(await readFile(path.join(root, "dashboard.html"), "utf8")).toContain("Supervisor outcome: failed; finalization export: accepted");
+  });
+
+  it("preserves all-attempt costs when regenerating a retained report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-attempt-costs-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const first = result(execution, "failed");
+    const last = { ...result(execution, "passed"), attempt: 2, usage: { inputTokens: 200, outputTokens: 50, costUsd: 0.02 } };
+    const campaign = buildRunnerCampaign({ campaignId: "retries", generatedAt: last.finishedAt,
+      expected: [execution.id], results: [last], attempts: [first, last] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.accounting).toEqual(campaign.accounting);
+    expect(regenerated.billing.reportedLlmCostUsd).toBe(0.03);
+    expect(regenerated.results[0].billing.reportedCostUsd).toBe(0.02);
+  });
+  it("does not let empty legacy provenance hide a later measured source", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-legacy-source-"));
+    temporaryDirectories.push(root);
+    const source = {
+      sha: "measured-source-sha", ref: "refs/heads/measured-source",
+      workflowRunUrl: "https://example.test/actions/runs/1",
+    };
+    const results = [
+      { ...result(runnerMatrix[0]!, "passed"), schema: "paperclip.runner-e2e.result/v1" },
+      { ...result(runnerMatrix[1]!, "passed"), source },
+    ];
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({
+      campaignId: "legacy-source", generatedAt: results[0]!.finishedAt,
+      expected: results.map((entry) => entry.executionId), results,
+    }));
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "renderer-sha");
+    vi.stubEnv("GITHUB_EVENT_NAME", "push");
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.source).toEqual({ ...source, eventName: null });
+    expect(regenerated.results[0].source).toEqual({ sha: null, ref: null, workflowRunUrl: null });
+    expect(regenerated.passed).toBe(2);
+  });
+
+  it.each(["workflow_dispatch", null, undefined])("preserves retained source during regeneration (event %s)", async (eventName) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-retained-source-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const source = {
+      sha: "measured-source-sha", ref: "refs/heads/measured-source",
+      workflowRunUrl: "https://example.test/actions/runs/1",
+    };
+    const retainedResult = { ...result(execution, "passed"), source };
+    const campaign = buildRunnerCampaign({
+      campaignId: "retained-source", generatedAt: retainedResult.finishedAt,
+      expected: [execution.id], results: [retainedResult],
+    });
+    const published = { ...campaign, source: eventName === undefined ? undefined : { ...source, eventName } };
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(published));
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "renderer-sha");
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/renderer");
+    vi.stubEnv("GITHUB_EVENT_NAME", "push");
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.source).toEqual({ ...source, eventName: eventName ?? null });
+    expect(regenerated.results).toEqual(campaign.results.map((entry) => ({ ...entry, evidenceValid: true, evidenceErrors: [] })));
+    expect(regenerated.generatedAt).toBe(campaign.generatedAt);
+  });
+
+  it("retains incomplete journeys in campaign, suite and history without marking them green", () => {
+    const execution = runnerMatrix.find(e => e.suite.id === "first-task")!;
+    const incomplete: RunnerE2EResult = {
+      ...result(execution, "failed"), failureClass: "candidate_failure",
+      firstTask: {
+        caseId: execution.task.id, nonce: "fixture", onboardingIssueId: "issue", agentId: "agent",
+        initialTaskIds: ["issue"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+        checks: [{ id: "acceptance-recorded", passed: false, detail: "Acceptance", evidence: [], notReached: "Recording stopped" }],
+      },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "incomplete", generatedAt: incomplete.finishedAt, expected: [execution.id], results: [incomplete] });
+    expect(campaign).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    expect(campaign.suites[0]).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    const record = campaignHistoryRecord(campaign, "https://example.test");
+    expect(record.executions[0].status).toBe("incomplete");
+    const history = mergeRunnerHistory(null, { ...record, complete: true, suites: record.suites.map(s => ({ ...s, complete: true })) });
+    expect(history.latestGreenCampaignId).toBeNull();
+    expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
+    expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
+    expect(renderRunnerHistoryIndex(history)).toContain('data-index-status="incomplete"');
+  });
+
+  it("shows unknown campaign costs without plotting zero dollars", () => {
+    const execution = runnerMatrix[0];
+    const campaign = buildRunnerCampaign({ campaignId: "unknown-cost", generatedAt: "2026-09-15T00:00:00Z", expected: [execution.id], results: [result(execution, "passed")] });
+    campaign.billing.observedAndEstimatedCostUsd = null;
+    const record = { ...campaignHistoryRecord(campaign, "https://example.test"), complete: true };
+    const history = mergeRunnerHistory(null, record);
+    expect(renderRunnerHistoryIndex(history)).toContain("Unknown");
+    const index = renderRunnerHistoryIndex(history);
+    expect(index).toContain("Unknown measurements are not plotted");
+    expect(index).not.toContain("NaN");
+  });
+
+  it("does not turn a clean-evidence behavior failure into a pass when regenerating", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-failed-evidence-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0];
+    const failedResult = { ...result(execution, "failed"), failureClass: "candidate_failure" as const, error: "Behavior check failed", evidenceValid: true, evidenceErrors: [] };
+    const campaign = buildRunnerCampaign({ campaignId: "failed", generatedAt: failedResult.finishedAt, expected: [execution.id], results: [failedResult] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({ ...campaign, results: [failedResult] }));
+    await regenerateRunnerDashboard({ bundle: root });
+    const page = await readFile(path.join(root, "index.html"), "utf8");
+    expect(page).toContain('class="case case-failed"');
+    expect(page).not.toContain('class="case case-passed"');
+  });
+
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
+    vi.stubEnv("GITHUB_SERVER_URL", "");
+    vi.stubEnv("GITHUB_REPOSITORY", "");
+    vi.stubEnv("GITHUB_RUN_ID", "");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");
     vi.stubEnv("GITHUB_SHA", "trusted-master-sha");
@@ -173,39 +324,38 @@ describe("runner E2E campaign history", () => {
         errors: campaignResult.status === "passed" ? [] : ["failed"],
       })),
     });
-    expect(dashboard).toContain("Campaign trends");
-    expect(dashboard).toContain("data-history-from");
-    expect(dashboard).toContain("data-history-through");
-    expect(dashboard).toContain(
+    expect(dashboard).not.toContain('class="history-section"');
+    const index = renderRunnerHistoryIndex(history);
+    expect(index).toContain("Campaign trends");
+    expect(index).toContain('data-index-filter="from"');
+    expect(index).toContain('data-index-filter="through"');
+    expect(index).toContain(
       'data-history-suite-trends="core-compatibility"',
     );
-    expect(dashboard).toContain(
+    expect(index).toContain(
       'data-history-suite-trends="openrouter-model-breadth"',
     );
-    expect(dashboard).toContain(
+    expect(index).toContain(
       'data-history-suite-trends="local-session-integrity"',
     );
-    expect(dashboard).toContain("Suite pass rate");
-    expect(dashboard).toContain("lines break at definition changes");
-    expect(dashboard).toContain("cleanup passed");
-    const index = renderRunnerHistoryIndex(history, {
-      latestSummaryImageHref:
-        "campaigns/complete-red/public-images/campaign-summary.png",
-    });
-    expect(index).toContain("Runner E2E campaigns");
+    expect(index).toContain("Suite pass rate");
+    expect(index).toContain("lines break at definition changes");
+    expect(index).toContain("cleanup passed");
+    expect(index).toContain("E2E tests");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
     expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);
     expect(index).toContain(`${runnerMatrix.length - 1}/${runnerMatrix.length} passed`);
     expect(index).toContain("Open report&nbsp;→");
+    expect(index).toContain('aria-label="Latest campaign summary"');
+    expect(index).toContain('aria-label="Suite results"');
+    expect(index).toContain("Core Runner Compatibility</a>");
+    expect(index).not.toContain("campaign-summary.png");
     expect(index).toContain(
-      "campaigns/complete-red/public-images/campaign-summary.png",
+      "declared screenshots, and normalized results",
     );
     expect(index).toContain(
-      "declared screenshots, and sanitized structured evidence",
-    );
-    expect(index).toContain(
-      "Declared screenshots and inert structured evidence",
+      "Declared screenshots and normalized results",
     );
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
@@ -213,6 +363,32 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
+  it.each([
+    "snapshots/api-state.json", "server.log", "playwright.log", "result.json",
+    "renamed-diagnostic.md", "nested/provider.txt", "malformed.json",
+  ])("withholds raw diagnostic %s even after credential redaction", async (file) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-private-evidence-"));
+    temporaryDirectories.push(root);
+    const relative = `evidence/fixture.local.case/attempt-1/${file}`;
+    const absolute = path.join(root, relative);
+    const text = file === "malformed.json" ? "{malformed PRIVATE_REASONING" : JSON.stringify({
+      apiKey: "[REDACTED]",
+      runEvents: [{ payload: { prpEvent: { payload: {
+        kind: "reasoning", text: "PRIVATE_REASONING", sessionId: "PRIVATE_SESSION",
+      } } } }],
+      runLogs: [{ log: { content: JSON.stringify({ reasoning: "PRIVATE_REASONING" }) } }],
+    });
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, text);
+    expect(isHistoricalBundlePathAllowed(relative)).toBe(false);
+    // A text file cannot be admitted by pretending it is a declared screenshot.
+    expect(isHistoricalBundlePathAllowed(relative, false, new Set([relative]))).toBe(false);
+    await expect(createBundleManifest(root, "private-diagnostics")).rejects.toThrow("non-allowlisted");
+    await prunePrivateHistoryEvidence(root);
+    await expect(readFile(absolute)).rejects.toThrow();
+    expect((await createBundleManifest(root, "private-diagnostics")).files).toEqual([]);
+  });
+
   it("allows public capture only on an issue task route", () => {
     const target = {
       issuePrefix: "PAP",
@@ -332,10 +508,10 @@ describe("historical publication security", () => {
     );
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
+      "Declared PNG screenshots and normalized results are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      "Declared screenshots and normalized results published",
     );
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
@@ -357,13 +533,13 @@ describe("historical publication security", () => {
     ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     await expect(
       readFile(
         path.join(evidenceDirectory, "snapshots", "api-state.json"),
         "utf8",
       ),
-    ).resolves.toBe("{}\n");
+    ).rejects.toThrow();
     expect(
       JSON.parse(
         await readFile(path.join(output, "normalized-results.json"), "utf8"),
@@ -437,7 +613,7 @@ describe("historical publication security", () => {
     }
     await expect(
       readFile(path.join(evidenceDirectory, "server.log"), "utf8"),
-    ).resolves.toBe("sanitized\n");
+    ).rejects.toThrow();
     const summaryHtml = renderPublicCampaignSummary(campaign);
     expect(summaryHtml).toContain(execution.suite.label);
     expect(summaryHtml).not.toContain("PROVIDER_TEXT_MUST_NOT_RENDER");
@@ -478,11 +654,11 @@ describe("historical publication security", () => {
     ).toBe(true);
     await regenerateRunnerDashboard({
       bundle: root,
-      publicSummaryImageHref: "public-images/campaign-summary.png",
     });
-    expect(await readFile(path.join(root, "index.html"), "utf8")).toContain(
-      'src="public-images/campaign-summary.png"',
-    );
+    const dashboardHtml = await readFile(path.join(root, "index.html"), "utf8");
+    expect(dashboardHtml).toContain('aria-label="Suite results"');
+    expect(dashboardHtml).toContain(`${execution.suite.label}</a>`);
+    expect(dashboardHtml).not.toContain('src="public-images/campaign-summary.png"');
     const manifest = await createBundleManifest(
       root,
       campaign.campaignId,
@@ -700,12 +876,12 @@ describe("historical publication security", () => {
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/result.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/snapshots/api-state.json",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(isHistoricalBundlePathAllowed("paperclip-home/database")).toBe(
       false,
     );

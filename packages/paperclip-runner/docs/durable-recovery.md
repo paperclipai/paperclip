@@ -57,6 +57,110 @@ PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
 protocol validation before execution; ordinary persisted v1 summaries remain
 compatible.
 
+## Adoption and retired launch artifacts
+
+A live runner is adopted with its admitted artifact binding and authenticated
+process identity. ACPX and OpenCode launch profiles are constructed only when a
+new runner will actually be spawned. Adoption does not read the retired
+controller's provider-pack executables, sidecar or proxy files. Fresh launches
+still require the existing artifact digests and provider-pack authority.
+
+The component regression starts the production runner and OpenCode proxy against
+a scripted harness, removes the controller's launch files, then recovers the
+same process and provider session and completes another turn. This exercises the
+real transport; it does not qualify a hosted OpenCode or ACPX deployment.
+
+## Source-bound profile history
+
+Copilot profile v68 binds the merged hot-upgrade and current master transport.
+Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
+historical records. The distinct development v66 identity is retained under
+`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
+replace the published v66 fixture. Decoding historical versions does not grant
+fresh-launch permission. Installation still requires the exact current profile,
+package and digest. These records do not establish hosted harness qualification.
+
+## External controller checkpoints
+
+The optional controller persistence callback stores recovery control state, not
+an output transcript. Text deltas do not trigger callbacks; usage updates are
+coalesced into the next control checkpoint. Authentication, command intents and
+outcomes, semantic inputs, lifecycle and result events retain commit barriers.
+Priority-zero and unknown event kinds are never treated as disposable output.
+
+Installing the callback makes it the controller's durable authority. The local
+state file is replaced once with a fail-closed marker; ordinary control changes
+no longer rewrite or fsync a second local journal. The controller can continue
+if that directory disappears. A new controller must restore the committed
+external checkpoint before opening the directory; the marker cannot recover
+an execution or authorize a new one. This does not change the sandbox runner's
+journal or controllers without an external persistence callback.
+
+Fresh semantic inputs reserve their original live callback before awaiting the
+checkpoint barrier. Recovery cannot steal first dispatch when no saved outcome
+exists. The reservation is released if persistence or admission fails; business
+execution still starts only after durable persistence succeeds.
+
+Recovery and live semantic-tool dispatch share per-call ownership. Overlapping
+reconciliation calls cannot invoke the same callback twice while its outcome is
+pending. An already queued authoritative result is replayed without resolving
+its business outcome again. Failed or unknown outcomes retain the existing
+reconciliation and authority rules.
+
+Pending completion inputs (`paperclip_finish` and `paperclip_block`) use the
+driver's existing completion handler even when its caller supplies no recovery
+lookup for ordinary tools. Codex transport waits for both authenticated startup
+and handler installation; the external driver waits for session opening.
+An ordinary tool with no outcome lookup remains held. Reconciliation does not
+turn a missing lookup into permission to repeat that tool.
+
+Transport readers use a committed view when external persistence is enabled.
+Lifecycle and result events, command outcomes and warm-handoff authority become
+visible only after the checkpoint callback succeeds. A failed write leaves the
+previous view in place until a successful retry. Internal admission still sees
+staged intents so overlapping recovery cannot duplicate them. Command results
+flush their checkpoint even when no next command is waiting.
+
+Streamed output continues without checkpoint writes. The view stops before a
+pending control event to preserve event order, reuses immutable event records
+and unchanged decoded commands, and caches the visible projection between
+changes. It neither copies a second transcript nor adds an idle scan.
+
+A rejected persistence callback closes the current connection and keeps the last
+successful revision. A later flush or reconnect retries from a complete checkpoint,
+including when the failed response hid a successful commit. Queued writes also
+rebuild their delta against the last successful callback. Commit barriers remain
+in force, and no retry timer runs when the controller is idle.
+
+Supporting runners advertise `recoveryCursorVersion: 1` in `auth_hello`. The core
+includes that capability and `recoveryAckedSourceSeq` in both authentication
+proofs. The runner verifies the cursor equals its persisted acknowledgement.
+After authentication and owner admission, a replacement core can reconcile that
+cursor with its sparse checkpoint. It only skips already-acknowledged history;
+new delivery remains contiguous. Unacknowledged events use the existing outbox.
+A peer without this capability cannot attach to a sparse external checkpoint.
+New runners can still authenticate to older controllers that use full journals.
+
+There is no per-output external checkpoint timer or remote-controller cache
+fsync. Local-only controllers retain their full file journal. Existing application
+callbacks, the bounded runner outbox, and backpressure remain. Losing the
+controller before acknowledged display output reaches its application log can
+leave a display tail gap; this must not trigger provider or tool reexecution.
+
+Prepared environments retain at most two opaque configuration IDs, each bound to
+its exact execution identity across a warm handoff. They are captured with control
+state, never output, and do not duplicate instructions or preparation requirements.
+An execution driver can provide `authorizeRunnerAdoption(configurationId, identity)`
+to recheck current authority before registering a surviving runner, without
+preparing its resources again. The driver owns policy; Runner knows no project or
+account rules. Missing bindings and rejected checks fail closed. Without this
+optional hook, adoption retains the existing `prepareLaunch` recovery callback
+and requires its controller-local preparation cache. Older checkpoints without
+a configuration binding cannot use the cache-independent adoption path.
+Supplying the hook for adoption without `prepareLaunch` is rejected at construction;
+the transport must not silently skip a requested authority check. Drivers that do
+not use prepared environments keep their existing adoption contract.
+
 ## Connection and authentication
 
 The connection starts in this order:
@@ -94,6 +198,15 @@ closed during the challenge. The runner validates the complete encrypted
 welcome and every control envelope against the authenticated connection,
 runner, environment lease, run, normalized session, turn, item, protocol,
 lease ID, expiry, and revocation metadata before applying an ACK or command.
+
+Semantic input integrity uses SHA-256 of the complete transmitted input's
+canonical JSON, with UTF-16 object-key order and JavaScript number formatting.
+The controller checks this proof after authentication and exact run/session/
+turn/item correlation, before committing, dispatching, or acknowledging the
+input. Receipt redaction has a separate digest; a redacted digest cannot stand
+in for wire integrity, including when only a protected field changes. A failed
+integrity proof keeps the existing operator-required recovery fence. Updating
+the verifier does not clear a previously failed run or replay its work.
 
 The daemon captures and removes the bootstrap environment variable before it
 parses arguments or starts child work. Secret buffers are overwritten when they
@@ -166,6 +279,30 @@ The ACK means that every source event through sequence 9 is committed or
 deduplicated. The runner rejects an ACK that moves backward or beyond its
 produced source cursor. It removes only events at or below a valid ACK.
 
+The controller stages routine priority 1 and 2 event snapshots with asynchronous
+file writes and file fsyncs. Those operations let unrelated HTTP requests run
+while the volume is slow. Rename and directory fsync remain synchronous. The
+candidate snapshot stays private until its atomic replacement
+and directory flush finish. Lifecycle readers and replacement connections see
+only the committed cursor. The controller acknowledges the event after that commit.
+A command that saves during staging includes the pending event in its own
+durable write. Further commands do not add event deliveries or cause another
+staged write. Other authority changes leave an uncommitted event available for
+replay instead of repeatedly rewriting the snapshot. A replaced
+connection cannot publish its old candidate. Its unacknowledged event remains
+available for replay. A failed write fences further authority until reload.
+Priority 0 events, all `run.*` and `turn.*` lifecycle events, commands,
+authentication, and semantic tool input retain synchronous persistence. The
+lifecycle rule also covers producers that label a terminal event priority 1.
+A terminal suffix remains in the same
+control-loop turn. Semantic tool admission and dispatch cannot yield to a
+replacement connection between those operations.
+Controller replacement must still stop ingress and drain admitted processing
+before a successor reuses the journal. External control routes stop their
+reconnect loop before the controller joins admitted work. An incomplete drain
+cannot certify a reusable checkpoint. Snapshots use compact JSON; existing
+indented snapshots remain readable.
+
 For the lost-ACK fault, the mock commits an event, drops the ACK and socket, and
 reports the prior cursor once after reconnect. The runner sends the same bytes
 again. The mock increments delivery count, keeps one logical event, and sends
@@ -184,6 +321,106 @@ effect. Reusing the ID with different bytes is rejected.
 The trace records `logicalEffectCount`. Every completed command has exactly one
 logical effect. A policy rejection, such as a new turn during drain or storage
 pressure, has zero effects.
+
+## Semantic operations that outlive a turn
+
+An execution session includes the provider process, the runner's durable call
+receipts and event outbox, and the controller's durable command queue. Ending a
+provider turn closes admission of new work. It does not establish whether a
+semantic operation already dispatched to the server succeeded or failed.
+
+The tool bridge retains pending call IDs, operation IDs, and exact arguments
+across that boundary. It accepts the authority's late result without delivering
+it to an obsolete provider turn. An identical result is an idempotent replay;
+a different result for that call remains a conflict. Codex records harmless
+result replay as `semantic_tool_result_duplicate` in a diagnostic event, with
+no task failure. Conflict errors identify the call, operation, and both result
+digests without including the result bodies.
+
+The controller checkpoints a reusable session only after every admitted tool
+has a matching completed result-delivery command and the provider has drained.
+A callback rejected before business dispatch can report
+`semantic_tool_not_dispatched`. A callback rejected after dispatch has an
+unknown outcome; the controller must not invent a failure or execute it again.
+After controller restart, an already committed input without a result remains
+unsettled. It requires authoritative reconciliation, not an automatic retry.
+A different case is a runner crash after the controller saved the result but
+before its delivery command completed. Codex/OpenCode explicitly opt in to
+reconciling that exact `semantic_tool.result` command through their durable tool
+receipt. The full command fingerprint must match. This delivers the saved
+answer without executing the business operation. Unsupported providers and all
+other indeterminate commands remain non-reexecutable. This change does not
+repair legacy journals already containing contradictory or failed receipts.
+
+`update_agent_instructions` and `restore_agent_instructions` use a durable,
+company/run-scoped mutation receipt keyed by call ID. Before attempting a file
+write, the authority commits an `instructionToolAttempts` record and an
+`agent.instruction_write_attempted` activity row with the call ID, operation ID,
+and input digest. This evidence survives a later filesystem or database failure.
+Completed calls and retries after authority restart return the exact original receipt.
+Changing the arguments under that ID is an idempotency conflict. Receipt replay
+still checks current instruction-write authorization. Concurrent callers in the
+same process wait for the first handler before checking the receipt again.
+
+The filesystem and PostgreSQL are not one atomic store. If a write is visible
+but its receipt transaction rolls back, the attempt record remains durable and
+the result is unknown. An identical call with an attempt but no committed result
+raises `paperclip_runner_instruction_outcome_unknown`; it does not write again
+or pretend to have succeeded. This also applies to another process reaching a
+reserved call before its effect transaction starts. The controller retains an
+unsettled operation for authoritative reconciliation. If only the commit
+acknowledgement was lost, the committed receipt is replayed normally.
+The native tool wrapper propagates `SemanticToolOutcomeUnknownError` instead
+of turning it into a completed failed tool response. Ordinary validation,
+authorization, and stale-base errors still return normal tool errors. Before
+returning a definite pre-write failure, the authority saves its status, message,
+and details under the attempt's `failure` receipt. Replays return that original
+error without executing again, even if the old CAS base becomes current again.
+Failure-receipt storage errors retain an unsettled operation instead of exposing
+an unrecorded final answer.
+
+### Lossless arguments and bounded transport
+
+Execution arguments do not use the diagnostic preview formatter. Accepted
+input remains exact, including Unicode, line endings, and long document tails.
+The credential policy rejects input it would have to alter before dispatch.
+Diagnostic copies remain redacted and bounded. The semantic input limit is
+480 KiB of encoded JSON, leaving room for the encrypted frame's hex expansion
+and envelope inside the 1 MiB wire limit. Oversized input fails before a write;
+it is never truncated into an apparently successful write.
+
+A result command retains a SHA-256 `inputDigest` instead of duplicating the
+full input alongside the full result. The canonical input event retains the
+arguments. Settlement validates the digest and all run, event, call, operation,
+and correlation identities. Legacy result commands carrying the full input
+remain supported. Large results still have to fit the command transport limit;
+exceeding it leaves the outcome unsettled rather than retrying an effect.
+
+### Deterministic fault coverage
+
+These tests use explicit barriers, durable reloads, real runner processes with
+scripted providers, and a real PostgreSQL database. They do not require a paid
+model or rely on an LLM choosing the desired timing.
+
+| Fault | Required assertion | Regression suite |
+| --- | --- | --- |
+| Stop before/after server result; restart before late delivery | No invented failure; pending identity survives; late result accepted | Rust `provider_bridge`, `codex_provider` |
+| Provider terminal before tool completion | New turn blocked until actual result; safe replay and later reuse | Rust `acpx_provider_turns`, `acpx_provider_state` |
+| Crash before/after applying a saved delivery receipt, before command completion | Exact result delivery recovers only for opted-in providers; changed commands and ordinary operations never replay | Rust durable runner tests |
+| Lost result acknowledgement; conflicting redelivery | Identical result accepted; changed result rejected with IDs and digests | Rust `codex_provider`, `provider_bridge` |
+| Concurrent writes held at filesystem commit; authority restart | One write, one audit record, same receipt; revoked authorization rejected | Server `agent-instruction-tools.integration.test.ts` |
+| Failure after file rename or rollback while saving the receipt | Durable attempt and audit evidence survive; no success claim and no second write | Server `agent-instruction-tools.integration.test.ts` |
+| Receipt commits but its database acknowledgement is lost | Exact original result replays; one file-update audit and one attempt record | Server `agent-instruction-tools.integration.test.ts` |
+| Tool handler throws an unknown-outcome error versus a validation error | Unknown propagates without a completed tool event; validation returns an ordinary failed response | `codex-app-server-driver.semantic-results.test.ts` |
+| Invalid arguments, oversized input, or stale base; restart and replay | Original failure replays with zero writes, even after the base becomes valid | Server `agent-instruction-tools.integration.test.ts` |
+| Failure receipt cannot be stored | No unrecorded final failure; attempt remains unsettled and never reexecutes | Server `agent-instruction-tools.integration.test.ts` |
+| Long Unicode input and result; corrupted input digest | Exact bytes across persistence/wire; no copied input in result; bad proof blocks settlement | Rust durable-state tests; `durable-prp-control-plane.test.ts` |
+| Handler finishes during close, after close budget, or persistence fails | Checkpoint marked settled only with completed delivery and drained provider | `runnerd-codex-transport.test.ts` |
+| Controller restarts with committed input but no result | No second dispatch and no fabricated outcome | `durable-prp-control-plane.test.ts` |
+| Execution and cleanup both fail | Original execution error retained; cleanup error attached | `native-session-runtime.test.ts` |
+| Retry in same process or after local log loss | Earlier attempts survive locally and in the durable mirror | Server `run-log-store.test.ts` |
+| Two restores overlap and one appends before the other publishes | Complete prefix is published without replacement; both attempts survive | Server `run-log-store.test.ts` |
+| New run whose row has no log reference, output sequence, or log size | No durable-mirror request; a later attempt with a recorded log reference still restores after local loss | Server `run-log-store.test.ts`, `heartbeat/run-output.test.ts` |
 
 ## Residual local trust and revocation window
 
@@ -205,6 +442,14 @@ production core should close active sessions when it revokes a lease and choose
 the lease TTL to match its required revocation bound.
 
 ## Restart and reconciliation
+
+Local Linux process receipts use the kernel's `/proc/PID/stat` start ticks,
+`/proc/stat` boot time and `CLK_TCK` to record process birth. The server and
+retained Runner maintenance use the same reader. `/proc/PID` directory ctime
+can differ from birth and must not grant process ownership. Invalid or missing
+birth metadata fails closed. PID, process group and owner checks remain required.
+Drain active Linux runs before updating or rolling back across the previous
+ctime-based receipt format; do not rewrite a live receipt to force adoption.
 
 A socket drop keeps the same Rust process and in-memory lease. The process
 reconnects and reloads the mock-core command and event cursor.
@@ -283,10 +528,48 @@ A `revoke` envelope persists the `revoked` lifecycle. The runner flushes any
 existing durable events and exits. It does not accept new work or delete
 unacknowledged facts.
 
+## Process identity
+
+An external process owner can publish `startedAt` after launch dispatch returns.
+`spawnRunner` preserves that live value through its restart wrapper. Once the
+owner has a verified process identity, consumers use its birth time rather than
+controller construction or attachment time. Replacing the controller must not
+change the admitted process identity.
+
 ## Verification
 
 The production durable control plane and live-session suites cover reconnect,
 ACK replay, restart recovery, backpressure, lease expiry, drain, and revoke.
+
+`src/control-plane/runner-recovery-fixture.test.ts` builds the test-only Cargo
+example `recovery-fixture`. It links the unchanged production durable runner with
+a scripted `CommandExecutor`, whose worker thread performs bounded hashing steps
+and retains each resulting output until the normal executor ACK transfers it to
+the runner outbox. There is one process, no HTTP counter service, and no production
+provider-admission switch. Private fixture receipts report completed steps, queue
+depth and process identity; they do not acknowledge or recover protocol events.
+
+The short experiment starts one turn, removes the controller, then releases real
+work. Eight retained events fill the fixture queue and pause work explicitly.
+A replacement authenticates and drains through PRP. At step 32 the executor waits
+for a controller command, survives another replacement, then completes 64 steps
+without repeating the turn. The test runs with ordinary filesystem persistence
+and with opaque external checkpoints restored onto empty controller storage.
+An independent short-deadline case checks termination with recovery state intact.
+These prove the runner mechanism, not Codex, Claude, Daytona or application
+authorization. Server adoption and installed-artifact qualification have separate
+owners and evidence.
+
+Run the short experiment from this package with:
+
+```sh
+pnpm exec vitest run src/control-plane/runner-recovery-fixture.test.ts --maxWorkers=1
+```
+
+The fixture builds through Cargo during test setup. Production distribution builds
+do not include the example. Existing control-plane tests separately inject failed
+checkpoint persistence, stale/unauthenticated cursors and output floods, including
+the zero-per-text-checkpoint-write gate.
 
 Use `--json` for the complete trace or `--output <path>` to write it. The CLI
 and browser show connection counts, safe lease ID and expiry, stable identities,
@@ -300,3 +583,5 @@ Regenerate the checked fault matrix and every exact per-fault trace with:
 ```sh
 # Recorded evidence generation is deferred from this release.
 ```
+
+Checkpoint decoding also exposes read-only recovery evidence: the admitted runner/session identity, authenticated connection count, and highest recorded source sequence. This projection grants no authority and adds no checkpoint writes. Qualification compares it across controller replacement; a replayed canonical event by itself does not prove that a replacement controller has authenticated a runner.

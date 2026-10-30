@@ -43,13 +43,73 @@ describe("resolveNativeRuntimeMode", () => {
     }
   });
 
-  it("rejects a fresh Paperclip Runner start while the rollout flag is disabled", () => {
+  it("admits fresh native Codex when the experimental rollout is disabled", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
+  });
+
+  it("admits saved-token Copilot with the generic Runner rollout disabled", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false,
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
+    for (const acpxAgent of ["grok", "cursor", "codex"]) {
+      expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false,
+        adapterConfig: { provider: "acpx", acpxAgent, model: "gpt-5.6-luna" },
+      })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
+    }
+  });
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+  ])("retains the Grok Bot gate with runner enabled=%s and Grok enabled=%s", (enabled, grokEnabled) => {
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      enabled,
+      grokEnabled,
+      adapterConfig: {
+        provider: "grok_bot",
+        externalBindingId: "00000000-0000-4000-8000-000000000001",
+        allowUnmeteredProvider: true,
+      },
+    })).toThrow(expect.objectContaining({ code: "paperclip_runner_grok_disabled" }));
+  });
+
+  it("admits a bound Grok Bot when its existing experimental gates are enabled", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      grokEnabled: true,
+      adapterConfig: {
+        provider: "grok_bot",
+        externalBindingId: "00000000-0000-4000-8000-000000000001",
+        allowUnmeteredProvider: true,
+      },
+    })).toMatchObject({ kind: "native", profile: { backend: "grok_bot_mcp" } });
+  });
+
+  it("admits OpenCode without the experimental flag", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false,
+      adapterConfig: { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" },
+    })).toMatchObject({ kind: "native", profile: { backend: "opencode_server" } });
+  });
+
+  it("still rejects Grok while the rollout flag is disabled", () => {
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       enabled: false,
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_rollout_disabled",
     }));
+  });
+
+  it("admits Pi without the generic rollout flag", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false,
+      adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "openrouter/anthropic/claude-sonnet-4.6", piThinkingLevel: "max" },
+    })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
   });
 
   it("rejects unknown Paperclip Runner providers", () => {
@@ -107,25 +167,30 @@ describe("resolveNativeRuntimeMode", () => {
       kind: "native",
       profile: { backend: "acpx_runtime" },
     });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "acpx_runtime" },
+    });
   });
 
-  it("rejects malformed OpenCode and unqualified ACPX profiles", () => {
+  it("rejects malformed OpenCode and unregistered ACPX profiles", () => {
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "opencode", model: "gpt-5.6-sol" },
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_opencode_model_invalid",
     }));
-    expect(() => resolveNativeRuntimeMode({
-      ...eligible,
-      adapterConfig: {
-        provider: "acpx",
-        acpxAgent: "pi",
-        model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_acpx_agent_unavailable",
-    }));
+    for (const acpxAgent of ["unregistered-acpx-agent"]) {
+      expect(() => resolveNativeRuntimeMode({
+        ...eligible,
+        adapterConfig: { provider: "acpx", acpxAgent, model: "explicit-provider-model" },
+      })).toThrow(expect.objectContaining({
+        code: "paperclip_runner_acpx_agent_unavailable",
+      }));
+    }
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },
@@ -189,14 +254,17 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("keeps a persisted active run native while the global flag rejects a fresh runner start", () => {
-    const disabled = { ...eligible, enabled: false };
+  it("keeps a persisted experimental run native while the flag rejects a fresh start", () => {
+    const disabled = { ...eligible, enabled: false,
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    };
     expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
       persisted: {
         runtimeMode: "native",
         runtimeModeReason: "eligible_opt_in",
         runtimeModeResolvedAt: new Date(),
+        driverKind: "acpx_runtime",
       },
     })).toEqual(expect.objectContaining({
       kind: "native",
@@ -460,6 +528,26 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
       ...compatibilityInput,
       enabled: false,
       adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/anthropic/claude-sonnet-4.6" },
     })).toThrow(NativeRunnerSelectionError);
+  });
+  it("admits native Claude without enabling other ACPX providers", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "claude" } })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
+    expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "grok" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
+  });
+});
+
+
+describe("Muse native selection", () => {
+  const muse = { ...eligible, museEnabled: true, adapterConfig: { provider: "muse", museBindingId: "00000000-0000-4000-8000-000000000001", allowUnmeteredProvider: true, lifecycleMode: "per_turn" } };
+  it("requires both Runner and Muse rollout gates for fresh work", () => {
+    expect(() => resolveNativeRuntimeMode({ ...muse, museEnabled: false })).toThrow("Enable Muse");
+    expect(() => resolveNativeRuntimeMode({ ...muse, enabled: false })).toThrow("disabled");
+    expect(resolveNativeRuntimeMode(muse)).toMatchObject({ kind: "native", profile: { backend: "muse_external" } });
+  });
+  it("rejects model, workspace and inherited Dot attachment grants", () => {
+    for (const extra of [{ model: "local-model" }, { dotWorkspaceAccess: true }, { dotAttachmentAccess: true }, { lifecycleMode: "warm" }]) {
+      expect(() => resolveNativeRuntimeMode({ ...muse, adapterConfig: { ...muse.adapterConfig, ...extra } })).toThrow("Muse requires");
+    }
   });
 });

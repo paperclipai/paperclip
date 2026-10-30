@@ -29,6 +29,23 @@ export const activeHoursWindowSchema = z.object({
   timezone: z.string().trim().min(1).refine(isValidTimeZone, { message: "Invalid timezone identifier" }),
 });
 
+/**
+ * Earliest minute at or after `from` that falls inside the window, or null when
+ * the window never opens (for example start === end). Scans at most two days.
+ */
+export function nextActiveHoursStart(
+  window: ActiveHoursWindow,
+  from: Date,
+): Date | null {
+  const minuteMs = 60_000;
+  const first = Math.ceil(from.getTime() / minuteMs) * minuteMs;
+  for (let offset = 0; offset <= 2 * 24 * 60; offset += 1) {
+    const candidate = new Date(first + offset * minuteMs);
+    if (isWithinActiveHours(window, candidate)) return candidate;
+  }
+  return null;
+}
+
 export function isWithinActiveHours(
   window: ActiveHoursWindow | null | undefined,
   now: Date,

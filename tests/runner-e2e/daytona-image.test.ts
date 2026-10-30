@@ -11,8 +11,80 @@ import {
 } from "./daytona-image-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+function lastDockerignoreRule(dockerignore: string, fixturePath: string) {
+  return dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#")).filter(rule => {
+    const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
+    return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+  }).at(-1);
+}
 
 describe("runner E2E Daytona image contract", () => {
+  it("retains the active Copilot identity declaration in the Docker context", async () => {
+    const [generator, dockerignore] = await Promise.all([
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"), "utf8"),
+      readFile(path.join(repositoryRoot, ".dockerignore"), "utf8"),
+    ]);
+    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
+    expect(fixture).toBeDefined();
+    const fixturePath = `packages/paperclip-runner/${fixture}`;
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(fixturePath);
+    await expect(readFile(path.join(repositoryRoot, fixturePath), "utf8")).resolves.toContain('"commandDigest"');
+    // Docker's last matching rule wins, including the parent-directory exclusion.
+    const lastRule = lastDockerignoreRule(dockerignore, fixturePath);
+    expect(lastRule?.startsWith("!")).toBe(true);
+    // The exception also covers the next version without exposing other live evidence.
+    const exception = lastRule!.slice(1);
+    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-profile-v999-identity.json", exception)).toBe(true);
+    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-live-denial-2026-09-28.json", exception)).toBe(false);
+  });
+
+  it("invalidates the image content ID when the active Copilot identity changes", async () => {
+    const generator = await readFile(
+      path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"),
+      "utf8",
+    );
+    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
+    expect(fixture).toBeDefined();
+    const fixturePath = `packages/paperclip-runner/${fixture}`;
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-daytona-copilot-identity-"));
+    const options = {
+      repositoryRoot: root,
+      inputPaths: DAYTONA_IMAGE_INPUT_PATHS.filter(inputPath => inputPath === fixturePath),
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    } as const;
+    try {
+      await mkdir(path.dirname(path.join(root, fixturePath)), { recursive: true });
+      await writeFile(path.join(root, fixturePath), '{"commandDigest":"before"}\n');
+      const before = await computeDaytonaImageContentId(options);
+      expect(await computeDaytonaImageContentId(options)).toBe(before);
+      const withoutCopilot = { ...options, inputPaths: [] };
+      const unrelatedBefore = await computeDaytonaImageContentId(withoutCopilot);
+      await writeFile(path.join(root, fixturePath), '{"commandDigest":"after"}\n');
+      expect(await computeDaytonaImageContentId(options)).not.toBe(before);
+      expect(await computeDaytonaImageContentId(withoutCopilot)).toBe(unrelatedBefore);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the qualified native Grok binary separate from the legacy command", async () => {
+    const [dockerfile, packBuilder, runnerPackage] = await Promise.all([
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-provider-pack.mjs"), "utf8"),
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/package.json"), "utf8"),
+    ]);
+    expect(dockerfile).toMatch(/@xai-official\/grok@\d+\.\d+\.\d+/);
+    expect(dockerfile).not.toMatch(/for cli in[^;]*\bgrok\b/);
+    expect(packBuilder).not.toMatch(/writePortable\w+Shim\("grok"/);
+    expect(JSON.parse(runnerPackage).dependencies).not.toHaveProperty("@paperclipai/grok-acp");
+    expect(packBuilder).toContain('path: "dist/providers/grok/launcher.cjs"');
+    expect(dockerfile).toContain("scripts/provision-grok.mjs");
+    expect(dockerfile).toContain("/opt/paperclip/providers/grok/1.0.13/grok");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain("packages/paperclip-runner/scripts/provision-grok.mjs");
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("packages/grok-acp/package.json");
+  });
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
@@ -29,6 +101,8 @@ describe("runner E2E Daytona image contract", () => {
       ),
     ]);
     const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
+    expect(daytonaImageJob).toBeDefined();
     expect(dockerfile).toContain("--bin paperclip-runnerd");
     expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
     expect(normalizedDockerfile).not.toContain(
@@ -63,12 +137,21 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(extractDaytonaBaseImages(dockerfile)).toEqual([
       "rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6",
-      "node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b",
+      "node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a",
       "daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3",
     ]);
     expect(dockerignore).toContain("**/node_modules");
     expect(dockerignore).toContain("packages/paperclip-runner/dist");
     expect(dockerignore).toContain("packages/paperclip-runner/runner/target");
+    expect(await readFile(path.join(repositoryRoot, ".github/docker-context-checks.Dockerfile"), "utf8")).toContain("node packages/paperclip-runner/scripts/generate-acpx-profiles.mjs --check");
+    for (const declaration of [
+      "test-fixtures/pi-acp/profile-v19-identity.json",
+      "test/fixtures/copilot-profile-v16-identity.json",
+    ]) {
+      expect(lastDockerignoreRule(dockerignore, `packages/paperclip-runner/${declaration}`)?.startsWith("!")).toBe(true);
+      await expect(readFile(path.join(repositoryRoot, "packages/paperclip-runner", declaration), "utf8")).resolves.toBeTruthy();
+    }
+    expect(lastDockerignoreRule(dockerignore, "packages/paperclip-runner/test-fixtures/pi-acp/private-live-session.json")?.startsWith("!")).toBe(false);
     for (const developmentOnlyInput of [
       "packages/paperclip-runner/devtools",
       "packages/paperclip-runner/docs",
@@ -93,6 +176,22 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
+    expect(daytonaImageJob).toContain(
+      "TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}",
+    );
+    expect(daytonaImageJob).toContain(
+      '[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]',
+    );
+    expect(daytonaImageJob).toContain(
+      '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+    );
+    expect(
+      daytonaImageJob!.indexOf('[[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]'),
+    ).toBeLessThan(
+      daytonaImageJob!.indexOf(
+        '--build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}"',
+      ),
+    );
     expect(workflow).toContain(
       "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
     );
@@ -111,7 +210,9 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
     expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
-    expect(workflow).not.toContain("docker image inspect");
+    // Remote Daytona manifests must use registry inspection. Local oracle
+    // images in the test job can still use the Docker daemon.
+    expect(daytonaImageJob).not.toContain("docker image inspect");
     expect(workflow).not.toContain("docker buildx prune --all --force");
     expect(workflow).not.toContain("docker system prune --all --force");
     expect(workflow).toContain('.architecture == "amd64"');
@@ -162,7 +263,31 @@ describe("runner E2E Daytona image contract", () => {
       "patches",
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
+      "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
+      "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
+      "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+      "packages/paperclip-runner/scripts/copilot-profile-identity.mjs",
+      "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+      "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v12-identity.json",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v14-identity.json",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v21-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v24-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v25-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v26-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v35-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v40-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v42-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v46-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v47-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v48-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v49-identity.json",
+      "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
+      "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
+      "packages/paperclip-runner/cursor-distributions.json",
       "packages/paperclip-runner/runner/crates",
+      "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+      "packages/paperclip-runner/scripts/pi-distribution",
       "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
@@ -192,6 +317,8 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/src",
       "packages/paperclip-runner/runner/crates",
+      "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+      "packages/paperclip-runner/scripts/pi-distribution",
     ] as const;
     const options = {
       repositoryRoot: root,
@@ -237,7 +364,21 @@ describe("runner E2E Daytona image contract", () => {
         ),
         'pub const VERSION: &str = "one";\n',
       );
+      await mkdir(path.join(root, "packages/paperclip-runner/scripts/pi-distribution"), { recursive: true });
+      for (const relativePath of [
+        "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+        "packages/paperclip-runner/scripts/pi-distribution/package.json",
+        "packages/paperclip-runner/scripts/pi-distribution/package-lock.json",
+      ]) await writeFile(path.join(root, relativePath), "version one\n");
       const baseline = await computeDaytonaImageContentId(options);
+      const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
+      expect(candidate).not.toBe(baseline);
+      expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["copilot", "pi"] }))
+        .toBe(await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "copilot"] }));
+      await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "pi"] }))
+        .rejects.toThrow("distinct known");
+      await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["unknown"] }))
+        .rejects.toThrow("distinct known");
       expect(
         await computeDaytonaImageContentId({
           ...options,
@@ -264,6 +405,9 @@ describe("runner E2E Daytona image contract", () => {
         "pnpm-lock.yaml",
         "packages/paperclip-runner/package.json",
         "packages/paperclip-runner/src/runner.ts",
+        "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+        "packages/paperclip-runner/scripts/pi-distribution/package.json",
+        "packages/paperclip-runner/scripts/pi-distribution/package-lock.json",
         "packages/paperclip-runner/runner/crates/runner-core/src/lib.rs",
       ]) {
         const absolutePath = path.join(root, relativePath);
@@ -278,6 +422,30 @@ describe("runner E2E Daytona image contract", () => {
           platform: "linux/arm64",
         }),
       ).not.toBe(baseline);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
+    "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
+  ])("invalidates the image when %s changes", async (patchPath) => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-image-id-"));
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(patchPath);
+    const options = {
+      repositoryRoot: root,
+      inputPaths: [patchPath],
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+      candidateProviders: ["cursor"],
+    } as const;
+    try {
+      await mkdir(path.dirname(path.join(root, patchPath)), { recursive: true });
+      await writeFile(path.join(root, patchPath), "export const policy = 'one';\n");
+      const baseline = await computeDaytonaImageContentId(options);
+      await writeFile(path.join(root, patchPath), "export const policy = 'two';\n");
+      expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

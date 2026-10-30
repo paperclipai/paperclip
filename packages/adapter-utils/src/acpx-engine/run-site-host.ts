@@ -36,6 +36,8 @@ export type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
  */
 export type AcpxProcessIdentitySink = {
   current: AdapterExecutionContext["onSpawn"];
+  /** Counts physical spawns on the current run, including respawns on a cached runtime. */
+  onLaunch?: () => void;
   latest: AcpxAgentProcessIdentity | null;
   localProcess?: ChildProcess;
 };
@@ -52,6 +54,7 @@ export interface ChildStderrState {
  * time and its own optional idle timer, which the store reads and writes.
  */
 export interface RuntimeCacheEntry {
+  observabilityCompatibilityKey?: string;
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;

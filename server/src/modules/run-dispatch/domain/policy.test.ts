@@ -436,6 +436,28 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  describe("completed onboarding handoff report", () => {
+    const reportingFacts = (): QueuedRunFacts => ({
+      ...baseStalenessFacts(), issueStatus: "done", wakeReason: "issue_children_completed",
+      isCompletedOnboardingHandoffWake: true,
+    });
+
+    it("allows a verified child-completion report without reopening the parent", () => {
+      expect(decideQueuedRunStaleness(reportingFacts(), NOW)).toEqual({ stale: false });
+    });
+
+    it.each([
+      { overrides: { isCompletedOnboardingHandoffWake: false }, errorCode: "issue_terminal_status" },
+      { overrides: { wakeReason: "issue_assigned" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueStatus: "cancelled" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueAssigneeAgentId: "agent-2" }, errorCode: "issue_assignee_changed" },
+      { overrides: { retryReasonKind: "max_turn_continuation" as const }, errorCode: "issue_not_in_progress" },
+    ])("preserves $errorCode guard with $overrides", ({ overrides, errorCode }) => {
+      expect(decideQueuedRunStaleness({ ...reportingFacts(), ...overrides }, NOW))
+        .toMatchObject({ stale: true, errorCode });
+    });
+  });
+
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),

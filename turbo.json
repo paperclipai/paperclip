@@ -1,0 +1,226 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": [
+    "*",
+    "**/package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".npmrc",
+    "tsconfig*.json",
+    "vitest.config.ts",
+    "scripts/**",
+    ".github/**",
+    "patches/**",
+    "tests/**",
+    "doc/**",
+    "docs/**",
+    "skills/**",
+    ".agents/**",
+    "maps/**",
+    ".claude/**"
+  ],
+  "globalEnv": [
+    "CI",
+    "CI_TASK_CACHE_SCOPE",
+    "GITHUB_WORKFLOW",
+    "NODE_OPTIONS",
+    "TZ",
+    "PAPERCLIP_*",
+    "TEST_*",
+    "VITE_*",
+    "DATABASE_URL",
+    "PG*",
+    "RUST*",
+    "CARGO*",
+    "NODE_ENV",
+    "XDG_*",
+    "LANG",
+    "LC_*",
+    "GIT_*",
+    "NPM_CONFIG_*",
+    "npm_config_*"
+  ],
+  "globalPassThroughEnv": [
+    "GITHUB_*",
+    "RUNNER_*",
+    "SSH_AUTH_SOCK",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "HOME",
+    "USER",
+    "SHELL"
+  ],
+  "tasks": {
+    "//#ci:server": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:chat": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:workspaces-a": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:workspaces-b": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/public/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:db": {
+      "inputs": [
+        "packages/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:serialized": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:runner-static": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:runner-rust": {
+      "inputs": [
+        "packages/paperclip-runner/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:runner-vitest": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:typecheck": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:build": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:docker": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:canary": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:e2e": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    }
+  }
+}

@@ -29,14 +29,33 @@ export interface AgentRunUsageInput {
 }
 
 export interface CampaignBillingSummary {
+  assistant?: import("./types.js").RunnerE2EAggregateBillingSummary["assistant"];
+  judge?: import("./types.js").RunnerE2EJudgeBillingSummary;
   testCount: number;
-  agentRunDurationMs: number;
-  leaseDurationMs: number;
+  agentRunDurationMs: number | null;
+  leaseDurationMs: number | null;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
+  estimatedLlmCostUsd?: number;
   estimatedRuntimeCostUsd: number;
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
+}
+
+/** Render observed subtotals without presenting absent measurements as zero. */
+export function billingCoverageLabel(value: string, covered: number, total: number, incompleteAmount = false): string {
+  if (!Number.isInteger(covered) || !Number.isInteger(total) || covered <= 0 || total <= 0 || covered > total) {
+    return "Unavailable";
+  }
+  return covered < total ? `${value} (partial: ${covered}/${total} runs)` : incompleteAmount ? `${value} (partial amount)` : value;
+}
+
+function costCoverageStatus(runs: number, tokens: number, reported: number, estimated: number, partial = 0): RunnerE2EBillingSummary["llm"]["costStatus"] {
+  if (partial > 0) return "partial";
+  if (runs > 0 && reported === runs) return "reported";
+  if (runs > 0 && reported + estimated === runs) return "estimated";
+  if (reported + estimated > 0) return "partial";
+  return tokens > 0 ? "unpriced" : "unavailable";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -82,24 +101,25 @@ function usageMeasurement(usage: Record<string, unknown>) {
 }
 
 function usageCostUsd(usage: Record<string, unknown>) {
+  if (usage.billingType === "subscription") return undefined;
   const measurement = usageMeasurement(usage);
+  const exact = typeof usage.costUsdExact === "string" && /^\d+(?:\.\d+)?$/.test(usage.costUsdExact)
+    ? finiteNumber(Number(usage.costUsdExact)) : undefined;
   const direct =
-    firstNumber(usage, [
-      "cacheAdjustedCostUsd",
-      "costUsd",
-      "providerCostUsd",
-    ]) ??
+    firstNumber(usage, ["cacheAdjustedCostUsd"]) ?? exact ??
+    firstNumber(usage, ["costUsd", "providerCostUsd"]) ??
     firstNumber(measurement, [
       "cacheAdjustedCostUsd",
       "costUsd",
       "providerCostUsd",
     ]);
-  if (direct !== undefined) return direct;
+  if (direct !== undefined) return usage.costStatus === "unpriced" && direct === 0 ? undefined : direct;
   const cost = record(usage.cost);
   const currency =
     typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
   if (currency !== "USD") return undefined;
-  return firstNumber(cost, ["amount", "total"]);
+  const amount = firstNumber(cost, ["amount", "total"]);
+  return usage.costStatus === "unpriced" && amount === 0 ? undefined : amount;
 }
 
 function usageEntries(
@@ -134,9 +154,13 @@ function durationBetween(
 ) {
   const started = startedAt ? new Date(startedAt).getTime() : Number.NaN;
   const finished = finishedAt ? new Date(finishedAt).getTime() : Number.NaN;
-  return Number.isFinite(started) && Number.isFinite(finished)
-    ? Math.max(0, finished - started)
-    : 0;
+  return Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+    ? finished - started
+    : null;
+}
+
+function sumDurations(values: readonly (number | null)[]): number | null {
+  return values.some(value => value === null) ? null : values.reduce<number>((total, value) => total + value!, 0);
 }
 
 function resourceValue(
@@ -152,10 +176,9 @@ export function buildRuntimeUsage(input: {
   leases?: readonly RuntimeLeaseUsageInput[];
   fallbackFinishedAt?: string | Date;
 }): RunnerE2ERuntimeUsage {
-  const agentRunDurationMs = input.runs.reduce(
-    (total, run) => total + durationBetween(run.startedAt, run.finishedAt),
-    0,
-  );
+  const agentRunDurationMs = input.runs.length > 0
+    ? sumDurations(input.runs.map(run => durationBetween(run.startedAt, run.finishedAt)))
+    : null;
   if (input.environmentId === "local") {
     return {
       provider: "local",
@@ -169,6 +192,7 @@ export function buildRuntimeUsage(input: {
 
   const leases = input.leases ?? [];
   let leaseDurationMs = 0;
+  let leaseDurationsComplete = leases.length > 0;
   let estimatedListCostUsd = 0;
   let resourcesComplete = leases.length > 0;
   const resourceRows: Array<{ cpu: number; memory: number; disk: number }> = [];
@@ -176,6 +200,11 @@ export function buildRuntimeUsage(input: {
     const finishedAt =
       lease.releasedAt ?? input.fallbackFinishedAt ?? lease.updatedAt ?? null;
     const durationMs = durationBetween(lease.acquiredAt, finishedAt);
+    if (durationMs === null) {
+      leaseDurationsComplete = false;
+      resourcesComplete = false;
+      continue;
+    }
     leaseDurationMs += durationMs;
     const cpu = resourceValue(lease.metadata, "cpu");
     const memory = resourceValue(lease.metadata, "memory");
@@ -199,7 +228,7 @@ export function buildRuntimeUsage(input: {
   return {
     provider: "daytona",
     agentRunDurationMs,
-    leaseDurationMs: leases.length > 0 ? leaseDurationMs : null,
+    leaseDurationMs: leaseDurationsComplete ? leaseDurationMs : null,
     leaseCount: leases.length,
     ...(commonResource("cpu") === undefined
       ? {}
@@ -233,7 +262,7 @@ export function fallbackRuntimeUsage(
   if (result.runtimeUsage) return result.runtimeUsage;
   return {
     provider: result.environmentId,
-    agentRunDurationMs: result.durationMs,
+    agentRunDurationMs: null,
     leaseDurationMs: null,
     leaseCount: 0,
     costStatus:
@@ -248,17 +277,25 @@ export function fallbackRuntimeUsage(
 export function summarizeExecutionBilling(
   result: Pick<
     RunnerE2EResult,
-    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage"
-  >,
+    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage" | "firstTaskQuality" | "completionQuality" | "publicMcp" | "productJourney"
+  > & Partial<Pick<RunnerE2EResult, "runtimeMode" | "billing">>,
 ): RunnerE2EBillingSummary {
-  const requestedRunCount = Math.max(result.runIds?.length ?? 0, 1);
-  const entries = usageEntries(result.usage, requestedRunCount);
+  // Some retained journeys store their measured summary without raw run usage.
+  // Regeneration must preserve those measurements, including unknown prices.
+  if (result.usage === undefined && result.billing) return structuredClone(result.billing);
+  const browserOnly = Boolean(result.productJourney && result.runtimeMode === "none" && !result.runIds?.length);
+  const requestedRunCount = browserOnly ? 0 : Math.max(result.runIds?.length ?? 0, 1);
+  const entries = browserOnly ? [] : usageEntries(result.usage, requestedRunCount);
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
   let runsWithTokenUsage = 0;
   let runsWithReportedCost = 0;
+  let runsWithEstimatedCost = 0;
+  let runsWithPartialReportedCost = 0;
   let reportedCostUsd = 0;
+  let estimatedCostUsd = 0;
+  let incompleteReceipt = false;
   for (const usage of entries) {
     if (!usage) continue;
     const measurement = usageMeasurement(usage);
@@ -279,44 +316,62 @@ export function summarizeExecutionBilling(
     inputTokens += input;
     outputTokens += output;
     cachedInputTokens += cached;
-    if (input > 0 || output > 0 || cached > 0) runsWithTokenUsage += 1;
+    const completeTokens = firstNumber(measurement, ["inputTokens", "input", "promptTokens"]) !== undefined &&
+      firstNumber(measurement, ["outputTokens", "output", "completionTokens"]) !== undefined && usage.accountingReceiptReady !== false;
+    if (completeTokens) runsWithTokenUsage += 1;
+    if (usage.accountingReceiptReady === false) incompleteReceipt = true;
     const costUsd = usageCostUsd(usage);
-    if (costUsd !== undefined && (costUsd > 0 || input > 0 || output > 0)) {
-      runsWithReportedCost += 1;
-      reportedCostUsd += costUsd;
+    if (costUsd !== undefined) {
+      if (usage.costStatus === "estimated") {
+        runsWithEstimatedCost += 1;
+        estimatedCostUsd += costUsd;
+      } else {
+        runsWithReportedCost += 1;
+        if (usage.costStatus === "unpriced") runsWithPartialReportedCost += 1;
+        reportedCostUsd += costUsd;
+      }
     }
   }
   const runCount = Math.max(requestedRunCount, entries.length);
-  const costStatus =
-    runsWithReportedCost === runCount
-      ? "reported"
-      : runsWithReportedCost > 0
-        ? "partial"
-        : runsWithTokenUsage > 0
-          ? "unpriced"
-          : "unavailable";
-  const runtime = fallbackRuntimeUsage(result);
+  const costStatus = costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost, runsWithPartialReportedCost);
+  const runtime = { ...fallbackRuntimeUsage(result) };
+  if (browserOnly) runtime.agentRunDurationMs = 0;
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
+  const judgments = [...(result.firstTaskQuality ? [result.firstTaskQuality] : []), ...(result.completionQuality ?? [])];
+  const sumKnown = (key: "inputTokens" | "outputTokens" | "estimatedCostUsd") => judgments.some(q => q[key] === null) ? null : judgments.reduce((sum, q) => sum + (q[key] ?? 0), 0);
+  const quality = judgments.length ? { inputTokens: sumKnown("inputTokens"), outputTokens: sumKnown("outputTokens"), estimatedCostUsd: sumKnown("estimatedCostUsd"), reservedCostUsd: judgments.reduce((sum, q) => sum + q.reservedCostUsd, 0) } : undefined;
+  // The operations receipt covers setup and agent requests for ONE owning attempt.
+  // Descendants reuse the fixture context without copying its receipt or charges.
+  const operations = result.productJourney?.operations;
+  const modelSubtotal = operations ? operations.modelCostUsd : reportedCostUsd + estimatedCostUsd;
   const complete =
+    !incompleteReceipt && runsWithPartialReportedCost === 0 &&
+    (!quality || quality.estimatedCostUsd !== null) &&
+    (!operations || operations.modelCostUsd !== null) &&
     runsWithTokenUsage === runCount &&
-    runsWithReportedCost === runCount &&
+    runsWithReportedCost + runsWithEstimatedCost === runCount &&
     runtime.costStatus !== "unavailable";
   return {
+    ...(result.publicMcp ? { assistant: result.publicMcp } : {}),
     llm: {
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
+      runsWithPartialReportedCost,
       inputTokens,
       outputTokens,
       cachedInputTokens,
       totalTokens: inputTokens + cachedInputTokens + outputTokens,
       reportedCostUsd,
+      estimatedCostUsd,
       costStatus,
     },
     runtime,
     reportedCostUsd,
     estimatedRuntimeCostUsd,
-    observedAndEstimatedCostUsd: reportedCostUsd + estimatedRuntimeCostUsd,
+    ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
+    observedAndEstimatedCostUsd: modelSubtotal === null || quality?.estimatedCostUsd === null ? null : modelSubtotal + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
     complete,
   };
 }
@@ -324,7 +379,16 @@ export function summarizeExecutionBilling(
 export function aggregateCampaignBilling(
   results: readonly RunnerE2EResult[],
 ): CampaignBillingSummary {
-  const summaries = results.map(summarizeExecutionBilling);
+  return aggregateBillingSummaries(results.map(result => ({
+    executionId: result.executionId, billing: summarizeExecutionBilling(result),
+  })));
+}
+
+export function aggregateBillingSummaries(
+  entries: readonly { executionId: string; billing: RunnerE2EBillingSummary }[],
+): CampaignBillingSummary {
+  const summaries = entries.map(entry => entry.billing);
+  const executionIds = [...new Set(entries.map(entry => entry.executionId))];
   const runCount = summaries.reduce(
     (total, summary) => total + summary.llm.runCount,
     0,
@@ -341,24 +405,41 @@ export function aggregateCampaignBilling(
     (total, summary) => total + summary.reportedCostUsd,
     0,
   );
+  const runsWithEstimatedCost = summaries.reduce((sum, summary) => sum + (summary.llm.runsWithEstimatedCost ?? 0), 0);
+  const runsWithPartialReportedCost = summaries.reduce((sum, summary) => sum + (summary.llm.runsWithPartialReportedCost ?? 0), 0);
+  const estimatedLlmCostUsd = summaries.reduce((sum, summary) => sum + (summary.llm.estimatedCostUsd ?? 0), 0);
   const estimatedRuntimeCostUsd = summaries.reduce(
     (total, summary) => total + summary.estimatedRuntimeCostUsd,
     0,
   );
+  const judges = summaries.flatMap(summary => summary.judge ? [summary.judge] : []);
+  const assistants = summaries.flatMap(summary => summary.assistant ? [summary.assistant] : []);
   return {
-    testCount: results.length,
-    agentRunDurationMs: summaries.reduce(
-      (total, summary) => total + summary.runtime.agentRunDurationMs,
-      0,
-    ),
-    leaseDurationMs: summaries.reduce(
-      (total, summary) => total + (summary.runtime.leaseDurationMs ?? 0),
-      0,
-    ),
+    ...(assistants.length ? { assistant: {
+      requests: assistants.reduce((n, u) => n + u.requests, 0),
+      inputTokens: assistants.reduce((n, u) => n + u.inputTokens, 0),
+      outputTokens: assistants.reduce((n, u) => n + u.outputTokens, 0),
+      cachedInputTokens: assistants.reduce((n, u) => n + u.cachedInputTokens, 0),
+      estimatedCostUsd: assistants.reduce((n, u) => n + u.estimatedCostUsd, 0),
+    } } : {}),
+    ...(judges.length ? { judge: {
+      attempts: judges.length,
+      inputTokens: judges.reduce((n, q) => n + (q.inputTokens ?? 0), 0),
+      outputTokens: judges.reduce((n, q) => n + (q.outputTokens ?? 0), 0),
+      estimatedCostUsd: judges.some(q => q.estimatedCostUsd === null) ? null : judges.reduce((n, q) => n + (q.estimatedCostUsd ?? 0), 0),
+      reservedCostUsd: judges.reduce((n, q) => n + q.reservedCostUsd, 0),
+      attemptsWithUnknownUsage: judges.filter(q => q.estimatedCostUsd === null).length,
+    } } : {}),
+    testCount: executionIds.length,
+    agentRunDurationMs: sumDurations(summaries.map(summary => summary.runtime.agentRunDurationMs)),
+    leaseDurationMs: sumDurations(summaries.filter(summary => summary.runtime.provider === "daytona")
+      .map(summary => summary.runtime.leaseDurationMs)),
     llm: {
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
+      runsWithPartialReportedCost,
       inputTokens: summaries.reduce(
         (total, summary) => total + summary.llm.inputTokens,
         0,
@@ -376,19 +457,14 @@ export function aggregateCampaignBilling(
         0,
       ),
       reportedCostUsd: reportedLlmCostUsd,
-      costStatus:
-        runsWithReportedCost === runCount
-          ? "reported"
-          : runsWithReportedCost > 0
-            ? "partial"
-            : runsWithTokenUsage > 0
-              ? "unpriced"
-              : "unavailable",
+      estimatedCostUsd: estimatedLlmCostUsd,
+      costStatus: costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost, runsWithPartialReportedCost),
     },
     reportedLlmCostUsd,
+    estimatedLlmCostUsd,
     estimatedRuntimeCostUsd,
-    observedAndEstimatedCostUsd: reportedLlmCostUsd + estimatedRuntimeCostUsd,
-    testsWithCompleteBilling: summaries.filter((summary) => summary.complete)
-      .length,
+    observedAndEstimatedCostUsd: summaries.some(s => s.observedAndEstimatedCostUsd === null) ? null : summaries.reduce((total, summary) => total + (summary.observedAndEstimatedCostUsd ?? 0), 0),
+    testsWithCompleteBilling: executionIds.filter(id =>
+      entries.filter(entry => entry.executionId === id).every(entry => entry.billing.complete)).length,
   };
 }

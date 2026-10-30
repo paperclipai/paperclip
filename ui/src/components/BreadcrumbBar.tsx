@@ -17,6 +17,7 @@ import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { cn } from "../lib/utils";
+import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -53,6 +54,7 @@ function GlobalToolbar({
 }
 
 export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
     breadcrumbToolbar,
@@ -137,7 +139,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                 <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                   {isLast || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
-                      <BreadcrumbPage className="flex min-w-0 items-baseline gap-1.5">
+                      <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline")}>
                         {crumb.leading && (
                           <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
                         )}
@@ -152,7 +154,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                     <BreadcrumbLink asChild>
                       {crumb.leading || crumb.identifier ? (
                         <Link
-                          to={crumb.href}
+                          to={crumb.href} onClick={crumb.onClick}
                           className={cn(
                             "flex min-w-0 items-baseline gap-1.5",
                             i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
@@ -167,7 +169,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                         </Link>
                       ) : (
                         <Link
-                          to={crumb.href}
+                          to={crumb.href} onClick={crumb.onClick}
                           className={cn(
                             "min-w-0 truncate",
                             i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
@@ -209,6 +211,9 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
             </h1>
           )}
         </div>
+        {coordinatorEnabled && breadcrumbs[0].trailing ? (
+          <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
+        ) : null}
         {globalToolbarSlots}
       </div>
     );

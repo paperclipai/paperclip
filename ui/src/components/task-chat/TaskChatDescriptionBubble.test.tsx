@@ -27,6 +27,7 @@ vi.mock("@/components/MarkdownEditor", () => ({
 }));
 
 import { ThemeProvider } from "@/context/ThemeContext";
+import { CoordinatorPresentation } from "../coordinator/CoordinatorPresentation";
 import { TaskChatDescriptionBubble, type TaskChatIssueBrief } from "./TaskChatDescriptionBubble";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +81,7 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(bubble).not.toBeNull();
     expect(bubble?.getAttribute("data-author")).toBe("human");
     expect(bubble?.className).toContain("items-end");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).toBeNull();
     const body = bubble?.querySelector(".bg-\\(--liveness-blue\\)");
     expect(body).not.toBeNull();
     expect(body?.textContent).toContain("Ship the widget by");
@@ -89,12 +90,24 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(bubble?.querySelector('[data-testid="task-chat-description-edit"]')).toBeNull();
   });
 
+  it("uses the task creation time relatively in Coordinator and preserves Classic time formatting", () => {
+    const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    act(() => root!.render(<ThemeProvider><CoordinatorPresentation.Provider value>
+      <TaskChatDescriptionBubble brief={makeBrief({ createdAt })} />
+    </CoordinatorPresentation.Provider></ThemeProvider>));
+    expect(container.querySelector("time")?.getAttribute("datetime")).toBe(createdAt);
+    expect(container.querySelector("time")?.textContent).toMatch(/\d+m ago/);
+    render(makeBrief({ createdAt }));
+    expect(container.querySelector("time")).toBeNull();
+    expect(container.textContent).not.toContain("m ago");
+  });
+
   it("renders an agent-created task as the agent-side bubble with the avatar author header", () => {
     render(makeBrief({ author: "agent", authorName: "CEO" }));
     const bubble = container.querySelector('[data-testid="task-chat-description-bubble"]');
     expect(bubble?.getAttribute("data-author")).toBe("agent");
     expect(bubble?.className).toContain("items-start");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).not.toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).not.toBeNull();
     expect(bubble?.textContent).toContain("CEO");
     expect(bubble?.querySelector(".bg-\\(--bubble-agent\\)")).not.toBeNull();
     expect(bubble?.querySelector(".bg-\\(--liveness-blue\\)")).toBeNull();

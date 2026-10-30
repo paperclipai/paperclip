@@ -1,4 +1,6 @@
+import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
+import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -23,6 +25,10 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { compactAdjacentErrors } from "./adjacent-errors";
+import { CoordinatorChatTaskHandoff } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
+import { CoordinatorChatDecisionReceipt } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
+import { CoordinatorChatPendingQuestion } from "@/components/coordinator/CoordinatorChatPendingQuestions";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
@@ -72,6 +78,8 @@ interface TaskChatThreadViewProps {
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
   attachments?: IssueAttachment[];
+  onOpenSkill?: (skillId: string, name: string) => void;
+  onOpenBrowser?: (browserId: string) => void;
 }
 
 function renderItem(
@@ -92,9 +100,16 @@ function renderItem(
   onRetryFailedRun?: (runId: string) => Promise<void> | void,
   retryFailedRunId?: string | null,
   attachments: IssueAttachment[] = [],
+  onOpenSkill?: (skillId: string, name: string) => void,
+  onOpenBrowser?: (browserId: string) => void,
 ) {
   switch (item.kind) {
+    case "pending_question": return <CoordinatorChatPendingQuestion item={item.question} />;
+    case "task_handoff": return <CoordinatorChatTaskHandoff handoff={item.handoff} animateEntry={item.animateEntry} />;
+    case "decision_receipt": return <CoordinatorChatDecisionReceipt receipt={item.receipt} />;
+    case "browser": return <TaskBrowserActivity browser={item.browser} label={item.label} onOpen={onOpenBrowser} />;
     case "project_created": return <TaskChatProjectCreatedCard item={item} />;
+    case "skill_created": return <TaskChatSkillCreatedCard item={item} onOpen={onOpenSkill} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to
@@ -107,6 +122,7 @@ function renderItem(
             ...item.attachedTurn,
             agentName: item.attachedTurn.agentName ?? item.authorName,
             agentIcon: item.attachedTurn.agentIcon ?? item.agentIcon,
+            agent: item.attachedTurn.agent ?? item.agent,
           }
         : item.attachedTurn;
       const turn = attachedTurnItem ? (
@@ -132,6 +148,8 @@ function renderItem(
               undefined,
               undefined,
               attachments,
+              onOpenSkill,
+              onOpenBrowser,
             )
           }
         />
@@ -166,7 +184,7 @@ function renderItem(
         <TaskChatMarker
           item={item}
           onTryAgain={
-            item.id === retryableMarkerId
+            item.id === retryableMarkerId && item.retryable !== false
               ? item.runId && onRetryFailedRun
                 ? () => onRetryFailedRun(item.runId!)
                 : onTryAgainNoLiveExecutionPath
@@ -235,6 +253,8 @@ function renderItem(
               undefined,
               undefined,
               attachments,
+              onOpenSkill,
+              onOpenBrowser,
             )
           }
         />
@@ -300,43 +320,41 @@ export function TaskChatThreadView({
   className,
   scroll = true,
   attachments = EMPTY_ATTACHMENTS,
+  onOpenSkill,
+  onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
-      ? [...items]
+      ? [...visibleItems]
           .reverse()
           .find(
-            (item) =>
-              item.kind === "marker" &&
-              item.variant === "interrupted" &&
-              (item.label === "Run failed" ||
-                item.label === "Usage limit reached"),
+            (item) => {
+              const marker = item.kind === "marker" ? item : retryMarkers.get(item.id);
+              return marker?.variant === "interrupted" &&
+                (marker.label === "Run failed" || marker.label === "Usage limit reached");
+            },
           )?.id
       : undefined;
   // Streaming tail and header updates must not rebuild settled markdown/tool trees.
   const history = useMemo(() => {
+    const renderVisibleItem = (item: TaskChatItem) => {
+      const marker = item.id === retryableMarkerId ? retryMarkers.get(item.id) : undefined;
+      const runId = marker?.retryable !== false ? marker?.runId : undefined;
+      const runRetry = !onTryAgainNoLiveExecutionPath && onRetryFailedRun && runId
+        ? () => onRetryFailedRun(runId)
+        : undefined;
+      return renderItem(
+        item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions,
+        renderQueuedAction, onRuntimeRequestDecision, "classic",
+        runRetry ?? onTryAgainNoLiveExecutionPath,
+        runRetry ? retryFailedRunId === runId : tryAgainNoLiveExecutionPathPending,
+        retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+      );
+    };
     const renderedItems = streamlined
-      ? items
-          .map((item) => ({
-            item,
-            content: renderItem(
-              item,
-              onApprovalDecision,
-              renderInteraction,
-              renderBrief,
-              renderMessageActions,
-              renderQueuedAction,
-              onRuntimeRequestDecision,
-              "classic",
-              onTryAgainNoLiveExecutionPath,
-              tryAgainNoLiveExecutionPathPending,
-              retryableMarkerId,
-              onRetryFailedRun,
-              retryFailedRunId,
-              attachments,
-            ),
-          }))
+      ? visibleItems.map((item) => ({ item, content: renderVisibleItem(item) }))
           .filter((entry) => entry.content !== null)
       : [];
     return (
@@ -347,6 +365,7 @@ export function TaskChatThreadView({
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -362,11 +381,12 @@ export function TaskChatThreadView({
                 {content}
               </div>
             ))
-          : items.map((item, index) => (
+          : visibleItems.map((item, index) => (
               <div
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -378,31 +398,16 @@ export function TaskChatThreadView({
                     "-mt-3",
                 )}
               >
-                {renderItem(
-                  item,
-                  onApprovalDecision,
-                  renderInteraction,
-                  renderBrief,
-                  renderMessageActions,
-                  renderQueuedAction,
-                  onRuntimeRequestDecision,
-                  "classic",
-                  onTryAgainNoLiveExecutionPath,
-                  tryAgainNoLiveExecutionPathPending,
-                  retryableMarkerId,
-                  onRetryFailedRun,
-                  retryFailedRunId,
-                  attachments,
-                )}
+                {renderVisibleItem(item)}
               </div>
             ))}
       </>
     );
   }, [
-    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    visibleItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
-    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
   ]);
   const body = (
     <div
@@ -421,7 +426,7 @@ export function TaskChatThreadView({
         </div>
       ) : null}
       {history}
-      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
+      {tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
     </div>
   );
 
@@ -436,7 +441,7 @@ export function TaskChatThreadView({
 
 // Cheap content signature so streaming growth (text lengthening without the
 // item count changing) still advances the auto-follow key. Shared by the
-// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+// shared message scroller on desktop and mobile (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
   if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);

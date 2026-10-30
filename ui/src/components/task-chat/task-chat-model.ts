@@ -13,12 +13,16 @@
  * CSS motion tokens in ui/src/index.css.
  */
 import type {
+  TaskBrowser,
   IssueAttachment,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueDocument,
   IssueDocumentSummary,
   IssueWorkProduct,
+  DecisionHistoryItem,
+  ConversationTaskHandoff,
+  AttentionItem,
 } from "@paperclipai/shared";
 import type {
   PaperclipQuestionResponse,
@@ -100,12 +104,17 @@ export interface TaskChatTokenUsage {
 
 /** A human/agent/system message bubble. */
 export interface TaskChatMessageItem {
+  origin?: "comment" | "fast_response";
   /** Stable UI identity through optimistic acknowledgement; id remains canonical. */
   renderKey?: string;
   id: string;
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  /** Human identity comes from the company directory, matched by stored user ID. */
+  authorUserId?: string | null;
+  authorAvatarUrl?: string | null;
+  isCurrentUser?: boolean;
   text: string;
   /** Runner-authored output channel. Legacy adapters leave this unset. */
   channel?: "progress" | "final" | "unknown";
@@ -126,6 +135,7 @@ export interface TaskChatMessageItem {
   }>;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  agent?: import("../AgentAvatar").AvatarAgent;
   /**
    * Responsible user's display name, set only when this agent comment is a
    * cross-issue write (the author is not the assignee). Renders as a
@@ -245,6 +255,8 @@ export interface TaskChatMarkerItem {
   variant: "session_start" | "interrupted" | "turn_boundary";
   label: string;
   detail?: string;
+  /** False when the recorded run cannot be retried, even after the chat continues. */
+  retryable?: boolean;
   /** Renders the marker as a quiet disclosure row with detail beneath it. */
   collapsible?: boolean;
   /** Expected cancellation is neutral; unexpected failures remain destructive. */
@@ -252,6 +264,14 @@ export interface TaskChatMarkerItem {
   runId?: string;
   createdAtIso?: string;
   runHref?: string;
+  planHref?: string;
+  /** An actionable credential denial is always expanded in the task conversation. */
+  credentialAccess?: {
+    agentName: string;
+    credentialName?: string;
+    deniedUser: string;
+    settingsHref: string;
+  };
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */
@@ -503,9 +523,12 @@ export interface TaskChatTurnItem {
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /** Superseded execution status is omitted; activity remains inspectable. */
+  historical?: boolean;
   /** Agent identity retained when a live runner turn becomes durable history. */
   agentName?: string;
   agentIcon?: string | null;
+  agent?: import("../AgentAvatar").AvatarAgent;
   /**
    * The in-flight run's status line, hoisted to be THE turn's single visible
    * row while collapsed (PAP-354 parent-row model). Absent once settled.
@@ -542,8 +565,32 @@ export interface TaskChatProjectCreatedItem {
   timestamp: string;
 }
 
+export interface TaskChatSkillCreatedItem {
+  id: string;
+  kind: "skill_created";
+  skillId: string;
+  name: string;
+  description?: string | null;
+  slug?: string | null;
+  versionId?: string | null;
+  timestamp: string;
+}
+
+export interface TaskChatBrowserItem {
+  id: string;
+  kind: "browser";
+  browser: TaskBrowser;
+  label: string;
+  timestamp: string;
+}
+
 export type TaskChatItem =
+  | { id: string; kind: "pending_question"; question: AttentionItem }
+  | { id: string; kind: "decision_receipt"; receipt: DecisionHistoryItem }
+  | { id: string; kind: "task_handoff"; handoff: ConversationTaskHandoff; animateEntry?: boolean }
+  | TaskChatBrowserItem
   | TaskChatProjectCreatedItem
+  | TaskChatSkillCreatedItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem

@@ -1,17 +1,61 @@
+import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
+import { latestFailedRunsByAgent } from "@paperclipai/shared";
+import { agentConfigurationSpec } from "@paperclipai/shared";
+import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
+import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
+import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
+import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
+import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId, aiLoginUserAction } from "./connection-management-authz.js";
+import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
+import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+import { isAgentSetupDraft } from "../modules/agent-lifecycle/index.js";
+
+import { agentIdentityService } from "../services/agent-identity.js";
+import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
+import { connectionIntentService } from "../services/connection-intents.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { publicMcpConfig } from "../services/public-mcp/oauth.js";
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { completeConnectionIntentSchema } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
+import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
+import { pipeline } from "node:stream/promises";
+import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { withManagedAiProbe, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
+import {
+  ADAPTER_AUTH_MISSING_CHECK_CODE,
+  aiConnectionBindingSchema,
+  aiConnectionMetadataSchema,
+  aiRoutingModel,
+  aiRuntimeConnectionBindingSchema,
+  type AiConnectionBinding,
+  type AiRuntimeConnectionBinding,
+} from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
+import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
+import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
-import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
+import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
+import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
+import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
+import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -32,11 +76,14 @@ import {
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   type AgentDesiredSkillEntry,
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
+  restoreAgentInstructionSchema,
+  resolveAgentInstructionCandidateSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
@@ -61,7 +108,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
+import { registerAgentProjectAccessRoutes } from "./agent-project-access.js";
+import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/native-agent-runtime-inheritance.js";
+import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
+import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
+import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
+import { instructionPath } from "../services/agent-instruction-files.js";
+import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -80,7 +133,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
-import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
+import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
@@ -91,7 +144,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
-import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
+
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -241,8 +294,16 @@ import {
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
 import {
+  canActorReadHeartbeatRun,
+  getHeartbeatRunReadDecisions,
+  canActorReadWorkspaceOperation,
+  redactHeartbeatRunListRow,
+} from "../services/heartbeat-run-privacy.js";
+import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
+  validatePaperclipRunnerDotConfig,
+  validatePaperclipRunnerGrokConfig,
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
@@ -278,6 +339,12 @@ function mergeDesiredSkillEntries(
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+type RunReadBinding = {
+  companyId: string;
+  scopeKind?: "company" | "issue" | null;
+  issueId?: string | null;
+};
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -377,6 +444,7 @@ const ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES = 5;
 
 async function anySecretNamesAccountHome(
   secretsSvc: {
+    hasInstanceAccountHomeClaim: (companyId: string, accountHomeDir: string) => Promise<boolean>;
     list: (companyId: string) => Promise<Array<{ id: string; name: string; provider: string }>>;
     resolveSecretValueForDeviceLoginCheck: (
       companyId: string,
@@ -387,6 +455,7 @@ async function anySecretNamesAccountHome(
   companyId: string,
   accountHomeDir: string,
 ): Promise<boolean> {
+  if (await secretsSvc.hasInstanceAccountHomeClaim(companyId, accountHomeDir)) return true;
   const checkedSecretIds = new Set<string>();
   for (let pass = 0; pass < ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES; pass += 1) {
     const secrets = await secretsSvc.list(companyId);
@@ -525,11 +594,14 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
-  const svc = agentService(db);
+  const managementGuard = connectionManagementGuard(db, "ai");
+  const svc = agentService(db, { cancelWorkForScope: scope => heartbeat.cancelBudgetScopeWork(scope) });
+  const svcLifecycle = createAgentLifecycle(db, { cancelWorkForScope: scope => heartbeat.cancelBudgetScopeWork(scope) });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const environmentsSvc = environmentService(db);
+  const { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, assertAdapterTestEnvironmentBinding, testManagedEnvironment } = agentEnvironmentTestService(db, options.pluginWorkerManager);
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -689,7 +761,7 @@ export function agentRoutes(
     store: setupTokenCleanupStore,
     completeCredential: async (input) => {
       if (!input.scope.aiConnection) return setupTokenSecretWriter(input);
-      await aiConnectionService(db).save(input.scope.companyId, input.scope.ownerUserId, input.scope.aiConnection, input.token, input.sessionId);
+      await completeSetupTokenAiConnection(db, input);
     },
     rateLimiter: setupTokenRateLimiter,
   });
@@ -722,11 +794,36 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
+  const agentFiles = agentFileStore(db);
+  const instructionRevisions = agentInstructionRevisionService(db);
+  const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
+  function instructionFileDetail(snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
+    receipt?: import("@paperclipai/shared").AgentInstructionCommitReceipt) {
+    const path = snapshot.revision.entryFile;
+    return { path, content: snapshot.content, contentHash: snapshot.revision.contentHash, size: snapshot.revision.byteLength, revision: snapshot.revision, receipt,
+      language: path.toLowerCase().endsWith(".md") ? "markdown" : "text", markdown: path.toLowerCase().endsWith(".md"),
+      isEntryFile: true, editable: true, deprecated: false, virtual: false };
+  }
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function actorCanReadRun(req: Request, run: RunReadBinding) {
+    return canActorReadHeartbeatRun(db, access, req.actor, run);
+  }
+
+  async function assertRunReadAllowed(
+    req: Request,
+    res: Response,
+    run: RunReadBinding,
+    notFoundMessage = "Heartbeat run not found",
+  ) {
+    if (await actorCanReadRun(req, run)) return true;
+    res.status(404).json({ error: notFoundMessage });
+    return false;
+  }
 
   // The company-scoped adapter login-session service. It runs the device-login
   // flow in a fresh trusted sandbox and holds the one-time prompt in memory. The
@@ -801,7 +898,7 @@ export function agentRoutes(
           if (managedSession?.aiConnection) {
             await adapterLoginStore.withCompanyAdapterPromotionLock(context.companyId, context.startedByUserId, context.adapterType, async () => {
               if (!(await checkStagedCredentialReadiness(authBytes)).ready) throw new Error("Provider credential is not ready");
-              await aiConnectionService(db).save(context.companyId, context.startedByUserId, managedSession.aiConnection!, authBytes.toString("utf8"), context.sessionId);
+              await aiConnectionService(db).save(context.companyId, context.startedByUserId, managedSession.aiConnection!, authBytes.toString("utf8"), { id: context.sessionId }, undefined, context.managementContext);
             });
             return;
           }
@@ -1046,7 +1143,7 @@ export function agentRoutes(
           if (managedSession?.aiConnection) {
             await adapterLoginStore.withCompanyAdapterPromotionLock(context.companyId, context.startedByUserId, context.adapterType, async () => {
               if (!(await checkStagedGrokCredentialReadiness(authBytes)).ready) throw new Error("Provider credential is not ready");
-              await aiConnectionService(db).save(context.companyId, context.startedByUserId, managedSession.aiConnection!, authBytes.toString("utf8"), context.sessionId);
+              await aiConnectionService(db).save(context.companyId, context.startedByUserId, managedSession.aiConnection!, authBytes.toString("utf8"), { id: context.sessionId }, undefined, context.managementContext);
             });
             return;
           }
@@ -1153,396 +1250,6 @@ export function agentRoutes(
       return decideAgentRead(req, { id, companyId });
     }));
     return rows.filter((_, index) => decisions[index]?.allowed);
-  }
-
-  /**
-   * Resolve the execution target the adapter should run its test probes against.
-   *
-   * - No environmentId / local environment → returns a local target so the
-   *   adapter probes the Paperclip host (legacy behavior).
-   * - SSH environment → builds an SSH execution target from the environment
-   *   config so the adapter probes the remote box. No lease is required:
-   *   the SSH spec is fully derived from the saved environment config.
-   * - Sandbox / plugin environments → acquires an ad-hoc lease, realizes the
-   *   workspace, and resolves a sandbox execution target wired to the runtime
-   *   so the adapter probe runs inside the sandbox the same way a heartbeat
-   *   would. The returned `release` callback rolls the lease back when the
-   *   route is done.
-   *
-   * The caller MUST always invoke `release()` (typically in a `finally` block).
-   */
-  async function resolveAdapterTestExecutionContext(input: {
-    companyId: string;
-    adapterType: string;
-    environmentId: string | null;
-  }): Promise<{
-    executionTarget: AdapterExecutionTarget | null;
-    environmentName: string | null;
-    fallbackChecks: AdapterEnvironmentCheck[];
-    sandboxIdentityCheck?: AdapterEnvironmentCheck | null;
-    release: (status?: "released" | "failed") => Promise<void>;
-  }> {
-    const noopRelease = async () => {};
-
-    if (!input.environmentId) {
-      return {
-        executionTarget: null,
-        environmentName: null,
-        fallbackChecks: [],
-        release: noopRelease,
-      };
-    }
-
-    const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
-    if (!requestedEnvironment) {
-      return {
-        executionTarget: null,
-        environmentName: null,
-        fallbackChecks: [
-          {
-            code: "environment_not_found",
-            level: "warn",
-            message: "Selected environment was not found. The test did not run.",
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    // Managed-sandbox-only policy: redirect a Test that would run on the local
-    // host onto the platform-managed sandbox, the same as a real run does
-    // (resolveExecutionWorkspaceEnvironmentId in heartbeat). Without this
-    // redirect the Test probes the local host while the run executes in the
-    // managed sandbox, so a passing Test validates the wrong execution target.
-    // With no active managed sandbox the Test fails closed — never local.
-    let environment = requestedEnvironment;
-    if (requestedEnvironment.driver === "local") {
-      const managedSandboxOnly =
-        (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
-      if (managedSandboxOnly) {
-        const managedSandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(
-          input.companyId,
-        );
-        if (!managedSandboxEnvironment) {
-          return {
-            executionTarget: null,
-            environmentName: requestedEnvironment.name,
-            fallbackChecks: [
-              {
-                code: "managed_sandbox_unavailable",
-                level: "error",
-                message:
-                  "This instance runs agents only in its platform-managed sandbox, but no active managed sandbox environment exists. The test did not run.",
-                hint: "Restore the managed sandbox environment, then test again.",
-              },
-            ],
-            release: noopRelease,
-          };
-        }
-        environment = managedSandboxEnvironment;
-      }
-    }
-
-    if (environment.driver === "local") {
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [],
-        release: noopRelease,
-      };
-    }
-
-    if (environment.driver === "ssh") {
-      try {
-        const target = await resolveEnvironmentExecutionTarget({
-          db,
-          companyId: input.companyId,
-          adapterType: input.adapterType,
-          environment: {
-            id: environment.id,
-            driver: environment.driver,
-            config: environment.config ?? null,
-          },
-          leaseMetadata: null,
-        });
-        if (target) {
-          return {
-            executionTarget: target,
-            environmentName: environment.name,
-            fallbackChecks: [],
-            release: noopRelease,
-          };
-        }
-        return {
-          executionTarget: null,
-          environmentName: environment.name,
-          fallbackChecks: [
-            {
-              code: "environment_target_unavailable",
-              level: "warn",
-              message:
-                `Could not resolve an execution target for environment "${environment.name}". The test did not run.`,
-            },
-          ],
-          release: noopRelease,
-        };
-      } catch (err) {
-        return {
-          executionTarget: null,
-          environmentName: environment.name,
-          fallbackChecks: [
-            {
-              code: "environment_target_failed",
-              level: "warn",
-              message:
-                `Could not connect to environment "${environment.name}" to run the test.`,
-              detail: err instanceof Error ? err.message : String(err),
-            },
-          ],
-          release: noopRelease,
-        };
-      }
-    }
-
-    // sandbox / plugin / other remote drivers: spin up an ad-hoc lease, realize
-    // the workspace inside the box, and run the same probe SSH uses against
-    // a sandbox execution target wired to the environment runtime.
-    //
-    // We pass `heartbeatRunId: null` because there's no heartbeat run for an
-    // operator-initiated `Test` invocation — the leases table FKs heartbeat
-    // run id to heartbeat_runs.id, and we don't want to manufacture a fake
-    // run row. Cleanup goes through the driver's `releaseRunLease` directly
-    // (by lease record), since the batch helper queries by heartbeatRunId.
-    //
-    // Sandbox tests boot a fresh throwaway sandbox (never resume a retained
-    // agent lease) and archive it on release instead of deleting it, so the
-    // operator can inspect the exact sandbox from the provider dashboard while
-    // provider-side expiry reaps it later.
-    const testEnvironment = environment.driver === "sandbox"
-      ? {
-          ...environment,
-          config: {
-            ...(environment.config ?? {}),
-            reuseLease: false,
-            archiveOnRelease: true,
-          },
-        }
-      : environment;
-    let leaseRecord: Awaited<ReturnType<typeof environmentRuntime.acquireRunLease>>;
-    try {
-      leaseRecord = await environmentRuntime.acquireRunLease({
-        companyId: input.companyId,
-        environment: testEnvironment,
-        issueId: null,
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        // Re-check the company binding atomically at lease time. The route
-        // guard already rejected a foreign environment, but the binding could
-        // change between the guard check and the lease acquire. This closes
-        // that check-to-lease race so a foreign sandbox never gets a lease.
-        assertCompanyBinding: true,
-        // Apply the active custom-image template so the Test boots with the
-        // operator's captured sandbox customizations and prepared image state,
-        // matching what real agent runs use. Without this the test would
-        // silently fall back to the base image.
-        applyCustomImageTemplate: true,
-      });
-    } catch (err) {
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_lease_acquire_failed",
-            level: "error",
-            message: `Could not acquire a lease for environment "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-            hint: "Check the environment's provider credentials and quota.",
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    const driver = environmentRuntime.getDriver(environment.driver);
-    const releaseLease = async (status: "released" | "failed" = "released") => {
-      try {
-        if (driver) {
-          await driver.releaseRunLease({
-            environment: testEnvironment,
-            lease: leaseRecord.lease,
-            status,
-          });
-        } else {
-          await environmentsSvc.releaseLease(leaseRecord.lease.id, status);
-        }
-      } catch (err) {
-        // Cleanup failures must not mask the test result.
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[adapter-test] Failed to release lease ${leaseRecord.lease.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    };
-
-    let realizedCwd: string | null = null;
-    try {
-      const realized = await environmentRuntime.realizeWorkspace({
-        environment: testEnvironment,
-        lease: leaseRecord.lease,
-        // No host workspace to copy for a Test invocation; sandbox/plugin
-        // realize implementations use the lease metadata's remoteCwd to
-        // create the working directory inside the box.
-        workspace: {},
-      });
-      realizedCwd =
-        typeof realized.cwd === "string" && realized.cwd.trim().length > 0
-          ? realized.cwd.trim()
-          : null;
-    } catch (err) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_workspace_realize_failed",
-            level: "error",
-            message: `Could not realize a workspace inside "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    let target: AdapterExecutionTarget | null;
-    try {
-      // Prefer the cwd the realize step returned; fall back to lease metadata.
-      const leaseMetadataForTarget: Record<string, unknown> | null =
-        realizedCwd
-          ? { ...(leaseRecord.lease.metadata ?? {}), remoteCwd: realizedCwd }
-          : (leaseRecord.lease.metadata as Record<string, unknown> | null) ?? null;
-
-      target = await resolveEnvironmentExecutionTarget({
-        db,
-        companyId: input.companyId,
-        adapterType: input.adapterType,
-        environment: {
-          id: testEnvironment.id,
-          driver: testEnvironment.driver,
-          config: testEnvironment.config ?? null,
-        },
-        leaseId: leaseRecord.lease.id,
-        leaseMetadata: leaseMetadataForTarget,
-        lease: leaseRecord.lease,
-        environmentRuntime,
-      });
-    } catch (err) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_target_failed",
-            level: "error",
-            message: `Could not resolve an execution target for "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    if (!target) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_target_unsupported",
-            level: "warn",
-            message:
-              `Adapter "${input.adapterType}" is not allowed in "${environment.name}" environments.`,
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    return {
-      executionTarget: target,
-      environmentName: environment.name,
-      fallbackChecks: [],
-      sandboxIdentityCheck: buildSandboxIdentityCheck({
-        environmentName: environment.name,
-        lease: leaseRecord.lease,
-      }),
-      release: releaseLease,
-    };
-  }
-
-  function readMetadataString(metadata: Record<string, unknown>, keys: string[]): string | null {
-    for (const key of keys) {
-      const value = metadata[key];
-      if (typeof value === "string" && value.trim().length > 0) return value.trim();
-    }
-    return null;
-  }
-
-  function buildSandboxIdentityCheck(input: {
-    environmentName: string;
-    lease: {
-      id: string;
-      provider?: string | null;
-      providerLeaseId?: string | null;
-      metadata?: Record<string, unknown> | null;
-    };
-  }): AdapterEnvironmentCheck {
-    const metadata = input.lease.metadata ?? {};
-    const provider = input.lease.provider ?? readMetadataString(metadata, ["provider"]);
-    const sandboxId = readMetadataString(metadata, ["sandboxId", "sandboxID", "sandbox_id", "id"]);
-    const sandboxName = readMetadataString(metadata, ["sandboxName", "sandbox_name", "name"]);
-    const snapshotRef = readMetadataString(metadata, [
-      "snapshot",
-      "snapshotId",
-      "snapshotID",
-      "snapshotRef",
-      "snapshot_ref",
-      "templateRef",
-      "template_ref",
-      "templateId",
-      "templateID",
-      "image",
-      "imageId",
-      "imageID",
-      "imageRef",
-      "image_ref",
-    ]);
-    const templateKind = readMetadataString(metadata, [
-      "templateKind",
-      "template_kind",
-      "templateRefKind",
-      "template_ref_kind",
-    ]);
-    const detailParts = [
-      `paperclipLeaseId=${input.lease.id}`,
-      input.lease.providerLeaseId ? `providerLeaseId=${input.lease.providerLeaseId}` : null,
-      provider ? `provider=${provider}` : null,
-      sandboxId ? `sandboxId=${sandboxId}` : null,
-      sandboxName ? `sandboxName=${sandboxName}` : null,
-      snapshotRef ? `${templateKind ? `${templateKind}Ref` : "snapshotOrTemplateRef"}=${snapshotRef}` : null,
-    ].filter((part): part is string => Boolean(part));
-
-    return {
-      code: "sandbox_test_identity",
-      level: "info",
-      message: `Environment test identity for "${input.environmentName}".`,
-      detail: detailParts.join("; "),
-      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed environment snapshots.",
-    };
   }
 
   async function getCurrentUserRedactionOptions() {
@@ -1725,6 +1432,12 @@ export function agentRoutes(
   }
 
   async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
+    if (req.actor.type === "agent") {
+      const context = connectionRequestContext(req);
+      if (!context || context.resource.companyId !== companyId || !context.responsibleUserId) throw forbidden("Connection management authority is required");
+      await context.reauthorize();
+      return context.responsibleUserId;
+    }
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     const decision = await access.decide({
@@ -1747,33 +1460,13 @@ export function agentRoutes(
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
-  // The single owner-authorization helper for the three adapter login routes. It
-  // requires a board actor, company access, and the same configuration
-  // permission as the adapter Test route (`agents:create`). It returns the
-  // immutable owner identifier: the board user that starts, reads, or cancels the
-  // session. The start route persists this identifier; the status and cancel
-  // routes compare it to the session owner and return 404 on a mismatch, so a
-  // non-owner cannot enumerate a session.
   async function assertCanManageAdapterLogin(
     req: Request,
     companyId: string,
   ): Promise<string> {
-    assertBoard(req);
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "agents:create",
-      resource: { type: "company", companyId },
-    });
-    if (!decision.allowed) {
-      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-    }
-    const userId = req.actor.userId;
-    if (!userId) {
-      throw forbidden(
-        "A board user identity is required to manage an adapter login session.",
-      );
-    }
+    await assertBoardCanManageAgentsForCompany(req, companyId);
+    const userId = connectionRequestUserId(req);
+    if (!userId) throw forbidden("A responsible user identity is required to manage an adapter login session.");
     return userId;
   }
 
@@ -2096,6 +1789,36 @@ export function agentRoutes(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertCanConfigureAgentSetup(req: Request, targetAgent: {
+    id: string; companyId: string; createdByUserId?: string | null; lifecycleState?: string; pauseReason?: string | null;
+  }, allowCompleted = false) {
+    if (req.actor.type === "board" && req.actor.userId && targetAgent.createdByUserId === req.actor.userId
+      && (allowCompleted || isAgentSetupDraft(targetAgent))) {
+      await assertCanCreateAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
+    await assertCanUpdateAgent(req, targetAgent);
+  }
+
+  router.post("/agents/:id/qualify-runner", validate(qualifyAgentRunnerSchema), async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const result = await qualifyAgentRunner(db, agent, req.body.expectedEnvironmentId, options.pluginWorkerManager);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent.runner_qualification_tested",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { environmentId: req.body.expectedEnvironmentId, ok: result.ok,
+        platformQualificationRecorded: result.details?.platformQualificationRecorded === true },
+    });
+    res.json(result);
+  });
+
   async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -2149,11 +1872,30 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
+  async function assertSelectableAdapterType(type: string | null | undefined, config?: unknown, companyId?: string): Promise<string> {
     const adapterType = assertKnownAdapterType(type);
     if (adapterType === "paperclip_runner") {
       const experimental = await instanceSettings.getExperimental();
-      if (experimental.enableNativeRunner !== true) {
+      const selected = asRecord(config);
+      let antigravityCandidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
+      if (companyId && selected?.provider === "acpx" && selected.acpxAgent === "antigravity"
+        && typeof selected.model === "string" && selected.model.trim()) {
+        try { antigravityCandidate = resolveAntigravityCandidateAdmission({ companyId, model: selected.model }); }
+        catch { throw unprocessable("This Google Antigravity candidate requires the exact enabled model and a current operator authorization.", { code: "paperclip_runner_antigravity_candidate_invalid" }); }
+      }
+      if (asRecord(config)?.provider === "openai_dot") {
+        if (experimental.enableOpenAiDot !== true) throw unprocessable(
+          "OpenAI Dot is experimental and disabled on this instance.",
+          { code: "paperclip_runner_dot_disabled" },
+        );
+      } else if (asRecord(config)?.provider === "muse") {
+        if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse is experimental and disabled on this instance.", { code: "paperclip_runner_muse_disabled" });
+      } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enablePublicMcp !== true || experimental.enableNativeRunner !== true)) {
+        throw unprocessable("Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
+      } else if (!([undefined, "codex", "opencode"].includes(asRecord(config)?.provider as string | undefined)) &&
+        !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
+        !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", asRecord(config) ?? {})) &&
+        experimental.enableNativeRunner !== true && !antigravityCandidate) {
         throw unprocessable(
           "Paperclip Runner is experimental and disabled on this instance.",
           { code: "paperclip_runner_rollout_disabled" },
@@ -2180,7 +1922,15 @@ export function agentRoutes(
     if (adapterType !== "paperclip_runner") return;
     let profile;
     try {
-      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+      if (adapterConfig.provider === "grok_bot") {
+        validatePaperclipRunnerGrokConfig(adapterConfig, false);
+        return;
+      }
+      if (adapterConfig.provider === "openai_dot") {
+        validatePaperclipRunnerDotConfig(adapterConfig, false);
+        return;
+      }
+      profile = resolvePaperclipRunnerProviderProfile(adapterConfig, { companyId });
     } catch (error) {
       if (error instanceof PaperclipRunnerProviderProfileError) {
         throw unprocessable(error.message, { code: error.code });
@@ -2213,13 +1963,17 @@ export function agentRoutes(
     ) {
       return input.nextAdapterConfig;
     }
+    if (["openai_dot", "muse"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
-    if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
+    if (!["claude_local", "codex_local", "opencode_local", "pi_local", "grok_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
       throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
-    if (!asNonEmptyString(next.model)) next.model = defaults.model;
+    if (next.provider === "acpx" && next.acpxAgent === "pi") {
+      next.model = input.nextAdapterConfig.model
+        ?? (input.previousAdapterType === "pi_local" ? input.previousAdapterConfig.model : "");
+    } else if (!asNonEmptyString(next.model)) next.model = defaults.model;
     return normalizeLegacyRunnerProvider(next);
   }
 
@@ -2421,11 +2175,20 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
-    if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
-    const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
-    if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
-    const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
-    if (binding) normalized.aiConnection = binding;
+    if (normalized.aiConnection) return normalized;
+    if (req.actor.type === "agent") {
+      const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
+      const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
+      if (binding) normalized.aiConnection = binding;
+    }
+    // Copilot has no ambient-auth setup path. Omitting a binding still selects
+    // the responsible user's saved account and must pass the same metadata
+    // admission as an explicit connection before configuration is persisted.
+    if (!normalized.aiConnection && adapterType === "paperclip_runner"
+      && adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "copilot") {
+      normalized.aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" };
+    }
     return normalized;
   }
 
@@ -2434,6 +2197,7 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    setupOnly?: boolean;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2443,7 +2207,12 @@ export function agentRoutes(
         adapterType: input.adapterType ?? null,
       },
     );
-    await assertAdapterConfigConstraints(
+    const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
+      && (normalizedAdapterConfig.provider === "opencode"
+        || (normalizedAdapterConfig.provider === "acpx" && normalizedAdapterConfig.acpxAgent === "pi"))
+      && (normalizedAdapterConfig.model === undefined || normalizedAdapterConfig.model === "");
+    // Inactive drafts can precede model selection. Test/hire always validate the complete profile.
+    if (!incompleteModelSetup) await assertAdapterConfigConstraints(
       input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
@@ -2499,7 +2268,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (adapterType !== "codex_local") return adapterConfig;
+    if (agentHarnessType(adapterType ?? "", adapterConfig) !== "codex_local") return adapterConfig;
     const existingEnv = asRecord(adapterConfig.env);
     if (!existingEnv) return adapterConfig;
     if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
@@ -2550,20 +2319,21 @@ export function agentRoutes(
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
     if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
-    const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
+    const harness = agentHarnessType(adapterType ?? "", adapterConfig);
+    const credentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[harness];
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
-    if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    if (!parent || parent.companyId !== companyId || agentHarnessType(parent.adapterType, parent.adapterConfig) !== harness) return noInheritance;
     // Managed parents must not pass stale legacy credential references to hires.
-    if (aiConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
+    if (aiRuntimeConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
     if (!parentEnv) return noInheritance;
 
     const existingEnv = asRecord(adapterConfig.env);
     const claudeCredentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS.claude_local;
     const childHasClaudeCredential =
-      adapterType === "claude_local" &&
+      harness === "claude_local" &&
       existingEnv !== null &&
       claudeCredentialKeys.some((key) => existingEnv[key] !== undefined);
     if (childHasClaudeCredential) return noInheritance;
@@ -2716,8 +2486,8 @@ export function agentRoutes(
   // first-task/chief-of-staff/AGENTS.md, placeholders filled) over the agent's
   // entry file instead of the generic default. Honored only for board-authored
   // requests — the onboarding wizard runs as the board — so a client marker
-  // alone cannot swap another actor's instructions. The generic execution
-  // contract (default/AGENTS.md) is still appended on every run, unchanged.
+  // alone cannot swap another actor's instructions. Runtime coordination is
+  // supplied separately by the harness.
   async function resolveOnboardingFirstAgentBundle(params: {
     onboardingFirstAgent: unknown;
     actorType: string;
@@ -2862,10 +2632,79 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     path = "adapterConfig",
   ) {
+    if (req.actor.type === "agent" && hasOwn(adapterConfig, "homeMode"))
+      throw forbidden("Only an operator can configure Runner homeMode.");
+    if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId", "museBindingId", "museGeneration", "museConnection"].some(key => hasOwn(adapterConfig, key)))
+      throw forbidden("Only an operator can configure external-agent pairing, attachment access, or workspace access.");
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
+    );
+  }
+
+  function assertNoAgentProcessAdapterMutation(req: Request, adapterType: string, mutatesConfiguration: boolean) {
+    if (req.actor.type !== "agent" || adapterType !== "process" || !mutatesConfiguration) return;
+    throw forbidden("Agent keys cannot configure host-executed process adapters.");
+  }
+
+  const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
+    "command",
+    "hermesCommand",
+    "args",
+    "extraArgs",
+    "cwd",
+    "env",
+    "filesystemSandboxCommand",
+  ] as const;
+
+  const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+    ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
+    gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    kimi_local: ["KIMI_MODEL_API_KEY"],
+    opencode_local: ["PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON"],
+  };
+  const POOL_AUTH_OVERRIDE_ENV_KEYS = [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON",
+  ] as const;
+
+  async function callerUsesAiConnectionPool(req: Request, companyId: string): Promise<boolean> {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const caller = await svc.getById(req.actor.agentId);
+    if (!caller || caller.companyId !== companyId) return false;
+    return asRecord(asRecord(caller.runtimeConfig)?.aiConnection)?.mode === "router";
+  }
+
+  function containsOnlyLocalAdapterCredentialRefs(
+    adapterType: string,
+    env: unknown,
+    allowPlainCredentials: boolean,
+  ): boolean {
+    const envRecord = asRecord(env);
+    if (!envRecord) return false;
+    const allowedKeys = LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS[adapterType] ?? [];
+    return Object.entries(envRecord).every(([key, value]) =>
+      (allowedKeys.includes(key) && isInheritableCredentialReference(value)) ||
+      (allowPlainCredentials && POOL_AUTH_OVERRIDE_ENV_KEYS.includes(key as typeof POOL_AUTH_OVERRIDE_ENV_KEYS[number]) && asEnvBindingString(value) !== null),
+    );
+  }
+
+  function assertNoAgentLocalAdapterHostCommandMutation(
+    req: Request,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    allowPlainCredentials = false,
+    harnessConfig = adapterConfig,
+  ) {
+    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
+    const harness = agentHarnessType(adapterType, harnessConfig);
+    const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
+      adapterConfig[key] !== undefined &&
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(harness, adapterConfig.env, allowPlainCredentials)),
+    );
+    if (changedKeys.length === 0) return;
+    throw forbidden(
+      `Agent keys cannot configure host-executed local adapter settings (${changedKeys.join(", ")}).`,
     );
   }
 
@@ -2902,6 +2741,17 @@ export function agentRoutes(
     };
   }
 
+  function withAssignedSkillVersions(snapshot: AgentSkillSnapshot, adapterConfig: Record<string, unknown>): AgentSkillSnapshot {
+    const assignments = new Map(readPaperclipSkillSyncPreference(adapterConfig).desiredSkillEntries
+      .map(entry => [entry.key, entry.versionId]));
+    return {
+      ...snapshot,
+      // A resolved runtime version is not a stored assignment pin. Returning
+      // it here makes a read/save round trip silently pin Latest selections.
+      desiredSkillEntries: snapshot.desiredSkills.map(key => ({ key, versionId: assignments.get(key) ?? null })),
+    };
+  }
+
   // CEO and board-created onboarding chief-of-staff instructions assume the
   // core paperclip skills (board coordination, planning, hiring, memory).
   // Union them into these skills-capable hires/creates so their desired skills
@@ -2912,11 +2762,16 @@ export function agentRoutes(
     role: string | null | undefined,
     adapterType: string,
     boardOnboardingFirstAgent = false,
+    adapterConfig?: Record<string, unknown>,
   ): AgentDesiredSkillEntry[] | undefined {
+    if (adapterType === "paperclip_runner" && ["openai_dot", "grok_bot"].includes(String(adapterConfig?.provider))) return undefined;
     if (role !== "ceo" && !boardOnboardingFirstAgent) return undefined;
     const adapter = findActiveServerAdapter(adapterType);
     if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
-    return PAPERCLIP_CORE_SKILL_KEYS
+    const keys = boardOnboardingFirstAgent
+      ? [...PAPERCLIP_CORE_SKILL_KEYS, ONBOARDING_FIRST_TASK_SKILL_KEY]
+      : PAPERCLIP_CORE_SKILL_KEYS;
+    return keys
       .filter((key) => adapterType !== "paperclip_runner" || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY)
       .map((key) => ({ key, versionId: null }));
   }
@@ -3100,6 +2955,9 @@ export function agentRoutes(
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
+      ...agentConfigurationSpec(agent),
+      configurationRevision: agentConfigurationRevision(agent),
+      metadata: redactEventPayload(agent.metadata),
       id: agent.id,
       companyId: agent.companyId,
       name: agent.name,
@@ -3195,6 +3053,28 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
+    const pendingAcpxProfile = type === "paperclip_runner" && req.query.provider === "acpx"
+      ? PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === req.query.acpxAgent && !profile.qualified)
+      : undefined;
+    // Antigravity's setup-only catalog cannot open a session or send a prompt.
+    // Its execution/save/Test gates continue to require a qualified profile.
+    if (pendingAcpxProfile && req.query.acpxAgent !== "antigravity") throw unprocessable(`${pendingAcpxProfile.label} is awaiting native Runner acceptance. Its profile is not enabled for production runs.`,
+      { code: "paperclip_runner_acpx_agent_unavailable" });
+    const poolId = asNonEmptyString(req.query.poolId);
+    if (poolId) {
+      const pool = (await aiConnectionRouterService(db).selectable(companyId, responsibleUserForAiRequest(req) ?? "")).find(pool => pool.id === poolId);
+      if (!pool) throw unprocessable("Enable an accessible AI connection pool");
+      const catalog = new Map<string, { id: string; label: string }>();
+      for (const member of pool.members) {
+        const memberAdapter = member.binding.provider === "openai" ? "codex_local" : member.binding.provider === "anthropic" ? "claude_local" : member.binding.provider === "xai" ? "grok_local" : "opencode_local";
+        const models = [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
+        for (const model of models) {
+          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
+        }
+      }
+      res.json([...catalog.values()]);
+      return;
+    }
     const refresh = typeof req.query.refresh === "string"
       ? ["1", "true", "yes"].includes(req.query.refresh.toLowerCase())
       : false;
@@ -3205,6 +3085,57 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "antigravity") {
+      if (environment && environment.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
+      let binding: AiConnectionBinding = { provider: "google", method: "subscription", mode: "responsible_user" };
+      if (typeof req.query.aiConnection === "string") {
+        if (req.query.aiConnection.length > 4096) throw unprocessable("Invalid AI connection binding");
+        try { binding = aiConnectionBindingSchema.parse(JSON.parse(req.query.aiConnection)); }
+        catch { throw unprocessable("Invalid AI connection binding"); }
+      }
+      if (binding.provider !== "google") throw unprocessable("Select a Google runtime connection");
+      const modelAgentId = asNonEmptyString(req.query.agentId);
+      if (modelAgentId) {
+        const modelAgent = await svc.getById(modelAgentId);
+        if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, modelAgent);
+        if (modelAgent.defaultEnvironmentId && !environmentId) {
+          const target = await environmentsSvc.getById(modelAgent.defaultEnvironmentId);
+          if (!target || target.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
+        }
+      } else await assertCanCreateAgentsForCompany(req, companyId);
+      const allowUninstalledShared = !modelAgentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await antigravityConnectionModels(db, { companyId, userId: responsibleUserForAiRequest(req),
+        agentId: modelAgentId ?? undefined, binding, allowUninstalledShared }));
+      return;
+    }
+    if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "copilot") {
+      const userId = responsibleUserForAiRequest(req);
+      let binding: AiConnectionBinding = { provider: "github", method: "api_key", mode: "responsible_user" };
+      if (typeof req.query.aiConnection === "string") {
+        if (req.query.aiConnection.length > 4096) throw unprocessable("Invalid AI connection binding");
+        try { binding = aiConnectionBindingSchema.parse(JSON.parse(req.query.aiConnection)); }
+        catch { throw unprocessable("Invalid AI connection binding"); }
+      }
+      if (binding.provider !== "github") throw unprocessable("Select a GitHub Copilot AI connection");
+      const modelAgentId = asNonEmptyString(req.query.agentId);
+      let modelEnvironmentId = environmentId;
+      if (modelAgentId) {
+        const modelAgent = await svc.getById(modelAgentId);
+        if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, modelAgent);
+        modelEnvironmentId ??= modelAgent.defaultEnvironmentId ?? null;
+      } else await assertCanCreateAgentsForCompany(req, companyId);
+      const allowUninstalledShared = !modelAgentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+      const service = aiConnectionService(db);
+      const selection = await service.select({ companyId, userId, agentId: modelAgentId ?? "00000000-0000-0000-0000-000000000000",
+        adapterType: type, runnerProvider: "acpx", acpxAgent: "copilot", binding, allowUninstalledPersonal: true, allowUninstalledShared });
+      const metadata = await probeCopilotConnection(db, companyId, await service.credential(selection), modelEnvironmentId, undefined, { pluginWorkerManager: options.pluginWorkerManager, targetAgentId: modelAgentId ?? undefined });
+      res.setHeader("Cache-Control", "no-store");
+      res.json(metadata.models);
+      return;
+    }
     if (type === "opencode_local" && provider === "openrouter") {
       res.json(await listOpenRouterModels(refresh));
       return;
@@ -3213,7 +3144,8 @@ export function agentRoutes(
       throw unprocessable("Unknown Paperclip Runner provider");
     }
     const modelAdapterType = type === "paperclip_runner"
-      ? provider === "acpx" || provider === "claude_managed" ? "claude_local"
+      ? provider === "acpx" && req.query.acpxAgent === "grok" ? "grok_local"
+        : provider === "acpx" || provider === "claude_managed" ? "claude_local"
         : provider === "opencode" ? "opencode_local"
           : provider === "aws_agentcore" ? type : "codex_local"
       : type;
@@ -3224,7 +3156,10 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
-    res.json(models);
+    // The Legacy default marker is not an explicit native ACP model ID.
+    res.json(type === "paperclip_runner" && modelAdapterType === "grok_local"
+      ? models.filter(model => model.id !== "grok-build")
+      : models);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
@@ -3236,112 +3171,84 @@ export function agentRoutes(
     res.json(detected);
   });
 
-  // The environment drivers the adapter Test route accepts. A local, SSH, or
-  // sandbox environment can host a probe; a plugin environment cannot.
-  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
-
-  // The fail-closed tenant-binding guard for the adapter Test route. A caller
-  // may name any instance environment by id, so the route must reject an
-  // environment that binds to another company before it resolves secrets,
-  // merges env, resolves the target, leases a sandbox, or runs the adapter
-  // test. The guard checks the company binding BEFORE it validates the status
-  // or the driver, so it never reveals the status or the driver of a foreign
-  // environment. A same-company or an instance-global environment then gets the
-  // shared driver and status validation.
-  async function assertAdapterTestEnvironmentForCompany(
-    companyId: string,
-    environmentId: string,
-  ): Promise<void> {
-    const environment = await environmentsSvc.getById(environmentId);
-    if (!environment) {
-      // A missing environment leaks no tenant state. The execution-context
-      // resolver surfaces the existing environment_not_found check.
-      return;
-    }
-    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
-    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
-      throw forbidden("The selected environment belongs to another company.", {
-        code: "environment_company_mismatch",
-      });
-    }
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
-    });
-  }
-
-  async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
-    await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
-    const result = await requireServerAdapter(adapterType).testEnvironment(context);
-    if (result.status === "fail") return result;
-    // The resolved method, not binding.method — on a responsible_user binding
-    // that field is wire-compat only and the default connection decides.
-    const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
-    // An api_key account does not take the CLI hello probe below: a key
-    // travels as an env var any engine understands, and the engine's own test
-    // above judged whether this runtime can execute with it — the ACP lane
-    // deliberately runs no hello probe when a key is configured. Demanding one
-    // anyway forced the CLI lane, whose probe needs a provider CLI on PATH,
-    // and a clean install has none: that walled off onboarding's API-key path
-    // on exactly the machines the release smoke exists to guard. The account
-    // is still verified live here — the same provider-endpoint check the save
-    // performed — so a key revoked since its save fails adoption rather than
-    // producing an agent that cannot authenticate at runtime. The hello-probe
-    // requirement stays for subscriptions: a stored login is a file layout
-    // only a provider CLI reads, so proving the runtime lane can consume it
-    // takes a real hello turn.
-    if (resolvedMethod === "api_key") {
-      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
-      const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
-      try {
-        if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
-        result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
-      } catch (error) {
-        result.status = "fail";
-        result.checks.push({ code: "ai_connection_api_key_rejected", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
+  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false, validateModelCatalog = false) {
+    if (binding.mode === "router") {
+      const settings = await import("../services/instance-settings.js");
+      if (!(await settings.instanceSettingsService(db).getExperimental()).enableAiConnectionRouters) throw unprocessable("Ask your instance operator to enable AI connection routing.");
+      const pool = (await aiConnectionRouterService(db).selectable(companyId, responsibleUserForAiRequest(req) ?? "")).find((p) => p.id === binding.connectionId && p.enabled);
+      if (!pool) throw unprocessable("Enable the selected connection pool");
+      const userId = responsibleUserForAiRequest(req);
+      const memberConnectionIds = new Set<string>();
+      let compatible = false;
+      for (const member of pool.members) {
+        let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
+        try { runtime = poolMemberRuntimeConfig(member, adapterType); } catch { continue; }
+        compatible = true;
+        const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, member.binding);
+        try {
+          const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, binding: member.binding,
+            model: runtime.config.model, runnerProvider: runtime.config.provider, acpxAgent: runtime.config.acpxAgent,
+            allowUninstalledPersonal: newAgent, allowUninstalledShared });
+          memberConnectionIds.add(selection.connection.id);
+        } catch (error) {
+          if (!(error instanceof HttpError && [403, 422].includes(error.status))) throw error;
+        }
       }
-      return result;
+      if (!compatible) throw unprocessable("This pool has no compatible harness");
+      if (!memberConnectionIds.size) throw unprocessable("Install or repair a compatible pool member for this agent.", { code: "ai_connection_pool_no_eligible_member" });
+      return { connectionId: pool.id, ...(newAgent ? { memberConnectionIds: [...memberConnectionIds] } : {}) };
     }
-    if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
-      const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
-      result.checks.push(...probe.checks);
-      result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
-    }
-    if (!result.checks.some(check => /hello_probe_(passed|succeeded)$/.test(check.code))) {
-      result.status = "fail";
-      result.checks.push({ code: "ai_connection_validation_incomplete", level: "error", message: "The selected account has not completed a provider hello test. Retry before adopting it." });
-    }
-    return result;
-  }
-
-  async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
     const userId = responsibleUserForAiRequest(req);
     const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
     const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch((error: unknown) => {
       // Hiring is allowed before the responsible user has connected this
       // provider. Execution still resolves credentials and creates the normal
       // task connection request; compatibility and access denials stay errors.
-      if (newAgent && !test && binding.mode === "responsible_user" && error instanceof HttpError
+      if (newAgent && !test && binding.provider !== "github" && binding.mode === "responsible_user" && error instanceof HttpError
         && ["ai_connection_default_missing", "ai_connection_missing", "ai_connection_unavailable", "ai_connection_responsible_user_missing"].includes(String(asRecord(error.details)?.code))) {
         return null;
       }
       throw error;
     });
     if (!selection) return undefined;
-    if (test) {
-      if (environmentId) await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
-      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: environmentId ?? null });
-      let managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
-      try {
-        if (!target.executionTarget && target.fallbackChecks.some(check => check.level === "error")) throw unprocessable("The agent environment is not available for adoption");
-        managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
-        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
-        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment");
-        if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
-      } finally { try { await managed?.cleanup(); } finally { await target.release("released"); } }
+    const routing = validateModelCatalog ? aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing : undefined;
+    if (validateModelCatalog && routing?.models.length && !routing.models.some(model =>
+      aiRoutingModel(routing, agentHarnessType(adapterType, config), model.id) === config.model)) {
+      throw unprocessable("Choose a default model available on the selected connection");
     }
-    return selection.connection.id;
+    // Copilot model availability is account-specific. Verify the selected
+    // packaged runtime before creation/adoption even when a token is saved.
+    // This metadata-only path sends no model prompt.
+    if (test || binding.provider === "github") {
+      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github");
+      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
+      const hasSavedAgent = !newAgent || (isUuidLike(agentId) && Boolean(await svc.getById(agentId)));
+      if (newAgent && !test && testEnvironmentId && (await environmentsSvc.getById(testEnvironmentId))?.driver === "plugin") {
+        // The lifecycle verifies the saved agent after its plugin can create the agent-owned computer.
+        return { connectionId: selection.connection.id };
+      }
+      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType,
+        agentId: hasSavedAgent ? agentId : undefined, environmentId: testEnvironmentId });
+      try {
+        if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
+        await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true }, async managed => {
+        const managedAiCredentialHome = adapterType === "paperclip_runner" && (asRecord(managed.config)?.provider === "codex"
+          || (asRecord(managed.config)?.provider === "acpx" && asRecord(managed.config)?.acpxAgent === "antigravity")) && managed.home
+          ? path.join(managed.home, "provider") : undefined;
+        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, managedAiCredentialHome, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, managed, agentId);
+        if (binding.provider === "github" && result.status === "fail") {
+          const failure = result.checks.find(check => check.level === "error");
+          throw unprocessable(failure?.message ?? "Copilot metadata verification failed.", { code: failure?.code ?? "COPILOT_REQUEST_FAILED" });
+        }
+        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
+          code: "ai_connection_validation_failed",
+          checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
+        });
+        if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
+        });
+      } finally { await target.release("released"); }
+    }
+    return { connectionId: selection.connection.id };
   }
 
   router.post(
@@ -3349,45 +3256,107 @@ export function agentRoutes(
     validate(testAdapterEnvironmentSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      const type = assertKnownAdapterType(req.params.type as string);
+      let type = assertKnownAdapterType(req.params.type as string);
       await assertCanCreateAgentsForCompany(req, companyId);
 
-      const adapter = requireServerAdapter(type);
-
-      const aiBinding = req.body.aiConnection ? aiConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
+      const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
+      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
-      const requestedEnvironmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? (req.body.environmentId as string)
-          : null;
-      // Fail closed on a foreign environment before any secret resolution, env
-      // merge, target resolution, sandbox lease, or adapter test runs.
-      if (requestedEnvironmentId) {
-        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+      const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
+      const savedAgent = savedAgentId
+        ? await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found")
+        : null;
+      if (savedAgentId) {
+        if (!savedAgent) return;
+        if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanConfigureAgentSetup(req, savedAgent);
       }
+      const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
+      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
+        companyId,
+        // Omission tests the saved selection. Explicit null tests a prospective
+        // change back to the instance default.
+        req.body.environmentId === undefined
+          ? savedAgent?.defaultEnvironmentId
+          : asNonEmptyString(req.body.environmentId),
+        aiBinding?.provider === "github",
+      );
+      // Fail closed on a foreign environment before any secret resolution, env
+      // merge, target resolution, sandbox lease, or adapter test runs. The
+      // driver check waits for runner selection: a Claude harness on a plugin
+      // environment is only allowed once it resolves to Paperclip Runner.
+      const requestedEnvironment = requestedEnvironmentId
+        ? await assertAdapterTestEnvironmentBinding(companyId, requestedEnvironmentId)
+        : null;
       // Agent reads redact every plain environment value. When this is a saved
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
       // the probe treats "***REDACTED***" as a value to persist.
-      const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
       let adapterConfigForTest = inputAdapterConfig;
-      if (savedAgentId) {
-        const savedAgent = await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found");
-        if (!savedAgent) return;
-        if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
-        const providerAdapter = savedAgent.adapterType === "paperclip_runner"
-          ? inputAdapterConfig.provider === "codex"
-            ? "codex_local"
-            : inputAdapterConfig.provider === "acpx" && inputAdapterConfig.acpxAgent === "claude"
-              ? "claude_local"
-              : null
-          : null;
-        if (savedAgent.adapterType !== type && providerAdapter !== type) {
-          throw unprocessable("Saved agent is not compatible with the adapter being tested");
+      if (savedAgent) {
+        const canRestoreEnv = agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig) === agentHarnessType(type, inputAdapterConfig);
+        // Permit testing a prospective adapter switch, but do not transfer
+        // hidden values from the saved adapter into an unrelated harness.
+        if (!canRestoreEnv && Object.values(parseObject(inputAdapterConfig.env)).some(value => {
+          const binding = asRecord(value);
+          return binding?.type === "plain" && binding.value === REDACTED_EVENT_VALUE;
+        })) {
+          throw unprocessable("Re-enter environment values when testing a different adapter");
         }
-        await assertCanUpdateAgent(req, savedAgent);
-        adapterConfigForTest = restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig);
+        adapterConfigForTest = canRestoreEnv
+          ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
+          : inputAdapterConfig;
+      }
+      // A saved adapter that cannot run on the requested environment re-resolves
+      // its runner, so testing a Claude agent on a Runner-only environment
+      // tests the Runner configuration a save would produce.
+      const retainsSavedExecution = savedAgent && req.body.runner === undefined
+        && savedAgent.adapterType === type
+        && agentHarnessType(type, adapterConfigForTest) === agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig)
+        && (!requestedEnvironment || isEnvironmentDriverSupportedForAdapter(type, requestedEnvironment.driver));
+      const selection = retainsSavedExecution
+        ? { adapterType: type, adapterConfig: adapterConfigForTest }
+        : await resolveNewAgentRunnerForCompany(db, companyId, {
+          adapterType: type, adapterConfig: adapterConfigForTest,
+          runner: req.body.runner,
+          defaultEnvironmentId: requestedEnvironmentId,
+        });
+      type = selection.adapterType;
+      adapterConfigForTest = selection.adapterConfig;
+      if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
+      const adapter = requireServerAdapter(type);
+      if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
+      if (poolBinding?.mode === "router") {
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId || testingSetup);
+        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
+        return;
+      }
+      if (type === "paperclip_runner" && inputAdapterConfig.provider === "openai_dot") {
+        const dotEnabled = await dotRunnerBroker(db).enabled();
+        const binding = savedAgentId ? await dotRunnerBroker(db).bindingForAgent(companyId, savedAgentId) : null;
+        let resource: ReturnType<typeof publicMcpConfig> = null;
+        try { resource = publicMcpConfig(process.env); } catch { /* diagnostic below */ }
+        let environment = requestedEnvironmentId ? await environmentsSvc.getById(requestedEnvironmentId) : null;
+        const managedOnly = isCloudManagedInstance() || (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+        if (managedOnly && (!environment || environment.driver === "local")) {
+          environment = await environmentsSvc.findManagedSandboxEnvironment(companyId);
+        }
+        const controllerAvailable = !managedOnly || environment?.driver === "sandbox";
+        const checks: AdapterEnvironmentCheck[] = [
+          { code: "dot_enabled", level: dotEnabled ? "info" : "error", message: dotEnabled ? "Dot is enabled." : "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings." },
+          { code: "dot_public_endpoint", level: resource?.origin.startsWith("https://") ? "info" : "error", message: resource?.origin.startsWith("https://") ? "Public HTTPS MCP origin is configured." : "Configure a stable public HTTPS PAPERCLIP_PUBLIC_URL." },
+          { code: "dot_unmetered", level: inputAdapterConfig.allowUnmeteredProvider === true ? "info" : "error", message: "Dot usage and provider cost are unavailable. Explicit externally billed provider acknowledgement is required." },
+          { code: "dot_binding", level: binding?.status === "ready" && binding.subscriptionVerified && binding.id === inputAdapterConfig.dotBindingId ? "info" : "warn", message: binding?.status === "ready" && binding.subscriptionVerified ? "Binding has a verified event subscription and completed readiness challenge." : "Save this agent, pair it, subscribe to mailbox events and complete the event test." },
+          { code: "dot_controller", level: controllerAvailable ? "info" : "error", message: controllerAvailable
+            ? environment?.driver === "sandbox" ? "Dot assignments use the selected managed sandbox Runner." : "Dot assignments use the selected Runner environment."
+            : "Restore the managed sandbox before assigning Dot work. Dot cannot run on the Cloud control-plane host." },
+          ...(environment?.driver === "sandbox" && inputAdapterConfig.dotWorkspaceAccess === true
+            ? [{ code: "dot_workspace", level: "error" as const, message: "Managed Dot runners do not expose workspace access. Turn off workspace access before assigning work." }] : []),
+        ];
+        res.json({ adapterType: type, status: checks.some(c => c.level === "error") ? "fail" : checks.some(c => c.level === "warn") ? "warn" : "pass", testedAt: new Date().toISOString(), checks });
+        return;
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
@@ -3413,6 +3382,7 @@ export function agentRoutes(
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
+          agentId: savedAgentId ?? undefined,
           adapterType: type,
           environmentId: requestedEnvironmentId,
         });
@@ -3509,12 +3479,14 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }) : null;
-        let result;
-        try {
-          result = managed && aiBinding ? await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
-          if (managed) result.checks.unshift({ code: "ai_connection_tested", level: "info", message: `Tested ${managed.accountName} — ${managed.accountOwnerUserId ? managed.accountOwnerUserId === responsibleUserForAiRequest(req) ? "your personal account" : "the owner’s account authorized for this agent" : "company-shared account"}. Responsible user: ${req.actor.type === "agent" ? responsibleUserForAiRequest(req) ?? "unavailable" : "the signed-in user"}.` });
-        } finally { await managed?.cleanup(); }
+        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !savedAgentId || testingSetup, allowUninstalledShared: (!savedAgentId || testingSetup) && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
+          const managedAiCredentialHome = type === "paperclip_runner" && (asRecord(managed.config)?.provider === "codex"
+            || (asRecord(managed.config)?.provider === "acpx" && asRecord(managed.config)?.acpxAgent === "antigravity")) && managed.home
+            ? path.join(managed.home, "provider") : undefined;
+          const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, managedAiCredentialHome, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
+          tested.checks.unshift({ code: "ai_connection_tested", level: "info", message: `Tested ${managed.accountName} — ${managed.accountOwnerUserId ? managed.accountOwnerUserId === responsibleUserForAiRequest(req) ? "your personal account" : "the owner’s account authorized for this agent" : "company-shared account"}. Responsible user: ${req.actor.type === "agent" ? responsibleUserForAiRequest(req) ?? "unavailable" : "the signed-in user"}.` });
+          return tested;
+        }) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
 
         const prefixChecks = [
           ...(sandboxIdentityCheck ? [sandboxIdentityCheck] : []),
@@ -3636,7 +3608,7 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
       const environmentId = asNonEmptyString(req.query.environmentId);
       if (environmentId) {
-        await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
+        await assertAdapterTestEnvironmentForCompany(companyId, environmentId, type);
       }
       res.setHeader("Cache-Control", "no-store");
 
@@ -3664,7 +3636,7 @@ export function agentRoutes(
   // helper requires a board actor with the configuration permission, and it
   // returns the immutable owner identifier that the service persists on the row.
   router.post(
-    "/companies/:companyId/adapters/:type/login-sessions",
+    "/companies/:companyId/adapters/:type/login-sessions", managementGuard("connections:configure", "POST /companies/:companyId/adapters/:type/login-sessions", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
@@ -3696,6 +3668,7 @@ export function agentRoutes(
       if (!resolved) return;
       const { ownerUserId: startedByUserId, data } = resolved;
 
+      if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
       if (data.aiConnection) {
         await assertAiConnectionCreateAccess(db, req, companyId, data.aiConnection);
         if (!isAiConnectionCompatible(data.aiConnection, type)) throw unprocessable("Incompatible login method");
@@ -3710,6 +3683,7 @@ export function agentRoutes(
           startedByUserId,
           ttlSeconds: data.ttlSeconds,
           aiConnection: data.aiConnection,
+          managementContext: continuingConnectionManagement(connectionRequestContext(req)),
           signal: controller.signal,
         });
       } catch (error) {
@@ -3732,7 +3706,7 @@ export function agentRoutes(
           adapterLoginAbortControllers.delete(startedSessionId);
         });
 
-      res.status(201).json(result.session);
+      res.status(201).json({ ...result.session, ...await aiLoginUserAction(db, req, companyId, result.session.sessionId) });
     },
   );
 
@@ -3744,7 +3718,7 @@ export function agentRoutes(
   // This route registers before the `:sessionId` route below, so Express
   // never matches the literal `active` segment as a session id.
   router.get(
-    "/companies/:companyId/adapters/:type/login-sessions/active",
+    "/companies/:companyId/adapters/:type/login-sessions/active", managementGuard("connections:read", "GET /companies/:companyId/adapters/:type/login-sessions/active", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
@@ -3768,7 +3742,7 @@ export function agentRoutes(
   // active-session route above: a shared or a browser cache never stores the
   // authenticated response between one poll and the next.
   router.get(
-    "/companies/:companyId/adapters/:type/login-sessions/:sessionId",
+    "/companies/:companyId/adapters/:type/login-sessions/:sessionId", managementGuard("connections:read", "GET /companies/:companyId/adapters/:type/login-sessions/:sessionId", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
@@ -3789,7 +3763,7 @@ export function agentRoutes(
   // Cancel a login session. The owner aborts the in-flight run. A non-owner or a
   // cross-company caller receives a 404.
   router.post(
-    "/companies/:companyId/adapters/:type/login-sessions/:sessionId/cancel",
+    "/companies/:companyId/adapters/:type/login-sessions/:sessionId/cancel", managementGuard("connections:configure", "POST /companies/:companyId/adapters/:type/login-sessions/:sessionId/cancel", { personal: true }),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
@@ -3858,7 +3832,7 @@ export function agentRoutes(
       adapterType: agent.adapterType,
       config: connectorConfig,
     });
-    res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+    res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, agent.adapterConfig as Record<string, unknown>), connectorAssignments));
   });
 
   router.post(
@@ -3958,7 +3932,7 @@ export function agentRoutes(
         },
       });
 
-      res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+      res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, nextAdapterConfig), connectorAssignments));
     },
   );
 
@@ -3989,6 +3963,7 @@ export function agentRoutes(
         id: agentsTable.id,
         companyId: agentsTable.companyId,
         agentName: agentsTable.name,
+        agentAppearance: agentsTable.appearance,
         role: agentsTable.role,
         title: agentsTable.title,
         status: agentsTable.status,
@@ -4187,6 +4162,12 @@ export function agentRoutes(
     res.json(rows);
   });
 
+  router.get("/agents/:id/identity", async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent || !(await assertAgentReadAllowed(req, res, agent))) return;
+    res.json(await agentIdentityService(db).getPublicIdentity(agent.companyId, agent.id));
+  });
+
   router.get("/agents/:id", async (req, res) => {
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
@@ -4280,10 +4261,22 @@ export function agentRoutes(
         ? rollbackConfig.adapterType
         : null,
     );
-    if (rollbackAdapterType !== existing.adapterType) {
-      await assertSelectableAdapterType(rollbackAdapterType);
-    }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    const existingRollbackProvider = asRecord(existing.adapterConfig)?.provider;
+    if (rollbackAdapterType !== existing.adapterType || (rollbackAdapterType === "paperclip_runner"
+      && rollbackAdapterConfig.provider !== existingRollbackProvider
+      && (["openai_dot", "muse"].includes(String(rollbackAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRollbackProvider))))) {
+      await assertSelectableAdapterType(rollbackAdapterType, rollbackAdapterConfig, existing.companyId);
+    }
+    assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
+    if (req.actor.type === "agent" && rollbackAdapterConfig.homeMode !== asRecord(existing.adapterConfig)?.homeMode)
+      throw forbidden("Only an operator can configure Runner homeMode.");
+    assertNoAgentLocalAdapterHostCommandMutation(req, rollbackAdapterType, rollbackAdapterConfig);
+    assertNoAgentProcessAdapterMutation(
+      req,
+      rollbackAdapterType,
+      true,
+    );
     assertExternalInstructionsAdmin(req, existing);
     assertExternalInstructionsAdmin(req, {
       ...existing,
@@ -4387,7 +4380,7 @@ export function agentRoutes(
   // adapter-config secret lands in the activity log.
   const hireFingerprint = (body: unknown): string => sha256Digest(body);
 
-  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+  const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
@@ -4406,9 +4399,85 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: hireOnboardingFirstAgent,
+      // This intent flag is consumed below and must never reach agent create.
+      inheritRuntimeFrom,
+      setupAgentId,
+      runner: hireRunner,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
+
+    if (setupAgentId) {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
+      const setupAgent = await svc.getById(setupAgentId);
+      if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
+      await assertCanConfigureAgentSetup(req, setupAgent, true);
+      if (!setupAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, setupAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
+        if (["terminated", "rejected", "deleting"].includes(setupAgent.lifecycleState)) throw conflict("Agent setup is no longer available");
+        const priorApprovals = await approvalsSvc.list(companyId, undefined,
+          sql`type = 'hire_agent' AND payload ->> 'agentId' = ${setupAgentId}`);
+        let approval = priorApprovals.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+        if (!approval && setupAgent.status === "pending_approval") {
+          const adapterConfig = redactEventPayload(setupAgent.adapterConfig) ?? {};
+          const runtimeConfig = redactEventPayload(setupAgent.runtimeConfig) ?? {};
+          const desiredSkills = readPaperclipSkillSyncPreference(setupAgent.adapterConfig).desiredSkills;
+          approval = await approvalsSvc.create(companyId, {
+            type: "hire_agent", requestedByAgentId: null, requestedByUserId: req.actor.userId ?? null,
+            status: "pending", payload: {
+              name: setupAgent.name, role: setupAgent.role, title: setupAgent.title, icon: setupAgent.icon,
+              appearance: setupAgent.appearance, reportsTo: setupAgent.reportsTo, capabilities: setupAgent.capabilities,
+              adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills,
+              budgetMonthlyCents: setupAgent.budgetMonthlyCents, metadata: redactEventPayload(setupAgent.metadata ?? {}) ?? {},
+              agentId: setupAgent.id, requestedByAgentId: null,
+              requestedConfigurationSnapshot: { adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills },
+            }, decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+          });
+        }
+        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
+        return;
+      }
+      if (hireInput.adapterConfig && agentHarnessType(hireInput.adapterType ?? "process", hireInput.adapterConfig)
+        === agentHarnessType(setupAgent.adapterType, setupAgent.adapterConfig)) {
+        hireInput.adapterConfig = restoreRedactedAgentEnv(hireInput.adapterConfig, setupAgent.adapterConfig);
+      }
+    }
+    const hiredAgentId = setupAgentId ?? randomUUID();
+    const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedHireConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType ?? "process", requestedHireConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, hireInput.adapterType ?? "process", Object.keys(requestedHireConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: hiredAgentId, companyId, name: hireInput.name, adapterConfig: requestedHireConfig });
+
+    if (inheritRuntimeFrom === "caller") {
+      if (req.actor.type !== "agent" || !req.actor.agentId) {
+        throw forbidden("Only an agent can inherit native runtime settings from the caller");
+      }
+      if (hireInput.adapterType !== "paperclip_runner") {
+        throw unprocessable("inheritRuntimeFrom=caller requires adapterType=paperclip_runner");
+      }
+      const requestedConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedRuntime = (hireInput.runtimeConfig ?? {}) as Record<string, unknown>;
+      if (Object.keys(requestedConfig).length > 0 || Object.keys(requestedRuntime).length > 0 || hireInput.defaultEnvironmentId !== undefined) {
+        throw unprocessable("inheritRuntimeFrom=caller cannot be combined with adapterConfig, runtimeConfig, or defaultEnvironmentId");
+      }
+      const caller = await svc.getById(req.actor.agentId);
+      if (!caller || caller.companyId !== companyId) {
+        throw forbidden("The caller agent is not in this company");
+      }
+      if (caller.adapterType !== "paperclip_runner") {
+        throw unprocessable("The caller must use the paperclip_runner adapter");
+      }
+      hireInput.adapterConfig = inheritNativeRunnerAdapterConfig(caller.adapterConfig);
+      hireInput.defaultEnvironmentId = caller.defaultEnvironmentId ?? null;
+    }
+    if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
+    let configurationWarnings: AgentConfigurationWarning[] = [];
+    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner,
+      onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
+    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig, companyId);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
@@ -4421,7 +4490,8 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    const hiredAgentId = randomUUID();
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
       companyId,
@@ -4454,6 +4524,7 @@ export function agentRoutes(
           hireInput.role,
           hireInput.adapterType,
           hireOnboardingFirstAgent === true && req.actor.type === "board",
+          requestedAdapterConfig,
         ),
       ),
       "add",
@@ -4469,6 +4540,11 @@ export function agentRoutes(
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizedRuntimeConfig,
     };
+    await assertAgentEnvironmentSelection(companyId, hireInput.adapterType, hireInput.defaultEnvironmentId);
+    await assertAgentDefaultEnvironmentSelection(companyId, hireInput.defaultEnvironmentId, {
+      allowedDrivers: allowedEnvironmentDriversForAgent(hireInput.adapterType),
+      allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
+    });
 
     const company = await db
       .select()
@@ -4517,9 +4593,9 @@ export function agentRoutes(
 
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
-      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
-      const managedHireConnectionId = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
-      const createdAgent = await svc.create(
+      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
+      const createdAgent = await svcLifecycle.requestHire(
         companyId,
         {
           id: hiredAgentId,
@@ -4529,7 +4605,11 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
-          aiConnectionInstall: managedHireConnectionId ? { connectionId: managedHireConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
+          ...(setupAgentId ? { setupAgentId } : {}),
+          createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          runnerResolved: true,
+          responsibleUserId: responsibleUserForAiRequest(req),
+          aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
             ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -4587,6 +4667,7 @@ export function agentRoutes(
             role: normalizedHireInput.role,
             title: normalizedHireInput.title ?? null,
             icon: normalizedHireInput.icon ?? null,
+            appearance: agent.appearance,
             reportsTo: normalizedHireInput.reportsTo ?? null,
             capabilities: normalizedHireInput.capabilities ?? null,
             adapterType: requestedAdapterType,
@@ -4639,6 +4720,7 @@ export function agentRoutes(
           issueIds: sourceIssueIds,
           desiredSkills: desiredSkillAssignment.desiredSkills,
           hireFingerprint: requestFingerprint,
+          ...(managedHireConnection?.memberConnectionIds ? { aiConnectionPoolId: managedHireConnection.connectionId, aiConnectionMemberInstallIds: managedHireConnection.memberConnectionIds } : {}),
         },
       });
       const telemetryClient = getTelemetryClient();
@@ -4667,13 +4749,19 @@ export function agentRoutes(
         });
       }
 
-      return { status: 201, body: { agent, approval } };
+      return { status: 201, body: { agent: { ...agent, ...(configurationWarnings.length ? { configurationWarnings } : {}) }, approval } };
     };
 
     const outcome = runId
       ? await withHireRunLock(`${companyId}:${runId}`, performHire)
       : await performHire();
     res.status(outcome.status).json(outcome.body);
+  };
+
+  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+    if (req.body.setupAgentId) {
+      await withHireRunLock(`setup:${req.params.companyId}:${req.body.setupAgentId}`, () => handleAgentHire(req, res));
+    } else await handleAgentHire(req, res);
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -4689,7 +4777,11 @@ export function agentRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    if (company.requireBoardApprovalForNewAgents) {
+    if (req.body.setupId) {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
+    }
+    if (company.requireBoardApprovalForNewAgents && !req.body.setupId) {
       throw conflict(
         "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
       );
@@ -4708,12 +4800,24 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
+      setupId,
+      runner: createRunner,
       ...createInput
     } = req.body;
-    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
+    const agentId = setupId ?? randomUUID();
+    const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, createInput.adapterType ?? "process", Object.keys(requestedCreateConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
+    let configurationWarnings: AgentConfigurationWarning[] = [];
+    Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner, setupOnly: Boolean(setupId),
+      onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
+    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig, companyId);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
-    await assertFreshPaperclipRunnerProvider(
+    if (!setupId) await assertFreshPaperclipRunnerProvider(
       companyId,
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -4723,7 +4827,8 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    const agentId = randomUUID();
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
@@ -4749,6 +4854,7 @@ export function agentRoutes(
           createInput.role,
           createInput.adapterType,
           createOnboardingFirstAgent === true && req.actor.type === "board",
+          requestedAdapterConfig,
         ),
       ),
       "add",
@@ -4757,6 +4863,7 @@ export function agentRoutes(
       companyId,
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
+      setupOnly: Boolean(setupId),
     });
     const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
@@ -4765,9 +4872,9 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
-    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
-    const managedConnectionId = managedBinding ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
-    const createdAgent = await svc.create(
+    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
+    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const createdAgent = await svcLifecycle.requestHire(
       companyId,
       {
         id: agentId,
@@ -4779,7 +4886,11 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
-        aiConnectionInstall: managedConnectionId ? { connectionId: managedConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
+        ...(setupId ? { setupOnly: true } : {}),
+        createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        runnerResolved: true,
+        responsibleUserId: responsibleUserForAiRequest(req),
+        aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
         claudeLogin: {
           storedSessionId: createStoredSessionId ?? null,
           ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -4790,6 +4901,14 @@ export function agentRoutes(
         },
       },
     );
+    if (setupId) {
+      if (!createdAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, createdAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
+      }
+      res.status(201).json({ ...redactAgentRowForResponse(createdAgent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
+      return;
+    }
     const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
       onboardingFirstAgent: createOnboardingFirstAgent,
       actorType: req.actor.type,
@@ -4816,6 +4935,7 @@ export function agentRoutes(
         name: agent.name,
         role: agent.role,
         desiredSkills: desiredSkillAssignment.desiredSkills,
+        ...(managedConnection?.memberConnectionIds ? { aiConnectionPoolId: managedConnection.connectionId, aiConnectionMemberInstallIds: managedConnection.memberConnectionIds } : {}),
       },
     });
     const telemetryClient = getTelemetryClient();
@@ -4843,8 +4963,10 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(redactAgentRowForResponse(agent));
+    res.status(201).json({ ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
+
+  registerAgentProjectAccessRoutes(router, db);
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
     const id = req.params.id as string;
@@ -4991,8 +5113,24 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    await assertCanReadAgent(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    if (agentInstructionsBundleMode(existing) === "external") {
+      await assertCanReadAgent(req, existing);
+    } else {
+      await authorizeInstructionRead(db, req.actor, { companyId: existing.companyId, id: existing.id });
+    }
+    if (agentInstructionsBundleMode(existing) !== "external") {
+      const target = { companyId: existing.companyId, agentId: existing.id };
+      const current = await instructionRevisions.readCurrent(target, req.actor);
+      if (current) {
+        try { await instructionRevisions.materializeCurrent(target); }
+        catch (error) {
+          const bundle = await instructions.getBundle(existing);
+          bundle.warnings.push(`Saved instruction revision needs materialization: ${error instanceof Error ? error.message : String(error)}`);
+          res.json(bundle); return;
+        }
+      }
+    }
     res.json(await instructions.getBundle(existing));
   });
 
@@ -5048,8 +5186,12 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    await assertCanReadAgent(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+    if (agentInstructionsBundleMode(existing) === "external") {
+      await assertCanReadAgent(req, existing);
+    } else {
+      await authorizeInstructionRead(db, req.actor, { companyId: existing.companyId, id: existing.id });
+    }
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -5057,16 +5199,65 @@ export function agentRoutes(
       return;
     }
 
+    if (req.query.download === "true" && agentInstructionsBundleMode(existing) === "managed") {
+      const download = await agentFiles.download(existing.companyId, existing.id, relativePath, req.actor);
+      if (download === null) throw notFound("Agent file not found");
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.attachment(relativePath.split("/").at(-1)!);
+      res.setHeader("Content-Length", download.size);
+      await pipeline(download.stream, res); return;
+    }
+    if (agentInstructionsBundleMode(existing) !== "external" && instructionPath(relativePath) === deriveBundleState(existing).entryFile) {
+      const snapshot = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
+      if (snapshot) { res.json(instructionFileDetail(snapshot)); return; }
+    }
     res.json(await instructions.readFile(existing, relativePath));
   });
 
   router.put("/agents/:id/instructions-bundle/file", validate(upsertAgentInstructionsFileSchema), async (req, res) => {
+    if (req.actor.source === "mcp_oauth" && req.body.path === "promptTemplate.legacy.md") {
+      throw unprocessable("Migrate legacy prompt instructions to a managed instruction file in Paperclip before editing through an assistant", { code: "MCP_LEGACY_INSTRUCTIONS_UNVERSIONED" });
+    }
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    const entryFile = deriveBundleState(existing).entryFile;
+    if (instructionPath(req.body.path) === entryFile) {
+      assertExternalInstructionsAdmin(req, existing);
+      if (req.body.baseHash !== undefined) req.body.baseRevisionId = req.body.baseHash === null ? null : agentFileTokenFromHash(req.body.baseHash);
+      if (req.body.baseRevisionId === undefined) throw unprocessable("Read the entry and supply baseRevisionId (null for a new entry)", { code: "INSTRUCTION_BASE_REQUIRED" });
+      // Clearing legacy prompt configuration remains a protected config change.
+      if (req.body.clearLegacyPromptTemplate) await assertCanManageInstructionsPath(req, existing);
+      const receipt = await instructionRevisions.commit({ companyId: existing.companyId, agentId: existing.id,
+        entryFile, content: req.body.content, baseRevisionId: req.body.baseRevisionId,
+        source: req.actor.type === "board" ? "board" : "api" }, req.actor);
+      if (req.actor.type === "agent" && req.actor.runId) {
+        await instructionWorkingCopies.acknowledgeExplicitSave({ companyId: existing.companyId, agentId: existing.id,
+          runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
+          contentHash: receipt.revision.contentHash }).catch(() => undefined);
+      }
+      if (req.body.clearLegacyPromptTemplate) {
+        const fresh = await svc.getById(existing.id);
+        if (fresh) {
+          const adapterConfig = { ...asRecord(fresh.adapterConfig) };
+          delete adapterConfig.promptTemplate;
+          delete adapterConfig.bootstrapPromptTemplate;
+          await svc.update(existing.id, { adapterConfig });
+        }
+      }
+      res.json(instructionFileDetail(receipt, receipt));
+      return;
+    }
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
 
+    if (agentInstructionsBundleMode(existing) === "managed" && req.body.path !== "promptTemplate.legacy.md") {
+      if (req.body.baseHash === undefined) throw unprocessable("Read the file and supply baseHash (null for a new file)");
+      await agentFiles.write({ companyId: existing.companyId, agentId: existing.id, path: req.body.path,
+        bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
+      res.json(await instructions.readFile(existing, req.body.path)); return;
+    }
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,
@@ -5108,6 +5299,66 @@ export function agentRoutes(
     res.json(result.file);
   });
 
+  router.get("/agents/:id/instructions-bundle/candidates", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    res.json(await instructionWorkingCopies.list(existing.companyId, existing.id, req.actor));
+  });
+
+  router.post("/agents/:id/instructions-bundle/candidates/:runId/resolve", validate(resolveAgentInstructionCandidateSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const runId = req.params.runId as string;
+    if (!isUuidLike(runId)) throw unprocessable("Invalid instruction candidate run id");
+    const receipt = await instructionWorkingCopies.resolve({ companyId: existing.companyId, agentId: existing.id,
+      runId, baseRevisionId: req.body.baseRevisionId, content: req.body.content }, req.actor);
+    res.json(instructionFileDetail(receipt, receipt));
+  });
+
+  router.get("/agents/:id/instructions-bundle/history", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+    if (cursor && !isUuidLike(cursor)) throw unprocessable("Invalid history cursor");
+    res.json(await instructionRevisions.history({ companyId: existing.companyId, agentId: existing.id, entryFile, cursor }, req.actor));
+  });
+  router.get("/agents/:id/instructions-bundle/revision/:revisionId", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const revisionId = req.params.revisionId as string;
+    if (!isUuidLike(revisionId)) throw unprocessable("Invalid instruction revision id");
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    res.json(await instructionRevisions.readRevision({ companyId: existing.companyId, agentId: existing.id, entryFile, revisionId }, req.actor));
+  });
+  router.get("/agents/:id/instructions-bundle/diff", async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const fromRevisionId = typeof req.query.from === "string" ? req.query.from : "";
+    const toRevisionId = typeof req.query.to === "string" ? req.query.to : "";
+    if (!isUuidLike(fromRevisionId) || !isUuidLike(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
+    const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
+    res.json(await instructionRevisions.diff({ companyId: existing.companyId, agentId: existing.id, entryFile, fromRevisionId, toRevisionId }, req.actor));
+  });
+  router.post("/agents/:id/instructions-bundle/restore", validate(restoreAgentInstructionSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const receipt = await instructionRevisions.restore({ companyId: existing.companyId, agentId: existing.id,
+      entryFile: req.body.path, baseRevisionId: req.body.baseRevisionId, revisionId: req.body.revisionId }, req.actor);
+    if (req.actor.type === "agent" && req.actor.runId) {
+      await instructionWorkingCopies.acknowledgeExplicitSave({ companyId: existing.companyId, agentId: existing.id,
+        runId: req.actor.runId, entryFile: receipt.revision.entryFile, revisionId: receipt.revision.id,
+        contentHash: receipt.revision.contentHash }).catch(() => undefined);
+    }
+    res.json(instructionFileDetail(receipt, receipt));
+  });
+
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
@@ -5121,6 +5372,12 @@ export function agentRoutes(
       return;
     }
 
+    if (agentInstructionsBundleMode(existing) === "managed") {
+      const baseHash = typeof req.query.baseHash === "string" && /^[a-f0-9]{64}$/.test(req.query.baseHash) ? req.query.baseHash : null;
+      if (baseHash === null) throw unprocessable("Read the file and supply baseHash before deleting it");
+      await agentFiles.write({ companyId: existing.companyId, agentId: existing.id, path: relativePath, bytes: null, baseHash }, req.actor);
+      res.json(await instructions.getBundle(existing)); return;
+    }
     const actor = getActorInfo(req);
     const result = await instructions.deleteFile(existing, relativePath);
     await logActivity(db, {
@@ -5141,6 +5398,39 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
+  router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
+    assertBoard(req);
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const userId = responsibleUserForAiRequest(req);
+    const intents = connectionIntentService(db);
+    const interactionId = req.params.interactionId as string;
+    const loaded = await intents.loadIntent(interactionId);
+    if (loaded.issue.companyId !== agent.companyId || loaded.interaction.payload.requestingAgentId !== agent.id) throw notFound("Connection intent not found");
+    if (!userId || loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can adopt this connection");
+    const connectionId = req.body.connectionId as string;
+    if (loaded.interaction.status === "accepted" && loaded.interaction.result?.connectionId === connectionId) {
+      await connectionIntentDeliveryService(db, heartbeat).tryDeliver(interactionId);
+      res.json(loaded.interaction);
+      return;
+    }
+    if (loaded.interaction.status !== "pending") throw conflict("Connection intent is already resolved");
+    const setup = await intents.setupOptions(interactionId);
+    if (!setup.aiConnectionRequiresAdoption || !setup.aiConnection) throw conflict("The agent’s AI configuration changed. Reload the task and try again.");
+    // Probe in the agent's execution environment without installing access.
+    // The binding, install, audit, and card resolution commit together below.
+    const validatedConnection = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
+    if (validatedConnection?.connectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
+    const completed = await intents.complete(interactionId, connectionId, userId, {
+      validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection },
+    });
+    // Dispatch the committed continuation now. The persisted delivery remains
+    // available to the sweeper if this process exits or dispatch is deferred.
+    await connectionIntentDeliveryService(db, heartbeat).tryDeliver(interactionId);
+    res.json(completed);
+  });
+
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
@@ -5151,7 +5441,30 @@ export function agentRoutes(
       return;
     }
 
-    const patchData = { ...(req.body as Record<string, unknown>) };
+    const runtimeSettings = req.body.runtimeSettings;
+    if (runtimeSettings) await assertCanConfigureAgentSetup(req, existing);
+    const patchData = runtimeSettings
+      ? prepareRuntimeSettingsPatch(existing, req.body)
+      : { ...(req.body as Record<string, unknown>) };
+    const runner = patchData.runner as AgentRunnerChoice | undefined;
+    delete patchData.runner;
+    const expectedConfigurationRevision = patchData.expectedConfigurationRevision as string | undefined;
+    delete patchData.expectedConfigurationRevision;
+    if (expectedConfigurationRevision && expectedConfigurationRevision !== agentConfigurationRevision(existing)) {
+      throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
+    }
+    if (expectedConfigurationRevision) {
+      await assertCanConfigureAgentSetup(req, existing);
+      const displayed = redactAgentConfiguration(existing)!;
+      for (const key of ["adapterConfig", "runtimeConfig", "metadata"] as const) {
+        if (hasOwn(patchData, key)) {
+          patchData[key] = restoreAgentConfigurationRedactions(patchData[key], existing[key], displayed[key]);
+        }
+      }
+    }
+    const requestedStatus = patchData.status;
+    delete patchData.status;
+    if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
@@ -5177,12 +5490,30 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
+    let configurationWarnings: AgentConfigurationWarning[] = [];
+    const requestedRunnerConfig = asRecord(patchData.adapterConfig) ?? {};
+    const convertingPi = existing.adapterType === "pi_local" && patchData.adapterType === "paperclip_runner"
+      && (requestedRunnerConfig.provider === undefined
+        || (requestedRunnerConfig.provider === "acpx" && [undefined, "pi"].includes(requestedRunnerConfig.acpxAgent as string | undefined)));
+    const convertingGrok = existing.adapterType === "grok_local" && patchData.adapterType === "paperclip_runner"
+      && [undefined, "acpx"].includes(requestedRunnerConfig.provider as string | undefined)
+      && [undefined, "grok"].includes(requestedRunnerConfig.acpxAgent as string | undefined);
+    if (runner !== undefined || convertingPi || convertingGrok) {
+      await assertCanConfigureAgentSetup(req, existing);
+      const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
+      Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
+        adapterType: convertingPi || convertingGrok ? existing.adapterType : typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
+        adapterConfig: config, runner: runner ?? "paperclip", setupOnly: existing.lifecycleHolds?.includes("setup"),
+        onConfigurationWarnings: warnings => { configurationWarnings = warnings; },
+        defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
+      }));
+    }
     const nextAdapterType = hasOwn(patchData, "adapterType")
       ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
     const requestedAdapterType = nextAdapterType === existing.adapterType
       ? nextAdapterType
-      : await assertSelectableAdapterType(nextAdapterType);
+      : await assertSelectableAdapterType(nextAdapterType, patchData.adapterConfig, existing.companyId);
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -5195,11 +5526,12 @@ export function agentRoutes(
         runtimeConfig,
         existing.runtimeConfig,
       );
-      requestedRuntimeConfig = runtimeConfig;
+      requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    assertNoAgentProcessAdapterMutation(req, requestedAdapterType, touchesAdapterConfiguration);
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
@@ -5222,6 +5554,9 @@ export function agentRoutes(
         : changingAdapterType ? {} : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
+      }
+      if (req.actor.source === "mcp_oauth" && requestedAdapterConfig) {
+        rawEffectiveAdapterConfig = applyMcpReasoningEffort(requestedAdapterType, rawEffectiveAdapterConfig, requestedAdapterConfig);
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -5246,17 +5581,40 @@ export function agentRoutes(
       }
       if (requestedAdapterType === "paperclip_runner") {
         rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
+        if (agentHarnessType(requestedAdapterType, rawEffectiveAdapterConfig) === "claude_local") {
+          const normalized = normalizeClaudeRunnerOptions(rawEffectiveAdapterConfig);
+          configurationWarnings.push(...normalized.warnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));
+          rawEffectiveAdapterConfig = normalized.config;
+        }
+      }
+      if (req.actor.type === "agent" && rawEffectiveAdapterConfig.homeMode !== existingAdapterConfig.homeMode)
+        throw forbidden("Only an operator can configure Runner homeMode.");
+      if (changingAdapterType || requestedAdapterConfig) {
+        assertNoAgentLocalAdapterHostCommandMutation(
+          req,
+          requestedAdapterType,
+          changingAdapterType ? rawEffectiveAdapterConfig : (requestedAdapterConfig ?? {}),
+          false,
+          rawEffectiveAdapterConfig,
+        );
       }
       const existingRunnerProvider =
         existing.adapterType === "paperclip_runner"
           ? existingAdapterConfig.provider
           : undefined;
-      if (
+      // Moving between the standalone Dot choice and general Runner is a new
+      // selection. Preserve historical edits within the general Runner rollout.
+      if (!changingAdapterType && requestedAdapterType === "paperclip_runner"
+        && rawEffectiveAdapterConfig.provider !== existingRunnerProvider
+        && (["openai_dot", "muse"].includes(String(rawEffectiveAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRunnerProvider)))) {
+        await assertSelectableAdapterType(requestedAdapterType, rawEffectiveAdapterConfig, existing.companyId);
+      }
+      if (!isAgentSetupDraft(existing) && (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
           (requestedAdapterConfig !== null ||
             rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
-      ) {
+      )) {
         await assertFreshPaperclipRunnerProvider(
           existing.companyId,
           requestedAdapterType,
@@ -5276,6 +5634,7 @@ export function agentRoutes(
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        setupOnly: existing.lifecycleHolds?.includes("setup"),
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
@@ -5283,14 +5642,52 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+      && !isAgentSetupDraft(existing)) {
+      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
+        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
+          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+        requestedRuntimeConfig.aiConnection = existingBinding;
+      }
+    }
+    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+      && !isAgentSetupDraft(existing)
+      && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
+      && nextAiConfig.acpxAgent === "copilot"
+      && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
+      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+        aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+    }
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
-      await assertCanUpdateAgent(req, existing);
-      const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
+      await assertCanConfigureAgentSetup(req, existing);
+      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
+      if (changed && req.actor.type === "agent") {
+        await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
+          type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,
+          connectionId: "connectionId" in nextAiBinding ? nextAiBinding.connectionId : undefined,
+          operation: "agent.ai-binding.update",
+        });
+      }
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      if (!isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
-      if (changed) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+      const nextEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId;
+      const runtimeSelectionChanged = requestedAdapterType !== existing.adapterType
+        || nextEnvironmentId !== existing.defaultEnvironmentId
+        || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
+          key => aiConfig[key] !== existing.adapterConfig[key],
+        ));
+      if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
+      const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
+        && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
+      if (runtimeSettings || changed || runtimeSelectionChanged || copilotConfigurationChanged) {
+        const configuringSetup = isAgentSetupDraft(existing);
+        await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
+          (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+          !configuringSetup && (!runtimeSettings || changed), configuringSetup, Boolean(runtimeSettings));
+      }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -5312,11 +5709,16 @@ export function agentRoutes(
     if (profileOnlyChange) {
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
     }
 
     const actor = getActorInfo(req);
-    const agent = await svc.update(id, patchData, {
+    const updateOptions = {
+      expectedConfigurationRevision,
+      ...(runtimeSettings ? { expectedConfiguration: {
+        adapterType: existing.adapterType, adapterConfig: existing.adapterConfig,
+        runtimeConfig: existing.runtimeConfig, defaultEnvironmentId: existing.defaultEnvironmentId,
+      } } : {}),
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -5329,7 +5731,11 @@ export function agentRoutes(
         applyExistingWithoutClaim:
           req.actor.type !== "agent" && applyStoredClaudeLogin,
       },
-    });
+    };
+    const command = requestedStatus === "paused" ? "pause" : requestedStatus === "idle" ? "resume" : requestedStatus === "terminated" ? "terminate" : null;
+    const agent = command
+      ? await svcLifecycle.updateAndTransition(id, command, patchData, updateOptions)
+      : await svc.update(id, patchData, updateOptions);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5348,6 +5754,21 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
+    res.json({ ...redactAgentRowForResponse(agent), ...redactAgentConfiguration(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
+  });
+
+  router.post("/agents/:id/lifecycle/retry", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) return;
+    await assertCanConfigureAgentSetup(req, existing);
+    const agent = await svcLifecycle.retry(id);
+    if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.lifecycle_retried", entityType: "agent", entityId: agent.id });
     res.json(redactAgentRowForResponse(agent));
   });
 
@@ -5357,7 +5778,7 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.pause(id);
+    const agent = await svcLifecycle.pauseAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5390,7 +5811,7 @@ export function agentRoutes(
       });
       return;
     }
-    const agent = await svc.resume(id);
+    const agent = await svcLifecycle.resumeAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5456,32 +5877,14 @@ export function agentRoutes(
       return;
     }
 
-    // Resolve the linked hire approval (clears it from the inbox) and run the
-    // shared approval side effects: agent activation, budget policy, and the
-    // hire-approved notification. Fall back to direct activation if no open
-    // approval record exists (e.g. agents created before approvals were tracked).
-    const decidedByUserId = req.actor.userId ?? "board";
-    const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-
-    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-    if (openApproval) {
-      await approvalsSvc.approve(openApproval.id, decidedByUserId);
-      agent = await svc.getById(id);
-    } else {
-      const approval = await svc.activatePendingApproval(id);
-      if (!approval) {
-        res.status(404).json({ error: "Agent not found" });
-        return;
-      }
-      if (!approval.activated) {
-        res.status(409).json({ error: "Only pending approval agents can be approved" });
-        return;
-      }
-      agent = approval.agent;
-    }
-
+    const decision = await approvalsSvc.approveHire(id, req.actor.userId ?? "board");
+    const agent = decision?.agent;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (!decision.applied) {
+      res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
 
@@ -5492,7 +5895,7 @@ export function agentRoutes(
       action: "agent.approved",
       entityType: "agent",
       entityId: agent.id,
-      details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
+      details: { source: "agent_detail", approvalId: decision.approval?.id ?? null },
     });
 
     res.json(redactAgentRowForResponse(agent));
@@ -5506,23 +5909,9 @@ export function agentRoutes(
       return;
     }
 
-    // Terminating an agent that is still awaiting approval is the agent-detail
-    // equivalent of rejecting the hire. When a linked hire approval is still
-    // open, delegate to approvalsSvc.reject(), which both resolves the approval
-    // (clearing the inbox "Approve/Reject" card) and terminates the agent.
-    // Mirror the approve path's branch-or-fallback so we never terminate twice:
-    // reject() already calls agentsSvc.terminate() internally.
-    let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
-    if (existing.status === "pending_approval") {
-      const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-      if (openApproval) {
-        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
-        agent = await svc.getById(id);
-      }
-    }
-    if (!agent) {
-      agent = await svc.terminate(id);
-    }
+    const agent = existing.status === "pending_approval"
+      ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
+      : await svcLifecycle.terminateAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5708,6 +6097,8 @@ export function agentRoutes(
     }
 
     let wakePayload = req.body.payload ?? null;
+    let retryConversationContext: Record<string, unknown> = {};
+    let retryNativeReviewContext: NativeReviewAssignmentContext | null = null;
     if (req.body.failedRunId) {
       assertBoard(req);
       if (
@@ -5721,7 +6112,7 @@ export function agentRoutes(
           "An exact failed-run retry cannot override its execution context.",
         );
       }
-      const failedRun = await heartbeat.getRun(req.body.failedRunId);
+      const failedRun = await heartbeat.getRun(req.body.failedRunId, { includeExecutionEvidence: true });
       if (
         !failedRun ||
         failedRun.companyId !== agent.companyId ||
@@ -5729,14 +6120,23 @@ export function agentRoutes(
       ) {
         throw notFound("Failed run not found");
       }
-      if (!["failed", "timed_out"].includes(failedRun.status)) {
-        throw conflict("Only a failed run can be retried.");
+      if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
+        throw conflict("The stopped native session requires cleanup and reconciliation before a new attempt.", {
+          code: "native_session_cleanup_quarantined",
+        });
+      }
+      if (!(await canRetryStoppedRun(db, failedRun))) {
+        throw conflict("Only a failed run or a verified eligible cancellation can start a new attempt.");
       }
       const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
       const issueId =
         typeof failedContext.issueId === "string"
           ? failedContext.issueId
           : null;
+      if (failedRun.status === "cancelled" && (!issueId ||
+          (await getExecutionBlocker(db, agent.companyId, issueId))?.runId !== failedRun.id)) {
+        throw conflict("The stopped run no longer owns this task's recovery hold.");
+      }
       if (issueId) {
         const issue = await issueService(db).getById(issueId);
         if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
@@ -5752,7 +6152,46 @@ export function agentRoutes(
           },
         });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-        if (issue.assigneeAgentId !== agent.id) throw conflict("The task is no longer assigned to this agent.");
+        const savedReviewContext = readNativeReviewAssignmentContext(failedContext);
+        if (failedRun.runtimeMode === "native" && failedRun.status === "failed" &&
+            failedRun.errorCode === "native_provider_model_rejected" &&
+            failedRun.nativeIssueId === issue.id && savedReviewContext) {
+          const review = await getNativeReviewAssignment(db, {
+            companyId: agent.companyId, issueId: issue.id, agentId: agent.id,
+            contextSnapshot: savedReviewContext,
+          });
+          if (review?.interaction.status !== "pending") {
+            throw conflict("The failed run's review is no longer current.");
+          }
+          retryNativeReviewContext = savedReviewContext;
+        }
+        if (issue.assigneeAgentId !== agent.id && !retryNativeReviewContext) {
+          throw conflict("The task is no longer assigned to this agent.");
+        }
+        if (issue.conversationAgentId) {
+          // Agent Chat has no task description to replay. Recover the exact
+          // request from the selected server-owned run, never caller markers.
+          // Keep the generation pinned so a reset before dispatch cannot revive
+          // the old request. Runs that failed before turn preparation belong to
+          // the initial generation and cannot be retried after a reset.
+          const generation = failedContext.conversationSessionGeneration ?? 0;
+          if (!Number.isInteger(generation) || generation !== issue.conversationSessionGeneration) {
+            throw conflict("Conversation session changed; this older turn cannot be retried.");
+          }
+          retryConversationContext = { conversationSessionGeneration: generation };
+          const commentIds = [...new Set([
+            ...(Array.isArray(failedContext.wakeCommentIds) ? failedContext.wakeCommentIds : []),
+            failedContext.wakeCommentId,
+            failedContext.commentId,
+          ].filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+          if (commentIds.length > 0) {
+            retryConversationContext = {
+              ...retryConversationContext,
+              wakeCommentIds: commentIds,
+              wakeCommentId: commentIds[commentIds.length - 1],
+            };
+          }
+        }
       }
       const chatBinding = issueId
         ? await db
@@ -5768,6 +6207,9 @@ export function agentRoutes(
             .then((rows) => rows[0])
         : null;
       if (chatBinding) {
+        if (failedRun.status === "cancelled") {
+          throw conflict("Send a new chat message to continue this stopped conversation.");
+        }
         if (!options.chatRunRetries || !req.actor.userId) {
           throw conflict("Chat retry authorization is unavailable.", {
             code: "chat_failed_run_retry_requires_authorized_context",
@@ -5831,6 +6273,10 @@ export function agentRoutes(
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
+        ...retryConversationContext,
+        // Only the selected server-owned run can carry review authority into
+        // an exact retry. Dispatch revalidates the current review assignment.
+        ...retryNativeReviewContext,
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
         responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
@@ -6078,11 +6524,10 @@ export function agentRoutes(
    * from the authenticated actor.
    */
   const deriveSetupTokenOwnerUserId = (req: Request): string => {
-    const actor = getActorInfo(req);
-    if (actor.actorType !== "user") {
-      throw forbidden("A user must own a setup-token login session.");
-    }
-    return actor.actorId;
+    const userId = connectionRequestUserId(req);
+    if (req.actor.type === "agent" && !connectionRequestContext(req)) throw forbidden("Connection management authority is required");
+    if (!userId) throw forbidden("A user must own a setup-token login session.");
+    return userId;
   };
 
   /**
@@ -6248,7 +6693,13 @@ export function agentRoutes(
     res.json(body);
   });
 
-  router.post("/companies/:companyId/setup-token-login-sessions", async (req, res) => {
+  router.post("/companies/:companyId/setup-token-login-sessions", (req, res, next) => {
+    if (!startClaudeSetupTokenSessionRequestSchema.safeParse(req.body).success) {
+      res.status(400).json({ error: "The Claude login start request is invalid." });
+      return;
+    }
+    next();
+  }, managementGuard("connections:configure", "POST /companies/:companyId/setup-token-login-sessions", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
 
     // The shared start-route spine derives the owner, validates the strict
@@ -6314,6 +6765,7 @@ export function agentRoutes(
     if (!resolved) return;
     const { ownerUserId, data } = resolved;
     const { environmentId, adapterType } = data;
+    if (req.actor.type === "agent" && !data.aiConnection) throw forbidden("Agent logins must save a managed AI account");
     if (data.aiConnection) {
       await assertAiConnectionCreateAccess(db, req, companyId, data.aiConnection);
       if (!isAiConnectionCompatible(data.aiConnection, adapterType)) throw unprocessable("Incompatible login method");
@@ -6327,6 +6779,7 @@ export function agentRoutes(
       environmentId,
       confirmedOverwrite,
       aiConnection: data.aiConnection,
+      managementContext: continuingConnectionManagement(connectionRequestContext(req)),
     };
     // Read the panel mode from the adapter capability. The guard already checked
     // the capability, so it is present here. The client renders the panel from
@@ -6345,7 +6798,7 @@ export function agentRoutes(
         panelMode,
         prompt: null,
       };
-      res.status(201).json(body);
+      res.status(201).json({ ...body, ...await aiLoginUserAction(db, req, companyId, started.sessionId) });
     } catch (err) {
       sendSetupTokenError(res, err);
     }
@@ -6359,7 +6812,7 @@ export function agentRoutes(
   //
   // This route registers before the `:sessionId` route below, so Express never
   // matches the literal `active` segment as a session id.
-  router.get("/companies/:companyId/setup-token-login-sessions/active", async (req, res) => {
+  router.get("/companies/:companyId/setup-token-login-sessions/active", managementGuard("connections:read", "GET /companies/:companyId/setup-token-login-sessions/active", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6386,7 +6839,7 @@ export function agentRoutes(
     res.json({ ...body, ...(descriptor.aiConnection ? { aiConnection: descriptor.aiConnection } : {}) });
   });
 
-  router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", async (req, res) => {
+  router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", managementGuard("connections:read", "GET /companies/:companyId/setup-token-login-sessions/:sessionId", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6405,7 +6858,7 @@ export function agentRoutes(
     }
   });
 
-  router.get("/companies/:companyId/setup-token-login-sessions/:sessionId/prompt", async (req, res) => {
+  router.get("/companies/:companyId/setup-token-login-sessions/:sessionId/prompt", managementGuard("connections:read", "GET /companies/:companyId/setup-token-login-sessions/:sessionId/prompt", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6439,6 +6892,7 @@ export function agentRoutes(
   });
 
   router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/code", async (req, res) => {
+    assertBoard(req);
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6474,7 +6928,7 @@ export function agentRoutes(
     }
   });
 
-  router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/completion", async (req, res) => {
+  router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/completion", managementGuard("connections:configure", "POST /companies/:companyId/setup-token-login-sessions/:sessionId/completion", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6496,7 +6950,7 @@ export function agentRoutes(
     }
   });
 
-  router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/cancel", async (req, res) => {
+  router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/cancel", managementGuard("connections:configure", "POST /companies/:companyId/setup-token-login-sessions/:sessionId/cancel", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -6539,10 +6993,16 @@ export function agentRoutes(
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const limit = limitParam
+      ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || HEARTBEAT_RUN_LIST_DEFAULT_LIMIT))
+      : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, runs));
+    const recentRuns = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = req.query.latestFailuresOnly === "true" ? latestFailedRunsByAgent(recentRuns) : recentRuns;
+    const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
+    res.json(await runRedactions.redactForRuns(companyId, runs.map((run, index) =>
+      readDecisions[index] ? run : redactHeartbeatRunListRow(run)),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -6586,6 +7046,7 @@ export function agentRoutes(
     // padded in and renders bogus "live" counts.
     const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
+    const distinctTasks = req.query.distinctTasks === "true";
 
     const columns = {
       id: heartbeatRuns.id,
@@ -6601,6 +7062,7 @@ export function agentRoutes(
       createdAt: heartbeatRuns.createdAt,
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
+      agentAppearance: agentsTable.appearance,
       adapterType: agentsTable.adapterType,
       logBytes: heartbeatRuns.logBytes,
       livenessState: heartbeatRuns.livenessState,
@@ -6613,7 +7075,17 @@ export function agentRoutes(
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
       processStartedAt: heartbeatRuns.processStartedAt,
-      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      scopeKind: heartbeatRuns.scopeKind,
+      issueId: heartbeatRuns.issueId,
+      inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
+      cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
+      outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),
+      totalTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'totalTokens')::numeric`.as("totalTokens"),
+      costUsd: sql<number | null>`coalesce(
+        (${heartbeatRuns.resultJson} ->> 'costUsd')::numeric,
+        (${heartbeatRuns.resultJson} ->> 'cost_usd')::numeric,
+        (${heartbeatRuns.resultJson} ->> 'total_cost_usd')::numeric
+      )`.as("costUsd"),
     };
 
     const liveRunsQuery = db
@@ -6628,10 +7100,25 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const liveRuns = await liveRunsQuery.limit(limit);
+    const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
+    let rows = liveRuns;
     const targetRunCount = Math.min(minCount, limit);
 
-    if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
+    if (distinctTasks) {
+      // Return enough representatives for the dashboard to count cards beyond
+      // its visible four, rather than stopping at the minimum display count.
+      const selectedIds = await selectDashboardRunIds(db, companyId, limit);
+      const selectedRows = selectedIds.length === 0 ? [] : await db
+        .select(columns)
+        .from(heartbeatRuns)
+        .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, selectedIds)));
+      const byId = new Map(selectedRows.map((run) => [run.id, run]));
+      rows = selectedIds.flatMap((id) => {
+        const run = byId.get(id);
+        return run ? [run] : [];
+      });
+    } else if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);
       const recentRuns = await db
         .select(columns)
@@ -6647,29 +7134,34 @@ export function agentRoutes(
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(targetRunCount - liveRuns.length);
 
-      const rows = [...liveRuns, ...recentRuns];
-      const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-      res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
-        ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
-        outputSilence: await heartbeat.buildRunOutputSilence(run),
-      })))));
-      return;
+      rows = [...liveRuns, ...recentRuns];
     }
 
-    const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
+    const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
+    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
       ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+      agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
+      avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
+      execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    })))));
+    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
-  router.get("/heartbeat-runs/:runId", async (req, res) => {
+  function readHeartbeatRunId(req: Request): string {
     const runId = req.params.runId as string;
+    // isUuidLike accepts surrounding whitespace, but PostgreSQL UUID inputs do not.
+    if (runId !== runId.trim() || !isUuidLike(runId)) {
+      throw badRequest("Invalid heartbeat run ID");
+    }
+    return runId;
+  }
+
+  router.get("/heartbeat-runs/:runId", async (req, res) => {
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(await runRedactions.redactForRun(
@@ -6679,18 +7171,22 @@ export function agentRoutes(
         { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null,
     ));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
+    const requestId = cancellationRequestId(req.body?.cancellationRequestId);
     // Stamp the cancellation as operator-initiated (this route is board-only).
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      ...(requestId ? { cancellationRequestId: requestId, cancellationRequestedByUserId: req.actor.userId ?? null } : {}),
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,
@@ -6709,14 +7205,15 @@ export function agentRoutes(
       });
     }
 
-    res.json(run);
+    res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,
+      getActorInfo(req).actorId) : null);
   });
 
   router.post(
     "/heartbeat-runs/:runId/runtime-requests/:requestId/resolve",
     async (req, res) => {
       assertBoard(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const requestId = req.params.requestId as string;
       const existing = await getAccessibleResource(
         req,
@@ -6921,9 +7418,10 @@ export function agentRoutes(
   );
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
     const decision = typeof req.body?.decision === "string" ? req.body.decision : "";
     if (!["snooze", "continue", "dismissed_false_positive"].includes(decision)) {
       res.status(400).json({ error: "Unsupported watchdog decision" });
@@ -6954,7 +7452,7 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
     assertInstanceAdmin(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(
       req,
       res,
@@ -6983,7 +7481,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/reproject-workspace-diffs",
     async (req, res) => {
       assertBoard(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const run = await getAccessibleResource(
         req,
         res,
@@ -7042,7 +7540,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/frames/:frameId/reveal",
     async (req, res) => {
       assertInstanceAdmin(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const frameId = Number(req.params.frameId);
       if (!Number.isSafeInteger(frameId) || frameId < 1) {
         throw badRequest("Invalid provider trace frame id");
@@ -7082,7 +7580,7 @@ export function agentRoutes(
     "/heartbeat-runs/:runId/provider-trace/download",
     async (req, res) => {
       assertInstanceAdmin(req);
-      const runId = req.params.runId as string;
+      const runId = readHeartbeatRunId(req);
       const run = await getAccessibleResource(
         req,
         res,
@@ -7117,7 +7615,7 @@ export function agentRoutes(
 
   router.delete("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
     assertInstanceAdmin(req);
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(
       req,
       res,
@@ -7140,14 +7638,26 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
-    const runId = req.params.runId as string;
-    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    const runId = readHeartbeatRunId(req);
+    const run = await getAccessibleResource(req, res, heartbeat.getRunReadAccess(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
+
+    if (req.query.view === "plugin-panels") {
+      const options = await getCurrentUserRedactionOptions();
+      const panels = redactCurrentUserValue(await readTaskPanelActivations(db, run.companyId, run.id), options);
+      res.json(await runRedactions.redactForRun(run.companyId, run.id, panels.map(panel => redactEventPayload({ ...panel }))));
+      return;
+    }
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
-    const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
+    const cursor = Number.isFinite(afterSeq) ? afterSeq : 0;
+    const pageLimit = Number.isFinite(limit) ? limit : 200;
+    const events = await (req.query.view === "conversation"
+      ? heartbeat.listEvents(runId, cursor, pageLimit, true)
+      : heartbeat.listEvents(runId, cursor, pageLimit));
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactedEvents = events.map((event) =>
       redactCurrentUserValue({
@@ -7159,32 +7669,46 @@ export function agentRoutes(
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
-    const runId = req.params.runId as string;
+    const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes,
-    });
+    const controller = new AbortController();
+    const cancelRead = () => controller.abort();
+    res.once("close", cancelRead);
+    try {
+      const result = await heartbeat.readLog(run, {
+        offset: Number.isFinite(offset) ? offset : 0,
+        limitBytes,
+        ...(req.query.alignStartToRecord === "true" ? { alignStartToRecord: true } : {}),
+        signal: controller.signal,
+      });
 
-    res.set("Cache-Control", "no-cache, no-store");
-    res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
+    } finally {
+      res.off("close", cancelRead);
+    }
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
-    const runId = req.params.runId as string;
-    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    const runId = readHeartbeatRunId(req);
+    const run = await getAccessibleResource(req, res, heartbeat.getRunWorkspaceAccess(runId), "Heartbeat run not found");
     if (!run) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
 
-    const context = asRecord(run.contextSnapshot);
-    const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
+    const executionWorkspaceId = asNonEmptyString(run.executionWorkspaceId);
     const operations = await workspaceOperations.listForRun(runId, executionWorkspaceId);
-    res.json(redactCurrentUserValue(operations, await getCurrentUserRedactionOptions()));
+    const visibleOperations = [];
+    for (const operation of operations) {
+      if (await canActorReadWorkspaceOperation(db, access, req.actor, operation)) visibleOperations.push(operation);
+    }
+    res.json(redactCurrentUserValue(visibleOperations, await getCurrentUserRedactionOptions()));
   });
 
   router.get("/workspace-operations/:operationId/log", async (req, res) => {
@@ -7192,6 +7716,10 @@ export function agentRoutes(
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
+    if (!(await canActorReadWorkspaceOperation(db, access, req.actor, operation))) {
+      res.status(404).json({ error: "Workspace operation not found" });
+      return;
+    }
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -7220,6 +7748,8 @@ export function agentRoutes(
       .select({
         id: heartbeatRuns.id,
         runtimeMode: heartbeatRuns.runtimeMode,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`.as("queuedCommentSourceWakeIds"),
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,
@@ -7230,6 +7760,7 @@ export function agentRoutes(
         createdAt: heartbeatRuns.createdAt,
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
+        agentAppearance: agentsTable.appearance,
         adapterType: agentsTable.adapterType,
         logBytes: heartbeatRuns.logBytes,
         livenessState: heartbeatRuns.livenessState,
@@ -7249,7 +7780,7 @@ export function agentRoutes(
         and(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          eq(heartbeatRuns.issueId, issue.id),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -7257,6 +7788,8 @@ export function agentRoutes(
     const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
+      agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
+      avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
@@ -7319,6 +7852,8 @@ export function agentRoutes(
       execution: await executionProjectionForRun(db, issue.companyId, run.id),
       agentId: agent.id,
       agentName: agent.name,
+      agentAppearance: agent.appearance,
+      avatarUrl: agent.avatarUrl,
       adapterType: agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     });

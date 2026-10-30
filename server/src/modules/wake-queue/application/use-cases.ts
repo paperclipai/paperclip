@@ -1,4 +1,5 @@
-import { enrichPromotedWakeContext } from "../domain/context.js";
+import { readWakeChatConversationId } from "../../run-dispatch/index.js";
+import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -119,6 +120,7 @@ export type ReleaseIssueExecutionInput = {
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
+  resumeStrandedQueue?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -150,12 +152,12 @@ async function runReleaseDrain(
   // The `processedWakeIds` guard below makes a break of the invariant
   // fail loudly, instead of holding this transaction open forever.
   const processedWakeIds = new Set<string>();
-  const handoffWakeIds: string[] = [];
+  const preservedWakeIds: string[] = [];
 
   while (true) {
     const candidate = await ports.transaction.findNextDeferredWake({
       companyId: run.companyId, issueId: issue.id,
-      ...(handoffWakeIds.length ? { excludedWakeIds: handoffWakeIds } : {}),
+      ...(preservedWakeIds.length ? { excludedWakeIds: preservedWakeIds } : {}),
     });
     if (!candidate) break;
     if (processedWakeIds.has(candidate.id)) {
@@ -199,11 +201,11 @@ async function runReleaseDrain(
       !candidate.preservesIndependentContinuation && candidate.queuedCommentIds.length > 0 &&
       ["issue_commented", "issue_reopened_via_comment"].includes(candidate.wakeReason ?? candidate.reason ?? "");
     if (ordinaryTaskComment && candidate.agentId !== issue.assigneeAgentId) {
-      if (run.agentId !== issue.assigneeAgentId) {
+      if (input.resumeStrandedQueue || run.agentId !== issue.assigneeAgentId) {
         // The old owner can release before assignment admission adopts these
         // exact IDs. Leave its receipt intact, skip it for this drain, and let
         // a current-assignee wake behind it proceed.
-        handoffWakeIds.push(candidate.id);
+        preservedWakeIds.push(candidate.id);
       } else {
         // The current owner has finished. An obsolete assignment cannot
         // launch another former-owner run or reopen its completed task.
@@ -281,12 +283,17 @@ async function runReleaseDrain(
 
     // A comment-id rewrite cannot change the agent or pause-hold facts already fetched above, so one decision covers both the rewritten and un-rewritten cases.
     const wakeOutcome = decideWakeOutcome({
-      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false },
+      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false, paused: deferredAgent?.paused === true },
       pauseHold: { activePauseHold: pauseHold.activePauseHold, treeHoldInteractionWake: pauseHold.treeHoldInteractionWake },
     });
 
     if (wakeOutcome.kind === "fail_not_invokable") {
       await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
+      continue;
+    }
+
+    if (wakeOutcome.kind === "defer_agent_pause") {
+      preservedWakeIds.push(workingCandidate.id);
       continue;
     }
 
@@ -355,8 +362,13 @@ async function promoteDeferredWake(
   // after completion; it cannot revive a cancelled task. Other stale
   // continuations cannot revive assignee execution. Cancel before claiming promotion so
   // the compare-and-set still sees the deferred wake.
+  const onboardingResultReport = currentIssue.status === "done" && currentIssue.originKind === "onboarding_first_task" &&
+    await ports.transaction.isCompletedOnboardingHandoffWake({ companyId: run.companyId, issueId: currentIssue.id,
+      agentId: workingCandidate.agentId, reason: workingCandidate.wakeReason ?? workingCandidate.reason,
+      contextSnapshot: workingCandidate.deferredContextSeed });
   if (
     !shouldReopen &&
+    !onboardingResultReport &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled") &&
     workingCandidate.agentId === currentIssue.assigneeAgentId
   ) {
@@ -487,7 +499,13 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
-  const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
+  // A run a person deliberately stopped (board cancel, operator interrupt, agent
+  // pause) is not stranded work. Re-queuing it here re-created the cancelled wake
+  // within a second of the cancel (issue_continuation_needed / assignment_recovery),
+  // and for a paused agent escalated the issue to `blocked`. The periodic sweep
+  // already stands down for operator cancels; this keeps release consistent.
+  const operatorStopped = run.status === "cancelled" && run.operatorStopped === true;
+  const suppressImmediateRecovery = input.suppressImmediateRecovery === true || operatorStopped || Boolean(
     issue.conversationAgentId && issue.conversationUserId &&
     issue.conversationState === "waiting" && issue.status === "in_review"
   );
@@ -822,8 +840,11 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
       }));
+    // A resolved card never merges with comments or another card.
+    const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: input.allowRunCoalescing,
+      allowRunCoalescing: wakeMustNotJoinActiveRun(input.activeExecutionRun.contextSnapshot, input.contextSnapshot, interactionReceipt)
+        ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
@@ -865,12 +886,13 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
     const existingDeferred =
-      input.allowRunCoalescing === false
+      (interactionReceipt || input.allowRunCoalescing === false)
         ? null
         : await deps.reader.findExistingDeferredWake(scope, {
             companyId: input.companyId,
             agentId: input.agentId,
             issueId: input.issueId,
+            chatConversationId: readWakeChatConversationId(input.contextSnapshot),
             ...(input.durableReceipt
               ? {
                   durableActor: {
@@ -881,7 +903,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
               : {}),
           });
 
-    if (existingDeferred) {
+    if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
         input.contextSnapshot,
@@ -952,7 +974,8 @@ export function createReleaseIssueExecution(deps: {
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
     const result = await deps.issueLock.withIssueExecutionLock(
-      { companyId: input.companyId, runId: input.runId, now: input.now },
+      { companyId: input.companyId, runId: input.runId, now: input.now,
+        ...(input.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}) },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 

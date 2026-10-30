@@ -10,9 +10,12 @@ import {
   buildRuntimeToolsEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
+  selectInitialCommunicationGuidance,
+  joinPromptSections,
   stringifyPaperclipWakePayload,
+  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -1104,11 +1107,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   // No heartbeat prompt template is sent over the gateway, so the wake prompt
   // must carry the execution contract itself.
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(ctx.runtime?.sessionId) });
+  const { taskContextNote, wakePrompt: structuredWakePrompt } = selectPaperclipPromptSections(ctx.context, {
+    resumedSession: Boolean(ctx.runtime?.sessionId),
     includeExecutionContract: true,
-    conversationMode: ctx.context.conversationMode === true,
+    includeCommunicationGuidance: false,
   });
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const structuredWakeJson = paperclipWakeCommentsArePromptOwned(ctx.context)
+    ? null
+    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+        omitIssueDescription: Boolean(taskContextNote),
+      });
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
@@ -1116,9 +1125,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
     resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
-    ctx.context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(ctx.context, { resumedSession: Boolean(ctx.runtime?.sessionId) })
-      : undefined,
+    taskContextNote || undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1133,7 +1140,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const message = joinPromptSections([
+    selectInitialCommunicationGuidance(ctx.context, { resumedSession: Boolean(ctx.runtime?.sessionId) }),
+    templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText,
+  ]);
 
   const agentParams = buildAgentParams({
     payloadTemplate,

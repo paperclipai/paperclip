@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -7,6 +7,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
@@ -14,12 +15,15 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { truncateTablesWithDeadlockRetry } from "./helpers/truncate-with-deadlock-retry.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { createPostgresWatchdogAdapter } from "../modules/active-run-watchdog/adapters/postgres.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -43,29 +47,6 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-function errorHasPostgresCode(error: unknown, code: string): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (!current || typeof current !== "object") return false;
-    const record = current as { code?: unknown; cause?: unknown };
-    if (record.code === code) return true;
-    current = record.cause;
-  }
-  return false;
-}
-
-async function truncateCompaniesWithDeadlockRetry(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-      return;
-    } catch (error) {
-      if (!errorHasPostgresCode(error, "40P01") || attempt === 4) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
-}
-
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -77,7 +58,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterEach(async () => {
     mockedAppendHeartbeatRunEvent.mockClear();
-    await truncateCompaniesWithDeadlockRetry(db);
+    await truncateTablesWithDeadlockRetry(db, `TRUNCATE TABLE "companies" CASCADE`, {
+      attempts: 5,
+      delayMs: (attempt) => 50 * (attempt + 1),
+    });
   });
 
   afterAll(async () => {
@@ -229,6 +213,27 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(coder?.status).toBe("running");
     expect(manager?.status).toBe("idle");
   }
+
+  it("warns after five silent minutes and escalates after fifteen without changing active work", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({ now, ageMs: 0 });
+    const summaryAt = (elapsedMs: number) => buildSummary(seeded.runId, new Date(now.getTime() + elapsedMs));
+    await expect(summaryAt(5 * 60_000 - 1)).resolves.toMatchObject({ level: "ok" });
+    await expect(summaryAt(5 * 60_000)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000 - 1)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000)).resolves.toMatchObject({ level: "critical" });
+    const { recovery, enqueueWakeup } = createRecovery();
+    await recovery.scanSilentActiveRuns({ now: new Date(now.getTime() + 35 * 60_000), companyId: seeded.companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("running");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expectNoReviewArtifacts(seeded);
+
+    // Fresh output clears the warning even on a long-running task.
+    await db.update(heartbeatRuns).set({ lastOutputAt: new Date(now.getTime() + 35 * 60_000) })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await expect(summaryAt(36 * 60_000)).resolves.toMatchObject({ level: "ok" });
+  });
 
   it.each(["stale_active_run_evaluation", "issue_productivity_review"])("keeps blocked and %s sources artifact-free", async (originKind) => {
     const now = new Date("2026-04-22T20:00:00.000Z");
@@ -442,6 +447,75 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       eq(issues.companyId, seeded.companyId),
       eq(issues.originKind, "stale_active_run_evaluation"),
     ))).toHaveLength(0);
+  });
+
+  it.each(["remote_lease", "workspace_finalize", "failed_finalize", "native_owner", "restore_failed"])(
+    "leaves a terminal task's run with its lifecycle owner while %s is unsettled",
+    async pending => {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const seeded = await seedRunningRun({ now, ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+        sourceStatus: "done", sameRunTerminalEvidence: true });
+      if (pending === "remote_lease") {
+        await db.insert(environmentLeases).values({ companyId: seeded.companyId, heartbeatRunId: seeded.runId,
+          issueId: seeded.issueId, status: "active", provider: "daytona", providerLeaseId: "sandbox-with-unsaved-files" });
+      } else if (pending === "workspace_finalize" || pending === "failed_finalize") {
+        await db.insert(workspaceOperations).values({ companyId: seeded.companyId, heartbeatRunId: seeded.runId,
+          issueId: seeded.issueId, phase: "workspace_finalize", status: pending === "failed_finalize" ? "failed" : "running" });
+      } else if (pending === "native_owner") {
+        await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, seeded.runId));
+      } else {
+        await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed" } })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const { recovery, enqueueWakeup } = createRecovery();
+      expect(await recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId }))
+        .toMatchObject({ folded: 0, created: 0, skipped: 1 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, seeded.coderId));
+      expect(run.status).toBe("running");
+      expect(task).toMatchObject({ status: "done", executionRunId: seeded.runId });
+      expect(agent.status).toBe("running");
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRunWatchdogDecisions).where(eq(heartbeatRunWatchdogDecisions.runId, seeded.runId)))
+        .toHaveLength(0);
+    },
+  );
+
+  it("folds stale bookkeeping after remote release and successful workspace finalization", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({ now, ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done", sameRunTerminalEvidence: true });
+    await db.insert(environmentLeases).values({ companyId: seeded.companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, status: "released", releasedAt: now, cleanupStatus: "success",
+      provider: "daytona", providerLeaseId: "finished-sandbox" });
+    await db.insert(workspaceOperations).values({ companyId: seeded.companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, phase: "workspace_finalize", status: "succeeded", finishedAt: now });
+    expect(await createRecovery().recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId }))
+      .toMatchObject({ folded: 1, created: 0 });
+  });
+
+  it("rechecks remote ownership when a lease appears after the initial fold check", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({ now, ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done", sameRunTerminalEvidence: true });
+    const adapter = createPostgresWatchdogAdapter(db);
+    const run = await adapter.findRunForCompany(seeded.companyId, seeded.runId);
+    expect(await adapter.isRuntimeSettlementPending(seeded.companyId, seeded.runId)).toBe(false);
+    await db.insert(environmentLeases).values({ companyId: seeded.companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, status: "active", provider: "daytona", providerLeaseId: "late-owned-sandbox" });
+    expect(await adapter.foldSourceResolvedRun(seeded.companyId, {
+      run: run!, sourceIssue: { id: seeded.issueId, identifier: `${seeded.issuePrefix}-1`, status: "done",
+        originKind: "manual", isRecoveryOriginKind: false },
+      evidence: { kind: "activity", id: randomUUID(), action: "issue.updated", createdAt: now },
+      existingEvaluation: null, silenceStartedAt: seeded.startedAt, silenceAgeMs: 16 * 60 * 1000,
+      cleanup: { attempted: false, outcome: "no_process_metadata", adapterType: "grok_local" }, now,
+    })).toEqual({ kind: "stale" });
+    const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(persisted.status).toBe("running");
+    expect(persisted.resultJson).toBeNull();
+    expect(await db.select().from(heartbeatRunWatchdogDecisions).where(eq(heartbeatRunWatchdogDecisions.runId, seeded.runId)))
+      .toHaveLength(0);
   });
 
   it("folds existing legacy evaluation and recovery rows idempotently", async () => {

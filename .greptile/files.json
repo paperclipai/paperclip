@@ -1,0 +1,76 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "description": "Repository contributor instructions and routing to scoped architecture rules."
+    },
+    {
+      "path": "docs/api/agents.md",
+      "description": "Agent API documentation retained from the existing Greptile agent-file context. This is API reference material, not contributor instructions."
+    },
+    {
+      "path": "rules/pull-request-review.mdc",
+      "description": "Existing Paperclip review guidance for PR descriptions, UI evidence, and growth of large source files."
+    },
+    {
+      "path": "rules/product-harness-responsibility.mdc",
+      "description": "Product requirements and review criteria for harness responsibility, minimal user-facing internals, truthful progress, and human decisions."
+    },
+    {
+      "path": "rules/module-boundaries.mdc",
+      "description": "Module ownership, justification of shared contract changes, delivery scope, and verification across affected consumers."
+    },
+    {
+      "path": "rules/runtime-dependency-boundaries.mdc",
+      "description": "Dependency cost, responsiveness, and verification requirements for changed server, adapter, and runner execution paths.",
+      "scope": [
+        "server/src/**",
+        "packages/adapter-utils/src/**",
+        "packages/adapters/*/src/**",
+        "packages/paperclip-runner/src/**",
+        "packages/paperclip-runner/runner/**"
+      ]
+    },
+    {
+      "path": "rules/chat-channel-platform-boundaries.mdc",
+      "description": "Architecture requirements and review criteria for separating chat channel platform implementations from shared orchestration.",
+      "scope": [
+        "server/src/services/chat-channels/**",
+        "server/src/services/chat-channels.ts"
+      ]
+    },
+    {
+      "path": "rules/heartbeat-execution-boundaries.mdc",
+      "description": "Heartbeat module ownership and review criteria for admission, cancellation, recovery, cleanup, and durable execution evidence.",
+      "scope": [
+        "server/src/services/heartbeat.ts",
+        "server/src/services/heartbeat/**",
+        "server/src/services/heartbeat-*.ts",
+        "server/src/__tests__/heartbeat-*.test.ts"
+      ]
+    },
+    {
+      "path": "rules/database-migration-snapshots.mdc",
+      "description": "Snapshot retention requirements for migration generation, rebases, and review; preserve SQL migrations and journal history.",
+      "scope": [
+        "packages/db/src/schema/**",
+        "packages/db/src/migrations/**",
+        "packages/db/package.json",
+        "packages/db/drizzle.config.ts"
+      ]
+    },
+    {
+      "path": "rules/sleep-aware-background-work.mdc",
+      "description": "Prevent new idle polling; require event-driven producers, real scheduler deadlines, obligation-based recovery, and lifecycle verification without forcing unrelated legacy migrations.",
+      "scope": [
+        "server/src/**",
+        "packages/db/src/**",
+        "packages/adapter-utils/src/**",
+        "packages/adapters/*/src/**",
+        "packages/plugins/*/src/**",
+        "packages/paperclip-runner/src/**",
+        "packages/paperclip-runner/runner/**"
+      ]
+    }
+  ]
+}

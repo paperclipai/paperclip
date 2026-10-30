@@ -1,4 +1,4 @@
-import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import { isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -36,7 +36,7 @@ export type IssueFilterState = {
    *   - `none`           — issues with zero external objects
    */
   externalObjectStatuses: string[];
-  hideRoutineExecutions: boolean;
+  showAgentCreatedTasks: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -49,7 +49,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   workspaces: [],
   liveOnly: false,
   externalObjectStatuses: [],
-  hideRoutineExecutions: false,
+  showAgentCreatedTasks: false,
 };
 
 export const externalObjectFilterOrder = [
@@ -57,6 +57,7 @@ export const externalObjectFilterOrder = [
   "waiting",
   "running",
   "auth_required",
+  "rate_limited",
   "unreachable",
   "stale",
   "none",
@@ -67,6 +68,7 @@ const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
   waiting: "Any waiting",
   running: "Any running",
   auth_required: "Auth required",
+  rate_limited: "Rate limited",
   unreachable: "Unreachable",
   stale: "Stale",
   none: "No external objects",
@@ -115,7 +117,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
-    hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+    showAgentCreatedTasks: candidate.showAgentCreatedTasks === true,
   };
 }
 
@@ -193,6 +195,8 @@ function issueMatchesExternalObjectStatusFilter(
     case "auth_required":
       return (summary?.authRequiredCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "auth_required") > 0;
+    case "rate_limited":
+      return summaryRecordCount(summary?.byLiveness, "rate_limited") > 0;
     case "unreachable":
       return (summary?.unreachableCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "unreachable") > 0;
@@ -210,7 +214,7 @@ export function applyIssueFilters(
   issues: Issue[],
   state: IssueFilterState,
   currentUserId?: string | null,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   liveIssueIds?: ReadonlySet<string>,
   workspaceContext: IssueFilterWorkspaceContext = {},
 ): Issue[] {
@@ -218,8 +222,8 @@ export function applyIssueFilters(
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
   }
-  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
-    result = result.filter((issue) => issue.originKind !== "routine_execution");
+  if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks) {
+    result = result.filter((issue) => !isAgentCreatedIssue(issue));
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
   if (state.priorities.length > 0) result = result.filter((issue) => state.priorities.includes(issue.priority));
@@ -269,7 +273,7 @@ export function applyIssueFilters(
 
 export function countActiveIssueFilters(
   state: IssueFilterState,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
 ): number {
   let count = 0;
   if (state.statuses.length > 0) count += 1;
@@ -281,6 +285,6 @@ export function countActiveIssueFilters(
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
-  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
+  if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks) count += 1;
   return count;
 }

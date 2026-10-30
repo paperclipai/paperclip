@@ -134,7 +134,7 @@ describe("InboxIssueMetaLeading live state", () => {
 });
 
 describe("InboxIssueTrailingColumns attribution", () => {
-  it("renders a kicked off by column for agent creators with square identity", () => {
+  it("renders a kicked off by column for agent creators with a character identity", () => {
     const text = renderLeading(
       <InboxIssueTrailingColumns
         issue={makeIssue({
@@ -155,7 +155,7 @@ describe("InboxIssueTrailingColumns attribution", () => {
     );
 
     expect(text).toContain("CodexCoder");
-    expect(container?.querySelector('[data-shape="square"]')).not.toBeNull();
+    expect(container?.querySelector('[data-slot="agent-avatar"]')).not.toBeNull();
   });
 
   it("renders a kicked off by column for user creators", () => {
@@ -208,7 +208,7 @@ describe("InboxIssueTrailingColumns attribution", () => {
     // The responsible user wins over the creating agent.
     expect(text).toContain("Morgan Product");
     expect(container?.querySelector('[data-shape="circle"]')).not.toBeNull();
-    expect(container?.querySelector('[data-shape="square"]')).toBeNull();
+    expect(container?.querySelector('[data-slot="agent-avatar"]')).toBeNull();
   });
 
   it("surfaces the responsible user for a routine execution with no creator", () => {

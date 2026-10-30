@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_review_response_receipt_idx" ON "issue_comments" USING btree ("created_by_run_id","company_id","issue_id","author_agent_id") WHERE "issue_comments"."author_type" = 'agent' AND "issue_comments"."metadata"->>'authorizationReason' = 'allow_chat_run_presentation';

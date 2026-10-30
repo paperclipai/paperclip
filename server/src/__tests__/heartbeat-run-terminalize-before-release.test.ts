@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   companies,
   createDb,
@@ -71,6 +72,7 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(issues);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -300,6 +302,43 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
 
     expect(releaseRunLeases).not.toHaveBeenCalled();
   });
+
+  it.each(["failed", "cancelled", "timed_out", "interrupted", "succeeded"])(
+    "uses the durable %s outcome when recovered workspace cleanup requests warm retention",
+    async (status) => {
+      const { companyId, agentId, issueId, runId } = await seed({
+        issueStatus: status === "succeeded" ? "done" : "blocked",
+        runStatus: status,
+      });
+      await db.update(heartbeatRuns).set({
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        nativePhase: "committed",
+        finishedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, runId));
+      const releaseRunLeases = vi.fn(async () => []);
+      const heartbeat = heartbeatService(db, {
+        environmentRuntime: { releaseRunLeases } as unknown as HeartbeatEnvironmentRuntime,
+      });
+
+      // Successful workspace copy-back does not make a failed provider turn
+      // successful. Recovery can reach this boundary without the run's finally.
+      await heartbeat.releaseEnvironmentLeasesForRun({
+        runId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        providerResourceDisposition: "keep_running",
+      });
+
+      expect(releaseRunLeases).toHaveBeenCalledWith(
+        runId,
+        leaseReleaseStatusForRunStatus(status),
+        expect.any(Function),
+        status === "succeeded" ? "keep_running" : "stop_and_retain",
+      );
+    },
+  );
 
   it.each(["daytona", "local"])("destroy after failed checkpoint requires a terminal remote owner: %s", async provider => {
     const { companyId, agentId, runId } = await seed({ issueStatus: "blocked", runStatus: "running" });

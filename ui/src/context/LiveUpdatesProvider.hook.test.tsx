@@ -8,9 +8,12 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 
-const { pushToast } = vi.hoisted(() => ({ pushToast: vi.fn(() => "toast-id") }));
+const { pushToast, companySelection } = vi.hoisted(() => ({
+  pushToast: vi.fn(() => "toast-id"),
+  companySelection: { id: "company-1" },
+}));
 vi.mock("./CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } }),
+  useCompany: () => ({ selectedCompanyId: companySelection.id, selectedCompany: { id: companySelection.id } }),
 }));
 vi.mock("./ToastContext", () => ({ useToastActions: () => ({ pushToast }) }));
 vi.mock("../lib/router", () => ({ useLocation: () => ({ pathname: "/PAP/issues/PAP-204" }) }));
@@ -133,6 +136,7 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
 
   beforeEach(() => {
     pushToast.mockClear();
+    companySelection.id = "company-1";
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     queryClient.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } });
     queryClient.setQueryData(queryKeys.issues.detail("PAP-204"), {
@@ -170,16 +174,133 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     vi.unstubAllGlobals();
   });
 
-  async function receiveStatus(payload: Record<string, unknown>) {
+  async function receiveStatus(payload: Record<string, unknown>, createdAt = "2026-09-09T18:00:00.000Z", toastEligible: boolean | undefined = true) {
     await reactAct(async () => {
       root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><span>Visible task</span></LiveUpdatesProvider></QueryClientProvider>);
     });
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(sockets[0]?.onmessage).toBeTypeOf("function");
     await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
-      data: JSON.stringify({ id: 1, companyId: "company-1", type: "heartbeat.run.status", createdAt: "2026-09-09T18:00:00.000Z", payload }),
+      data: JSON.stringify({ id: Date.now(), companyId: "company-1", type: "heartbeat.run.status", createdAt, payload, toastEligible }),
     })));
   }
+
+  it.each([false, undefined])("keeps ineligible runs quiet (%s) while updating their cache", async (eligibility) => {
+    queryClient.setQueryData(queryKeys.runDetail("other-run"), { id: "other-run", status: "running" });
+    // Pass an event directly to exercise a missing property, not the helper default.
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({ id: 99, companyId: "company-1", type: "heartbeat.run.status",
+        createdAt: "2026-09-09T18:00:00.000Z", toastEligible: eligibility,
+        payload: { runId: "other-run", agentId: "other-agent", status: "failed" } }),
+    })));
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.runDetail("other-run"))).toMatchObject({ status: "failed" });
+  });
+
+  it.each([true, false, undefined])("gates task activity (%s)", async (eligibility) => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({ id: 99, companyId: "company-1", type: "activity.logged",
+        createdAt: "2026-09-09T18:00:00.000Z", toastEligible: eligibility,
+        payload: { entityType: "issue", entityId: "other-task", action: "issue.comment_added", actorType: "user", actorId: "another-user" } }),
+    })));
+    expect(pushToast).toHaveBeenCalledTimes(eligibility === true ? 1 : 0);
+  });
+
+  it("keeps generic agent errors quiet even with eligibility metadata", async () => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({ id: 99, companyId: "company-1", type: "agent.status", toastEligible: true,
+        createdAt: "2026-09-09T18:00:00.000Z", payload: { agentId: "other-agent", status: "error" } }),
+    })));
+    expect(pushToast).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: queryKeys.agents.detail("other-agent"),
+    })));
+  });
+
+  it("ignores a callback retained from a closed socket", async () => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const staleCallback = sockets[0]!.onmessage!;
+    await reactAct(async () => root!.unmount());
+    root = null;
+    staleCallback(new MessageEvent("message", { data: JSON.stringify({
+      id: 99, companyId: "company-1", type: "heartbeat.run.status", toastEligible: true,
+      createdAt: "2026-09-09T18:00:00.000Z", payload: { runId: "stale-run", agentId: "other-agent", status: "failed" },
+    }) }));
+    expect(pushToast).not.toHaveBeenCalled();
+  });
+
+  it.each(["account", "company"])("ignores old socket messages after switching %s", async (scope) => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const staleCallback = sockets[0]!.onmessage!;
+    await reactAct(async () => {
+      if (scope === "account") {
+        queryClient.setQueryData(queryKeys.auth.session, {
+          user: { id: "new-viewer" }, session: { id: "new-session", userId: "new-viewer" },
+        });
+      } else {
+        companySelection.id = "company-2";
+      }
+      root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><span>New scope</span></LiveUpdatesProvider></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    await reactAct(async () => staleCallback(new MessageEvent("message", { data: JSON.stringify({
+      id: 99, companyId: "company-1", type: "heartbeat.run.status", toastEligible: true,
+      createdAt: "2026-09-09T18:00:00.000Z", payload: { runId: "stale-run", agentId: "other-agent", status: "failed" },
+    }) })));
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.runDetail("stale-run"))).toBeUndefined();
+  });
+
+  it("announces a run outcome once across minute-apart redeliveries but still refreshes caches", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const payload = { runId: "unrelated-run", agentId: "other-agent", status: "failed", finishedAt: "2026-09-09T18:00:00.000Z" };
+    clock.mockReturnValue(Date.parse(payload.finishedAt));
+    await receiveStatus({ ...payload, deliveryId: "first" });
+    expect(pushToast).toHaveBeenCalledTimes(1);
+    queryClient.setQueryData(queryKeys.runDetail(payload.runId), { id: payload.runId, status: "running" });
+    for (let minute = 1; minute <= 3; minute += 1) {
+      const now = Date.parse(payload.finishedAt) + minute * 60_000;
+      clock.mockReturnValue(now);
+      await receiveStatus({ ...payload, deliveryId: `retry-${minute}` }, new Date(now).toISOString());
+    }
+    expect(pushToast).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(queryKeys.runDetail(payload.runId))).toMatchObject({ status: "failed" });
+    await receiveStatus({ ...payload, runId: "new-failure" });
+    expect(pushToast).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes an old terminal run without announcing its first delivery as a new failure", async () => {
+    queryClient.setQueryData(queryKeys.runDetail("old-run"), { id: "old-run", status: "running" });
+    await receiveStatus({
+      runId: "old-run", agentId: "other-agent", status: "failed",
+      finishedAt: "2026-09-07T18:00:00.000Z", deliveryId: "new-delivery-of-old-failure",
+    });
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.runDetail("old-run"))).toMatchObject({ status: "failed" });
+  });
+
+  it("does not announce an outcome again after hiding and reopening the window", async () => {
+    const payload = { runId: "unrelated-run", agentId: "other-agent", status: "failed" };
+    await receiveStatus(payload);
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await reactAct(async () => {
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    await reactAct(async () => sockets[1]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({ id: 2, companyId: "company-1", toastEligible: true, type: "heartbeat.run.status", createdAt: "2026-09-09T18:01:00.000Z", payload }),
+    })));
+    expect(pushToast).toHaveBeenCalledTimes(1);
+  });
 
   it("disconnects while hidden and reconciles active queries once on return", async () => {
     await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });

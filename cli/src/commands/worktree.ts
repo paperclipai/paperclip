@@ -16,7 +16,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
@@ -118,6 +118,7 @@ type WorktreeInitOptions = {
   serverPort?: number;
   dbPort?: number;
   seed?: boolean;
+  empty?: boolean;
   seedMode?: string;
   preserveLiveWork?: boolean;
   force?: boolean;
@@ -245,6 +246,7 @@ export type EnsureWorktreeSeededResult = {
     | "seeded"
     | "verified_manifest"
     | "complete_marker"
+    | "explicitly_empty"
     | "legacy_unmarked"
     | "legacy_database";
   details?: SeedWorktreeDatabaseResult;
@@ -1306,10 +1308,11 @@ export async function quarantineSeededWorktreeExecutionState(
             .update(agents)
             .set({
               runtimeConfig: normalized.runtimeConfig,
-              status: nextStatus,
               updatedAt: new Date(),
             })
             .where(eq(agents.id, agent.id));
+          if (nextStatus !== agent.status) await tx.update(agents).set({ status: "idle", updatedAt: new Date() })
+            .where(and(eq(agents.id, agent.id), eq(agents.lifecycleState, "ready")));
         }
       }
 
@@ -2221,6 +2224,9 @@ export async function ensureWorktreeSeeded(
 ): Promise<EnsureWorktreeSeededResult> {
   const configPath = resolveConfigPath(opts.config);
   const markers = resolveWorktreeSeedMarkerPaths(configPath);
+  if (existsSync(markers.empty)) {
+    return { seeded: false, reason: "explicitly_empty" };
+  }
   const initialManifest = readWorktreeSeedManifest(configPath);
   if (initialManifest?.state === "verified") {
     return { seeded: false, reason: "verified_manifest" };
@@ -2282,6 +2288,9 @@ export async function ensureWorktreeSeeded(
   mkdirSync(path.dirname(markers.lock), { recursive: true });
   const releaseLock = await acquireWorktreeSeedLock(markers.lock);
   try {
+    if (existsSync(markers.empty)) {
+      return { seeded: false, reason: "explicitly_empty" };
+    }
     // These checks deliberately happen under the cross-process lock. A second
     // service process waits for the first seed transaction, then observes the
     // verified manifest instead of cloning the same database concurrently.
@@ -2434,8 +2443,10 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     rmSync(paths.configPath, { force: true });
     rmSync(paths.envPath, { force: true });
     const seedMarkers = resolveWorktreeSeedMarkerPaths(paths.configPath);
+    rmSync(seedMarkers.manifest, { force: true });
     rmSync(seedMarkers.pending, { force: true });
     rmSync(seedMarkers.complete, { force: true });
+    rmSync(seedMarkers.empty, { force: true });
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
@@ -2464,6 +2475,11 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       });
 
       try {
+        // Persist the no-copy choice before the config becomes visible to managed startup.
+        if (opts.empty) {
+          mkdirSync(paths.repoConfigDir, { recursive: true });
+          writeFileSync(resolveWorktreeSeedMarkerPaths(paths.configPath).empty, "Explicitly empty instance; automatic database copying is disabled.\n", { mode: 0o600 });
+        }
         writeConfig(selectedConfig, paths.configPath);
         writeWorktreePortRegistry(paths.homeDir, [
           ...registeredConfigPaths,
@@ -2471,6 +2487,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
         ]);
       } catch (error) {
         rmSync(paths.configPath, { force: true });
+        if (opts.empty) rmSync(resolveWorktreeSeedMarkerPaths(paths.configPath).empty, { force: true });
         throw error;
       }
 
@@ -2481,18 +2498,20 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       };
     },
   );
-  markWorktreeSeedPending({
-    configPath: paths.configPath,
-    sourceConfigPath,
-    targetInstanceId: instanceId,
-    seedMode,
-  });
+  if (!opts.empty) {
+    markWorktreeSeedPending({
+      configPath: paths.configPath,
+      sourceConfigPath,
+      targetInstanceId: instanceId,
+      seedMode,
+    });
+  }
   const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
   const existingAgentJwtSecret =
-    nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
+    opts.empty ? randomBytes(32).toString("base64url") : nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
     nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
   const existingToolActionSigningSecret =
-    nonEmpty(sourceEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    opts.empty ? randomBytes(32).toString("base64url") : nonEmpty(sourceEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
     nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET);
   mergePaperclipEnvEntries(
     {
@@ -2511,7 +2530,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   let seedExecutionQuarantineSummary: SeededWorktreeExecutionQuarantineSummary | null = null;
   let pausedScheduledRoutineCount: number | null = null;
   let reboundWorkspaceSummary: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
-  if (opts.seed !== false) {
+  if (!opts.empty && opts.seed !== false) {
     if (!sourceConfig) {
       throw new Error(
         `Cannot seed worktree database because source config was not found at ${sourceConfigPath}. Use --no-seed or provide --from-config.`,
@@ -2601,6 +2620,8 @@ export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOpti
       spinner.stop("Seeded isolated worktree database (minimal).");
     } else if (result.reason === "legacy_database") {
       spinner.stop("Validated and adopted an existing legacy worktree database.");
+    } else if (result.reason === "explicitly_empty") {
+      spinner.stop("Explicitly empty instance; automatic database copying is disabled.");
     } else {
       spinner.stop("Worktree database already has a verified seed manifest.");
     }
@@ -2618,7 +2639,7 @@ export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOpti
         );
       }
     }
-    p.outro(pc.green("Worktree database seed complete."));
+    p.outro(pc.green(result.reason === "explicitly_empty" ? "Empty worktree ready." : "Worktree database seed complete."));
   } catch (error) {
     spinner.stop(pc.red("Failed to seed worktree database."));
     throw error;
@@ -4320,6 +4341,8 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
       expectedCompanyId: nonEmpty(process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID) ?? undefined,
       seedDatabase: seedWorktreeDatabase,
     });
+    // An operator-confirmed successful reseed replaces the earlier empty-instance choice.
+    rmSync(markers.empty, { force: true });
     spinner.stop(`Reseeded ${targetEndpoint.label} (${seedMode}).`);
     p.log.message(pc.dim(`Source: ${source.configPath}`));
     p.log.message(pc.dim(`Target: ${targetEndpoint.configPath}`));
@@ -4456,6 +4479,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
     .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
+    .option("--empty", "Create an empty instance without immediate or deferred database copying", false)
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeMakeCommand);
 
@@ -4473,6 +4497,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
     .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
+    .option("--empty", "Create an empty instance without immediate or deferred database copying", false)
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeInitCommand);
 

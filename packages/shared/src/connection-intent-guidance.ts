@@ -7,29 +7,18 @@
  */
 export const CONNECTION_INTENT_AGENT_GUIDANCE = [
   "Connection tools:",
-  "- When work requires a known external service and usable access is uncertain, call `connections_search` with the service name or capability.",
-  "- This applies both when the user explicitly asks to connect a service and when the requested work implicitly depends on that service.",
-  "- If search returns `ready`, use the installed connection; do not create a connection intent.",
-  "- If search returns `available` or `needs_user_action`, call `connection_request` with the returned service identifier.",
-  "- When the user has already asked to connect a known service, use the real connection request. Do not ask whether to connect again or imitate the Connect / Not now card with `ask_user_questions`, a generic confirmation, or a comment. Only `connection_request` creates the actual connection setup card.",
-  "- If search returns `unavailable`, explain that the service is unavailable and do not call `connection_request`.",
-  "- If `connection_request` returns `needs_user_action`, finish any independent work, then yield in a waiting posture. Do not retry the request, ask for credentials in comments, or claim access.",
-  "- Do not use connection tools for arbitrary MCP URLs, unsupported services, or work that does not require an external service.",
-  "- Keep an existing pending card across messages. Do not request again after the user declines unless they explicitly ask to retry.",
-  "- On a continuation run after connection setup, use the newly installed connection instead of requesting it again.",
+  "- When the user asks to connect a service, call `connections_search` before any service tool, even if already installed. Also search when a task needs a service and usable access is uncertain. Search by its name or capability and follow the returned `instruction`.",
+  "- Distinguish tool, chat/channel, and AI account purposes. Use `search_api` and `call_api` for authorized connection configuration requested by the user. Standard agents can manage connections under their responsible user's authority; inspect the returned capabilities and respect explicit restrictions. Reuse saved accounts and setup drafts.",
+  "- Suggest a relevant connection when it would help the task and usable access is missing. Respect recorded declines and provider choices. Ask only for missing decisions, consent, credentials, or authority; never ask for credentials in comments. Hand off the exact required human action at the saved setup link, then inspect status and continue through the API.",
+  "- If a tool call is blocked by Off/Ask first or missing installation access, use `connection_request` with the saved connectionId and required toolNames. Do not silently relax policy to work around a failed call. You may perform an access-policy change explicitly requested by the user when authorized; never approve your own governed action or change your own principal permissions.",
+  "- Report saved, authenticated, usable, and verified as separate states. A saved connection is not proof of successful authentication or a verified provider action.",
+  "- When waiting for user action, finish independent work, then yield without retrying or polling. On continuation, follow the recorded outcome and use the installed connection.",
+  "- Do not use connection tools for arbitrary MCP URLs or unrelated work.",
 ].join("\n");
 
-export const CONNECTIONS_SEARCH_TOOL_DESCRIPTION = [
-  "Search Paperclip's catalog services and authorized configured custom connections and report this run's agent-relative access state.",
-  "Use it when work requires a known external service and usable access is uncertain; do not use it for arbitrary MCP URLs or unrelated work.",
-  "If the user already asked to connect the service, search and request it through the connection tools instead of asking a generic confirmation question.",
-].join(" ");
+export const CONNECTIONS_SEARCH_TOOL_DESCRIPTION = "Search connections across tool, channel/email, and AI purposes with a service name or natural-language description (up to 4000 characters). Choose the relevant method and inspect its management capabilities. For user-requested configuration, discover and call the existing REST operation with search_api/call_api; reuse saved drafts and hand off only required human authentication or consent. Use connection_request for missing access or required user input. Also discovers verified external aggregator apps. Use first when asked to connect a service or usable access is uncertain; respect the returned instruction, recorded declines, and exact providerQuestion. Do not use for arbitrary MCP URLs. Search is read-only.";
 
-export const CONNECTION_REQUEST_TOOL_DESCRIPTION = [
-  "Request access to a known connectable service for this run's agent from the responsible user.",
-  "This creates the real Connect / Not now setup card. When the user already asked to connect, use this tool; do not recreate those choices with ask_user_questions, request_confirmation, or a comment. A generic question does not start connection setup.",
-  "Call it only with the service identifier returned as available or needs_user_action by connections_search; if user action is needed, finish independent work, then yield without retrying or asking for credentials in comments.",
-].join(" ");
+export const CONNECTION_REQUEST_TOOL_DESCRIPTION = "Request the service identifier returned by connections_search. For an existing connection with missing agent access, pass connectionId and the exact required toolNames to create an embedded Grant access card; only the human can approve it. Follow the search instruction; aggregator routes require the saved provider-selection interaction ID. Only this tool creates the real setup card. If user action is needed, finish independent work, then yield without retrying or asking for credentials in comments.";
 
 export const CONNECTION_RUNTIME_TOOL_NAMES = [
   "connections_search",

@@ -1,3 +1,5 @@
+import profiles from "../acpx-profiles.json" with { type: "json" };
+import compatibility from "../src/live/provider-pack-contract.json" with { type: "json" };
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -18,10 +20,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
+import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
+import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack } from "./provider-pack-runtime-tree.mjs";
+import { packContractDigest } from "./contracts/contract-fingerprints.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
-const outputArgument = process.argv.slice(2).find((value) => value !== "--");
+const { output: outputArgument, candidates } = parseProviderPackArguments(process.argv.slice(2));
 const outputRoot = resolve(
   process.cwd(),
   outputArgument ?? join(packageRoot, "provider-pack"),
@@ -34,7 +41,7 @@ if (
   throw new Error(`Refusing unsafe provider-pack output path: ${outputRoot}`);
 }
 
-const temporaryParent = mkdtempSync(join(tmpdir(), "paperclip-provider-pack-"));
+const temporaryParent = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-provider-pack-")));
 const temporaryRoot = join(temporaryParent, "pack");
 
 function canonicalJson(value) {
@@ -98,21 +105,6 @@ function writePortableNodeShim(name, entrypoint) {
   chmodSync(shimPath, 0o755);
 }
 
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shimPath, 0o755);
-}
-
 try {
   const deployed = spawnSync(
     "pnpm",
@@ -127,6 +119,11 @@ try {
   );
   if (deployed.status !== 0) {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
+  }
+  removeControllerArtifactsFromProviderPack(temporaryRoot);
+  const foreignLibcPackages = removeForeignLibcPackagesFromProviderPack(temporaryRoot, providerPackLibc());
+  if (foreignLibcPackages.length) {
+    process.stderr.write(`Removed ${foreignLibcPackages.length} provider-pack packages built for another libc: ${foreignLibcPackages.join(", ")}\n`);
   }
 
   // Fail the image build if a bridge silently brings back an older/private
@@ -163,6 +160,32 @@ try {
   mkdirSync(dirname(stableNodeCommand), { recursive: true, mode: 0o755 });
   copyFileSync(process.execPath, stableNodeCommand);
   chmodSync(stableNodeCommand, 0o755);
+  // A freshly copied x64 Mach-O can stall when launched directly from a
+  // translated Node process. Select Rosetta explicitly for this build probe;
+  // native Intel and every other platform still execute the copied bytes directly.
+  const translated = process.platform === "darwin" && process.arch === "x64"
+    && spawnSync("/usr/sbin/sysctl", ["-n", "sysctl.proc_translated"], {
+      encoding: "utf8", timeout: 1_000,
+    }).stdout?.trim() === "1";
+  const relocatedNode = spawnSync(translated ? "/usr/bin/arch" : stableNodeCommand,
+    translated ? ["-x86_64", stableNodeCommand, "--version"] : ["--version"], {
+    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: buildNodeStartupTimeout(),
+  });
+  if (relocatedNode.status !== 0 || relocatedNode.stdout.trim() !== `v${process.versions.node}`) {
+    throw new Error("Provider pack Node is not portable after relocation; build with a standalone Node distribution");
+  }
+
+  const candidateProviders = {};
+  for (const provider of providerPackProviders(process.platform, process.arch, candidates)) {
+    const assetPath = `provider-assets/${provider}/${process.platform}-${process.arch}`;
+    const metadata = await materializeCandidateProviderPack({ provider, outputRoot: join(temporaryRoot, assetPath) });
+    if (typeof metadata?.version !== "string" || !metadata.version || metadata.version.length > 120
+      || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
+      || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
+    candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
+      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) ? "qualified" : "pending", path: assetPath,
+      sha256: sha256Tree(join(temporaryRoot, assetPath)) };
+  }
 
   // pnpm's generated .bin shims embed the temporary deployment directory in
   // NODE_PATH. That makes an otherwise identical provider pack hash differ on
@@ -183,12 +206,15 @@ try {
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
+    temporaryRoot,
     "claude",
     relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
+  writePortableExecutableShim(temporaryRoot, "node", "node/bin/node");
+  writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
+  writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
+  writePortableNodeShim("paperclip-runner-copilot-metadata-probe", "../dist/cli/copilot-metadata-probe.js");
   writePortableNodeShim(
     "claude-agent-acp",
     "@agentclientprotocol/claude-agent-acp/dist/index.js",
@@ -288,13 +314,18 @@ try {
         cwd: workspaceRoot,
       }).status !== 0;
   const payload = {
+    compatibility,
+    // Semantic digest of the Runner/pack contracts. Image packs are reused only
+    // by a controller whose bundled pack records the same value.
+    contractDigest: packContractDigest(workspaceRoot),
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.153.4",
-      opencode: "1.18.29",
-      acpx: "0.13.1",
-      claudeAcp: "0.73.0",
-      codexAcp: "1.6.2",
+      codex: profiles.profiles.codex.agentRuntimeVersion,
+      opencode: "1.18.34",
+      acpx: profiles.acpxVersion,
+      grok: profiles.profiles.grok.agentRuntimeVersion,
+      claudeAcp: profiles.profiles.claude.agentServerVersion,
+      codexAcp: profiles.profiles.codex.agentServerVersion,
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
@@ -307,12 +338,18 @@ try {
       .update(distDigest)
       .digest("hex")}`,
     acpxProfileDigests: {
+      grok: profiles.profiles.grok.commandDigest,
       claude:
-        "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+        profiles.profiles.claude.commandDigest,
       codex:
-        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+        profiles.profiles.codex.commandDigest,
     },
+    ...providerPackManifestFields(candidateProviders, candidates),
     artifacts: {
+      grokLauncher: {
+        path: "dist/providers/grok/launcher.cjs",
+        sha256: sha256File(join(temporaryRoot, "dist/providers/grok/launcher.cjs")),
+      },
       nodeCommand: {
         path: nodeCommand,
         sha256: sha256File(join(temporaryRoot, nodeCommand)),

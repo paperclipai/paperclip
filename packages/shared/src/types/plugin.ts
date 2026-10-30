@@ -191,6 +191,15 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Plugin-managed skill keys automatically included when this environment is selected. */
+  skillKeys?: string[];
+  /** Leases require a saved agent and its lifecycle preparation, including during setup. */
+  requiresAgent?: boolean;
+  /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
+  supportsTasks?: boolean;
+  freshWorkspaceVersion?: 1;
+  /** Codex task retention and authorized run attachment, version 1. */
+  warmTaskVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -205,6 +214,13 @@ export interface PluginEnvironmentDriverDeclaration {
   displayName: string;
   /** Optional description for operator-facing docs or UI affordances. */
   description?: string;
+  /**
+   * Default provider budget for a fresh lease acquisition, in milliseconds.
+   * The host adds RPC overhead. A valid explicit config.timeoutMs overrides
+   * this default; bridgeRequestTimeoutMs can extend the resulting budget.
+   * Omit to retain the worker's normal RPC timeout. This is not lease lifetime.
+   */
+  defaultAcquireTimeoutMs?: number;
   /**
    * Sandbox providers must opt in before the host retains and resumes provider
    * leases across runs. Providers without this flag keep per-run acquire/release
@@ -483,6 +499,18 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Also offer this agent detail tab beside a task while its agent is running.
+   * The run must record the declared runtime activity before a task panel appears.
+   * GET this plugin-relative path with :entityId replaced by the agent ID,
+   * and runId/issueId query parameters for the active task.
+   * The board/agent-scoped route returns { available: boolean }.
+   */
+  taskSidePanel?: {
+    availabilityPath: string;
+    /** Opaque runtime activity mapped to this view. Absent mappings add no task panel. */
+    activation?: { namespace: string; activityKey: string };
+  };
+
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
    * companySettingsPage slots.
@@ -601,13 +629,16 @@ export interface PluginDatabaseDeclaration {
 export type PluginApiRouteCompanyResolution =
   | { from: "body"; key: string }
   | { from: "query"; key: string }
-  | { from: "issue"; param: string };
+  | { from: "issue"; param: string }
+  | { from: "agent"; param: string };
 
 export interface PluginApiRouteDeclaration {
   /** Stable plugin-defined route key passed to the worker. */
   routeKey: string;
   /** HTTP method accepted by this route. */
   method: PluginApiRouteMethod;
+  /** Browser WebSocket upgrade, authorized through the ordinary HTTP middleware. */
+  transport?: "websocket";
   /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
   path: string;
   /** Actor class allowed to call the route. */
@@ -680,6 +711,24 @@ export interface PaperclipPluginManifestV1 {
   minimumPaperclipVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
+  /** Required participant in agent preparation, stop, resume, and cleanup. */
+  agentLifecycle?: true;
+  /** Own project storage and durable workspace operations as one contract. */
+  workspaceProvider?: {
+    /** Supports bounded run completion separately from removal-safety inspection. */
+    finalizationVersion?: 1;
+    freshWorkspaceVersion?: 1;
+    modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
+    strategies: Array<"project_primary" | "git_worktree">;
+    defaultForProjects?: {
+      mode: "shared_workspace" | "isolated_workspace" | "operator_branch";
+      strategy: "project_primary" | "git_worktree";
+    };
+  };
+  /** Durable, acknowledged resource events delivered to onResourceLifecycle. Requires events.subscribe. */
+  resourceLifecycle?: Array<"agent" | "project" | "agent_runtime">;
+  /** Opt into the native pooled-connection catalog, setup, and management UI. */
+  aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */
   entrypoints: {
     /** Path to the worker entrypoint (required). */

@@ -186,6 +186,16 @@ describeEmbeddedPostgres("heartbeat timer active hours", () => {
     expect(snapshot?.lastHeartbeatAt?.getTime()).toBe(lastHeartbeatAt.getTime());
   });
 
+  it("defers the next timer deadline to the window opening", async () => {
+    const { agentId } = await seedTimerAgent({
+      activeHours: { start: "09:00", end: "18:00", timezone: "UTC" },
+    });
+    await markTimerDue(agentId, new Date("2026-07-15T10:00:00.000Z"));
+
+    expect(await heartbeat.nextAgentTimerAt(new Date("2026-07-15T22:00:00.000Z")))
+      .toBe(new Date("2026-07-16T09:00:00.000Z").getTime());
+  });
+
   it("still enqueues comment and on-demand wakes outside the window", async () => {
     const { agentId } = await seedTimerAgent({
       activeHours: { start: "09:00", end: "18:00", timezone: "UTC" },

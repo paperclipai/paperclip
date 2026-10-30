@@ -16,8 +16,9 @@ const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.
 const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
+const routingWorkflow = path.join(repoRoot, ".github", "workflows", "ci-routing.yml");
 
-const SHARD_COUNT = 3;
+const SHARD_COUNT = 8;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -54,11 +55,11 @@ function readWorkflowJobs(workflow) {
 }
 
 function runStackScope(stack, prBaseRef) {
-  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const workflow = readFileSync(routingWorkflow, "utf8");
   const match = workflow.match(
-    /      - name: Select stacked PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\n\n  policy:/,
+    /      - name: Select PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)(?=\n      - name:|$)/,
   );
-  assert.ok(match, "trusted workflow must define the stacked PR scope script");
+  assert.ok(match, "routing workflow must define the PR CI scope script");
   const script = match[1]
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))
@@ -86,6 +87,17 @@ function runStackScope(stack, prBaseRef) {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+function runAggregate(block, fullCi, overrides = {}) {
+  const code = block.split("          node --input-type=module <<'NODE'\n")[1].split("\n          NODE")[0]
+    .split("\n").map((line) => line.slice(10)).join("\n");
+  const names = /needs: \[([^\]]+)\]/.exec(block)[1].split(", ");
+  const results = Object.fromEntries(names.map((name) => [name, { result: overrides[name]
+    ?? (name === "gate" || name === "policy" || fullCi ? "success" : "skipped") }]));
+  return spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", env: {
+    ...process.env, FULL_CI: String(fullCi), CI_PLAN: "", CI_RESULTS: JSON.stringify(results),
+  } });
 }
 
 test("the e2e shards form a complete, non-overlapping partition", () => {
@@ -177,22 +189,19 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
     /^ {4}needs: \[gate, (?:policy, )?e2e_shards\]$/m,
     "the aggregate must depend on the runner gate, optional policy gate, and shard matrix",
   );
-  assert.match(
-    aggregate,
-    /test "\$E2E_SHARDS_RESULT" = "success"/,
-    "the aggregate must fail unless every shard succeeded",
-  );
+  assert.equal(runAggregate(aggregate, true).status, 0);
+  assert.equal(runAggregate(aggregate, false).status, 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.notEqual(runAggregate(aggregate, true, { e2e_shards: result }).status, 0);
+  }
 
   const shards = jobs.get("e2e_shards");
   assert.ok(shards, "pr-trusted.yml must define the `e2e_shards` matrix job");
-  const matrixEntries = [
-    ...shards.matchAll(
-      /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
-    ),
-  ].map((match) => ({
-    shardIndex: Number(match.groups.shardIndex),
-    shardCount: Number(match.groups.shardCount),
-    shardLabel: match.groups.shardLabel,
+  const matrixEntries = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
+    .e2e_shards.map((entry) => ({
+    shardIndex: entry.shard_index,
+    shardCount: entry.shard_count,
+    shardLabel: entry.shard_label,
   }));
 
   assert.equal(matrixEntries.length, SHARD_COUNT, "the shard matrix must define exactly SHARD_COUNT entries");
@@ -207,10 +216,22 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
+test("runner selection has reserved AWS capacity and executes metadata checks only", () => {
+  const workflow = readFileSync(routingWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow.split(/^jobs:\n/m)[1]);
+  assert.deepEqual([...jobs.keys()], ["gate"]);
+  assert.match(jobs.get("gate"), /^ {4}runs-on: \$\{\{ vars\.AWS_CI_ENABLED[\s\S]*paperclip-ci-routing-x64/m);
+  assert.doesNotMatch(jobs.get("gate"), /uses:|actions\/checkout|secrets\./);
+  assert.match(workflow, /^ {6}runner:\n {8}value: \$\{\{ jobs\.gate\.outputs\.runner \}\}$/m);
+  assert.match(workflow, /^ {6}full_ci:\n {8}value: \$\{\{ jobs\.gate\.outputs\.full_ci \}\}$/m);
+  assert.doesNotMatch(workflow, /^ {2}(?:actions|contents|pull-requests): write$/m);
+});
+
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
-  const gate = jobs.get("gate");
+  assert.match(jobs.get("gate"), /uses: paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master/);
+  const gate = readWorkflowJobs(readFileSync(routingWorkflow, "utf8")).get("gate");
 
   assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
   assert.match(gate, /STACK_JSON: \$\{\{ toJSON\(github\.event\.pull_request\.stack\) \}\}/);
@@ -228,7 +249,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   ]) {
     assert.match(
       jobs.get(jobId),
-      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' \}\}$/m,
+      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' && /m,
       `${jobId} must run only when the gate selects full CI`,
     );
   }
@@ -242,28 +263,24 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run\]$/m,
   );
-  assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
-  assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
-  assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
-  // Runner verification must participate in the legacy aggregate required
-  // check, or a runner regression could be merged while `verify` succeeds.
-  assert.match(verify, /RUNNER_VERIFICATION_RESULT: \$\{\{ needs\.verify_paperclip_runner\.result \}\}/);
-  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "success"/);
-  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "skipped"/);
-  assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
-  // Both halves of the docker-context lane's gating: the result must be
-  // wired into the aggregate's env AND asserted successful on full CI —
-  // dropping either would let `verify` pass after the lane fails.
-  assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
-  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
-  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
+  assert.equal(runAggregate(verify, true).status, 0);
+  assert.equal(runAggregate(verify, false).status, 0);
+  for (const job of ["gate", "policy", "typecheck_release_registry", "general_tests", "verify_paperclip_runner",
+    "build", "docker_context_integrity", "verify_serialized_server", "canary_dry_run"]) {
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      assert.notEqual(runAggregate(verify, true, { [job]: result }).status, 0, `${job}: ${result}`);
+    }
+    if (job !== "gate" && job !== "policy") {
+      assert.notEqual(runAggregate(verify, false, { [job]: "success" }).status, 0, job);
+    }
+  }
 
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
-  assert.match(e2e, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
-  assert.match(e2e, /false\) test "\$E2E_SHARDS_RESULT" = "skipped"/);
+  assert.notEqual(runAggregate(e2e, true, { policy: "failure" }).status, 0);
+  assert.notEqual(runAggregate(e2e, false, { e2e_shards: "success" }).status, 0);
 });
 
 test("the stacked PR scope selector runs full CI only where intended", () => {
@@ -317,23 +334,25 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
-    workflow,
+    policy,
     /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
     "the policy job must resolve the complete merge tree without rewriting platform metadata",
   );
-  assert.match(
-    workflow,
-    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
-    "the policy job must upload a lockfile only when regeneration changed it",
-  );
 
-  const restoreSteps = workflow.match(
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  // Test lanes no longer wait on a policy-job artifact: each install step
+  // resolves a stale lockfile inline, so a manifest-changing or stacked PR
+  // still installs while the policy job validates resolution in parallel.
+  const fallbackInstalls = workflow.match(
+    /if ! pnpm install --frozen-lockfile; then\n[\s\S]{0,240}?pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile\n\s+pnpm install --frozen-lockfile\n\s+fi/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(
+    fallbackInstalls.length,
+    7,
+    "every downstream install job must resolve a stale lockfile inline",
+  );
   assert.doesNotMatch(
     workflow,
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
-    "a missing artifact must fail after the policy job says it uploaded one",
+    /Restore regenerated PR lockfile|lockfile_regenerated|name: pr-lockfile/,
+    "the policy lockfile artifact chain must stay removed; it put the policy job on every lane's critical path",
   );
 });

@@ -45,7 +45,7 @@ export function EmailConnectionAccess({
   const everyone = active.some((g) => g.kind === "organization");
   const personal = active.find((g) => g.kind === "user");
   const humanLabel = everyone
-    ? "Any human in the company"
+    ? "Any human in the organization"
     : personal
       ? personal.subjectUserId === grants.data?.currentUserId
         ? "Just me"

@@ -1,0 +1,149 @@
+{
+  "schema": "paperclip.copilot-product-merged-live-proof/v1",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "modelProvider": "github",
+  "qualificationStatus": "pending",
+  "environment": "local",
+  "activeTurnDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 300,
+  "providerPackSourceRevision": "ee9536001fbe733b2386dd3379730a4e0be59488",
+  "providerPackDigest": "sha256:809ea6bef2fc1122ef214840d119f37854598007ff7449189027294b0802a681",
+  "productionLockSha256": "9c163adf40fe1c6a65abda6207bd9f5acfc8196bc94f81348b8bf1b2769e050e",
+  "runnerdBuildSourceRevision": "527ac0e31f45a613cba1f65c25b01547f176736d",
+  "runnerdRustTree": "8a7155529bf3d4c26947fdc4642badd6fbe96232",
+  "runnerdSha256": "sha256:dadafb10a6a02f2046798ae4104edc481d205e65724e0526a7f34ba50eb746d0",
+  "executionMode": "source-mode Product E2E with build-owned verified native assets; complete compiled pack retained separately",
+  "cases": [
+    {
+      "caseId": "file-edit-validate",
+      "status": "passed",
+      "failureClass": null,
+      "durationMs": 59696,
+      "cleanup": "passed",
+      "startedAt": "2026-09-28T20:03:36.094Z",
+      "finishedAt": "2026-09-28T20:04:35.790Z",
+      "sourceRevision": "ee9536001fbe733b2386dd3379730a4e0be59488",
+      "attempt": 1,
+      "automaticRetries": 0,
+      "originalResultSha256": "sha256:33c29e5fa267c346bec408b22fa3bc84f9fe2069da25d3ba376683f7ca39d796",
+      "originalApiSnapshotSha256": "sha256:d91977a5578f4cff83b4204f315ed9d408f4dd5c4783a920c0dc04261e197afc",
+      "behaviorMatchersPassed": 7,
+      "behaviorMatchersTotal": 7,
+      "providerTurns": 1,
+      "providerReportedCostUsd": null,
+      "biller": "github",
+      "costStatus": "unpriced",
+      "costUsdFieldPresent": false,
+      "billingComplete": false,
+      "tokens": {
+        "inputTokens": 108583,
+        "cachedInputTokens": 91553,
+        "outputTokens": 2131
+      },
+      "validation": {
+        "fileBytes": 24,
+        "fileSha256": "sha256:df22c73c1e878f5b497e64921edac53ea77c4f81c64ba347ca436f8550e30183",
+        "shellComparisonExitCodeInNativeOutput": 0,
+        "normalizedTypedExitCode": null,
+        "note": "The native shell output proves the cmp validation completed with exit code0; typed exitCode remains absent, a meaningful field gap."
+      },
+      "visualReview": "Downloadable file artifact, task Done, exact marker and Copilot activity are visible.",
+      "finalScreenshotSha256": "sha256:d3b0130c973860cb31ee2abbd3d33502218453d02a704c4b5eb8a086e81fa561",
+      "displayedIncludedCreditBaseline": 1,
+      "displayedIncludedCreditsAfter": 2
+    },
+    {
+      "caseId": "question-resume-complete",
+      "status": "failed",
+      "failureClass": "candidate_failure",
+      "durationMs": 102939,
+      "cleanup": "passed",
+      "startedAt": "2026-09-28T20:06:25.416Z",
+      "finishedAt": "2026-09-28T20:08:08.355Z",
+      "sourceRevision": "ee9536001fbe733b2386dd3379730a4e0be59488",
+      "attempt": 1,
+      "automaticRetries": 0,
+      "originalResultSha256": "sha256:0f88be06103195bd45f1d10a9e2a7fef270b77be8cafa1cbc352527c6aac7dcd",
+      "originalApiSnapshotSha256": "sha256:eb35620b00f1c5bdff3274520255cdfcda231a97a9531dd1da671263e09a2e60",
+      "behaviorMatchersPassed": 4,
+      "behaviorMatchersTotal": 6,
+      "providerTurns": 2,
+      "failureReason": "Provider emitted the literal placeholder [terminal marker] instead of the required exact terminal marker.",
+      "observedFinalText": "[terminal marker]",
+      "questionDelivered": true,
+      "answerOptionId": "cobalt",
+      "sameProviderSessionReused": true,
+      "continuation": {
+        "biller": "github",
+        "costStatus": "unpriced",
+        "costUsdFieldPresent": false,
+        "providerReportedCostUsd": null,
+        "tokens": {
+          "inputTokens": 47652,
+          "cachedInputTokens": 42912,
+          "outputTokens": 293
+        }
+      },
+      "pausedRunAccountingDefect": {
+        "biller": "github",
+        "costStatus": "reported",
+        "costUsdFieldPresent": false,
+        "allNormalizedTokenCountersZero": true,
+        "fixedSeparatelyBySource": "c276496e48e34be870a78fddb35bcf4f9b4e85f3"
+      },
+      "originalEvidenceUnchanged": true,
+      "originalLogEvidence": [
+        "run.result.proposed.summary",
+        "item.completed.text",
+        "run.result.accepted.result.summary"
+      ],
+      "visualReview": "Question options Cobalt/Amber visible; Cobalt answer and same-session continuation visible; final placeholder visible while task is Done.",
+      "questionScreenshotSha256": "sha256:73f119b3a6a5a51206b7157415084444b00248b02a3598ebb5e6f6a685270d97",
+      "finalScreenshotSha256": "sha256:9a6fc52c0b71003a0291a4a77796cf15b1e2c97060fe94d1a93876d3a0d98e29",
+      "displayedIncludedCreditBaseline": 2,
+      "displayedIncludedCreditsAfter": 3
+    },
+    {
+      "caseId": "plan-approve-complete",
+      "status": "failed",
+      "failureClass": "transient_infrastructure",
+      "durationMs": 9531,
+      "cleanup": "not_started",
+      "startedAt": "2026-09-28T20:13:18.966Z",
+      "finishedAt": "2026-09-28T20:13:28.497Z",
+      "sourceRevision": "c276496e48e34be870a78fddb35bcf4f9b4e85f3",
+      "attempt": 1,
+      "automaticRetries": 0,
+      "originalResultSha256": "sha256:e43690769d695e0a66dab205c17bb55054cf719191b4efe0ca51f07cc42884f8",
+      "providerTurns": 0,
+      "providerReportedCostUsd": null,
+      "failureReason": "Embedded PostgreSQL bootstrap exited1 before provider startup; concurrent host diagnostics confirmed macOS semaphore exhaustion.",
+      "qualificationEvidence": false,
+      "modelSpendUsd": 0
+    }
+  ],
+  "restartCase": {
+    "status": "not_executed",
+    "reason": "Paused before launch because host semaphore capacity was exhausted."
+  },
+  "externalBilling": {
+    "source": "parent verified GitHub billing dashboard after each executed case",
+    "displayedIncludedAiCreditsBefore": 1,
+    "displayedIncludedAiCreditsAfter": 3,
+    "displayedIncludedAiCreditsTotal": 1500,
+    "exactCreditConsumption": null,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "additionalCashChargesUsd": 0,
+    "providerReportedCostUsd": null
+  },
+  "remainingQualification": [
+    "Exact question terminal behavior failed; no retry or grader weakening.",
+    "Plan behavior unverified after pre-provider infrastructure failure.",
+    "Controller restart case unexecuted.",
+    "Product Daytona cases.",
+    "Restrictive permissions and background settlement with actual GitHub inference.",
+    "Full isolation/governance matrix."
+  ]
+}

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -21,6 +21,7 @@ const mockPluginLoader = vi.hoisted(() => ({
   getOrExtractUiParserSource: vi.fn(),
   reloadExternalAdapter: vi.fn(),
 }));
+const mockCandidateAdmission = vi.hoisted(() => vi.fn());
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -52,12 +53,29 @@ let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/acpx-qualification.js", async () => ({
+    ...await vi.importActual("../services/native-runtime/acpx-qualification.js"),
+    resolveAntigravityCandidateAdmission: mockCandidateAdmission,
+  }));
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
-  vi.doMock("../routes/adapters.js", async () => vi.importActual("../routes/adapters.js"));
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
+}
+
+function resetAdapterMocks() {
+  vi.resetAllMocks();
+  mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
+  mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
+  mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
+  mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
+  mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+  mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
+  mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
+  mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
+  mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
+  mockPluginLoader.getUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
 }
 
 function createApp(
@@ -83,33 +101,14 @@ function createApp(
 }
 
 describe("adapter routes", () => {
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("node:child_process");
-    vi.doUnmock("../adapters/registry.js");
-    vi.doUnmock("../adapters/plugin-loader.js");
-    vi.doUnmock("../services/adapter-plugin-store.js");
-    vi.doUnmock("../routes/adapters.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
+  // Keep the route and middleware on one module graph so HttpError retains
+  // its identity. Reset mock state and adapter overrides between tests.
+  beforeAll(async () => {
     registerModuleMocks();
-    mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
-    mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
-    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
-    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
-    mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
-    mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
-    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
-    mockPluginLoader.getUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
-    const [registry, routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-    ]);
+    resetAdapterMocks();
+    const registry = await import("../adapters/registry.js");
+    const routes = await import("../routes/adapters.js");
+    const middleware = await import("../middleware/index.js");
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
@@ -117,6 +116,10 @@ describe("adapter routes", () => {
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
+  });
+
+  beforeEach(() => {
+    resetAdapterMocks();
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
@@ -148,12 +151,61 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
     }
   });
+  it("projects only the enabled company-local candidate and exact model", async () => {
+    mockCandidateAdmission.mockImplementation(({ companyId }) => companyId === "company-1"
+      ? { agent: "antigravity", model: "exact-google-model", profileDigest: "private-profile", nativeClosureDigest: "private-closure" } : undefined);
+    const local = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    const scoped = await request(local).get("/api/adapters?companyId=company-1");
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses)
+      .toEqual([{ agent: "antigravity", model: "exact-google-model" }]);
+    expect(JSON.stringify(scoped.body)).not.toContain("private-profile");
+    expect(JSON.stringify(scoped.body)).not.toContain("private-closure");
+    for (const query of ["", "?companyId=other-company"]) {
+      const response = await request(local).get(`/api/adapters${query}`);
+      expect(response.status).toBe(200);
+      expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+    }
+    const remote = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "ssh" }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=remote");
+    expect(remote.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
+    const disabled = await request(local).get("/api/adapters?companyId=company-1");
+    expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
+  });
 
-  it("keeps paperclip_runner hidden from selection unless the rollout flag is enabled", async () => {
+  it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
+    mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+    const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    const response = await request(app).get("/api/adapters?companyId=company-1");
+    expect(response.status).toBe(200);
+    expect(response.body.some((adapter: any) => adapter.type === "claude_local")).toBe(true);
+    expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+  });
+
+  it("warns once without startup payloads for malformed candidate authority, while expiry stays quiet", async () => {
+    const { logger } = await import("../middleware/logger.js");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    try {
+      mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+      expect((await request(app).get("/api/adapters?companyId=company-1")).status).toBe(200);
+      expect(warn).not.toHaveBeenCalled();
+      mockCandidateAdmission.mockImplementation(() => { throw new Error("Invalid Antigravity candidate admission"); });
+      for (let index = 0; index < 2; index++) {
+        const response = await request(app).get("/api/adapters?companyId=company-1");
+        expect(response.status).toBe(200);
+        expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+      }
+      expect(warn).toHaveBeenCalledExactlyOnceWith({ code: "ANTIGRAVITY_CANDIDATE_ADMISSION_INVALID" }, "Invalid Google Antigravity preview authorization");
+    } finally { warn.mockRestore(); }
+  });
+
+  it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);
     expect(disabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
-      .toMatchObject({ disabled: true });
+      .toMatchObject({ disabled: false });
 
     const enabledResponse = await request(createApp({}, {
       getNativeRunnerEnabled: async () => true,
@@ -166,6 +218,61 @@ describe("adapter routes", () => {
           supportsInstructionsBundle: true,
         },
       });
+  });
+
+  it.each([
+    [{ driver: "ssh", platform: "linux", architecture: "x64" }, "paperclip"],
+    [{ driver: "ssh", platform: "darwin", architecture: "arm64" }, "paperclip"],
+    [{ driver: "ssh", platform: "darwin", architecture: "x64" }, "paperclip"],
+    [{ driver: "ssh", platform: "linux", architecture: "arm64" }, "paperclip"],
+    [{ driver: "ssh", platform: "linux", architecture: "arm" }, "legacy"],
+    [{ driver: "local", platform: "win32", architecture: "x64" }, "legacy"],
+    [{ driver: "sandbox", platform: "linux", architecture: "arm64", libc: "glibc", glibcVersion: "2.39" }, "paperclip"],
+  ])("projects the selected environment once for the whole adapter inventory (%s)", async (target, defaultRunner) => {
+    const resolveRunnerTarget = vi.fn(async () => target);
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1&environmentId=selected");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).toHaveBeenCalledExactlyOnceWith("company-1", "selected");
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local")).toMatchObject({ defaultRunner });
+    expect(response.body.find((adapter: any) => adapter.type === "claude_local")).toMatchObject({ defaultRunner: "legacy" });
+  });
+
+  it("uses the company's effective default environment when discovery omits an override", async () => {
+    const resolveRunnerTarget = vi.fn(async () => ({ driver: "sandbox" }));
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).toHaveBeenCalledExactlyOnceWith("company-1", undefined);
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local")).toMatchObject({ defaultRunner: "legacy" });
+  });
+
+  it("keeps unscoped inventory independent of company target discovery", async () => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign company before selecting or probing an environment", async () => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({ source: "session", companyIds: ["allowed"] }, { resolveRunnerTarget })).get("/api/adapters?companyId=foreign&environmentId=selected");
+    expect(response.status).toBe(403);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it.each(["environmentId=selected", "companyId=", "companyId=one&companyId=two", "companyId=one&environmentId="])("rejects malformed discovery scope before resolution (%s)", async query => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({}, { resolveRunnerTarget })).get(`/api/adapters?${query}`);
+    expect(response.status).toBe(400);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it("keeps the shared implementation available for Dot independently, while honoring adapter-admin disabling", async () => {
+    const options = { getNativeRunnerEnabled: async () => false, getOpenAiDotEnabled: async () => true };
+    const enabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(enabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: false });
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
+    const disabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: true });
   });
 
   it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
@@ -357,12 +464,12 @@ describe("adapter routes", () => {
       }),
       expect.objectContaining({
         key: "opencodePermissionMode",
-        default: "ask",
+        default: "allow",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       }),
       expect.objectContaining({
         key: "acpxPermissionMode",
-        default: "approve-reads",
+        default: "approve-all",
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       }),
       expect.objectContaining({
@@ -375,8 +482,16 @@ describe("adapter routes", () => {
       }),
     ]));
     const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
-    expect(acpxAgent).toBeUndefined();
-    expect(JSON.stringify(res.body)).toContain("ACPX Claude");
+    expect(acpxAgent).toMatchObject({
+      type: "select",
+      default: "claude",
+      meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      options: [
+        { value: "claude", label: "Claude" },
+        { value: "grok", label: "Grok Build" },
+        { value: "copilot", label: "GitHub Copilot" },
+      ],
+    });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 

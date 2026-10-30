@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../../workflows/pr-trusted.yml", import.meta.url), "utf8");
 const jobs = [...workflow.matchAll(/^  ([a-z_][a-z_0-9]*):\n([\s\S]*?)(?=^  [a-z_][a-z_0-9]*:\n|$(?![\s\S]))/gm)];
-const installers = jobs.filter(([, , body]) => body.includes("run: pnpm install --frozen-lockfile"));
+const installers = jobs.filter(([, , body]) => body.includes("pnpm install --frozen-lockfile"));
 
 test("PR workflows restore dependency stores without creating branch copies", () => {
   assert.equal(installers.length, 7);
@@ -20,20 +20,22 @@ test("PR workflows restore dependency stores without creating branch copies", ()
 });
 
 for (const [, job, body] of installers) {
-  test(`${job}: reuse master keys before restoring the resolved PR lockfile`, () => {
+  test(`${job}: reuse master keys before installing with an inline stale-lockfile fallback`, () => {
     const locate = body.indexOf("      - name: Locate pnpm store");
     const restore = body.indexOf("      - name: Restore pnpm store (read only)");
-    const artifact = body.indexOf("      - name: Restore regenerated PR lockfile");
-    const install = body.indexOf("run: pnpm install --frozen-lockfile");
-    assert.ok(locate >= 0 && locate < restore && restore < artifact && artifact < install);
-    const cache = body.slice(restore, artifact);
+    const install = body.indexOf("      - name: Install dependencies");
+    assert.ok(locate >= 0 && locate < restore && restore < install);
+    const cache = body.slice(restore, install);
     assert.match(body.slice(locate, restore), /pnpm store path --silent/);
     assert.match(body.slice(locate, restore), /node -p 'process.arch'/);
     assert.match(cache, /uses: actions\/cache\/restore@[a-f0-9]{40}/);
     assert.ok(cache.includes("key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}"));
     assert.ok(cache.includes("restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-"));
-    assert.match(body.slice(artifact, install), /if: needs.policy.outputs.lockfile_regenerated == '1'/);
-    assert.match(body.slice(artifact, install), /name: pr-lockfile/);
-    assert.doesNotMatch(body.slice(artifact, install), /continue-on-error/);
+    // Lanes must not wait on the policy job for a regenerated lockfile; each
+    // install resolves a stale one inline and then re-validates frozen.
+    const installStep = body.slice(install).split("      - name:")[1] ?? body.slice(install);
+    assert.match(installStep, /if ! pnpm install --frozen-lockfile; then/);
+    assert.match(installStep, /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/);
+    assert.doesNotMatch(installStep, /needs\.policy/);
   });
 }

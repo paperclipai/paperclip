@@ -18,6 +18,7 @@ const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  summaries: vi.fn(),
   update: vi.fn(),
   archiveFromInbox: vi.fn(),
   getTreeControlState: vi.fn(),
@@ -63,6 +64,10 @@ describe("SidebarRecentTasks", () => {
     window.localStorage.clear();
     Object.values(mockAgentsApi).forEach((mock) => mock.mockReset());
     Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
+    mockIssuesApi.summaries.mockImplementation(async (_company: string, ids: string[]) => {
+      const rows = await Promise.all(ids.map(id => mockIssuesApi.get.getMockImplementation()?.(id)));
+      return rows.filter(row => row && !row.hiddenAt);
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -154,10 +159,9 @@ describe("SidebarRecentTasks", () => {
     });
 
     const link = container.querySelector('a[href="/issues/issue-1"]');
-    expect(mockIssuesApi.get).toHaveBeenCalledWith("issue-1");
-    expect(queryClient.getQueryData(["issues", "detail", "issue-1"])).toMatchObject({
-      title: "Refreshed title",
-    });
+    expect(mockIssuesApi.get).not.toHaveBeenCalled();
+    expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["issues", "detail", "issue-1"])).toBeUndefined();
     expect(link?.textContent).toContain("Refreshed title");
     expect(link?.textContent).toContain("1 live");
     expect(link?.querySelector('[aria-label="In Progress"]')).toBeNull();
@@ -179,6 +183,7 @@ describe("SidebarRecentTasks", () => {
       identifier: `PAP-${id}`,
       status: "done" as const,
       hiddenAt: null,
+      projectId: null,
       updatedAt: new Date(id),
     }));
     tasks.forEach((task) => recordRecentTask(task, "user-1"));
@@ -206,7 +211,8 @@ describe("SidebarRecentTasks", () => {
     expect(order()).toEqual(originalOrder);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(order()).toEqual(["/issues/issue-2", "/issues/issue-1", "/issues/issue-3"]);
-    expect(mockIssuesApi.get).toHaveBeenCalledTimes(3);
+    expect(mockIssuesApi.get).not.toHaveBeenCalled();
+    expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
     queryClient.clear();
   });
 
@@ -260,6 +266,19 @@ describe("SidebarRecentTasks", () => {
     expect(menu?.textContent).toContain("Rename");
     expect(menu?.textContent).toContain("Archive");
     expect(menu?.textContent).toContain("Pause/Restart");
+  });
+
+  it("keeps an idle Slack conversation in recent history and labels it Idle", async () => {
+    const issue = {
+      id: "issue-1", companyId: "company-1", title: "Slack conversation", identifier: "PAP-1",
+      status: "in_review" as const, externalConversationState: "waiting" as const,
+      updatedAt: new Date(1), hiddenAt: null,
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    await render();
+    expect(container.textContent).toContain("Slack conversation");
+    expect(container.textContent).toContain("Idle");
   });
 
   it("archives a task from the inbox without hiding or removing the recent task", async () => {

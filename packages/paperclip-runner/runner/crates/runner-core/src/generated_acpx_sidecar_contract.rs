@@ -32,6 +32,7 @@ pub enum GeneratedAcpxSidecarCommand {
     RunAttach,
     TurnStart,
     TurnCancel,
+    TurnSteer,
     PermissionResolve,
     InputResolve,
     ToolResolve,
@@ -52,6 +53,7 @@ impl GeneratedAcpxSidecarCommand {
             Self::RunAttach => "run.attach",
             Self::TurnStart => "turn.start",
             Self::TurnCancel => "turn.cancel",
+            Self::TurnSteer => "turn.steer",
             Self::PermissionResolve => "permission.resolve",
             Self::InputResolve => "input.resolve",
             Self::ToolResolve => "tool.resolve",
@@ -70,6 +72,8 @@ impl GeneratedAcpxSidecarCommand {
 pub enum GeneratedAcpxSidecarEventType {
     #[serde(rename = "runtime.event")]
     RuntimeEvent,
+    #[serde(rename = "runtime.rich_event")]
+    RuntimeRichEvent,
     #[serde(rename = "runtime.permission_requested")]
     RuntimePermissionRequested,
     #[serde(rename = "runtime.input_requested")]

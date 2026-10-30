@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { TaskChatBubble } from "./TaskChatBubble";
+import { paperclipHumanAvatarUrl } from "@/lib/issue-chat-human-author";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 describe("TaskChatBubble attachment chips", () => {
@@ -40,6 +41,46 @@ describe("TaskChatBubble attachment chips", () => {
       ),
     );
   }
+
+  it("renders another human on the left like an agent, and moves them right when they become the viewer", () => {
+    const item: TaskChatMessageItem = {
+      id: "sam-comment", kind: "message", author: "human", text: "I still see the old task title.",
+      authorUserId: "sam", authorName: "Sam Rivera", isCurrentUser: false,
+    };
+    const render = (isCurrentUser: boolean) => flushSync(() => root!.render(
+      <ThemeProvider><TaskChatBubble item={{ ...item, isCurrentUser }} /></ThemeProvider>,
+    ));
+    render(false);
+    const identity = container.querySelector('[data-testid="task-chat-human-identity"]');
+    expect(identity?.textContent).toContain("Sam Rivera");
+    expect(identity?.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("SR");
+    expect(identity?.getAttribute("data-author-user-id")).toBe("sam");
+    expect(container.querySelector('[data-testid="task-chat-human-bubble"]')?.parentElement?.classList.contains("items-start")).toBe(true);
+    const bubble = container.querySelector('[data-testid="task-chat-human-bubble"]');
+    expect(bubble?.className).toContain("bg-transparent");
+    expect(bubble?.className).not.toContain("bg-(--liveness-blue)");
+    expect(bubble?.querySelector(".paperclip-markdown")?.className).not.toContain("paperclip-markdown-on-accent");
+    render(true);
+    expect(bubble?.parentElement?.classList.contains("items-end")).toBe(true);
+    expect(bubble?.className).toContain("bg-(--liveness-blue)");
+    expect(container.querySelector('[data-testid="task-chat-human-identity"]')).toBeNull();
+    expect(container.textContent).toContain("I still see the old task title.");
+  });
+
+  it("uses initials instead of loading an external human avatar", () => {
+    flushSync(() => root!.render(
+      <ThemeProvider><TaskChatBubble item={{
+        id: "external-avatar", kind: "message", author: "human", text: "Please check this.",
+        authorName: "Sam Rivera", authorAvatarUrl: "https://example.com/track.png", isCurrentUser: false,
+      }} /></ThemeProvider>,
+    ));
+    const identity = container.querySelector('[data-testid="task-chat-human-identity"]');
+    expect(identity?.querySelector("img")).toBeNull();
+    expect(identity?.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("SR");
+    expect(paperclipHumanAvatarUrl("/api/assets/sam/content")).toBe("/api/assets/sam/content");
+    expect(paperclipHumanAvatarUrl("https://example.com/track.png")).toBeNull();
+    expect(paperclipHumanAvatarUrl("//example.com/track.png")).toBeNull();
+  });
 
   it("shows persistent iMessage attribution only on inbound human bubbles", () => {
     for (const author of ["human", "agent"] as const) {
@@ -92,6 +133,33 @@ describe("TaskChatBubble attachment chips", () => {
     // No empty bubble is left behind once the only line is chipped.
     expect(container.textContent).toContain("report.pdf");
     expect(container.textContent).toContain("PDF");
+  });
+
+  it("opens video thumbnails in a local gallery when no task gallery is available", () => {
+    renderMessage("[clip.mp4](/api/attachments/clip/content)", "agent", [
+      attachment({ id: "clip", originalFilename: "clip.mp4", contentType: "video/mp4" }),
+    ]);
+    const group = container.querySelector('[data-testid="task-chat-bubble-attachments"]');
+    expect(group?.querySelector("video")?.getAttribute("src")).toBe("/api/attachments/clip/content");
+    expect(group?.querySelector("video")?.autoplay).toBe(false);
+    flushSync(() => group!.querySelector<HTMLButtonElement>('button[aria-label="Open clip.mp4"]')!.click());
+    expect(document.querySelector('[role="dialog"] video')?.getAttribute("src")).toBe("/api/attachments/clip/content");
+    expect(document.querySelector('[role="dialog"] a[download]')?.getAttribute("href")).toBe("/api/attachments/clip/content?download=1");
+  });
+
+  it.each(["video/mp4", "application/octet-stream"])("opens %s video attachments in the shared task gallery", (contentType) => {
+    const openGallery = vi.fn(() => true);
+    const clip = attachment({ id: "clip", originalFilename: "clip.mp4", contentType });
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <IssueGalleryContext.Provider value={openGallery}>
+          <TaskChatBubble item={{ id: "m1", kind: "message", author: "agent", text: `[clip.mp4](${clip.contentPath})` }} attachments={[clip]} />
+        </IssueGalleryContext.Provider>
+      </ThemeProvider>,
+    ));
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label="Open clip.mp4"]')!.click());
+    expect(openGallery).toHaveBeenCalledWith(clip.contentPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("leaves messages without file references untouched", () => {
@@ -268,8 +336,8 @@ describe("TaskChatBubble accent-bubble text color", () => {
     );
   }
 
-  it("marks the human bubble's markdown as on-accent so prose text follows text-white", () => {
-    render({ id: "m1", kind: "message", author: "human", text: "when a new task is created…" });
+  it("marks the own-message markdown as on-accent so prose text follows text-white", () => {
+    render({ id: "m1", kind: "message", author: "human", isCurrentUser: true, text: "when a new task is created…" });
     const body = container.querySelector(".paperclip-markdown");
     expect(body).not.toBeNull();
     // Without this class the light-mode prose body color reads as black on blue.

@@ -38,6 +38,16 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
+import {
+  buildBrowserErrorContext,
+  classifyRejectionReason,
+  readBrowserErrorState,
+  readPageLifecycle,
+  startPageDiagnostics,
+  takeRejectionEventSnapshot,
+  type BrowserErrorDetails,
+} from "./browser-error-context";
+
 let queue: Promise<void> = Promise.resolve();
 
 /** Run gate operations one at a time, in call order. */
@@ -65,12 +75,17 @@ let sentry: SentryBrowserModule | null = null;
  * — the session query can refetch and call this again, and a second call is
  * a no-op because a client is already started.
  */
-export function initBrowserErrorMonitoring(dsn: string): Promise<void> {
+export function initBrowserErrorMonitoring(dsn: string, environment?: string | null): Promise<void> {
   return enqueue(async () => {
     if (sentry) return;
     try {
       const Sentry = await import("@sentry/browser");
-      Sentry.init(buildBrowserSentryInitOptions(dsn));
+      // Before init: the rejection snapshot listener must precede the SDK's
+      // `onunhandledrejection` handler. Diagnostics never block monitoring.
+      try {
+        startPageDiagnostics();
+      } catch { /* diagnostic unavailable */ }
+      Sentry.init(buildBrowserSentryInitOptions(dsn, environment));
       sentry = Sentry;
     } catch (err) {
       // The dynamic import or the init call failed. Fall through with a
@@ -135,10 +150,17 @@ export function teardownBrowserErrorMonitoring(): Promise<void> {
  * control flow. A no-op before the gate opens, when the gate never opens (no
  * DSN on the session), or when bootstrap failed.
  */
-export function captureBrowserException(error: unknown): void {
+export function captureBrowserException(error: unknown, details?: BrowserErrorDetails): void {
+  let context: ReturnType<typeof buildBrowserErrorContext> | undefined;
+  try {
+    if (details) context = buildBrowserErrorContext(details);
+  } catch {
+    // Diagnostics must never replace the original exception or its recovery UI.
+  }
   void enqueue(async () => {
     try {
-      sentry?.captureException(error);
+      if (context) sentry?.captureException(error, context);
+      else sentry?.captureException(error);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry captureBrowserException failed", err);
@@ -152,11 +174,56 @@ export function captureBrowserException(error: unknown): void {
  * `@sentry/browser` module and assert the resolved integration list and the
  * captured-event shape against the true SDK, not a stand-in.
  */
-export function buildBrowserSentryInitOptions(dsn: string): BrowserSentryInitOptions {
+export function buildBrowserSentryInitOptions(
+  dsn: string,
+  environment?: string | null,
+): BrowserSentryInitOptions {
   return {
     dsn,
+    environment: environment ?? undefined,
+    // Use the loaded bundle's build, even when the server has since deployed.
+    release:
+      typeof __PAPERCLIP_BUILD_COMMIT__ === "string"
+        ? __PAPERCLIP_BUILD_COMMIT__
+        : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    beforeSend: (event, hint) => {
+      // Global handlers do not pass through our React boundaries. Give their
+      // reports the same bounded document state, without URLs or breadcrumbs.
+      // Preserve a boundary's earlier snapshot across the asynchronous queue.
+      try {
+        event.contexts = {
+          ...event.contexts,
+          browser_state: event.contexts?.browser_state ?? readBrowserErrorState(),
+          page_lifecycle: event.contexts?.page_lifecycle ?? readPageLifecycle(),
+        };
+        event.tags = {
+          ...event.tags,
+          browser_build_mode: import.meta.env.DEV ? "development" : "production",
+        };
+        if (event.exception?.values?.some((value) =>
+          value.mechanism?.type === "onunhandledrejection"
+          || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
+        )) {
+          // The SDK supplies the rejected value directly. Classify without
+          // reading object properties, coercing strings, or copying its value.
+          const kind = classifyRejectionReason(hint.originalException);
+          event.tags.browser_rejection_kind = kind;
+          // Whether the browser or a script dispatched the event, and which
+          // promise implementation carried it. Without a stack these are the
+          // remaining attribution facts for an `undefined` rejection.
+          const rejection = takeRejectionEventSnapshot(kind);
+          if (rejection) {
+            event.tags.browser_rejection_event = rejection.trusted ? "trusted" : "synthetic";
+            event.contexts.rejection_event = rejection;
+          }
+        }
+      } catch {
+        // Diagnostics must not replace or discard the original error.
+      }
+      return event;
+    },
     integrations: (defaults) =>
       defaults.filter(
         (integration) => integration.name !== "HttpContext" && integration.name !== "Breadcrumbs",

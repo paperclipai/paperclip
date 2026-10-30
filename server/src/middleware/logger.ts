@@ -3,8 +3,11 @@ import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
-  isPrivateChatWebhookHttpRequest,
+  isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
+  isPrivateAgentCommentaryHttpRequest,
+  isPrivateAgentObservabilityHttpRequest,
+  isPrivateMuseHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
@@ -56,10 +59,16 @@ function isPrivateWebhook(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
-  return isPrivateChatWebhookHttpRequest(
+  return isPrivateWebhookHttpRequest(
     req.method,
     requestClassificationUrl(req),
   );
+}
+
+function privateWebhookLogUrl(url: unknown) {
+  return typeof url === "string" && /\/routine-triggers\/public(?:\/|$)/i.test(url)
+    ? "/api/routine-triggers/public/:publicId/fire"
+    : "/api/chat-webhooks/:publicId/:provider";
 }
 
 function requestLogUrl(req: {
@@ -67,8 +76,10 @@ function requestLogUrl(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
+  if(isPrivateMuseHttpRequest(requestClassificationUrl(req)))return "/api/muse/:protocol";
+  if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) return "/api/companies/:companyId/observability";
   return isPrivateWebhook(req)
-    ? "/api/chat-webhooks/:publicId/:provider"
+    ? privateWebhookLogUrl(requestClassificationUrl(req))
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
 }
 
@@ -77,6 +88,13 @@ export function createHttpLogger(baseLogger: Logger) {
     logger: baseLogger,
     serializers: {
       req(req: Record<string, unknown> & { url?: unknown }) {
+        if (isPrivateAgentObservabilityHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
+          return { id: req.id, method: req.method, url: "/api/companies/:companyId/observability" };
+        }
+        if(isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/api/muse/:protocol"};
+        if (isPrivateAgentCommentaryHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
+          return { id: req.id, method: req.method, url: stripSecretBearingUrlParts(req.url as string) };
+        }
         if (
           isPrivateWebhook({
             method: typeof req.method === "string" ? req.method : undefined,
@@ -89,7 +107,7 @@ export function createHttpLogger(baseLogger: Logger) {
           return {
             id: req.id,
             method: req.method,
-            url: "/api/chat-webhooks/:publicId/:provider",
+            url: privateWebhookLogUrl(req.url),
           };
         }
         return {
@@ -113,7 +131,7 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && isPrivateWebhook(res.raw.req)
+        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
           ? { statusCode: res.statusCode }
           : res;
       },
@@ -144,6 +162,13 @@ export function createHttpLogger(baseLogger: Logger) {
       return `${req.method} ${stripSecretBearingUrlParts(req.url ?? "")} ${res.statusCode} — ${errMsg}`;
     },
     customErrorObject(req, _res, _err, value) {
+      if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
+        return { ...value, err: { type: "Error", message: "Agent observability request failed" } };
+      }
+      if (isPrivateMuseHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"External agent request failed"}};
+      if (isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req))) {
+        return { ...value, err: { type: "Error", message: "Feedback request failed" } };
+      }
       // pino-http serializes res.err independently of customProps/errorContext.
       // Do not rely on a particular error handler having sanitized an SDK Error.
       return isPrivateWebhook(req)
@@ -156,7 +181,10 @@ export function createHttpLogger(baseLogger: Logger) {
     customProps(req, res) {
       if (res.statusCode >= 400) {
         const ctx = (res as any).__errorContext;
-        if (isPrivateWebhook(req)) {
+        if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
+          return { reqBody: "[REDACTED]", ...(ctx ? { errorContext: { name: "Error" } } : {}) };
+        }
+        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {

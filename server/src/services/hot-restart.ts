@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "../vendor/paperclip-runner/index.js";
 import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
@@ -14,7 +15,6 @@ const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
-type ProcessStatReader = (target: string) => Promise<{ ctimeMs: number }>;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -178,17 +178,15 @@ export async function readProcessStartedAt(
   pid: number,
   options: {
     platform?: NodeJS.Platform;
-    stat?: ProcessStatReader;
+    linuxProcessStart?: LinuxProcessStartOptions;
     runCommand?: ProcessCommandRunner;
   } = {},
 ) {
   const platform = options.platform ?? process.platform;
-  const stat = options.stat ?? fs.stat;
   const runCommand = options.runCommand ?? runProcessCommand;
 
   if (platform === "linux") {
-    const processStat = await stat(`/proc/${pid}`);
-    return new Date(processStat.ctimeMs).toISOString();
+    return readLinuxProcessStartedAt(pid, options.linuxProcessStart);
   }
 
   if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {

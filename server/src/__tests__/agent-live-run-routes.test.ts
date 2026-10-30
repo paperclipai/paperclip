@@ -9,11 +9,14 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
   buildRunOutputSilence: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRunReadAccess: vi.fn(),
   getRunLogAccess: vi.fn(),
+  getRunWorkspaceAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
@@ -23,6 +26,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
 }));
+const mockNativeReviewAssignment = vi.hoisted(() => vi.fn());
 
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
@@ -79,6 +83,10 @@ const mockChatRunRetries = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/native-review-participant.js", async () => ({
+    ...(await vi.importActual<typeof import("../services/native-runtime/native-review-participant.js")>("../services/native-runtime/native-review-participant.js")),
+    getNativeReviewAssignment: mockNativeReviewAssignment,
+  }));
   vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
@@ -272,6 +280,17 @@ async function requestApp(
 }
 
 describe("agent live run routes", () => {
+  it.each([
+    ["", 200], ["?limit=10&agentId=agent-1&summary=true", 10],
+    ["?limit=99999", 1000], ["?limit=invalid", 200], ["?limit=-10", 1],
+  ])("bounds company history reads for %s", async (query, limit) => {
+    const app = await createApp({});
+    const response = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs${query}`));
+    expect(response.status).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", query.includes("agentId") ? "agent-1" : undefined,
+      limit, { summary: query.includes("summary=true") });
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");
@@ -287,6 +306,7 @@ describe("agent live run routes", () => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -298,7 +318,7 @@ describe("agent live run routes", () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
-      executionRunId: "run-1",
+      executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       assigneeAgentId: "agent-1",
       status: "in_progress",
     });
@@ -329,7 +349,7 @@ describe("agent live run routes", () => {
       currentStatusUpdatedAt: null,
     }));
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -345,21 +365,33 @@ describe("agent live run routes", () => {
       null,
     );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
-    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-      id: "run-1",
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
+    });
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
       logStore: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
+    });
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: null,
     });
     mockHeartbeatService.readLog.mockResolvedValue({
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       store: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       content: "chunk",
       nextOffset: 5,
     });
     mockHeartbeatService.wakeup.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "queued",
@@ -367,7 +399,7 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
     });
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "succeeded",
@@ -375,7 +407,7 @@ describe("agent live run routes", () => {
     mockWorkspaceOperationService.getById.mockResolvedValue({
       id: "operation-1",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
     mockQueueRuntimeRequestResolution.mockReturnValue({
       commandId: "command-resolution-1",
@@ -394,6 +426,85 @@ describe("agent live run routes", () => {
     });
   });
 
+  describe("heartbeat run ID validation", () => {
+    const routes = [
+      ["get", ""],
+      ["post", "/cancel"],
+      ["post", "/runtime-requests/approval-1/resolve"],
+      ["post", "/watchdog-decisions"],
+      ["get", "/provider-trace"],
+      ["post", "/provider-trace/reproject-workspace-diffs"],
+      ["post", "/provider-trace/frames/1/reveal"],
+      ["get", "/provider-trace/download"],
+      ["delete", "/provider-trace"],
+      ["get", "/events"],
+      ["get", "/log"],
+      ["get", "/workspace-operations"],
+    ] as const;
+
+    it.each(["undefined", "null", "not-a-uuid", " aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "])(
+      "rejects malformed run ID %j before any run lookup",
+      async (runId) => {
+        const app = await createApp();
+        for (const [method, suffix] of routes) {
+          const response = await requestApp(app, (url) =>
+            request(url)[method](`/api/heartbeat-runs/${encodeURIComponent(runId)}${suffix}`).send({}),
+          );
+          expect(response.status, `${method} ${suffix}: ${JSON.stringify(response.body)}`).toBe(400);
+          expect(response.body).toEqual({ error: "Invalid heartbeat run ID" });
+        }
+        expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunReadAccess).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunLogAccess).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+        expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+      },
+    );
+
+    it("accepts uppercase UUIDs without changing the lookup value", async () => {
+      const runId = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+      const response = await requestApp(await createApp(), (url) =>
+        request(url).get(`/api/heartbeat-runs/${runId}/log`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
+    });
+
+    it.each(["get", "log", "events"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
+      const lookup = kind === "events"
+        ? mockHeartbeatService.getRunReadAccess
+        : kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
+      const suffix = kind === "get" ? "" : `/${kind}`;
+      const app = await createApp({}, {
+        type: "board", userId: "test-user", source: "session", companyIds: ["company-1"],
+      });
+      for (const result of [null, { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-2" }]) {
+        lookup.mockResolvedValueOnce(result);
+        const response = await requestApp(app, (url) =>
+          request(url).get(`/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa${suffix}`),
+        );
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual({ error: "Heartbeat run not found" });
+      }
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    });
+
+    it("keeps board and instance-admin checks ahead of malformed-ID validation", async () => {
+      const app = await createApp({}, { type: "agent", companyId: "company-1", agentId: routeAgentId });
+      for (const [method, suffix] of routes.filter(([, suffix]) =>
+        suffix === "/cancel" || suffix === "/runtime-requests/approval-1/resolve" || suffix.startsWith("/provider-trace"),
+      )) {
+        const response = await requestApp(app, (url) =>
+          request(url)[method](`/api/heartbeat-runs/undefined${suffix}`).send({}),
+        );
+        expect(response.status, `${method} ${suffix}`).toBe(403);
+      }
+      expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    });
+  });
+
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
@@ -402,10 +513,10 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
-      "run-1",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(res.body).toMatchObject({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -440,7 +551,7 @@ describe("agent live run routes", () => {
       issueId: "issue-2",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -457,13 +568,13 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
-      "run-1",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(
       mockHeartbeatService.getActiveRunIssueSummaryForAgent,
     ).toHaveBeenCalledWith("agent-1");
     expect(res.body).toMatchObject({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       issueId: "issue-1",
       agentId: "agent-1",
       agentName: "Builder",
@@ -487,11 +598,11 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
     );
     expect(mockExecutionProjection.executionProjectionForRun).toHaveBeenCalledWith(
-      expect.anything(), "company-1", "run-1",
+      expect.anything(), "company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(res.body).toMatchObject({
       execution: null,
@@ -503,31 +614,35 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("uses narrow run log metadata lookups for log polling", async () => {
+  it.each([false, true])("uses narrow run log metadata lookups (aligned tail: %s)", async (aligned) => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64",
+        `/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64${aligned ? "&alignStartToRecord=true" : ""}`,
       ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith(
       {
-        id: "run-1",
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
         logStore: "local_file",
-        logRef: "logs/run-1.ndjson",
+        logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       },
       {
         offset: 12,
         limitBytes: 64,
+        signal: expect.any(AbortSignal),
+        ...(aligned ? { alignStartToRecord: true } : {}),
       },
     );
     expect(res.body).toEqual({
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       store: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       content: "chunk",
       nextOffset: 5,
     });
@@ -557,10 +672,11 @@ describe("agent live run routes", () => {
       const paths = [
         "/api/companies/company-1/heartbeat-runs",
         "/api/companies/company-1/live-runs",
-        "/api/heartbeat-runs/run-1",
-        "/api/heartbeat-runs/run-1/events",
-        "/api/heartbeat-runs/run-1/log",
-        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations",
         "/api/workspace-operations/operation-1/log",
       ];
 
@@ -578,6 +694,38 @@ describe("agent live run routes", () => {
       }));
     },
   );
+
+  it("reads persisted plugin activation only after normal run-read authorization", async () => {
+    const limit = vi.fn(async () => [{ payload: { namespace: "example.runtime", activityKey: "desktop.used" }, pluginKey: "example.live-view",
+      manifest: { ui: { slots: [{ id: "screen", type: "detailTab", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } }] } } }]);
+    const query = { from: vi.fn().mockReturnThis(), innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), limit };
+    const db = { selectDistinct: vi.fn(() => query) };
+    const response = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{ pluginKey: "example.live-view", slotId: "screen" }]);
+    expect(limit).toHaveBeenCalledWith(128);
+    expect(mockRunSecretRedactionRegistry.redactForRun).toHaveBeenCalledWith("company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [{ pluginKey: "example.live-view", slotId: "screen" }]);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue(null);
+    const denied = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(denied.status).toBe(404); expect(limit).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists workspace operations using narrow current run access", async () => {
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: " workspace-one ",
+    });
+    mockWorkspaceOperationService.listForRun.mockResolvedValue([]);
+    const response = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+    expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
@@ -605,7 +753,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -649,7 +798,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -692,7 +842,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
@@ -752,7 +903,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const recentRows = Array.from({ length: 4 }, (_, index) => ({
       id: `run-recent-${index}`,
@@ -779,7 +931,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     let selectCallCount = 0;
@@ -890,6 +1043,68 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
+  describe("exact native model-rejected review retry", () => {
+    const reviewContext = {
+      nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",
+      nativeReviewDecisionId: "66666666-6666-4666-8666-666666666666",
+    };
+    const selectedRun = {
+      id: failedChatRunId, companyId: "company-1", agentId: routeAgentId,
+      status: "failed", runtimeMode: "native", errorCode: "native_provider_model_rejected",
+      nativeIssueId: failedChatIssueId,
+      contextSnapshot: { issueId: failedChatIssueId, ...reviewContext },
+    };
+    const selectedIssue = { id: failedChatIssueId, companyId: "company-1", status: "in_review", assigneeAgentId: "worker", assigneeUserId: null };
+    const retryBody = { failedRunId: failedChatRunId, reason: "retry_failed_run" };
+    beforeEach(() => {
+      mockAgentService.getById.mockResolvedValue({ id: routeAgentId, companyId: "company-1" });
+      mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockIssueService.getById.mockResolvedValue(selectedIssue);
+      mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "pending" } });
+    });
+
+    it("permits the Board to retry the exact pending review using only saved context", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      const res = await requestApp(await createApp(fixture.db), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        ...retryBody, payload: { issueId: "forged", nativeReviewInteractionId: "forged", nativeReviewDecisionId: "forged" },
+      }));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockNativeReviewAssignment).toHaveBeenCalledExactlyOnceWith(fixture.db, {
+        companyId: "company-1", issueId: failedChatIssueId, agentId: routeAgentId, contextSnapshot: reviewContext,
+      });
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(routeAgentId, expect.objectContaining({
+        failedRunId: failedChatRunId, reason: "retry_failed_run", payload: { issueId: failedChatIssueId },
+        requestedByActorType: "user", contextSnapshot: expect.objectContaining(reviewContext),
+      }));
+      expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
+    });
+
+    it.each(["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
+      "rejects an ineligible exact review retry (%s)", async scenario => {
+        let actor: Record<string, unknown> | undefined;
+        if (scenario === "agent-caller") actor = { type: "agent", agentId: routeAgentId, companyId: "company-1" };
+        if (scenario === "denied-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:comment", explanation: "Denied" }));
+        if (scenario === "foreign-company") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, companyId: "company-2" });
+        if (scenario === "foreign-agent") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, agentId: "other-reviewer" });
+        if (scenario === "foreign-issue") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, nativeIssueId: "other-task" });
+        if (scenario === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, runtimeMode: "legacy" });
+        if (scenario === "unknown-error") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, errorCode: "adapter_failed" });
+        if (scenario === "missing-context") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
+        if (scenario === "stale" || scenario === "changed-reviewer") mockNativeReviewAssignment.mockResolvedValue(null);
+        if (scenario === "resolved") mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "accepted" } });
+        const fixture = createFailedChatRetryDb(false);
+        const res = await requestApp(await createApp(fixture.db, actor), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+          ...retryBody, payload: { ...reviewContext },
+        }));
+        expect(res.status).toBe(["agent-caller", "denied-task"].includes(scenario) ? 403 : ["foreign-company", "foreign-agent"].includes(scenario) ? 404 : 409);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        if (["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context"].includes(scenario)) {
+          expect(mockNativeReviewAssignment).not.toHaveBeenCalled();
+        }
+      },
+    );
+  });
+
   describe("exact failed chat run retry", () => {
     const retryBody = {
       failedRunId: failedChatRunId,
@@ -931,6 +1146,19 @@ describe("agent live run routes", () => {
       });
     });
 
+    it("refuses a quarantined native retry before queuing another failed attempt", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun,
+        runtimeMode: "native", errorCode: "native_session_cleanup_quarantined" });
+      const res = await requestApp(await createApp(fixture.db, {
+        type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
+      }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ error: expect.stringContaining("cleanup and reconciliation") });
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+    });
+
     it("retries a task for an operator without agent-creation permission", async () => {
       const fixture = createFailedChatRetryDb(false);
       mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
@@ -952,6 +1180,54 @@ describe("agent live run routes", () => {
         requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
         payload: { issueId: failedChatIssueId },
       }));
+    });
+
+    it.each([0, 3])("preserves an Agent Chat request and generation %s using only the selected run's context", async (generation) => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
+        issueId: failedChatIssueId,
+        wakeCommentIds: ["first-comment", "original-comment"],
+        wakeCommentId: "original-comment",
+        ...(generation > 0 ? { conversationSessionGeneration: generation } : {}),
+      } });
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        conversationAgentId: routeAgentId, conversationUserId: "local-board",
+        status: "in_review", conversationState: "waiting", conversationSessionGeneration: generation,
+      });
+      const res = await requestApp(await createApp(fixture.db), url =>
+        request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+          ...retryBody, payload: { commentId: "forged-comment", wakeCommentIds: ["forged-comment"], conversationSessionGeneration: 999 },
+        }));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+        payload: { issueId: failedChatIssueId },
+        contextSnapshot: expect.objectContaining({
+          wakeCommentIds: ["first-comment", "original-comment"],
+          wakeCommentId: "original-comment",
+          conversationSessionGeneration: generation,
+        }),
+      }));
+      expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, 0, 2])("rejects pre-reset Agent Chat retries from generation %s", async (generation) => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
+        issueId: failedChatIssueId, wakeCommentId: "original-comment",
+        ...(generation === undefined ? {} : { conversationSessionGeneration: generation }),
+      } });
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        conversationAgentId: routeAgentId, conversationUserId: "local-board",
+        conversationSessionGeneration: 3,
+      });
+      const res = await requestApp(await createApp(fixture.db), url =>
+        request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error).toContain("Conversation session changed");
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
     });
 
     it.each(["viewer", "missing", "other-company", "reassigned", "other-chat-owner"])(
@@ -1026,7 +1302,7 @@ describe("agent live run routes", () => {
         expect(res.status, JSON.stringify(res.body)).toBe(202);
         expect(res.body).toEqual(receipt);
         expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(
-          failedChatRunId,
+          failedChatRunId, { includeExecutionEvidence: true },
         );
         expect(
           mockChatRunRetries.prepareFailedChatRunRetry,
@@ -1407,7 +1683,7 @@ describe("agent live run routes", () => {
 
   it("does not let an ordinary member downgrade a persisted approval into a question", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "running",
@@ -1420,7 +1696,7 @@ describe("agent live run routes", () => {
           schema: "paperclip.prp.event.v1",
           eventType: "runtime_request.created",
           sourceKind: "runner",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           turnId: "canonical-turn",
           payload: {
             request: {
@@ -1442,7 +1718,7 @@ describe("agent live run routes", () => {
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .post("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/runtime-requests/approval-1/resolve")
       .send({
         requestKind: "runtime",
         turnId: "attacker-turn",
@@ -1455,7 +1731,7 @@ describe("agent live run routes", () => {
 
   it("queues an admin resolution with canonical request and actor bindings", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "running",
@@ -1468,7 +1744,7 @@ describe("agent live run routes", () => {
           schema: "paperclip.prp.event.v1",
           eventType: "runtime_request.created",
           sourceKind: "runner",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           turnId: "canonical-turn",
           payload: {
             request: {
@@ -1490,7 +1766,7 @@ describe("agent live run routes", () => {
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .post("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/runtime-requests/approval-1/resolve")
       .send({
         requestKind: "user_input",
         turnId: "attacker-turn",
@@ -1500,10 +1776,10 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockQueueRuntimeRequestResolution).toHaveBeenCalledWith({
       companyId: "company-1",
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       pendingRequest: {
         companyId: "company-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         requestId: "approval-1",
         requestKind: "permission_approval",
         turnId: "canonical-turn",
@@ -1519,11 +1795,11 @@ describe("agent live run routes", () => {
   });
 
   it.each([
-    ["get", "/api/companies/company-1/provider-traces?runIds=run-1"],
-    ["get", "/api/heartbeat-runs/run-1/provider-trace"],
-    ["post", "/api/heartbeat-runs/run-1/provider-trace/frames/1/reveal"],
-    ["get", "/api/heartbeat-runs/run-1/provider-trace/download"],
-    ["delete", "/api/heartbeat-runs/run-1/provider-trace"],
+    ["get", "/api/companies/company-1/provider-traces?runIds=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    ["get", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"],
+    ["post", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/frames/1/reveal"],
+    ["get", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/download"],
+    ["delete", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"],
   ] as const)(
     "requires instance administration to %s %s",
     async (method, path) => {
@@ -1551,7 +1827,7 @@ describe("agent live run routes", () => {
       {
         schema: "paperclip.provider_trace_metadata.v1",
         id: "trace-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
         status: "complete",
         provider: "codex",
@@ -1568,14 +1844,14 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/companies/company-1/provider-traces?runIds=run-1",
+        "/api/companies/company-1/provider-traces?runIds=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockProviderTraceStore.listMetadataForRuns).toHaveBeenCalledWith(
       "company-1",
-      ["run-1"],
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
     );
     expect(res.body[0]).not.toHaveProperty("rawBase64");
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -1600,7 +1876,7 @@ describe("agent live run routes", () => {
       ],
     });
     const res = await requestApp(await createApp(), (baseUrl) =>
-      request(baseUrl).get("/api/heartbeat-runs/run-1/provider-trace"),
+      request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -1634,7 +1910,7 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).post(
-        "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
       ),
     );
 
@@ -1644,7 +1920,7 @@ describe("agent live run routes", () => {
       expect.anything(),
       expect.objectContaining({
         traceId: "trace-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
         agentId: "agent-1",
         projection,
@@ -1688,7 +1964,7 @@ describe("agent live run routes", () => {
 
       const res = await requestApp(await createApp(), (baseUrl) =>
         request(baseUrl).post(
-          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+          "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
         ),
       );
 
@@ -1711,13 +1987,13 @@ describe("agent live run routes", () => {
           type: "agent",
           agentId: "agent-1",
           companyId: "company-1",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           source: "agent_key",
         },
       ),
       (baseUrl) =>
         request(baseUrl).post(
-          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+          "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
         ),
     );
 
@@ -1725,4 +2001,10 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
   });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
 });

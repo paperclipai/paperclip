@@ -122,10 +122,10 @@ describe("stdin file race (parent PAP-4037)", () => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function waitFor(check: () => boolean, timeoutMs = 4_000): Promise<void> {
+  async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 4_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (check()) return;
+      if (await check()) return;
       await delay(20);
     }
     throw new Error("Timed out waiting for condition.");
@@ -492,7 +492,249 @@ describe("stdin file race (parent PAP-4037)", () => {
     }
   });
 
+  it.each([
+    ...["prepare", "append", "finalize", "late-finalize"].map((stage) =>
+      [stage, "Request failed with status code 502"] as const),
+    ...[502, 503, 504].map((status) =>
+      ["finalize", `Cloudflare sandbox bridge request failed with HTTP ${status}.`] as const),
+  ])(
+    "recovers a transient %s failure (%s) without repeating or reordering stdin",
+    async (stage, failure) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-retry-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-child.mjs");
+      await writeFile(childPath, "process.stdin.on('data', (c) => process.stdout.write(c));\n", "utf8");
+      const first = "first-" + "x".repeat(70_000);
+      let delivered = "";
+      let injected = false;
+      let lateFinalize: (() => Promise<RunProcessResult>) | undefined;
+      const local = createLocalSandboxRunner();
+      const runner = {
+        execute: async (input: Parameters<typeof local.execute>[0]) => {
+          const script = input.args?.[1] ?? "";
+          const matches = script.includes("/stdin/000000000001.json") && (
+            stage === "prepare" ? script.includes("mkdir -p") :
+            stage === "append" ? script.startsWith("printf") : script.startsWith("base64 -d")
+          );
+          if (matches && !injected) {
+            injected = true;
+            if (stage === "late-finalize") lateFinalize = () => local.execute(input);
+            else if (stage !== "prepare") await local.execute(input);
+            // The provider can lose the response after the receiver consumed
+            // the file. A retry must not repeat those bytes on the ACP stream.
+            if (stage === "finalize") await waitFor(() => delivered === first, 8_000);
+            throw new Error(failure);
+          }
+          return local.execute(input);
+        },
+      };
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stdin-retry",
+        target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+        runtimeRootDir: path.join(rootDir, "runtime"),
+        adapterKey: "acpx", command: process.execPath, args: [childPath], cwd: rootDir, env: {},
+      });
+      let peer: net.Socket | undefined;
+      try {
+        const source = await readFile(bridge!.agentCommand, "utf8");
+        const port = Number(/port: (\d+)/.exec(source)![1]);
+        const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+        peer = net.createConnection({ host: "127.0.0.1", port });
+        peer.on("error", () => {});
+        peer.setEncoding("utf8");
+        let buffer = "";
+        peer.on("data", (chunk) => {
+          buffer += chunk;
+          const lines = buffer.split("\n");
+          buffer = lines.pop()!;
+          for (const line of lines) {
+            const frame = JSON.parse(line) as DeliveredFrame;
+            delivered += collectDelivered([frame]);
+          }
+        });
+        await new Promise<void>((resolve) => peer!.once("connect", resolve));
+        for (const text of [first, "-second"])
+          peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from(text).toString("base64") }) + "\n");
+        await waitFor(() => delivered.endsWith("-second"), 10_000);
+        expect(injected).toBe(true);
+        expect(delivered).toBe(first + "-second");
+        if (lateFinalize) {
+          // A provider can return 502 while its original finalize still runs.
+          // Cleanup may invalidate its private upload, but it cannot touch
+          // the retry's data or repeat input after newer messages arrived.
+          await lateFinalize();
+          peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from("-third").toString("base64") }) + "\n");
+          await waitFor(() => delivered.endsWith("-third"), 8_000);
+          expect(delivered).toBe(first + "-second-third");
+        }
+        await waitFor(async () => {
+          const files = await readdir(path.join(rootDir, "runtime", "process-sessions"), { recursive: true });
+          return files.every((file) => !file.endsWith(".paperclip-upload.b64") && !file.endsWith(".paperclip-upload.decoded"));
+        });
+      } finally {
+        peer?.destroy();
+        await bridge?.stop();
+      }
+    },
+    20_000,
+  );
+
+  it.each([
+    ["Request failed with status code 502", 3],
+    ["Request failed with status code 503", 3],
+    ["Request failed with status code 504", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 502.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 503.", 3],
+    ["Cloudflare sandbox bridge request failed with HTTP 504.", 3],
+    ["Request failed with status code 403", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 403.", 1],
+    ["Remote command failed: Request failed with status code 502", 1],
+    ["Cloudflare sandbox bridge request failed with HTTP 502. sensitive-input", 1],
+    ["Remote command failed: sensitive-input", 1],
+    ["Provider never responds", 1],
+  ] as const)("bounds input failure %s to %i attempts and stops later writes", async (failure, expectedAttempts) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-failed-"));
+    cleanupDirs.push(rootDir);
+    let attempts = 0;
+    let laterWrite = false;
+    let stderr = "";
+    const runner = createLocalSandboxRunner(async (script) => {
+      if (!script.startsWith("mkdir -p")) return;
+      if (script.includes("/stdin/000000000002.json")) laterWrite = true;
+      if (script.includes("/stdin/000000000001.json")) {
+        attempts += 1;
+        if (failure === "Provider never responds") await new Promise<void>(() => {});
+        throw new Error(failure);
+      }
+    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-failed",
+      timeoutSec: failure === "Provider never responds" ? 5 : undefined,
+      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+      runtimeRootDir: path.join(rootDir, "runtime"),
+      adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},
+      onLog: async (stream, chunk) => { if (stream === "stderr") stderr += chunk; },
+    });
+    let peer: net.Socket | undefined;
+    try {
+      const source = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(source)![1]);
+      const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+      peer = net.createConnection({ host: "127.0.0.1", port });
+      peer.setEncoding("utf8");
+      peer.on("error", () => {});
+      let output = "";
+      peer.on("data", (chunk) => { output += chunk; });
+      const closed = new Promise<void>((resolve) => peer!.on("close", () => resolve()));
+      await new Promise<void>((resolve) => peer!.once("connect", resolve));
+      for (const text of ["first", "second"])
+        peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from(text).toString("base64") }) + "\n");
+      await closed;
+      expect(attempts).toBe(expectedAttempts);
+      expect(laterWrite).toBe(false);
+      expect(JSON.parse(output)).toEqual({ type: "error", message: "ACP process session input delivery failed." });
+      expect(stderr).toContain("ACP process session input delivery failed.");
+      expect(stderr).not.toContain(failure);
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  }, 15_000);
+
+  it("stops after exhausted input retries even when failure logging stalls", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-log-stall-"));
+    cleanupDirs.push(rootDir);
+    let attempts = 0;
+    let loggingStarted = false;
+    let releaseLog!: () => void;
+    const stalledLog = new Promise<void>((resolve) => { releaseLog = resolve; });
+    const runner = createLocalSandboxRunner(async (script) => {
+      if (script.startsWith("mkdir -p") && script.includes("/stdin/000000000001.json")) {
+        attempts += 1;
+        throw new Error("Request failed with status code 502");
+      }
+    });
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-log-stall",
+      target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
+      runtimeRootDir: path.join(rootDir, "runtime"),
+      adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},
+      onLog: async (stream) => {
+        if (stream === "stderr") {
+          loggingStarted = true;
+          await stalledLog;
+        }
+      },
+    });
+    let peer: net.Socket | undefined;
+    let stop: Promise<void> | undefined;
+    try {
+      const source = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(source)![1]);
+      const token = JSON.parse(/const token = (".*?");/.exec(source)![1]) as string;
+      peer = net.createConnection({ host: "127.0.0.1", port });
+      peer.setEncoding("utf8");
+      peer.on("error", () => {});
+      let output = "";
+      peer.on("data", (chunk) => { output += chunk; });
+      const closed = new Promise<void>((resolve) => peer!.once("close", resolve));
+      await new Promise<void>((resolve) => peer!.once("connect", resolve));
+      peer.write(JSON.stringify({ token, type: "stdin", data: Buffer.from("input").toString("base64") }) + "\n");
+      await closed;
+      expect(attempts).toBe(3);
+      expect(loggingStarted).toBe(true);
+      expect(JSON.parse(output)).toEqual({ type: "error", message: "ACP process session input delivery failed." });
+      let stopped = false;
+      stop = bridge!.stop().then(() => { stopped = true; });
+      // Teardown has a three-second acknowledgement budget. It must finish
+      // while the run-log promise remains unresolved, including local cleanup.
+      await waitFor(() => stopped, 6_000);
+      await expect(lstat(bridge!.agentCommand)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      releaseLog();
+      peer?.destroy();
+      await (stop ?? bridge?.stop());
+    }
+  }, 15_000);
+
   // ---- Host atomic-write tests ------------------------------------------
+
+  it.each(["fails", "stalls"])("preserves the upload failure when best-effort cleanup %s", async (cleanupMode) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-upload-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const local = createLocalSandboxRunner();
+    const uploadFailure = new Error("Request failed with status code 502");
+    let cleanupAttempted = false;
+    let rejectCleanup!: (error: Error) => void;
+    const stalledCleanup = new Promise<never>((_resolve, reject) => { rejectCleanup = reject; });
+    // Observe the test-owned promise even in the immediate-failure case.
+    void stalledCleanup.catch(() => {});
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      remoteCwd: rootDir,
+      runner: {
+        execute: async (input) => {
+          const script = input.args?.[1] ?? "";
+          if (script.startsWith("rm -f")) {
+            cleanupAttempted = true;
+            if (cleanupMode === "stalls") return stalledCleanup;
+            throw new Error("Request failed with status code 403");
+          }
+          const result = await local.execute(input);
+          if (script.startsWith("printf")) throw uploadFailure;
+          return result;
+        },
+      },
+    });
+    try {
+      await expect(Promise.race([
+        client.writeTextFile(path.join(rootDir, "message.json"), "test input"),
+        delay(1_000).then(() => { throw new Error("Upload waited for stalled cleanup"); }),
+      ])).rejects.toBe(uploadFailure);
+      expect(cleanupAttempted).toBe(true);
+    } finally {
+      rejectCleanup(new Error("Cleanup unavailable"));
+    }
+  });
 
   // A runner that executes each bridge shell script on the local filesystem,
   // so the test exercises the real command-managed `writeTextFile` script.
@@ -572,7 +814,7 @@ describe("stdin file race (parent PAP-4037)", () => {
     expect(finalizeScript).toBeDefined();
     expect(finalizeScript).toContain(`mv `);
     expect(finalizeScript).not.toContain(`> '${jsonPath}'`);
-    expect(finalizeScript).toContain(`> '${jsonPath}.paperclip-upload.decoded'`);
+    expect(finalizeScript).toMatch(/> '[^']+\.paperclip-upload\.decoded'/);
   });
 
   it("never exposes a partial .json file under a concurrent reader (command-managed host write)", async () => {
@@ -746,6 +988,66 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     return fakeBirthtimePreloadPath;
   }
 
+  let probeLifetimePreloadDir: string | null = null;
+  afterAll(async () => {
+    if (probeLifetimePreloadDir) await rm(probeLifetimePreloadDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+  let probeLifetimePreloadPath: Promise<string> | null = null;
+  async function getProbeLifetimePreloadPath(): Promise<string> {
+    probeLifetimePreloadPath ??= (async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-lifetime-preload-"));
+      probeLifetimePreloadDir = dir;
+      const preloadPath = path.join(dir, "probe-lifetime-preload.cjs");
+      await writeFile(preloadPath, [
+        `const fs = require("fs");`,
+        `const path = require("path");`,
+        `const mode = process.env.PAPERCLIP_TEST_PROBE_LIFETIME;`,
+        `const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;`,
+        `const probePath = path.join(sessionDir, ".paperclip-birthtime-probe-" + process.pid + "-1");`,
+        `const tracePath = path.join(sessionDir, ".probe-lifetime.json");`,
+        `const events = [];`,
+        `let probeHandle;`,
+        `const save = () => { fs.writeFileSync(tracePath + ".tmp", JSON.stringify(events)); fs.renameSync(tracePath + ".tmp", tracePath); };`,
+        `const originalOpen = fs.promises.open.bind(fs.promises);`,
+        `fs.promises.open = async (candidatePath, ...args) => {`,
+        `  const handle = await originalOpen(candidatePath, ...args);`,
+        `  if (String(candidatePath) === probePath) {`,
+        `    probeHandle = handle;`,
+        `    const originalClose = handle.close.bind(handle);`,
+        `    handle.close = async () => {`,
+        `      const fd = handle.fd;`,
+        `      await originalClose();`,
+        `      let descriptorClosed = false;`,
+        `      try { fs.fstatSync(fd); } catch (error) { descriptorClosed = error.code === "EBADF"; }`,
+        `      events.push({ kind: "closed", descriptorClosed });`,
+        `      save();`,
+        `    };`,
+        `    if (mode === "stat_failure") handle.stat = async () => { throw Object.assign(new Error("test probe fstat failure"), { code: "EIO" }); };`,
+        `  }`,
+        `  return handle;`,
+        `};`,
+        `const originalLstat = fs.promises.lstat.bind(fs.promises);`,
+        `fs.promises.lstat = async (candidatePath, ...args) => {`,
+        `  if (String(candidatePath) === probePath) {`,
+        `    let descriptorOpen = false;`,
+        `    try { fs.fstatSync(probeHandle.fd); descriptorOpen = true; } catch {}`,
+        `    events.push({ kind: "path", descriptorOpen });`,
+        `    save();`,
+        `    if (mode === "path_failure") throw Object.assign(new Error("test probe lstat failure"), { code: "EIO" });`,
+        `  }`,
+        `  return originalLstat(candidatePath, ...args);`,
+        `};`,
+        `const originalRm = fs.promises.rm.bind(fs.promises);`,
+        `fs.promises.rm = async (candidatePath, ...args) => {`,
+        `  if (String(candidatePath) === probePath && mode === "remove_failure") throw Object.assign(new Error("test probe remove failure"), { code: "EACCES" });`,
+        `  return originalRm(candidatePath, ...args);`,
+        `};`,
+      ].join("\n"), "utf8");
+      return preloadPath;
+    })();
+    return probeLifetimePreloadPath;
+  }
+
   // A test-only preload for PAP-5355: it deterministically simulates a
   // same-sandbox peer that wins the gap between the wrapper's final identity
   // check and its removal call. nextProbeFileName() is deterministic (pid +
@@ -879,6 +1181,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     // (PAP-5374). seq 1 is sessionDir's probe (the first one
     // captureSessionIdentity() runs).
     fstatFailure?: { seq: 1 | 2 };
+    probeLifetime?: "success" | "stat_failure" | "path_failure" | "remove_failure";
   }) {
     const sessionDir = await mkdtemp(path.join(options?.parentDir ?? os.tmpdir(), "paperclip-wrapper-lifecycle-"));
     cleanupDirs.push(sessionDir);
@@ -912,6 +1215,10 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       env.PAPERCLIP_TEST_PROBE_SWAP_MODE = options.probeSwap.mode;
       if (options.probeSwap.symlinkTarget) env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET = options.probeSwap.symlinkTarget;
       execArgv.push("--require", await getProbeSwapPreloadPath());
+    }
+    if (options?.probeLifetime) {
+      env.PAPERCLIP_TEST_PROBE_LIFETIME = options.probeLifetime;
+      execArgv.push("--require", await getProbeLifetimePreloadPath());
     }
     if (options?.fstatFailure) {
       env.PAPERCLIP_TEST_FSTAT_FAILURE_SEQ = String(options.fstatFailure.seq);
@@ -2139,4 +2446,26 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     const probePath = path.join(wrapper.sessionDir, `.paperclip-birthtime-probe-${wrapper.pid}-1`);
     expect((await lstat(probePath)).isFile()).toBe(true);
   }, 15_000);
+
+  it.each(["success", "stat_failure", "path_failure", "remove_failure"] as const)(
+    "T26 retains the real probe descriptor through cleanup and closes it (%s)",
+    async (mode) => {
+      const wrapper = await startWrapperProcess({ outputToStdout: false, probeLifetime: mode });
+      const tracePath = path.join(wrapper.sessionDir, ".probe-lifetime.json");
+      type LifetimeEvent = { kind: "path" | "closed"; descriptorOpen?: boolean; descriptorClosed?: boolean };
+      const readTrace = async (): Promise<LifetimeEvent[]> => JSON.parse(await readFile(tracePath, "utf8").catch(() => "[]"));
+      await waitFor(async () => (await readTrace()).some((event) => event.kind === "closed"), 4_000);
+      const events = await readTrace();
+      const checks = events.filter((event) => event.kind === "path");
+      expect(checks).toEqual(mode === "stat_failure" ? [] : [{ kind: "path", descriptorOpen: true }]);
+      expect(events.filter((event) => event.kind === "closed")).toEqual([{ kind: "closed", descriptorClosed: true }]);
+      const probePath = path.join(wrapper.sessionDir, `.paperclip-birthtime-probe-${wrapper.pid}-1`);
+      if (mode === "success") {
+        await expect(lstat(probePath)).rejects.toThrow();
+      } else {
+        expect((await lstat(probePath)).isFile()).toBe(true);
+      }
+    },
+    15_000,
+  );
 });

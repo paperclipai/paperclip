@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   companies,
   createDb,
@@ -34,6 +38,8 @@ vi.mock("../middleware/logger.js", () => ({
 
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { nativeWorkspaceExportPendingForLease } from "../services/native-runtime/native-workspace-finalization-state.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -62,6 +68,7 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
 
   afterEach(async () => {
     await db.delete(environmentLeases);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(environments);
     await db.delete(agents);
@@ -157,6 +164,123 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
   }
 
   const oldEnough = () => new Date(Date.now() - 60 * 60 * 1000);
+
+  async function seedUnexportedWorkspace(status = "active") {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const leaseId = await insertActiveLease({ companyId, environmentId, heartbeatRunId: runId, status, updatedAt: oldEnough() });
+    const lease = (await leaseRow(leaseId))!;
+    const reference = {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+      descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+      workspaceId: randomUUID(), leaseId, providerLeaseId: lease.providerLeaseId,
+      remoteCwd: "/workspace", resourceDisposition: "destroy",
+    };
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: { nativeWorkspaceSync: reference } })
+      .where(eq(heartbeatRuns.id, runId));
+    return { companyId, agentId, environmentId, runId, leaseId, lease, reference };
+  }
+
+  it.each(["active", "pending_cleanup"])("preserves an unexported native workspace in %s across cleanup restart", async status => {
+    const { runId, leaseId, reference } = await seedUnexportedWorkspace(status);
+    const sandbox = await mkdtemp(join(tmpdir(), "native-export-cleanup-"));
+    const output = join(sandbox, "unexported.txt");
+    const nonce = randomUUID();
+    await writeFile(output, nonce);
+    const destroyRunLease = vi.fn(async () => {
+      await rm(sandbox, { recursive: true, force: true });
+      return (await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "success" })
+        .where(eq(environmentLeases.id, leaseId)).returning())[0];
+    });
+    const runtime = { destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
+    try {
+      const restarted = heartbeatService(db, { environmentRuntime: runtime });
+      await restarted.sweepOrphanedActiveLeases({ backoffMs: 0 });
+      await restarted.sweepPendingCleanupLeases({ backoffMs: 0 });
+      expect(destroyRunLease).not.toHaveBeenCalled();
+      expect(await readFile(output, "utf8")).toBe(nonce);
+      expect((await leaseRow(leaseId))?.status).toBe(status);
+
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+        ...reference, state: "finalized", finalHostSha256: "c".repeat(64),
+      } } }).where(eq(heartbeatRuns.id, runId));
+      const afterExport = heartbeatService(db, { environmentRuntime: runtime });
+      await afterExport.sweepOrphanedActiveLeases({ backoffMs: 0 });
+      await afterExport.sweepPendingCleanupLeases({ backoffMs: 0 });
+      expect(destroyRunLease).toHaveBeenCalledOnce();
+      await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("guards direct destructive release and teardown before provider dispatch", async () => {
+    const { environmentId, runId, lease } = await seedUnexportedWorkspace();
+    const runtime = environmentRuntimeService(db);
+    const environment = (await db.select().from(environments).where(eq(environments.id, environmentId)))[0];
+    const input = { environment, lease } as Parameters<typeof runtime.destroyRunLease>[0];
+    expect(await runtime.releaseRunLeases(runId, "failed")).toEqual([]);
+    expect(await runtime.releaseRunLeases(runId, "failed", undefined, "destroy")).toEqual([]);
+    expect(await runtime.destroyRunLease(input)).toBeNull();
+    await expect(runtime.retryPendingSandboxTeardown(input)).rejects.toThrow("Native workspace export is pending");
+    expect(await leaseRow(lease.id)).toMatchObject({ status: "active", releasedAt: null });
+  });
+
+  it.each(["company", "run", "lease", "provider", "finalized", "no_workspace"])("does not pin an unrelated or exported source: %s", async mode => {
+    const { companyId, agentId, runId, lease, reference } = await seedUnexportedWorkspace();
+    const source = { ...lease };
+    if (mode === "company") source.companyId = randomUUID();
+    if (mode === "run") source.heartbeatRunId = randomUUID();
+    if (mode === "lease") source.id = randomUUID();
+    if (mode === "provider") source.providerLeaseId = randomUUID();
+    if (mode === "finalized" || mode === "no_workspace") {
+      await db.update(heartbeatRuns).set({
+        ...(mode === "no_workspace" ? { driverKind: "openai_dot_mcp" } : {}),
+        runnerProfileJson: {
+          nativeWorkspaceSync: mode === "finalized" ? { ...reference, state: "finalized", finalHostSha256: "c".repeat(64) } : reference,
+          ...(mode === "no_workspace" ? { nativeExecutionInput: {
+            schema: "paperclip.native-execution-input.v6", binding: { runId, companyId, agentId, issueId: null },
+            provider: { kind: "openai_dot" }, workspace: { access: "none", cwd: null },
+          } } : {}),
+        },
+      }).where(eq(heartbeatRuns.id, runId));
+    }
+    expect(await nativeWorkspaceExportPendingForLease(db, source)).toBe(false);
+  });
+
+  it.each([false, true])("releases an interrupted local run's bookkeeping lease (deleted environment: %s)", async (deletedEnvironment) => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.delete(environments).where(eq(environments.driver, "local"));
+    await db.update(environments).set({ driver: "local", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "interrupted" });
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({
+      id: leaseId, companyId, environmentId, heartbeatRunId: runId,
+      status: "active", leasePolicy: "ephemeral", provider: "local",
+      providerLeaseId: null, metadata: { driver: "local" }, updatedAt: oldEnough(),
+    });
+    if (deletedEnvironment) await db.delete(environments).where(eq(environments.id, environmentId));
+
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(await leaseRow(leaseId)).toMatchObject({ status: "expired", cleanupStatus: "success" });
+    expect((await leaseRow(leaseId))?.releasedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not discard an unexpected provider resource from a local lease", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.delete(environments).where(eq(environments.driver, "local"));
+    await db.update(environments).set({ driver: "local", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "interrupted" });
+    const leaseId = await insertActiveLease({ companyId, environmentId, heartbeatRunId: runId,
+      updatedAt: oldEnough(), provider: "local", providerLeaseId: "unexpected-resource" });
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { driver: "local" } })
+      .where(eq(environmentLeases.id, leaseId));
+
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(await leaseRow(leaseId)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+  });
 
   it("test_flips_an_active_lease_when_its_run_is_failed", async () => {
     const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();

@@ -7,6 +7,16 @@ export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
 
+/** Operator diagnostics are untrusted provider data, not model handoff prose. */
+export function summarizeRunErrorForModel(error: string | null, terminalFailureCategory?: unknown): string | null {
+  if (terminalFailureCategory == null) return error;
+  const category = typeof terminalFailureCategory === "string"
+    && ["connection", "access", "limit", "service", "request", "unknown"].includes(terminalFailureCategory)
+    ? terminalFailureCategory
+    : "unknown";
+  return `ACP agent reported a terminal ${category} failure. Provider diagnostics are available in the run record.`;
+}
+
 function truncateSummaryText(
   value: unknown,
   maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
@@ -120,7 +130,7 @@ const NARRATION_OPENERS =
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
-export const RUN_PRESENTATION_RESOLVER_VERSION = "1";
+export const RUN_PRESENTATION_RESOLVER_VERSION = "2";
 export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
   "allow_chat_run_presentation";
 
@@ -182,18 +192,35 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function requiresChatOriginProof(source: string): boolean {
+  return source === "tool_action_review" || source === "issue.monitor" || source === "native_status_decision" ||
+    source.startsWith("issue.comment") || source.startsWith("issue.interaction.") ||
+    source === "external_chat.interaction.resolve" || source === "connection_intent.resolved" || source === "issue.update";
+}
+
 export function isExternalChatPresentationContext(
   contextSnapshot: unknown,
+  verifiedToolReviewChatOrigin = false,
 ): boolean {
   const context = record(contextSnapshot);
   const wake = record(context.paperclipWake);
   const source =
     typeof context.source === "string" ? context.source.trim() : "";
+  // Approvals and Board comments also resume ordinary internal tasks. Only
+  // durable source-run or mirrored-comment proof authorizes an external reply.
+  if (requiresChatOriginProof(source))
+    return verifiedToolReviewChatOrigin;
   return (
     source.startsWith("chat:") ||
     context.externalChatContinuation === true ||
     wake.externalInteractionContinuation === true
   );
+}
+
+export function isChatOriginPublicationCandidate(contextSnapshot: unknown): boolean {
+  const context = record(contextSnapshot);
+  const source = typeof context.source === "string" ? context.source.trim() : "";
+  return requiresChatOriginProof(source) || isExternalChatPresentationContext(contextSnapshot);
 }
 
 /**
@@ -263,6 +290,24 @@ function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
       candidate.schema === "paperclip.run_result.v1" &&
       candidate.reportedWorkDisposition === "yielded",
   );
+}
+
+export function readAcceptedTaskContinuationSummary(
+  resultJson: Record<string, unknown> | null | undefined,
+): string | null {
+  const result = record(resultJson);
+  if (result.finalizationPhase !== "committed") return null;
+  const kind = result.finalizationReasonCode === "live_continuation_registered" ? "same_agent"
+    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched", "scheduled_monitor_preserved"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
+  if (!kind) return null;
+  for (const candidate of semanticResultCandidates(result)) {
+    const continuation = record(candidate.continuation);
+    if (candidate.schema === "paperclip.run_result.v1" && candidate.reportedWorkDisposition === "yielded" &&
+        continuation.kind === kind && readCommentText(continuation.idempotencyKey)) {
+      return readCommentText(candidate.summary);
+    }
+  }
+  return null;
 }
 
 function readAcceptedExternalChatResponseWakeSummary(
@@ -360,6 +405,7 @@ export function resolveHeartbeatRunResponse(input: {
   /** Server-owned conversation finalization, after normal governance checks. */
   conversationTurnFinished?: boolean;
   existingComment?: { id: string; body?: string | null } | null;
+  interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
@@ -374,6 +420,24 @@ export function resolveHeartbeatRunResponse(input: {
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
+  const continuationSummary = readAcceptedTaskContinuationSummary(resultJson);
+  if (continuationSummary) {
+    if (input.interactionOwnsResponse) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_response"] }),
+    };
+    const existing = input.existingComment;
+    const reuse = existing?.body === continuationSummary;
+    return {
+      text: continuationSummary,
+      decision: decision("semantic_result_summary", {
+        commentAction: reuse ? "reuse" : "create",
+        ...(reuse ? { commentId: existing.id } : {}),
+        reasonCodes: [resultJson.finalizationReasonCode === "live_continuation_registered"
+          ? "accepted_task_continuation_summary" : "accepted_scheduled_monitor_summary"],
+      }),
+    };
+  }
   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
@@ -556,31 +620,48 @@ export function buildHeartbeatRunIssueComment(
   return resolveHeartbeatRunResponse({ resultJson }).text;
 }
 
-export function findHeartbeatRunCompletionComment<T extends { id: string }>(
+export function findHeartbeatRunCompletionComment<T extends { id: string; presentation?: unknown }>(
   comments: T[],
   resultJson: Record<string, unknown> | null | undefined,
 ): T | null {
+  const completionComments = comments.filter(comment => record(comment.presentation).kind !== "system_notice");
   const receipts = resultJson?.semanticToolReceipts;
   if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) {
-    return comments[0] ?? null;
+    return completionComments[0] ?? null;
   }
 
-  const progressCommentIds = new Set<string>();
+  const generatedCommentIds = new Set<string>();
   for (const receipt of Object.values(receipts)) {
     if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
       continue;
     const receiptRecord = receipt as Record<string, unknown>;
-    if (receiptRecord.operationId !== "report_progress") continue;
     const result = receiptRecord.result;
     if (!result || typeof result !== "object" || Array.isArray(result))
       continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId.length > 0) {
-      progressCommentIds.add(commentId);
+    const receiptResult = result as Record<string, unknown>;
+    if (receiptRecord.operationId === "report_progress") {
+      const commentId = receiptResult.commentId;
+      if (typeof commentId === "string" && commentId.length > 0) {
+        generatedCommentIds.add(commentId);
+      }
+    } else if (
+      receiptRecord.operationId === "register_deliverable" &&
+      typeof receiptResult.attachmentId === "string" &&
+      receiptResult.commandId === `deliverable-prepared:${receiptResult.attachmentId}` &&
+      ["applied", "duplicate"].includes(String(receiptResult.disposition)) &&
+      Array.isArray(receiptResult.entityRefs)
+    ) {
+      // File preparation binds an attachment to a generated comment. That
+      // receipt is not the agent's final answer. Use the server-issued entity
+      // references, never the comment's wording, to exclude its comment from
+      // final-response deduplication. The attachment and binding stay intact.
+      for (const ref of receiptResult.entityRefs) {
+        if (typeof ref === "string") generatedCommentIds.add(ref);
+      }
     }
   }
 
   return (
-    comments.find((comment) => !progressCommentIds.has(comment.id)) ?? null
+    completionComments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
   );
 }
