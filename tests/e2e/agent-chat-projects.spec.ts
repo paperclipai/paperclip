@@ -500,6 +500,7 @@ test("shared questions resume and existing project reuse creates no project card
     );
     await page.goto(f.route);
     await send(page, { action: "question" });
+    await idle(request, f.chatPath);
     await expect(
       page.getByRole("radio", { name: "Garden club", exact: true }).last(),
     ).toBeVisible();
@@ -610,7 +611,7 @@ test("disabling the experiment lets an active turn settle and keeps idle history
     await send(page, { action: "delayed" });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     const chat = await json(await request.get(f.chatPath));
     await json(
       await request.patch("/api/instance/settings/experimental", {

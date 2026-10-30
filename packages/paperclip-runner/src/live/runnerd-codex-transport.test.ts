@@ -1356,6 +1356,7 @@ it.each(["after_budget", "within_budget", "interrupted_within_budget", "persiste
         expect(closeFailure).toBeInstanceOf(
           NativeSessionCloseUnrecoverableError,
         );
+        expect(closeFailure).toHaveProperty("semanticToolsSettled", false);
         expect(closeFailure).toHaveProperty("settlement.semanticTools.pending", expect.arrayContaining([
           expect.objectContaining({ callId: expect.any(String), operationId: expect.any(String),
             sourceEventId: expect.any(String), inputDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }),
@@ -8110,9 +8111,13 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
       cwd: tmpdir(),
       dynamicTools: [],
     });
-    await expect(bundle.transport.close()).rejects.toThrow(
-      "runner did not durably suspend before checkpoint",
-    );
+    const closed = bundle.transport.close();
+    await expect(closed).rejects.toMatchObject({
+      code: "native_session_close_unrecoverable",
+      semanticToolsSettled: true,
+    });
+    // Retirement preserves the original rejected promise and its proof.
+    expect(bundle.transport.close()).toBe(closed);
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
