@@ -180,9 +180,12 @@ The `followup-while-running` story uses the same ordinary task composer and save
 reply observer on managed self-hosted and attached Cloud targets. The initial
 request includes one bounded `sleep 90` command. It supplies no changed launch
 day or final marker. The observer requires a valid running native turn and a
-pending builtin or process execution before sending the follow-up. The same
-command must remain active after exactly one user message is saved. The task page and
-composer are ready before observing the boundary, so navigation is outside the
+pending named builtin command or process execution before sending the follow-up.
+Paperclip semantic tools, including completion/block/progress calls, cannot
+satisfy this boundary even if a provider labels them builtin execute or wraps
+their names with a native prefix. Unnamed or ambiguous builtin calls fail closed.
+The same command must remain active after exactly one user message is saved.
+The task page and composer are ready before observing the boundary, so navigation is outside the
 submission window. The longer bounded command leaves room for remote persistence.
 Merely observing a running heartbeat or waiting for a fixed interval cannot satisfy the boundary.
 

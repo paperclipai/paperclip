@@ -33,6 +33,12 @@ export function activeFollowupBoundary(run: Row, events: Row[]): ActiveFollowupB
     return event.seq > latestTurn.seq && event.eventType === "tool.execution.started" && payload?.schema === "paperclip.tool.execution.v1"
       && typeof payload.executionId === "string" && Boolean(payload.executionId)
       && ["builtin", "process"].includes(payload.transport) && payload.operation === "execute"
+      // Provider display titles vary, but Paperclip semantic calls never prove
+      // native command work, even when a provider maps them to builtin execute.
+      && payload.namespace == null
+      && (payload.transport === "process" || typeof payload.name === "string" && Boolean(payload.name.trim())
+        && !/^(?:unknown|tool(?:[ _-]+call)?)$/i.test(payload.name.trim())
+        && !/(?:^|[._:/-])paperclip(?:[._:/-]|$)/i.test(payload.name.trim()))
       && payload.readOnly !== true && payload.status === "running";
   });
   const pending = starts.filter(start => {

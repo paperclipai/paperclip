@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalProviderEventsFromCodex, canonicalProviderEventsFromAcpxRuntimeEvent } from "../../../packages/paperclip-runner/src/provider-events.js";
+import { canonicalProviderEventsFromCodex, canonicalProviderEventsFromAcpxRuntimeEvent, canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
 import { activeFollowupBoundary, activeFollowupOutcome, sameActiveFollowupBoundary } from "./active-followup-evidence.js";
 import { activeFollowupStory } from "./active-followup-flow.js";
 import { journeyRequiredChecks } from "./success-contract.js";
@@ -32,6 +32,10 @@ describe("deployment-independent active follow-up", () => {
     for (const rows of [[], events().slice(0, 1), [...events(), event(3, "tool.execution.completed", { ...command, status: "completed" })],
       [...events(), event(3, "turn.completed")], [...events(), event(3, "turn.started")], [events()[0]!, event(2, "tool.execution.started", { ...command, operation: "read" })],
       [events()[0]!, event(2, "tool.execution.started", { ...command, readOnly: true })],
+      [events()[0]!, event(2, "tool.execution.started", { ...command, name: "paperclip_finish" })],
+      [events()[0]!, event(2, "tool.execution.started", { ...command, name: "paperclip_block" })],
+      [events()[0]!, event(2, "tool.execution.started", { ...command, namespace: "paperclip" })],
+      [events()[0]!, event(2, "tool.execution.started", { ...command, name: null })],
       [events()[0]!, event(2, "tool.execution.started", { ...command, transport: "mcp" })],
       [events()[0]!, event(3, "tool.execution.started", command)],
       [...events(), event(3, "tool.execution.started", command)]]) expect(activeFollowupBoundary(run, rows)).toBeNull();
@@ -53,6 +57,23 @@ describe("deployment-independent active follow-up", () => {
     expect(acp.payload).toMatchObject({ transport: "builtin", operation: "execute", name: "Bounded settlement fixture", readOnly: false, status: "running" });
     for (const mapped of [codex, acp]) {
       expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, mapped.eventType, mapped.payload)])).toMatchObject({ runId: "run", startedSeq: 2 });
+    }
+  });
+  it("accepts the real OpenCode shell fixture and rejects semantic calls normalized as builtin execute", () => {
+    const mapped = (tool: string, callID = "") => canonicalProviderEventsFromOpenCodePart({
+      id: "wait", type: "tool", tool, callID, state: { status: "pending", input: { command: "sleep 90" } },
+    })[0]!;
+    const shell = mapped("bash");
+    expect(shell.payload).toMatchObject({ transport: "builtin", operation: "execute", name: "bash", readOnly: false, status: "running" });
+    expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, shell.eventType, shell.payload)])).toMatchObject({ runId: "run", startedSeq: 2 });
+    for (const semantic of [mapped("paperclip_finish"), mapped("paperclip_block"), mapped("paperclip_report_progress"),
+      mapped("paperclip_paperclip_finish"), mapped("unknown", "functions.paperclip_block:0"),
+      mapped("functions.paperclip_finish"), mapped("mcp__paperclip__paperclip_block"), mapped("paperclip.paperclip_report_progress")]) {
+      expect(semantic.payload).toMatchObject({ transport: "builtin", operation: "execute", readOnly: false, status: "running" });
+      expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, semantic.eventType, semantic.payload)])).toBeNull();
+    }
+    for (const name of [null, "", " ", "unknown", "tool", "tool call", "tool_call", "tool-call"]) {
+      expect(activeFollowupBoundary(run, [event(1, "turn.started"), event(2, shell.eventType, { ...shell.payload, name })])).toBeNull();
     }
   });
   it("proves the same execution remains active after the user message is stored", () => {
