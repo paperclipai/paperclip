@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,9 +9,10 @@ import { codexSemanticToolSpecs, dynamicToolResponse } from "../drivers/codex/co
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 
 const runner = defaultCapabilityRunnerdBinary();
+const compilerAvailable = process.platform !== "win32" && spawnSync("cc", ["--version"]).status === 0;
 const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 
-it.skipIf(process.platform === "win32" || !existsSync(runner)).each(["discovery", "completion"])(
+it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "completion"])(
   "acknowledges %s before its MCP deadline after a burst of streamed text",
   async tool => {
     const root = await mkdtemp(join(tmpdir(), "runnerd-opencode-streaming-"));
