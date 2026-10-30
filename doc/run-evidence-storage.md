@@ -185,6 +185,11 @@ is not yet part of Cloud's durable wake contract, so outstanding trace deadlines
 conservatively block instance sleep. Removing that blocker requires qualification
 of the corresponding external wake, not a longer polling interval.
 
+Trace expiry and failed-deletion recovery remain registered when
+`HEARTBEAT_SCHEDULER_ENABLED=false`. Disabling agent scheduling does not disable
+retained-data cleanup. The worker still respects warm standby, admission drain,
+actual deadlines, and shutdown.
+
 ## History migration and rollback
 
 S3-configured servers automatically migrate retained local history in the background.

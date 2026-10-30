@@ -479,6 +479,12 @@ claim live-provider or fleet evidence from deterministic fixtures.
   including saved Cloud profile reuse after the legacy config file is absent.
   A further combined run passed all 124 storage and real-Postgres Cloud runtime
   configuration controls on the merged source.
+- Further review: trace retention now registers independently of heartbeat
+  scheduling, and optional issue-comment attribution reads the published log
+  prefix after a failed best-effort native repair. Both defects reproduced red;
+  all 116 selected startup, retention, attribution and cancellation controls pass.
+  The 19f702d780 browser session-recovery check timed out; its job log is retained.
+  No UI behavior or browser assertion was changed to suppress that failure.
 - Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
 - S3 holds payloads from the first committed batch. Conditional object heads
   hold cursors and writer generations. Existing Postgres rows hold lifecycle and

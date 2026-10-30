@@ -1370,6 +1370,10 @@ async function startServerWithDatabaseTeardown(
   const runEvidenceMigrationWork = registerRunEvidenceMigrationWork(db, deliveryWork,
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(), { storageProvider: config.storageProvider });
   if (runEvidenceMigrationWork) trackHeartbeatSchedulerWork(runEvidenceMigrationWork.ready);
+  const providerTraceRetentionWork = registerProviderTraceRetentionWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+  trackHeartbeatSchedulerWork(providerTraceRetentionWork.ready);
+  server.on("close", providerTraceRetentionWork.stop);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
@@ -1974,12 +1978,6 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
-      await step("provider_trace_retention", async () => {
-        const worker = registerProviderTraceRetentionWork(db, deliveryWork,
-          () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
-        server.on("close", worker.stop);
-        trackHeartbeatSchedulerWork(worker.ready);
-      });
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("retention_sweep", runRetentionSweep);
@@ -2248,6 +2246,7 @@ async function startServerWithDatabaseTeardown(
     unsubscribeRetainedNativeSessionCleanup?.();
     await deliveryWork.stop();
     await runEvidenceMigrationWork?.stop();
+    await providerTraceRetentionWork.stop();
     await skillVersionRetentionWorker?.dispose();
     await workspaceRecoveryWork.stop();
     unregisterTerminalWorkspaceProbe?.();
