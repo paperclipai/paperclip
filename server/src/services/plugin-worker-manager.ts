@@ -814,6 +814,12 @@ export interface PluginWorkerManager {
    */
   startWorker(pluginId: string, options: WorkerStartOptions): Promise<PluginWorkerHandle>;
 
+  setStreamNotificationHandler(
+    handler:
+      | ((pluginId: string, method: string, params: Record<string, unknown>) => void)
+      | null,
+  ): void;
+
   /**
    * Stop and unregister a specific plugin worker.
    */
@@ -2905,10 +2911,10 @@ export function createPluginWorkerHandle(
         return;
       }
       const allowedCompanyId = context.invocationScope?.companyId;
-      if (allowedCompanyId && companyId !== allowedCompanyId) {
+      if (!allowedCompanyId || companyId !== allowedCompanyId) {
         log.warn(
           { method: notification.method, companyId, allowedCompanyId },
-          "dropping plugin stream notification outside invocation company scope",
+          "dropping plugin stream notification outside a host-owned company scope",
         );
         return;
       }
@@ -3698,6 +3704,13 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+
+  onStreamNotification?: (
+    pluginId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ) => void;
+
   /**
    * The process-scoped aggregate ceiling for concurrent duplex channel routes,
    * across every worker in the process. The manager builds one shared slot
@@ -3790,6 +3803,9 @@ export function createPluginWorkerManager(
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  let streamHandler:
+    | ((pluginId: string, method: string, params: Record<string, unknown>) => void)
+    | null = managerOptions?.onStreamNotification ?? null;
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -3798,6 +3814,10 @@ export function createPluginWorkerManager(
   );
 
   return {
+    setStreamNotificationHandler(handler) {
+      streamHandler = handler;
+    },
+
     onConfigApplied(listener) {
       configApplied.add(listener);
       return () => { configApplied.delete(listener); };
@@ -3838,7 +3858,13 @@ export function createPluginWorkerManager(
         // Inject the shared process-scoped route-slot controller, unless the
         // caller already supplied its own (a test may inject its own).
         duplexRouteSlots,
-        ...options,
+        ...(options.onStreamNotification
+          ? options
+          : {
+              ...options,
+              onStreamNotification: (method: string, params: Record<string, unknown>) =>
+                streamHandler?.(pluginId, method, params),
+            }),
       });
       workers.set(pluginId, handle);
 
