@@ -10,7 +10,8 @@ qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
 `recover-controller` journey with the recorded Codex and Claude staging models
-on fresh Daytona fixtures. After a completed task tool in an active revision
+on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+must survive both controller replacements. After a completed task tool in an active revision
 turn, it keeps the owned development controller offline for 300 seconds. This
 exceeds the 60-second ownership lease and remains within the Runner's 420-second
 reconnect grace. The existing independent oracle
@@ -27,6 +28,15 @@ leaving headroom for the outage and replacement startup. Native agent idle timin
 ownership/reconnect limits, archive/delete backstops and owned cleanup remain unchanged.
 The retained continuation accepts whitespace between its exact marker and the
 exact `queue_r` output token; readiness and final grading use the same matcher.
+
+Definition version 6 uses the existing warm reusable environment with a dedicated
+configuration key. The prior version 5 per-turn/no-reuse measurement **failed**
+retained native/provider identity and remains failed; it does not qualify this
+warm fixture. Cache retirement moves the entire controller Runner directory,
+including provider failover-backup bytes. Once a per-turn sandbox is disposed,
+its DB checkpoint alone cannot replace those bytes. Per-turn application
+qualification under this disk loss awaits the provider-backup owner's durable
+storage contract; native controller recovery does not waive that dependency.
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.

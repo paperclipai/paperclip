@@ -313,6 +313,15 @@ The general everyday suite retains its 125-second default. These intervals are
 fault tests, not permitted HTTP deployment downtime. Both fixtures retain the
 workspace and remote sandbox; they do not prove whole-webserver disk loss.
 
+The dedicated suite's version 6 uses the existing reusable warm environment,
+with a 15-minute provider idle window and unchanged 60/300/420-second ownership,
+outage and reconnect limits. Its prior per-turn/no-reuse measurement failed
+retained native/provider identity and remains failed. The test retires the whole
+`runtime/paperclip-runner` directory, including provider failover-backup bytes.
+Per-turn application qualification after sandbox disposal and this disk loss
+therefore awaits the provider-backup owner's durable storage contract; logical
+native checkpoints do not replace provider history or weaken the identity oracle.
+
 The rollback reader must support both the recovery envelope and the settled PRP
 v2 idle goal suffix. Record its actual source commit and installed tree hash.
 An older reader rejecting that journal is an unsupported rollback, not a pass.
