@@ -1,12 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { appearanceForPalette } from "@paperclipai/shared";
-import { agents, companies, costEvents, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts } from "@paperclipai/db";
 import { costDataQualityReport, RECEIPT_WAIT_MS } from "../services/cost-data-quality.js";
 import { accountingIntegrityService } from "../services/accounting-integrity.js";
 import { costService } from "../services/costs.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
+import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
+import { nativeSessionWorkspaceScope } from "../services/native-runtime/native-session-executor.js";
+import { createRunUsageRecorder } from "../services/usage-receipts.js";
 
 const now = new Date("2026-10-09T13:00:00Z");
 describe("actionable cost data quality", () => {
@@ -212,5 +219,133 @@ describe("actionable cost data quality", () => {
     expect((await costDataQualityReport(db, owner.companyId, true, { allTime: true }, now)).runs).toEqual([]);
     const other = await company();
     await expect(integrity.retry(other.companyId, pending.id, "board")).rejects.toThrow("Accounting run not found");
+  });
+
+  it("routes the board retry through same-source native receipt capture and normal settlement", async () => {
+    const owner = await company(), runId = randomUUID();
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "accounting-retry-recovery-"));
+    const paperclipHome = path.join(temporaryRoot, "home");
+    const runnerStateBase = path.join(temporaryRoot, "runner-state");
+    const previousEnv = {
+      PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
+      PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
+      PAPERCLIP_RUNNER_STATE_DIR: process.env.PAPERCLIP_RUNNER_STATE_DIR,
+    };
+    try {
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = "native-recovery-test";
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = runnerStateBase;
+      const issueId = randomUUID(), workspaceId = randomUUID(), normalizedSessionId = randomUUID();
+      const [issue] = await db.insert(issues).values({ id: issueId, companyId: owner.companyId,
+        identifier: `REC-${runId.slice(0, 8)}`, title: "Synthetic recovery fixture", status: "in_progress",
+        priority: "medium", workMode: "standard", assigneeAgentId: owner.agentId }).returning();
+      const execution = buildNativeExecutionInput({
+        companyId: owner.companyId, runId, agentId: owner.agentId,
+        issue: { id: issue!.id, identifier: issue!.identifier, title: issue!.title, description: null, workMode: "standard" },
+        taskPrompt: "Synthetic integration fixture.",
+        workspace: { id: workspaceId, cwd: temporaryRoot, repoUrl: null, repoRef: null, branchName: null },
+        normalizedSessionId, provider: "codex", runtimeContext: nativeRuntimeContextFixture(),
+        completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+          contract: { revision: "1", objective: "Verify recovery", criteria: [{ id: "check", requirement: "Recover synthetic usage." }] } },
+      });
+      const runnerInstanceId = randomUUID(), environmentLeaseId = randomUUID();
+      const nativeTurnId = "native-turn-fixture", providerTurnId = randomUUID(), threadId = randomUUID();
+      const [runRow] = await db.insert(heartbeatRuns).values({ ...owner, id: runId, status: "failed", runtimeMode: "native",
+        nativeIssueId: issueId, nativeSessionId: normalizedSessionId, runnerInstanceId, costAccountingPending: true,
+        createdAt: now, finishedAt: now, usageJson: { accountingProviderWorkStarted: true },
+        runnerProfileJson: { nativeExecutionInput: execution } }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: owner.companyId, issueId, runId, phase: "terminal_failure" });
+      const recorder = await createRunUsageRecorder(db, { companyId: owner.companyId, runId, adapterType: "paperclip_runner" });
+      await recorder.capture({ complete: false, provider: "openai", biller: "openai", model: "fixture-model", billingType: "metered_api",
+        usageBasis: "per_run", costStatus: "unpriced", pricingProvenance: { source: "unknown", version: "accounting-receipt/v1" },
+        usage: { inputTokens: 4, outputTokens: 2 } });
+      const scope = {
+        schema: "paperclip.native-session-scope.v2", companyId: owner.companyId, agentId: owner.agentId,
+        workspace: nativeSessionWorkspaceScope(execution),
+        provider: { driverKind: execution.session.driverKind, identity: { kind: "codex" } },
+        normalizedSessionId,
+      };
+      const canonicalJson = (value: unknown): string => {
+        if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+        if (value && typeof value === "object") {
+          const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
+          return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+        }
+        return JSON.stringify(value) ?? "null";
+      };
+      const stateRoot = path.join(runnerStateBase, createHash("sha256").update(canonicalJson(scope)).digest("hex"));
+      const controlRoot = path.join(stateRoot, "control-plane"), runnerRoot = path.join(stateRoot, "runner");
+      const codexHome = path.join(stateRoot, "codex-home");
+      const rolloutDir = path.join(codexHome, "sessions", "2026", "10", "24");
+      await Promise.all([mkdir(controlRoot, { recursive: true }), mkdir(runnerRoot, { recursive: true }), mkdir(rolloutDir, { recursive: true })]);
+      const runnerIdentity = { runnerInstanceId, environmentLeaseId, runId, normalizedSessionId,
+        turnId: nativeTurnId, itemId: randomUUID() };
+      const events = [
+        { eventType: "turn.accepted", turnId: nativeTurnId, payload: {} },
+        { eventType: "turn.started", turnId: nativeTurnId, payload: { providerTurnId } },
+        { eventType: "usage.reported", turnId: nativeTurnId, payload: { kind: "usage" } },
+      ];
+      const committedEvents = events.map((payload, index) => ({ envelope: { runnerInstanceId, payload: {
+        runId, sourceInstanceId: runnerInstanceId, normalizedSessionId, sourceSeq: index + 1, ...payload,
+      } } }));
+      const controlState = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: runnerIdentity,
+        committedEvents, commands: [{ type: "turn.start", status: "completed", result: { result: { providerTurnId } } }] };
+      const runnerState = { schema: "paperclip.runner.durable.state.v1", ...runnerIdentity, lifecycle: "suspended",
+        ackedSourceSeq: committedEvents.length, nextSourceSeq: committedEvents.length + 1, outbox: [] };
+      const providerState = { schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "session_open", threadId,
+        providerSessionId: null, activeProviderTurnId: null, ambiguousTurnStartPending: false,
+        config: { provider: "codex", driver: "codex_app_server" } };
+      const controlPath = path.join(controlRoot, "control-plane-state.json");
+      await Promise.all([
+        writeFile(controlPath, JSON.stringify(controlState)),
+        writeFile(path.join(runnerRoot, "runner-state.json"), JSON.stringify(runnerState)),
+        writeFile(path.join(runnerRoot, "codex-provider-state.json"), JSON.stringify(providerState)),
+      ]);
+      const rootSessionId = randomUUID();
+      const rolloutRows: Array<{ ordinal: number; type: string; payload: Record<string, unknown> }> = [
+        { ordinal: 0, type: "session_meta", payload: { id: threadId, session_id: randomUUID() } },
+        { ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: providerTurnId, root_turn_id: providerTurnId } },
+        { ordinal: 2, type: "token_usage_record", payload: { thread_id: threadId,
+          session_id: rootSessionId,
+          turn_id: providerTurnId, root_turn_id: providerTurnId, response_id: randomUUID(),
+          usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20, total_tokens: 110 },
+          turn_token_usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20, cache_write_input_tokens: 0, total_tokens: 110 } } },
+        { ordinal: 3, type: "event_msg", payload: { type: "turn_aborted", turn_id: providerTurnId } },
+      ];
+      rolloutRows[0]!.payload.session_id = rootSessionId;
+      const rolloutPath = path.join(rolloutDir, `rollout-2026-10-24T00-00-00-${threadId}.jsonl`);
+      await writeFile(rolloutPath, rolloutRows.map(row => JSON.stringify(row)).join("\n") + "\n");
+
+      const originalControl = JSON.stringify(controlState);
+      controlState.identity.runId = randomUUID();
+      await writeFile(controlPath, JSON.stringify(controlState));
+      expect(await accountingIntegrityService(db).retry(owner.companyId, runRow!.id, "board")).toEqual({ accounted: false });
+      const [stillPending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(stillPending).toMatchObject({ status: "failed", costAccountingPending: true,
+        usageJson: { accountingReceiptSequence: 1, accountingReceiptReady: false } });
+      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, runId))).toHaveLength(1);
+      await writeFile(controlPath, originalControl);
+
+      expect(await accountingIntegrityService(db).retry(owner.companyId, runRow!.id, "board")).toEqual({ accounted: true });
+      const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runRow.id));
+      expect(settled).toMatchObject({ status: "failed", costAccountingPending: false, usageJson: {
+        accountingReceiptSequence: 2, accountingReceiptReady: true, accountingProviderWorkStarted: true,
+        inputTokens: 80, cachedInputTokens: 20, outputTokens: 10, costUsd: null, costStatus: "unpriced",
+      } });
+      expect(settled.costAccountedAt).not.toBeNull();
+      expect(settled.accountingAttemptCount).toBe(0);
+      expect(settled.usageJson?.accountingCaptureFailed).not.toBe(true);
+      const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runRow.id));
+      expect(charges).toHaveLength(1);
+      expect(charges[0]).toMatchObject({ inputTokens: 80, cachedInputTokens: 20, outputTokens: 10, costStatus: "unpriced" });
+    } finally {
+      if (previousEnv.PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousEnv.PAPERCLIP_HOME;
+      if (previousEnv.PAPERCLIP_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousEnv.PAPERCLIP_INSTANCE_ID;
+      if (previousEnv.PAPERCLIP_RUNNER_STATE_DIR === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousEnv.PAPERCLIP_RUNNER_STATE_DIR;
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
   });
 });

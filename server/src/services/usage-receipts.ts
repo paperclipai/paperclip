@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
@@ -40,6 +40,7 @@ const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
+  recovery: z.object({ kind: z.literal("native_codex_rollout"), previousSequence: z.number().int().nonnegative(), sourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/) }).strict().optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
@@ -70,19 +71,26 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   return withAccountingTransaction(db, envelope.companyId, async (tx, publications) => {
     const [run] = await tx.select({
       id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+      runtimeMode: heartbeatRuns.runtimeMode, costAccountingPending: heartbeatRuns.costAccountingPending,
       usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
     if (!run) throw notFound("Accounting run not found");
+    const previous = run.usageJson ?? {};
+    if (envelope.recovery && (run.runtimeMode !== "native" || !run.costAccountingPending || run.costAccountedAt ||
+        run.status !== "failed" ||
+        previous.accountingCaptureFailed === true || previous.accountingReceiptReady !== false ||
+        previous.accountingReceiptSourceId !== envelope.sourceId ||
+        Number(previous.accountingReceiptSequence ?? 0) !== envelope.recovery.previousSequence ||
+        envelope.sequence !== envelope.recovery.previousSequence + 1)) return false;
     const [existing] = await tx.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId), eq(runUsageReceipts.sourceId, envelope.sourceId), eq(runUsageReceipts.sequence, envelope.sequence)));
     if (existing && existing.receiptHash !== hash) throw conflict("Conflicting usage checkpoint replay");
     if (!existing) await tx.insert(runUsageReceipts).values({
       id: envelope.id, companyId: envelope.companyId, runId: envelope.runId, sourceId: envelope.sourceId,
       sequence: envelope.sequence, receiptHash: hash, receiptJson: envelope, complete: envelope.receipt.complete, receivedAt: new Date(envelope.receivedAt),
     });
-    const previous = run.usageJson ?? {};
     // A restarted/replaced controller owns a fresh source. Old spool files
     // remain auditable but cannot overwrite its snapshots or acknowledged work.
-    if (run.costAccountedAt || previous.accountingReceiptSourceId !== envelope.sourceId || Number(previous.accountingReceiptSequence ?? 0) >= envelope.sequence) return;
+    if (run.costAccountedAt || previous.accountingReceiptSourceId !== envelope.sourceId || Number(previous.accountingReceiptSequence ?? 0) >= envelope.sequence) return false;
     const receipt = envelope.receipt;
     const billingType = receipt.billingType === "api" ? "metered_api" : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
     const oldProjection = previous.budgetExposure && typeof previous.budgetExposure === "object"
@@ -121,7 +129,83 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
       await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(envelope.companyId, run.agentId,
         typeof scope.projectId === "string" ? scope.projectId : null);
     }
+    return true;
   });
+}
+
+export async function captureRecoveredNativeUsageCheckpoint(db: Db, input: {
+  companyId: string;
+  runId: string;
+  sourceFingerprint: string;
+  expectedSourceId: string;
+  expectedSequence: number;
+  usage: NonNullable<AdapterUsageCheckpoint["usage"]>;
+}, directory = usageReceiptSpoolPath()) {
+  const [run] = await db.select({
+    id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+    costAccountingPending: heartbeatRuns.costAccountingPending, costAccountedAt: heartbeatRuns.costAccountedAt,
+    usageJson: heartbeatRuns.usageJson,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+  const state = run?.usageJson ?? {};
+  const subscriptionState = state.billingType === "subscription_included" || state.billingType === "subscription";
+  const zeroUsd = (value: unknown) => {
+    if (value == null) return true;
+    try { return typeof value === "number" ? value === 0 : typeof value === "string" && usdToUnits(value) === 0n; }
+    catch { return false; }
+  };
+  const sourceId = state.accountingReceiptSourceId;
+  const sequence = Number(state.accountingReceiptSequence ?? 0);
+  if (!run || run.runtimeMode !== "native" || run.status !== "failed" || !run.costAccountingPending || run.costAccountedAt ||
+      state.accountingCaptureFailed === true || state.accountingReceiptReady !== false ||
+      ((!subscriptionState || ![state.costUsd, state.costUsdExact, state.cacheAdjustedCostUsd].every(zeroUsd)) &&
+        [state.costUsd, state.costUsdExact, state.cacheAdjustedCostUsd].some(value => value != null)) ||
+      typeof sourceId !== "string" || !z.string().uuid().safeParse(sourceId).success ||
+      sourceId !== input.expectedSourceId || !Number.isSafeInteger(sequence) || sequence < 1 ||
+      sequence !== input.expectedSequence) return false;
+  const exposure = state.budgetExposure && typeof state.budgetExposure === "object"
+    ? state.budgetExposure as Record<string, unknown> : {};
+  if (exposure.sourceId === sourceId && exposure.sequence === sequence && typeof exposure.costCents === "string") {
+    try { if (compareCents(exposure.costCents, 0) > 0) return false; } catch { return false; }
+  }
+  const [prior] = await db.select().from(runUsageReceipts).where(and(
+    eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
+    eq(runUsageReceipts.sourceId, sourceId), eq(runUsageReceipts.sequence, sequence),
+  )).orderBy(desc(runUsageReceipts.sequence)).limit(1);
+  if (!prior || prior.id !== state.accountingReceiptId || prior.complete) return false;
+  const parsedPriorEnvelope = envelopeSchema.safeParse(prior.receiptJson);
+  if (!parsedPriorEnvelope.success) return false;
+  const priorEnvelope = parsedPriorEnvelope.data;
+  if (priorEnvelope.companyId !== input.companyId || priorEnvelope.runId !== input.runId ||
+      priorEnvelope.sourceId !== sourceId || priorEnvelope.sequence !== sequence || priorEnvelope.receipt.complete) return false;
+  const priorReceipt = priorEnvelope.receipt;
+  const subscriptionReceipt = priorReceipt.billingType === "subscription" || priorReceipt.billingType === "subscription_included";
+  const liveCostIsZero = priorEnvelope.liveCostCents == null || (subscriptionReceipt && (() => {
+    try { return compareCents(priorEnvelope.liveCostCents!, 0) === 0; } catch { return false; }
+  })());
+  if (!liveCostIsZero || (subscriptionReceipt
+      ? ![priorReceipt.costUsd, priorReceipt.costUsdExact, priorReceipt.cacheAdjustedCostUsd].every(zeroUsd)
+      : [priorReceipt.costUsd, priorReceipt.costUsdExact, priorReceipt.cacheAdjustedCostUsd].some(value => value != null)) ||
+      (priorReceipt.usageByModel?.length ?? 0) > 0 ||
+      (!subscriptionReceipt && priorReceipt.costStatus !== undefined && priorReceipt.costStatus !== "unpriced")) return false;
+  const envelope: UsageReceiptEnvelope = {
+    ...priorEnvelope,
+    id: randomUUID(),
+    sequence: sequence + 1,
+    receivedAt: new Date().toISOString(),
+    liveCostCents: null,
+    recovery: { kind: "native_codex_rollout", previousSequence: sequence, sourceFingerprint: input.sourceFingerprint },
+    receipt: { ...priorReceipt, usage: input.usage, usageBasis: "per_run", complete: true,
+      usageByModel: undefined, costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced",
+      pricingProvenance: priorReceipt.pricingProvenance ?? { source: "unknown", version: "accounting-receipt/v1" } },
+  };
+  const file = await spoolUsageReceipt(envelope, directory);
+  try {
+    const persisted = await persistUsageReceipt(db, envelope);
+    await fs.rm(file, { force: true });
+    return persisted;
+  } catch (error) {
+    throw error;
+  }
 }
 
 export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolPath(), limit = 100) {

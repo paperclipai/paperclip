@@ -17,7 +17,8 @@ export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
-import { createRunUsageRecorder } from "../usage-receipts.js";
+import { captureRecoveredNativeUsageCheckpoint, createRunUsageRecorder } from "../usage-receipts.js";
+import { bindCodexRolloutTurnToNativeRun, findCodexRolloutCandidate, parseCodexRolloutTurnUsage } from "./codex-rollout-usage-recovery.js";
 import { registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
 import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
@@ -10311,6 +10312,67 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
     if (provider.agent === "pi") return "openrouter";
   }
   return "openai";
+}
+
+export async function recoverNativeCodexUsageReceipt(db: Db, runId: string): Promise<boolean> {
+  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+  const usageState = record(run?.usageJson);
+  if (!run || run.runtimeMode !== "native" || run.status !== "failed" || !run.costAccountingPending || run.costAccountedAt ||
+      usageState.accountingCaptureFailed === true || usageState.accountingReceiptReady !== false ||
+      typeof usageState.accountingReceiptSourceId !== "string" ||
+      !Number.isSafeInteger(usageState.accountingReceiptSequence) || Number(usageState.accountingReceiptSequence) < 1 ||
+      !run.runnerInstanceId || !run.nativeSessionId || !run.nativeIssueId) return false;
+  const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+  if (execution.provider.kind !== "codex" || execution.binding.runId !== run.id ||
+      execution.binding.companyId !== run.companyId || execution.binding.agentId !== run.agentId ||
+      execution.binding.issueId !== run.nativeIssueId || nativeSessionKey(execution) !== run.nativeSessionId) return false;
+  const [finalization] = await db.select({ resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
+    nextAttemptAt: nativeRunFinalizations.nextAttemptAt, leaseOwner: nativeRunFinalizations.leaseOwner,
+    leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
+    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId)));
+  if (finalization && (!finalization.resultId && finalization.phase !== "terminal_failure" ||
+      finalization.nextAttemptAt || finalization.leaseOwner && finalization.leaseExpiresAt && finalization.leaseExpiresAt > new Date())) return false;
+  const scope = nativeSessionScopeKey(execution);
+  if (activeNativeSessions.has(run.id) || nativeSessionScopeDigestIsBusy(createHash("sha256").update(scope).digest("hex"))) return false;
+  const root = scopedRunnerdStateRoot(execution);
+  let snapshot: ReturnType<typeof cleanupStateSnapshot>;
+  try { snapshot = cleanupStateSnapshot(root); } catch { return false; }
+  const identity = record(snapshot.control.identity);
+  const identityKeys = ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"] as const;
+  if (snapshot.control.schema !== RUNNERD_CONTROL_PLANE_STATE_SCHEMA || snapshot.runner.schema !== RUNNERD_STATE_SCHEMA ||
+      snapshot.runner.lifecycle !== "suspended" || !Array.isArray(snapshot.runner.outbox) || snapshot.runner.outbox.length !== 0 ||
+      !durableIdentityMatchesExecution(identity, execution) || identity.runnerInstanceId !== run.runnerInstanceId ||
+      identityKeys.some(key => typeof identity[key] !== "string" || !identity[key] || snapshot.runner[key] !== identity[key])) return false;
+  const providerIdentity = providerSessionIdentityFromDurableProviderState({ execution, providerState: snapshot.provider });
+  const threadId = typeof providerIdentity.providerSessionId === "string" ? providerIdentity.providerSessionId : null;
+  if (!threadId || snapshot.provider.threadId !== threadId || snapshot.provider.activeProviderTurnId !== null ||
+      snapshot.provider.ambiguousTurnStartPending === true) return false;
+  const committed = snapshot.control.committedEvents;
+  const commands = snapshot.control.commands;
+  if (!Array.isArray(committed) || !Array.isArray(commands) || committed.length === 0 || committed.length > 100_000) return false;
+  const binding = bindCodexRolloutTurnToNativeRun({ control: snapshot.control, runner: snapshot.runner }, { runId: run.id,
+    runnerInstanceId: run.runnerInstanceId, normalizedSessionId: nativeSessionKey(execution) });
+  if (!binding) return false;
+  const rolloutPath = findCodexRolloutCandidate(root, threadId);
+  if (!rolloutPath) return false;
+  let bytes: Buffer;
+  try { bytes = readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_accounting_recovery_unavailable"); }
+  catch { return false; }
+  const recovered = parseCodexRolloutTurnUsage(bytes.toString("utf8"), { threadId, turnId: binding.providerTurnId });
+  if (!recovered) return false;
+  return captureRecoveredNativeUsageCheckpoint(db, {
+    companyId: run.companyId,
+    runId: run.id,
+    sourceFingerprint: createHash("sha256").update(bytes).digest("hex"),
+    expectedSourceId: usageState.accountingReceiptSourceId,
+    expectedSequence: Number(usageState.accountingReceiptSequence),
+    usage: {
+      inputTokens: recovered.inputTokens - recovered.cachedInputTokens,
+      outputTokens: recovered.outputTokens,
+      cachedInputTokens: recovered.cachedInputTokens,
+      ...(recovered.cacheWriteTokens > 0 ? { cacheWriteTokens: recovered.cacheWriteTokens } : {}),
+    },
+  });
 }
 
 function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {

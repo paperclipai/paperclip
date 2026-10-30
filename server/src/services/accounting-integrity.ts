@@ -90,7 +90,14 @@ export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {
       const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
       if (!run) throw notFound("Accounting run not found");
       await logActivity(db, { companyId, actorType: "user", actorId, action: "accounting.retry_requested", entityType: "heartbeat_run", entityId: runId });
-      try { return { accounted: await accountRunCost(db, runId, hooks) }; }
+      try {
+        if (await accountRunCost(db, runId, hooks)) return { accounted: true };
+        const { recoverNativeCodexUsageReceipt } = await import("./native-runtime/native-session-executor.js");
+        if (await recoverNativeCodexUsageReceipt(db, runId)) {
+          return { accounted: await accountRunCost(db, runId, hooks) };
+        }
+        return { accounted: false };
+      }
       catch (error) {
         await db.update(heartbeatRuns).set({ accountingLastAttemptAt: new Date(), accountingAttemptCount: sql`${heartbeatRuns.accountingAttemptCount} + 1`,
           accountingLastError: error instanceof Error ? error.message.slice(0,1000) : "Accounting retry failed",
