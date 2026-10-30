@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# This prerequisite belongs only to the MCP isolation workspace test lane.
 set -euo pipefail
 : "${RUNNER_TEMP:?RUNNER_TEMP must select an isolated test directory}"
 : "${GITHUB_PATH:?GITHUB_PATH must select the CI path file}"
@@ -7,7 +6,6 @@ version=2.1.207
 prefix="$RUNNER_TEMP/paperclip-claude-cli"
 bin_dir="$RUNNER_TEMP/paperclip-claude-bin"
 npm install --prefix "$prefix" --cache "$RUNNER_TEMP/paperclip-claude-npm-cache"   --omit=dev --ignore-scripts --no-audit --no-fund "@anthropic-ai/claude-code@$version"
-# The package wrapper supports --ignore-scripts and selects its native package.
 launcher="$prefix/node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs"
 chmod +x "$launcher"
 mkdir -p "$bin_dir"

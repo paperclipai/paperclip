@@ -97,8 +97,6 @@ describe("cli telemetry", () => {
   });
 
   it("creates telemetry state only after the first event is tracked", async () => {
-    // This opt-in behavior test uses mocked fetch; ambient runner opt-outs must
-    // not turn its client into null. afterEach restores both environment flags.
     delete process.env.PAPERCLIP_TELEMETRY_DISABLED;
     delete process.env.DO_NOT_TRACK;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));

@@ -5,10 +5,14 @@ import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { testEnvironment } from "@paperclipai/adapter-cursor-local/server";
 
-async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): Promise<string> {
+function nodeScript(source: string, nodeExecutable = process.execPath): string {
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  return "#!/bin/sh\nexec " + quote(nodeExecutable) + " -e " + quote(source) + ' "$0" "$@"\n';
+}
+
+async function writeFakeAgentCommand(binDir: string, argsCapturePath: string, nodeExecutable = process.execPath): Promise<string> {
   const commandPath = path.join(binDir, "agent");
-  const script = `#!${process.execPath}
-const fs = require("node:fs");
+  const source = `const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
   fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(2)), "utf8");
@@ -23,14 +27,13 @@ console.log(JSON.stringify({
   result: "hello",
 }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
+  await fs.writeFile(commandPath, nodeScript(source, nodeExecutable), "utf8");
   await fs.chmod(commandPath, 0o755);
   return commandPath;
 }
 
-async function writeFakeCursorAgentCommand(commandPath: string): Promise<void> {
-  const script = `#!${process.execPath}
-const fs = require("node:fs");
+async function writeFakeCursorAgentCommand(commandPath: string, nodeExecutable = process.execPath): Promise<void> {
+  const source = `const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
   fs.writeFileSync(outPath, JSON.stringify({
@@ -50,7 +53,7 @@ console.log(JSON.stringify({
 }));
 `;
   await fs.mkdir(path.dirname(commandPath), { recursive: true });
-  await fs.writeFile(commandPath, script, "utf8");
+  await fs.writeFile(commandPath, nodeScript(source, nodeExecutable), "utf8");
   await fs.chmod(commandPath, 0o755);
 }
 

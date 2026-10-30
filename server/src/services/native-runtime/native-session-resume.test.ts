@@ -53,8 +53,6 @@ import {
   retainedNativeCleanupJournalMatches,
 } from "./native-session-executor.js";
 import * as publicationSignals from "../chat-publication-reconciliation.js";
-// The package resolver intentionally prefers installed Codex over PATH. Pin only
-// this test's provider boundary; retain the real daemon and transport behavior.
 const fixtureProvider = vi.hoisted(() => ({ command: undefined as string | undefined }));
 vi.mock("@paperclipai/paperclip-runner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@paperclipai/paperclip-runner")>();

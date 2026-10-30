@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,21 +9,28 @@ import test from "node:test";
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const installer = path.join(repo, "scripts/install-claude-test-cli.sh");
 
-function fixture(version) {
+function nodeScript(source, nodeExecutable = process.execPath) {
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  return "#!/bin/sh\nexec " + quote(nodeExecutable) + " -e " + quote(source) + ' "$0" "$@"\n';
+}
+
+function fixture(version, quotedRuntime = false) {
   const root = mkdtempSync(path.join(os.tmpdir(), "claude-ci-prerequisite-"));
   const fakeBin = path.join(root, "fake-bin");
   mkdirSync(fakeBin);
+  const nodeExecutable = quotedRuntime ? path.join(root, "node with ' quotes") : process.execPath;
+  if (quotedRuntime) symlinkSync(process.execPath, nodeExecutable);
   const npm = path.join(fakeBin, "npm");
-  writeFileSync(npm, `#!${process.execPath}
-const fs = require("node:fs");
+  const npmSource = `const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
 fs.writeFileSync(process.env.TEST_INSTALL_ARGS, JSON.stringify(args));
 const prefix = args[args.indexOf("--prefix") + 1];
 const wrapper = path.join(prefix, "node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs");
 fs.mkdirSync(path.dirname(wrapper), {recursive:true});
-fs.writeFileSync(wrapper, ${JSON.stringify(`#!${process.execPath}\nconsole.log(${JSON.stringify(version)});\n`)});
-`);
+fs.writeFileSync(wrapper, ${JSON.stringify(nodeScript(`console.log(${JSON.stringify(version)});\n`, nodeExecutable))});
+`;
+  writeFileSync(npm, nodeScript(npmSource, nodeExecutable));
   chmodSync(npm, 0o755);
   const githubPath = path.join(root, "github-path");
   writeFileSync(githubPath, "");
@@ -66,4 +73,12 @@ test("PR and release workflows provision the CLI only for the MCP workspace lane
     assert.match(step, /run: bash scripts\/install-claude-test-cli\.sh/);
     assert.ok(source.indexOf("Install pinned Claude test CLI") < source.indexOf("Run grouped general test suites"));
   }
+});
+
+test("runs fake npm and Claude commands with a quoted Node path", () => {
+  const f = fixture("2.1.207 (Claude Code)", true);
+  try {
+    assert.equal(f.result.status, 0, f.result.stderr);
+    assert.equal(readFileSync(f.githubPath, "utf8"), `${path.join(f.runnerTemp, "paperclip-claude-bin")}\n`);
+  } finally { rmSync(f.root, {recursive:true, force:true}); }
 });

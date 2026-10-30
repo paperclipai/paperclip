@@ -140,8 +140,6 @@ describe("workspace Git scan route load regression", () => {
     await new Promise<void>(resolve => server.once("listening", resolve));
     const pendingResponses: Promise<Response>[] = [];
     try {
-      // Admit below host listener-backlog limits, keeping every request open
-      // behind scanGate. All 500 must still join before health/load assertions.
       for (let start = 0; start < 500; start += 64) {
         const end = Math.min(start + 64, 500);
         for (let index = start; index < end; index += 1) {
@@ -150,7 +148,7 @@ describe("workspace Git scan route load regression", () => {
             .set("x-test-actor", `actor-${index % 73}`)
             .query({ mode: "changed" })
             .then((response) => response);
-          void response.catch(() => {}); // Observe rejections before final collection.
+          void response.catch(() => {});
           pendingResponses.push(response);
         }
         await vi.waitFor(
