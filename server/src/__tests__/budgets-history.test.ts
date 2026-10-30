@@ -58,7 +58,7 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
     await expect(service.evaluateAdmission(companyId, missingId)).rejects.toThrow("Agent not found");
     await expect(service.evaluateAdmission(companyId, agentId, { projectId: missingId })).rejects.toThrow("Project not found");
     for (const scopeType of ["agent", "project"] as const) {
-      await expect(service.upsertPolicy(companyId, { scopeType, scopeId: missingId, amount: 100 })).rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
+      await expect(service.upsertPolicy(companyId, { scopeType, scopeId: missingId, amount: 100 }, "board")).rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
       const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType, scopeId: missingId,
         windowKind: "calendar_month_utc", amount: 100 }).returning();
       const [approval] = await db.insert(approvals).values({ companyId, type: "budget_override_required", payload: {} }).returning();
