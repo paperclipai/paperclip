@@ -121,7 +121,7 @@ export async function ensureChatPlan(api, inspected, markOnce) {
 }
 
 
-export const executionId = 'chat-features.runner-opencode.local.create-backlog';
+export const executionId = 'chat-features.runner-opencode-deepseek-1017.local.create-backlog';
 export const scenario = 'tasks.create-backlog';
 const positive = value => typeof value === 'string' && /^[1-9][0-9]{0,15}$/.test(value) && Number.isSafeInteger(Number(value));
 export function publicContext(env) {

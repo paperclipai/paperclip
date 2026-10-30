@@ -14,13 +14,13 @@ async function fixture(t, changes = {}) {
   t.after(() => rm(directory, { recursive: true }));
   const root = path.join(directory, 'export'); await mkdir(root);
   const png = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82]);
-  const shot = { id: 'chat-feature-result', file: 'chat-feature-result.png', sha256: hash(png) };
-  const result = { executionId, suiteId: 'chat-features', caseId: 'create-backlog', profileId: 'runner-opencode', provider: 'opencode',
+  const shot = { id: 'final-state', file: 'final-state.png', sha256: hash(png) };
+  const result = { executionId, suiteId: 'chat-features', caseId: 'create-backlog', profileId: 'runner-opencode-deepseek-1017', provider: 'opencode',
     environmentId: 'local', model: 'openrouter/deepseek/deepseek-v4.1-flash-1017', runtimeMode: 'native', attempt: 1,
     source: { sha: expected.targetSha }, status: 'passed', cleanup: 'passed', runIds: ['synthetic-run'], durationMs: 1234,
     matcherResults: [{ matcher: { kind: 'json_path', path: 'chatFeature.createdTask', expected: true }, passed: true }], screenshots: [shot], ...changes };
   const files = new Map([['normalized-results.json', Buffer.from(JSON.stringify({ schema: 'paperclip.runner-e2e.campaign/v2', campaignId: 'gha-123-1', complete: false, results: [result] }))],
-    ['junit.xml', Buffer.from('<testsuite tests="1"/>')], [`evidence/${executionId}/attempt-1/chat-feature-result.png`, png]]);
+    ['junit.xml', Buffer.from('<testsuite tests="1"/>')], [`evidence/${executionId}/attempt-1/final-state.png`, png]]);
   const binding = { schema: 'paperclip.chat-feature-testops-export/v1', ...expected, executionId, campaignId: 'gha-123-1', resultStatus: result.status, cleanup: result.cleanup,
     files: [...files].map(([name, bytes]) => ({ path: name, sha256: hash(bytes), bytes: bytes.length })) };
   for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(root, name)), { recursive: true }); await writeFile(path.join(root, name), bytes); }

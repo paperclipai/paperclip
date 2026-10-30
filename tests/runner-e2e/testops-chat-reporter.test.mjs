@@ -42,13 +42,13 @@ test('actual upload facade copies authenticated workspace bytes to owned temp be
   const root = path.join(workspace, 'safe-export'); await mkdir(root);
   const png = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82]);
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-  const shot = { id: 'chat-feature-result', file: 'chat-feature-result.png', sha256: hash(png) };
-  const result = { executionId, suiteId: 'chat-features', caseId: 'create-backlog', profileId: 'runner-opencode', provider: 'opencode',
+  const shot = { id: 'final-state', file: 'final-state.png', sha256: hash(png) };
+  const result = { executionId, suiteId: 'chat-features', caseId: 'create-backlog', profileId: 'runner-opencode-deepseek-1017', provider: 'opencode',
     environmentId: 'local', model: 'openrouter/deepseek/deepseek-v4.1-flash-1017', runtimeMode: 'native', attempt: 1,
     source: { sha: context.GITHUB_SHA }, status: 'passed', cleanup: 'passed', runIds: ['synthetic'], durationMs: 123,
     matcherResults: [{ matcher: { kind: 'json_path', path: 'chatFeature.createdTask', expected: true }, passed: true }], screenshots: [shot] };
   const files = new Map([['normalized-results.json', Buffer.from(JSON.stringify({ schema: 'paperclip.runner-e2e.campaign/v2', campaignId: 'gha-123-1', results: [result] }))],
-    ['junit.xml', Buffer.from('<testsuite tests="1"/>')], [`evidence/${executionId}/attempt-1/chat-feature-result.png`, png]]);
+    ['junit.xml', Buffer.from('<testsuite tests="1"/>')], [`evidence/${executionId}/attempt-1/final-state.png`, png]]);
   for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(root, name)), { recursive: true }); await writeFile(path.join(root, name), bytes); }
   await writeFile(path.join(root, 'binding.json'), JSON.stringify({ schema: 'paperclip.chat-feature-testops-export/v1', runId: '123', attempt: '1',
     workflowSha: context.GITHUB_SHA, targetSha: context.GITHUB_SHA, executionId, campaignId: 'gha-123-1', resultStatus: 'passed', cleanup: 'passed',

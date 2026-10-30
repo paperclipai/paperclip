@@ -19,7 +19,7 @@ afterEach(async () => {
   for (const directory of wrapperDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-const id = "chat-features.runner-opencode.local.create-backlog";
+const id = "chat-features.runner-opencode-deepseek-1017.local.create-backlog";
 function fixture() {
   const env: NodeJS.ProcessEnv = { PAPERCLIP_TESTOPS_CHAT_MAIN_ADMISSION: "v1", GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "workflow_dispatch",
     GITHUB_REPOSITORY: "paperclipai/paperclip", GITHUB_REF: "refs/heads/master", GITHUB_WORKFLOW_REF: "paperclipai/paperclip/.github/workflows/chat-feature-testops.yml@refs/heads/master",
@@ -54,6 +54,11 @@ it("rejects metadata bootstrap as an evaluation admission", () => { const f = fi
 it("rejects forged event sender and foreign event source", () => {
   const f = fixture(); f.event.sender.id = 456; expect(() => authorizeShippedChat(f.env, f.event, f.selected, "b".repeat(64))).toThrow();
   f.event.sender.id = 123; f.event.repository.full_name = "foreign/repo"; expect(() => authorizeShippedChat(f.env, f.event, f.selected, "b".repeat(64))).toThrow();
+});
+it("rejects the existing production OpenCode backlog cell", () => {
+  const f = fixture();
+  const stock = runnerMatrix.find(row => row.id === "chat-features.runner-opencode.local.create-backlog")!;
+  expect(() => authorizeShippedChat(f.env, f.event, stock, "b".repeat(64))).toThrow("Unexpected shipped chat selection or bounds");
 });
 it.each(["model", "provider", "work", "clock", "retry", "budget"])("rejects changed selected %s", field => {
   const f = fixture(); const selected = { ...f.selected, profile: { ...f.selected.profile }, task: { ...f.selected.task }, suite: { ...f.selected.suite, definitionMetadata: { ...f.selected.suite.definitionMetadata } } };

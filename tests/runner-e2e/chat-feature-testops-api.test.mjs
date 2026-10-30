@@ -132,7 +132,7 @@ const selectedApi = replacements => async route => {
 test('real API selection is exact singleton/project/job/launch and current source bound before model access', async () => {
   const selected = await validateChatSelection(selectedApi(), publicEnv);
   assert.equal(selected.runId, '123'); assert.equal(selected.workflowSha, 'a'.repeat(40));
-  assert.equal(selected.executionId, 'chat-features.runner-opencode.local.create-backlog');
+  assert.equal(selected.executionId, 'chat-features.runner-opencode-deepseek-1017.local.create-backlog');
   assert.equal(selected.canonicalScenario, 'tasks.create-backlog'); assert.equal(selected.allureJobRunId, '9');
   assert.equal(selected.launchId, 10);
 });
@@ -317,7 +317,7 @@ const uploadContext = { GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 
   GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', ALLURE_JOB_RUN_ID: '9',
   GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-feature-testops.yml@refs/heads/master' };
 const uploadSelection = { runId: '123', attempt: '1', workflowSha: 'a'.repeat(40), targetSha: 'a'.repeat(40), allureJobRunId: '9',
-  executionId: 'chat-features.runner-opencode.local.create-backlog', canonicalScenario: 'tasks.create-backlog', projectId: 1,
+  executionId: 'chat-features.runner-opencode-deepseek-1017.local.create-backlog', canonicalScenario: 'tasks.create-backlog', projectId: 1,
   planId: 8, jobId: 7, caseId: 91, fullName, launchId: 10 };
 const uploadReceipt = { status: 'passed', cleanup: 'passed', caseId: 91, campaignId: 'gha-123-1', count: 1,
   attachmentMetadata: [{ name: 'Synthetic task and source conversation', contentType: 'image/png', contentLength: 400 },

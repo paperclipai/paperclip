@@ -8,7 +8,7 @@ import { validateRetainedRunnerResult } from "./result-validation.js";
 import { PUBLIC_RUNNER_SCREENSHOT_MARKER } from "./screenshot-policy.js";
 import type { RunnerE2EResult } from "./types.js";
 
-export const TESTOPS_CHAT_EXECUTION = "chat-features.runner-opencode.local.create-backlog";
+export const TESTOPS_CHAT_EXECUTION = "chat-features.runner-opencode-deepseek-1017.local.create-backlog";
 const model = "openrouter/deepseek/deepseek-v4.1-flash-1017";
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const sha = /^[a-f0-9]{40}$/;
@@ -53,12 +53,12 @@ export async function exportTestOpsChat(reportRoot: string, output: string, bind
   if (raw.schema !== "paperclip.runner-e2e.campaign/v2" || raw.campaignId !== campaignId || !Array.isArray(raw.expected) || raw.expected.length !== 1 || raw.expected[0] !== TESTOPS_CHAT_EXECUTION || !Array.isArray(raw.results) || raw.results.length !== 1 || raw.retries !== 0) throw new Error("Foreign or repeated TestOps selection");
   const original = raw.results[0];
   validateRetainedRunnerResult(original);
-  if (original.executionId !== TESTOPS_CHAT_EXECUTION || original.suiteId !== "chat-features" || original.profileId !== "runner-opencode" || original.environmentId !== "local" || original.caseId !== "create-backlog" || original.provider !== "opencode" || original.model !== model || original.runtimeMode !== "native" || original.attempt !== 1 || original.source?.sha !== binding.targetSha) throw new Error("Foreign TestOps result");
+  if (original.executionId !== TESTOPS_CHAT_EXECUTION || original.suiteId !== "chat-features" || original.profileId !== "runner-opencode-deepseek-1017" || original.environmentId !== "local" || original.caseId !== "create-backlog" || original.provider !== "opencode" || original.model !== model || original.runtimeMode !== "native" || original.attempt !== 1 || original.source?.sha !== binding.targetSha) throw new Error("Foreign TestOps result");
   if (!original.billing) throw new Error("Missing retained billing coverage");
   const checks = original.matcherResults ?? [];
   if (original.status === "passed" && (original.cleanup !== "passed" || raw.results[0].evidenceValid !== true || checks.length === 0 || checks.some(c => !c.passed) || original.runIds?.length !== 1)) throw new Error("Incomplete passing TestOps evidence");
   const screenshots = (original.screenshots ?? []).filter(s => s.publication === PUBLIC_RUNNER_SCREENSHOT_MARKER);
-  if (screenshots.length > 8 || original.status === "passed" && !screenshots.some(s => s.id === "chat-feature-result" && s.file === "chat-feature-result.png")) throw new Error("Missing or excessive fixture screenshots");
+  if (screenshots.length > 8 || original.status === "passed" && !screenshots.some(s => s.id === "final-state" && s.file === "final-state.png")) throw new Error("Missing or excessive fixture screenshots");
   const files = new Map<string, Buffer>();
   for (const shot of screenshots) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.png$/.test(shot.file) || !/^[a-f0-9]{64}$/.test(shot.sha256 ?? "")) throw new Error("Unbound fixture screenshot");
@@ -73,7 +73,7 @@ export async function exportTestOpsChat(reportRoot: string, output: string, bind
     source: { sha: binding.targetSha, ref: null, workflowRunUrl: `https://github.com/paperclipai/paperclip/actions/runs/${binding.runId}` },
     attempt: 1, status: original.status, ...(original.failureClass ? { failureClass: original.failureClass } : {}),
     ...(original.status === "failed" ? { error: "Retained chat feature evaluation failed; private originals preserve diagnostics" } : {}),
-    profileId: "runner-opencode", environmentId: "local", caseId: "create-backlog", provider: "opencode", model, runtimeMode: "native",
+    profileId: "runner-opencode-deepseek-1017", environmentId: "local", caseId: "create-backlog", provider: "opencode", model, runtimeMode: "native",
     runIds: original.runIds?.map(id => { if (!/^[A-Za-z0-9._-]{1,100}$/.test(id)) throw new Error("Invalid task run identity"); return id; }),
     startedAt: original.startedAt, finishedAt: original.finishedAt, durationMs: original.durationMs, cleanup: original.cleanup,
     billing: publicBilling(original.billing),

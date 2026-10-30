@@ -20,12 +20,17 @@ task, or sends a hidden follow-up.
 
 ## Run the first slice
 
-Follow the installation steps in [README.md](README.md#local-commands). The current
-subscription profile is local native Codex using the catalog's recorded default model and an
+Follow the installation steps in [README.md](README.md#local-commands). The Codex
+subscription profile uses the catalog's recorded default model and an
 explicit `CODEX_AUTH_JSON` login. Load that login privately into the launcher
 environment; do not print it or save it in tracked configuration. The existing
 subscription fixture stages only `auth.json` in the disposable company login slot
 and removes it with the isolated instance.
+
+The local native OpenCode profile uses the current production-qualified model
+and `OPENROUTER_API_KEY` through the existing encrypted company-secret fixture.
+Each of the two journeys has a cell for each original profile. These four cells
+remain unchanged; the TestOps profile below adds one separately named backlog cell.
 
 ```sh
 pnpm test:e2e:runner:typecheck
@@ -33,19 +38,20 @@ pnpm test:e2e:runner:unit
 pnpm test:e2e:runner -- --list --suite chat-features
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.create-backlog --max-automatic-retries 0
 pnpm test:e2e:runner -- --id chat-features.runner-codex-subscription.local.delegate-announcement --max-automatic-retries 0
+pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.delegate-announcement --max-automatic-retries 0
 ```
 
 Run creation first and inspect its packaged report before delegation. For the original Codex
 acceptance, run each cell three times against fresh fixtures on the same definition
 revision. Keep every attempt, including failures; a retry does not erase one. A
-fixture or product correction starts a new three-sample measurement. Both cells
+fixture or product correction starts a new three-sample measurement. All cells
 are explicit-only and excluded from `--all`; this does not implement or qualify
 the rest of the YAML inventory.
 
 ## OpenCode TestOps integration acceptance
 
 The additional explicit cell
-`chat-features.runner-opencode.local.create-backlog` runs the same backlog
+`chat-features.runner-opencode-deepseek-1017.local.create-backlog` runs the same backlog
 query, public fixture and saved-state oracle on native OpenCode with
 `openrouter/deepseek/deepseek-v4.1-flash-1017`. It requires only the selected
 `OPENROUTER_API_KEY` profile credential. The launcher stores an encrypted secret
@@ -54,7 +60,7 @@ This selected model is a qualification candidate. Other OpenCode suites keep
 their existing model, and delegation is not registered for this profile.
 
 ```sh
-pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.create-backlog --max-automatic-retries 0
+pnpm test:e2e:runner -- --id chat-features.runner-opencode-deepseek-1017.local.create-backlog --max-automatic-retries 0
 ```
 
 Use a separately named TestOps integration-acceptance plan and launch for this
@@ -87,6 +93,16 @@ probes fall outside heartbeat usage and budget accounting; detailed setup tokens
 and cost are unavailable. These limits are not an absolute inference or cash cap.
 Subscription cost coverage must remain explicit in the report.
 
+An obsolete CEO assignment can leave a cancelled queue entry when the CEO creates
+a task and then assigns it to Morgan. Grader v2 distinguishes that entry from
+provider work only when the dispatch gate records `issue_assignee_changed`, an
+explicitly null start time, no native issue, and its unchanged stale-queue stop
+receipt. The entry must belong to this company and the one task now assigned to
+Morgan. It stays in the full observation and final ledger, with its events and an
+explicit provider-log omission reason. Active, unrelated, or unproved cancellations
+still fail. The three successful work runs, worker output, completion delivery,
+and original deadlines remain required. Backlog creation still permits no task wake.
+
 Because this subscription currently reports unpriced usage, setup explicitly sets
 `unpricedUsagePolicy: allow` on the disposable company and both agents through the
 public budget API and verifies all three policies. The 500-cent hard stops remain
@@ -102,6 +118,8 @@ on failures. Setup evidence records fixture IDs, synthetic brief, readiness and
 saved budgets. Ordinary Product E2E evidence packaging, redaction, cleanup, failure
 classification and dashboards own the result. The definition digest includes the
 query, defaults, flow and grader sources.
+Individual saved-state checks are also recorded when the journey fails, so the
+report shows partial progress without turning it into a passing workflow.
 
 The grader rejects duplicate tasks, wrong owners/projects/companies, early execution,
 missing audit attribution, missing or stale deliverables, extra human nudges and

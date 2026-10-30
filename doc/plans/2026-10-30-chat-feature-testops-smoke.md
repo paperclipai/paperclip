@@ -15,7 +15,7 @@ Delegation and the other catalog scenarios are deferred.
 
 ## Source and execution contract
 
-- Public selector: `chat-features.runner-opencode.local.create-backlog`.
+- Public selector: `chat-features.runner-opencode-deepseek-1017.local.create-backlog`.
 - Existing YAML query, fixture and independent backlog oracle stay unchanged.
 - One human query and one accounted controller work run; 120-second turns,
   420-second attempt, 300-second settled-state observation, zero retries.
@@ -77,3 +77,13 @@ build/worker receipt, plus same-job server-result readback after Allure upload.
 Focused checks cover 41 admission controls, 31 lock/owner/workflow controls and
 44 API/reporter controls; unchanged profile/oracle evidence is reused. This is
 source verification. The plan and actual model result are still not created.
+
+Current-main composition preserves the four existing Codex and production-qualified
+OpenCode cells introduced by #18319. The TestOps cell has its own
+`runner-opencode-deepseek-1017` profile, so the existing OpenCode model remains
+unchanged. It uses the shipped v2 grader, queue accounting and `final-state.png`
+capture. The new profile keeps the original query, one work run, one human message,
+120-second turn, 420-second attempt, 300-second observation bound and zero retries.
+The existing private session and trace-asset owners admit only this additional
+exact selector; the frozen 244-case candidate-approval registry remains unchanged.
+Source checks do not establish a TestOps registration or model outcome.

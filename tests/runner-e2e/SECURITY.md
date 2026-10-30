@@ -1,11 +1,9 @@
 # Runner E2E security for a public repository
 
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
-and a privately supplied Codex subscription login through the existing isolated
-company staging helper. The explicit OpenCode backlog cell uses only its selected
-OpenRouter API credential through the existing encrypted company secret-reference
-path. It adds no subscription login, credential alias or external service grant.
-Only source-chat screenshots are captured. Task, document
+and either a privately supplied Codex subscription login through the existing
+isolated company staging helper or the OpenCode profile's encrypted OpenRouter
+secret reference. Only source-chat screenshots are captured. Task, document
 and run evidence stays behind the existing sanitizer and publication allowlist;
 the YAML catalog contains no credentials. The suite's accounted-work budgets do
 not cover production setup probes or imply zero subscription cost.

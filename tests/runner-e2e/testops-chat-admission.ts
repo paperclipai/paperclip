@@ -4,7 +4,7 @@ import { runnerMatrix } from "./catalog.js";
 import { MANUAL_PRIVATE_PROTOCOL } from "./manual-private-retention.js";
 import type { MatrixExecution } from "./types.js";
 
-const executionId = "chat-features.runner-opencode.local.create-backlog";
+const executionId = "chat-features.runner-opencode-deepseek-1017.local.create-backlog";
 const authority = "paperclip.shipped-chat-testops/v1";
 const repository = "paperclipai/paperclip";
 const workflow = ".github/workflows/chat-feature-testops.yml";
@@ -25,7 +25,7 @@ export function authorizeShippedChat(env: NodeJS.ProcessEnv, event: unknown, sel
     || !payload.inputs || Object.keys(payload.inputs).some(k => !["ALLURE_JOB_RUN_ID", "ALLURE_USERNAME", "operation"].includes(k)) || (payload.inputs.operation ?? "evaluate") !== "evaluate" || !/^[1-9][0-9]{0,19}$/.test(String(payload.inputs.ALLURE_JOB_RUN_ID ?? ""))
     || !/^[a-f0-9]{64}$/.test(launchSha256)) throw new Error("Invalid shipped chat authority");
   if (JSON.stringify(JSON.parse(env.MANUAL_PRIVATE_IDS ?? "null")) !== JSON.stringify([executionId]) || env.SELECTED_EXECUTION_ID && env.SELECTED_EXECUTION_ID !== executionId
-    || selected.id !== executionId || selected.suite.id !== "chat-features" || selected.profile.id !== "runner-opencode" || selected.environment.id !== "local"
+    || selected.id !== executionId || selected.suite.id !== "chat-features" || selected.profile.id !== "runner-opencode-deepseek-1017" || selected.environment.id !== "local"
     || selected.profile.provider !== "opencode" || selected.profile.model !== "openrouter/deepseek/deepseek-v4.1-flash-1017" || selected.profile.expectedRuntimeMode !== "native"
     || selected.requiredCredentials.length !== 1 || selected.requiredCredentials[0] !== "OPENROUTER_API_KEY" || selected.task.id !== "create-backlog"
     || selected.task.expectedRunCount !== 1 || selected.task.turnTimeoutMs !== 120_000 || selected.task.attemptTimeoutMs.local !== 420_000 || selected.task.automaticRetryPolicy !== "single_attempt"

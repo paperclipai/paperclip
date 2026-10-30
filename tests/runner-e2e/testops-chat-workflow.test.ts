@@ -48,7 +48,7 @@ it("requires token-isolated selection before the fixed AWS run and keeps bootstr
   expect(workflow.jobs.chat.if).toBe("needs.authorize.outputs.operation == 'evaluate'");
   expect(workflow.jobs.build.if).toBe("needs.authorize.outputs.operation == 'evaluate'");
   const paid = workflow.jobs.chat.steps.find((s: any) => s.env?.OPENROUTER_API_KEY);
-  expect(paid.run).toContain("--id chat-features.runner-opencode.local.create-backlog --max-parallel 1 --max-automatic-retries 0");
+  expect(paid.run).toContain("--id chat-features.runner-opencode-deepseek-1017.local.create-backlog --max-parallel 1 --max-automatic-retries 0");
   expect(workflow.jobs.chat.steps.findIndex((s: any) => s.name === "Verify immutable outputs and token-free TestOps selection")).toBeLessThan(workflow.jobs.chat.steps.indexOf(paid));
   expect(workflow.jobs.authorize.outputs.runner).toBe("runs-on/fleet=paperclip-public-pr-x64/env=public-ci");
   expect(workflow.jobs.chat["runs-on"]).toBe("${{ needs.authorize.outputs.runner }}");

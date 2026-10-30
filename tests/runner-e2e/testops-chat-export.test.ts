@@ -13,17 +13,17 @@ const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "testops-chat-export-")); directories.push(root);
   const report = path.join(root, "report"), output = path.join(root, "export");
-  const screenshot = `evidence/${TESTOPS_CHAT_EXECUTION}/attempt-1/chat-feature-result.png`;
+  const screenshot = `evidence/${TESTOPS_CHAT_EXECUTION}/attempt-1/final-state.png`;
   await mkdir(path.dirname(path.join(report, screenshot)), { recursive: true });
   await writeFile(path.join(report, screenshot), png);
   const result = {
     schema: "paperclip.runner-e2e.result/v2", executionId: TESTOPS_CHAT_EXECUTION, suiteId: "chat-features", suiteDefinitionHash: "c".repeat(64),
     source: { sha: binding.targetSha, ref: "refs/heads/master", workflowRunUrl: `https://github.com/paperclipai/paperclip/actions/runs/${binding.runId}` },
     attempt: 1, status: "passed", cleanup: "passed", evidenceValid: true, runIds: ["synthetic-run"],
-    profileId: "runner-opencode", environmentId: "local", caseId: "create-backlog", provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeMode: "native",
+    profileId: "runner-opencode-deepseek-1017", environmentId: "local", caseId: "create-backlog", provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeMode: "native",
     startedAt: "2026-10-30T00:00:00.000Z", finishedAt: "2026-10-30T00:00:01.000Z", durationMs: 1000,
     matcherResults: [{ matcher: { kind: "json_path", path: "chat.saved-backlog", expected: true }, passed: true, detail: "Private diagnostic body" }],
-    screenshots: [{ id: "chat-feature-result", label: "Fixture", file: "chat-feature-result.png", publication: "public-runner-fixture", sha256: digest(png) }],
+    screenshots: [{ id: "final-state", label: "Fixture", file: "final-state.png", publication: "public-runner-fixture", sha256: digest(png) }],
     billing: { llm: { runCount: 1, runsWithTokenUsage: 1, runsWithReportedCost: 1, inputTokens: 100, outputTokens: 20, cachedInputTokens: 0, totalTokens: 120, reportedCostUsd: 0.01, costStatus: "reported" },
       runtime: { provider: "local", agentRunDurationMs: 1000, leaseDurationMs: null, leaseCount: 0, costStatus: "not_metered", costSource: "local_not_metered" },
       reportedCostUsd: 0.01, estimatedRuntimeCostUsd: 0, observedAndEstimatedCostUsd: null, complete: false },

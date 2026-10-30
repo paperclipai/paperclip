@@ -219,8 +219,8 @@ jobs:
       TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
       TESTOPS_TRIGGERING_ACTOR_ID: ${{ needs.authorize.outputs.triggering_actor_id }}
       TARGET_SHA: ${{ needs.authorize.outputs.sha }}
-      MANUAL_PRIVATE_IDS: '["chat-features.runner-opencode.local.create-backlog"]'
-      SELECTED_EXECUTION_ID: chat-features.runner-opencode.local.create-backlog
+      MANUAL_PRIVATE_IDS: '["chat-features.runner-opencode-deepseek-1017.local.create-backlog"]'
+      SELECTED_EXECUTION_ID: chat-features.runner-opencode-deepseek-1017.local.create-backlog
       RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
       NODE_OPTIONS: ''
       NODE_PATH: ''
@@ -293,12 +293,12 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.private.outputs.root }}/preflight.json
           PRIVATE_EVIDENCE_ROOT: ${{ steps.private.outputs.root }}
-          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1-chat-features.runner-opencode.local.create-backlog
+          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1-chat-features.runner-opencode-deepseek-1017.local.create-backlog
           PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: gha-${{ github.run_id }}-1
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ github.ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
-        run: pnpm test:e2e:runner -- --id chat-features.runner-opencode.local.create-backlog --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+        run: pnpm test:e2e:runner -- --id chat-features.runner-opencode-deepseek-1017.local.create-backlog --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
       - name: Retain exact original grade and private evidence, including failures
         if: always() && steps.cell_credentials.outcome == 'success'
         env: *cell_session
@@ -365,7 +365,7 @@ jobs:
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e
           PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
-          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: '["chat-features.runner-opencode.local.create-backlog"]'
+          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: '["chat-features.runner-opencode-deepseek-1017.local.create-backlog"]'
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ github.ref }}

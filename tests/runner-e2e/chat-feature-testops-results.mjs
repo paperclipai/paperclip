@@ -64,7 +64,7 @@ export async function readBoundChatExport(root, expected) {
     || !Array.isArray(campaign.results) || campaign.results.length !== 1) fail();
   const result = campaign.results[0];
   if (result.executionId !== executionId || result.suiteId !== 'chat-features' || result.caseId !== 'create-backlog'
-    || result.profileId !== 'runner-opencode' || result.provider !== 'opencode' || result.environmentId !== 'local'
+    || result.profileId !== 'runner-opencode-deepseek-1017' || result.provider !== 'opencode' || result.environmentId !== 'local'
     || result.model !== model || result.runtimeMode !== 'native' || result.attempt !== 1 || result.source?.sha !== expected.targetSha
     || !['passed', 'failed'].includes(result.status) || result.status !== binding.resultStatus
     || !['passed', 'failed', 'not_started'].includes(result.cleanup) || result.cleanup !== binding.cleanup
@@ -79,7 +79,7 @@ export async function readBoundChatExport(root, expected) {
   if (names.filter(name => pngPath.test(name)).length !== result.screenshots.length) fail();
   if (result.status === 'passed' && (result.cleanup !== 'passed' || result.matcherResults.length === 0
     || result.matcherResults.some(check => !check.passed) || result.runIds?.length !== 1
-    || !result.screenshots.some(shot => shot.id === 'chat-feature-result' && shot.file === 'chat-feature-result.png'))) fail();
+    || !result.screenshots.some(shot => shot.id === 'final-state' && shot.file === 'final-state.png'))) fail();
   return { binding, result, retained };
 }
 

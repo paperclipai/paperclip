@@ -39,7 +39,8 @@ only index HTML and history/pointer JSON; it does not upload evidence or change
 retained campaign bundles.
 
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
-two natural-language task scenarios into local native Product E2E cells. They
+two natural-language task scenarios into local native Codex subscription and
+OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
 state/provenance checks. A separately selected native OpenCode/DeepSeek1017

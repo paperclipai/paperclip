@@ -49,10 +49,12 @@ export function CoordinatorTasks() {
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
   const urlView = params.get("view");
+  const routineTasksOnly = params.get("originKind") === "routine_execution";
+  const originKind = routineTasksOnly ? "routine_execution" : undefined;
   const normalizedView = normalizeTaskViewKey(urlView);
   const presetStatuses = normalizedView && taskView(normalizedView).surface === "issues" ? taskView(normalizedView).statuses ?? [] : [];
   const initialStatuses: string[] = params.has("status") ? params.getAll("status") : presetStatuses;
-  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, view: urlView });
+  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly });
   const needsAttention = params.get("view") === "needs_attention";
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
@@ -72,11 +74,11 @@ export function CoordinatorTasks() {
   useEffect(() => { setBreadcrumbs([{ label: "Tasks" }]); }, [setBreadcrumbs]);
 
   const tasks = useInfiniteQuery({
-    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds],
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds, originKind],
     queryFn: async ({ pageParam, signal }) => {
       const pages = await Promise.all((workspaceIds.length ? workspaceIds : [undefined]).map(workspaceId => issuesApi.listCompact(companyId!, {
       projection: "index", limit: pageSize, offset: pageParam, includeAgentCreatedTasks: true, includeRoutineExecutions: true,
-      sortField: "updated", sortDir: "desc", q: deferredQuery || undefined, participantAgentId, workspaceId,
+      sortField: "updated", sortDir: "desc", q: deferredQuery || undefined, participantAgentId, workspaceId, originKind,
       }, { signal })));
       return { items: pages.flat(), hasNextPage: pages.some(page => page.length === pageSize) };
     },
@@ -91,13 +93,13 @@ export function CoordinatorTasks() {
   const attentionIds = needsAttention ? [...pendingDecisionTaskIds(attention.data?.items ?? [])] : [];
   const attentionBatches = Array.from({ length: Math.ceil(attentionIds.length / 100) }, (_, index) => attentionIds.slice(index * 100, (index + 1) * 100));
   const attentionTasks = useQueries({ queries: attentionBatches.map(ids => ({
-    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, ids],
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, originKind, ids],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const rows = await issuesApi.listCompact(companyId!, {
-        ids, projection: "index", limit: 100, q: deferredQuery || undefined, participantAgentId,
+        ids, projection: "index", limit: 100, q: deferredQuery || undefined, participantAgentId, originKind,
         includeAgentCreatedTasks: true, includeRoutineExecutions: true,
       }, { signal });
-      if (!deferredQuery && !participantAgentId && ids.some(id => !rows.some(row => row.id === id))) {
+      if (!deferredQuery && !participantAgentId && !originKind && ids.some(id => !rows.some(row => row.id === id))) {
         throw new Error("Some tasks with pending decisions couldn’t load.");
       }
       return rows;
@@ -126,22 +128,27 @@ export function CoordinatorTasks() {
     searchMode: "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey: taskListViewStorageKey("coordinator", userId ?? "local-board"),
-    initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses },
+    initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
   });
   useEffect(() => {
     const previous = previousUrlFilters.current;
-    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses) return;
-    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, view: urlView };
+    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses && previous.routineTasksOnly === routineTasksOnly) return;
+    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly };
     collection.updateFilters({
+      ...(previous.routineTasksOnly !== routineTasksOnly ? { routineTasksOnly } : {}),
       ...(previous.assignee !== urlAssignee ? { assignees: params.getAll("assignee") } : {}),
       ...(previous.view !== urlView || previous.statuses !== urlStatuses ? { statuses: initialStatuses } : {}),
     });
-  }, [urlAssignee, urlView, urlStatuses, initialStatuses, collection.updateFilters]);
+  }, [urlAssignee, urlView, urlStatuses, initialStatuses, routineTasksOnly, collection.updateFilters]);
   const updateFilters = (patch: Partial<IssueFilterState>) => {
     collection.updateFilters(patch);
-    if (patch.assignees === undefined && patch.statuses === undefined) return;
+    if (patch.assignees === undefined && patch.statuses === undefined && patch.routineTasksOnly === undefined) return;
     setParams(current => {
       const next = new URLSearchParams(current);
+      if (patch.routineTasksOnly !== undefined) {
+        if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
+        else next.delete("originKind");
+      }
       if (patch.assignees !== undefined) {
         next.delete("assignee");
         for (const id of patch.assignees) next.append("assignee", id);
@@ -160,7 +167,7 @@ export function CoordinatorTasks() {
     collection.updateFilters(defaultIssueFilterState);
     setParams(current => {
       const next = new URLSearchParams(current);
-      for (const key of ["q", "assignee", "status"]) next.delete(key);
+      for (const key of ["q", "assignee", "status", "originKind"]) next.delete(key);
       if (next.get("view") !== "needs_attention") next.set("view", "all");
       return next;
     }, { replace: true });
@@ -198,7 +205,7 @@ export function CoordinatorTasks() {
     <TaskListToolbar view={needsAttention ? "blocked" : "all"} viewOptions={views} onViewChange={view => setView(view === "blocked")}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
-      filters={{ state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
+      filters={{ enableRoutineTasksFilter: true, state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
         agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
     {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={retry}>Retry</Button></div> : null}
     {rowDetailsError ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><span>Task details couldn’t load.</span><Button variant="ghost" size="sm" onClick={() => void retryRowDetails()}>Retry</Button></div> : null}
