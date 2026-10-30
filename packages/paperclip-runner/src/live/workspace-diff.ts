@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 export const PAPERCLIP_WORKSPACE_DIFF_SCHEMA = "paperclip.workspace.diff.v1" as const;
 
@@ -58,10 +58,8 @@ const MAX_DIRECTORIES = 500;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_DIFF_CHARS_PER_FILE = 128 * 1024;
-
-function normalizedRelativePath(root: string, absolutePath: string): string {
-  return relative(root, absolutePath).split(sep).join("/");
-}
+const READ_AHEAD_FILES = 16;
+const MAX_READ_AHEAD_BYTES = 8 * 1024 * 1024;
 
 function appearsBinary(content: Buffer): boolean {
   return content.subarray(0, Math.min(content.length, 8_192)).includes(0);
@@ -81,7 +79,7 @@ export async function capturePaperclipWorkspace(
   let visitedDirectories = 0;
   const throwIfAborted = () => options.signal?.throwIfAborted();
 
-  async function visit(directory: string): Promise<void> {
+  async function visit(directory: string, relativeDirectory: string): Promise<void> {
     throwIfAborted();
     if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES || visitedDirectories >= MAX_DIRECTORIES) return;
     visitedDirectories += 1;
@@ -94,16 +92,73 @@ export async function capturePaperclipWorkspace(
     }
     throwIfAborted();
     entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
+    const pending: Array<{ path: string; bytes: Promise<Buffer | null> }> = [];
+    let pendingBytes = 0;
+    const capture = (relativePath: string, bytes: Buffer) => {
+      const binary = appearsBinary(bytes);
+      const retain = bytes.length <= MAX_FILE_BYTES && retainedBytes + bytes.length <= MAX_TOTAL_BYTES;
+      const content = retain ? bytes : null;
+      if (content !== null) retainedBytes += content.length;
+      result.set(relativePath, {
+        hash: createHash("sha256").update(bytes).digest("hex"),
+        content,
+        binary: binary || content === null,
+      });
+    };
+    const flush = async () => {
+      const completed = await Promise.all(pending.map(async ({ path, bytes }) => ({ path, bytes: await bytes })));
+      pending.length = 0;
+      pendingBytes = 0;
+      throwIfAborted();
+      for (const file of completed) {
+        if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES) break;
+        if (file.bytes !== null) capture(file.path, file.bytes);
+      }
+    };
+    let pendingSizes: Array<Promise<number | null>> = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
       throwIfAborted();
       if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES) return;
       if (IGNORED_DIRECTORY_NAMES.has(entry.name)) continue;
       const absolutePath = join(directory, entry.name);
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        await visit(absolutePath);
+        await flush();
+        await visit(absolutePath, relativePath);
+        pendingSizes = [];
         continue;
       }
       if (!entry.isFile()) continue;
+      if (pendingSizes.length === 0) {
+        // Preflight only a bounded run of files; reads and snapshot commits stay in directory order.
+        for (let next = index; next < entries.length && pendingSizes.length < READ_AHEAD_FILES; next += 1) {
+          const candidate = entries[next]!;
+          if (!candidate.isFile() || IGNORED_DIRECTORY_NAMES.has(candidate.name)) break;
+          pendingSizes.push(stat(join(directory, candidate.name)).then((metadata) => metadata.size, () => null));
+        }
+      }
+      const size = await pendingSizes.shift();
+      throwIfAborted();
+      if (size == null) {
+        continue;
+      }
+      if (size <= MAX_FILE_BYTES) {
+        // The stat budget limits ordinary read-ahead; a concurrent file writer can still grow a file.
+        if (pendingBytes + size > MAX_READ_AHEAD_BYTES) {
+          await flush();
+          if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES) return;
+        }
+        pending.push({
+          path: relativePath,
+          bytes: readFile(absolutePath, { signal: options.signal }).catch(() => null),
+        });
+        pendingBytes += size;
+        if (pending.length === READ_AHEAD_FILES) await flush();
+        continue;
+      }
+      await flush();
+      if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES) return;
       let bytes: Buffer;
       try {
         bytes = await readFile(absolutePath, { signal: options.signal });
@@ -111,19 +166,12 @@ export async function capturePaperclipWorkspace(
         throwIfAborted();
         continue;
       }
-      const binary = appearsBinary(bytes);
-      const retain = bytes.length <= MAX_FILE_BYTES && retainedBytes + bytes.length <= MAX_TOTAL_BYTES;
-      const content = retain ? bytes : null;
-      if (content !== null) retainedBytes += content.length;
-      result.set(normalizedRelativePath(root, absolutePath), {
-        hash: createHash("sha256").update(bytes).digest("hex"),
-        content,
-        binary: binary || content === null,
-      });
+      capture(relativePath, bytes);
     }
+    await flush();
   }
 
-  await visit(root);
+  await visit(root, "");
   return result;
 }
 
