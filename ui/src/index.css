@@ -3025,6 +3025,16 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-38rem: 38rem; /* Extracted from ui/src/pages/AgentDetail.tsx (max-h-[38rem]). */
   --sz-7rem: 7rem; /* Extracted from ui/src/pages/Agents.test.tsx (min-w-[7rem]). */
   --sz-calc-29: calc(100% + 3rem); /* Extracted from ui/src/pages/BoardChat.tsx (h-[calc(100%+3rem)]). */
+  /* Mobile fill for the Conference Room (BoardChat). The mobile shell is block
+     flow (root: min-h-dvh, main: overflow-visible + auto height), so a percent
+     height has nothing to resolve against and h-(--sz-calc-29) degenerates to
+     auto: the pane collapses to its header, the message viewport measures 0px
+     and the docked composer renders above the viewport under the sticky
+     breadcrumb bar, which swallows its taps (NEXA-261). Fill the band between
+     the sticky top bar and the bottom of main's padding instead:
+     100dvh − sticky header (--sz-60px) − (main's p-4 + pb-(--sz-calc-14) − the
+     page's -m-6 bleed) − safe-area inset. */
+  --boardchat-mobile-fill: calc(100dvh - var(--sz-60px) - var(--spacing) * 12 - var(--sz-safe-bottom));
   --sz-22rem: 22rem; /* Extracted from ui/src/pages/CompanyEnvironments.tsx (h-[22rem]). */
   --sz-560px: 560px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[560px]). */
   --sz-520px: 520px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[520px]). */
