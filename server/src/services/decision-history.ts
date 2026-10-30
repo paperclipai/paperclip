@@ -18,6 +18,42 @@ export function itemVerdictsHistoryLabel(result: unknown): string | null {
     counts.defer ? `${counts.defer} deferred` : null].filter(Boolean).join(" · ") || "Review recorded";
 }
 
+/**
+ * History labels by outcome. An interaction's `result.outcome` is more
+ * specific than its status: a withdrawn, skipped or task-closed card is stored
+ * as `cancelled` or `expired` (PAP-749 plan §2, Data and §3). A withdraw by a
+ * person reads `withdrawn_by_user`; one by the agent itself stays `withdrawn`.
+ */
+const HISTORY_OUTCOME_LABELS: Record<string, string> = {
+  accepted: "Approved", rejected: "Changes requested", answered: "Answers recorded", cancelled: "Cancelled",
+  expired: "Expired", failed: "Failed", stale_target: "Superseded", superseded_by_newer_request: "Superseded",
+  superseded_by_comment: "Answered in task", withdrawn: "Withdrawn", withdrawn_by_user: "Withdrawn by user",
+  skipped: "Skipped", issue_closed: "Closed with task",
+};
+
+/** History outcome filters that read `result.outcome`, not the status. */
+const RESULT_OUTCOME_FILTERS = new Set(["withdrawn", "withdrawn_by_user", "skipped", "issue_closed"]);
+
+function readRecordValue(value: unknown, key: string) {
+  return value && typeof value === "object" && !Array.isArray(value) && key in value
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+}
+
+export function interactionHistoryLabel(row: { kind: string; status: string; result: unknown; resolvedByUserId: string | null }) {
+  const resultOutcome = readRecordValue(row.result, "outcome");
+  const outcome = typeof resultOutcome === "string" ? resultOutcome : row.status;
+  const key = outcome === "withdrawn" && row.resolvedByUserId ? "withdrawn_by_user" : outcome;
+  return (row.kind === "request_item_verdicts" ? itemVerdictsHistoryLabel(row.result) : null)
+    ?? HISTORY_OUTCOME_LABELS[key] ?? HISTORY_OUTCOME_LABELS[row.status] ?? "Decision recorded";
+}
+
+/** The reason a person gave when they withdrew, skipped or cancelled the request. */
+export function interactionHistoryReason(result: unknown): string | null {
+  const reason = readRecordValue(result, "reason") ?? readRecordValue(result, "cancellationReason");
+  return typeof reason === "string" && reason.trim() ? reason : null;
+}
+
 export function decodeDecisionHistoryCursor(value: string | undefined, sort: Cursor["sort"]): Cursor | null {
   if (!value) return null;
   try {
@@ -84,12 +120,25 @@ export function decisionHistoryService(db: Db) {
       eq(issueThreadInteractions.status, "answered"), sql`${issueThreadInteractions.result}->>'outcome' = 'resolved'`);
     // Item reviews retain their canonical answered status, but outcome filters
     // describe the recorded verdicts. A mixed review can match both outcomes.
+    const resultOutcomeFilter = options.outcome && RESULT_OUTCOME_FILTERS.has(options.outcome)
+      ? options.outcome === "withdrawn_by_user" ? "withdrawn" : options.outcome
+      : null;
     const interactionOutcome = options.outcome === "accepted" || options.outcome === "rejected"
       ? or(eq(issueThreadInteractions.status, options.outcome), and(completedItemReview,
         sql`${issueThreadInteractions.result} @> ${JSON.stringify({ items: [{ verdict: options.outcome === "accepted" ? "approve" : "reject" }] })}::jsonb`))
       : options.outcome === "answered"
         ? and(eq(issueThreadInteractions.status, "answered"), sql`${issueThreadInteractions.kind} <> 'request_item_verdicts'`)
-        : options.outcome ? eq(issueThreadInteractions.status, options.outcome) : undefined;
+        : resultOutcomeFilter
+          ? and(sql`${issueThreadInteractions.result}->>'outcome' = ${resultOutcomeFilter}`,
+            options.outcome === "withdrawn_by_user" ? isNotNull(issueThreadInteractions.resolvedByUserId) : undefined)
+          : options.outcome ? eq(issueThreadInteractions.status, options.outcome) : undefined;
+    // A decision a person withdrew is a cancelled decision with its closer
+    // recorded; skipped and task-closed outcomes do not exist for decisions.
+    const decisionOutcome = options.outcome === "withdrawn" || options.outcome === "withdrawn_by_user"
+      ? and(eq(decisions.status, "cancelled"), isNotNull(decisions.decidedByUserId))
+      : resultOutcomeFilter
+        ? sql`false`
+        : options.outcome ? eq(decisions.status, options.outcome) : undefined;
     const conditions = (time: SQL, key: SQL, title: SQL | typeof decisions.title | typeof issueThreadInteractions.title) => [
       options.issueIds ? inArray(issues.id, options.issueIds) : undefined,
       options.projectId ? eq(issues.projectId, options.projectId) : undefined,
@@ -118,29 +167,32 @@ export function decisionHistoryService(db: Db) {
       db.select({ sourceId: decisions.id, issueId: issues.id, issueIdentifier: issues.identifier, issueTitle: issues.title,
         agentId: agents.id, agentName: agents.name, projectId: projects.id, projectName: projects.name,
         title: decisions.title, outcome: decisions.status, resolvedAt: decisionTime,
-        resolvedByUserId: decisions.decidedByUserId, chosenOptionId: decisions.chosenOptionId, options: decisions.options })
+        resolvedByUserId: decisions.decidedByUserId, chosenOptionId: decisions.chosenOptionId, options: decisions.options,
+        metadata: decisions.metadata })
         .from(decisions).innerJoin(issues, and(eq(issues.id, decisions.originIssueId), eq(issues.companyId, companyId)))
         .leftJoin(agents, and(eq(agents.id, decisions.originAgentId), eq(agents.companyId, companyId)))
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
         .where(and(eq(decisions.companyId, companyId), readable, notInArray(decisions.status, ["open"]),
           sql`not exists (select 1 from ${decisionTargetIssues} where ${decisionTargetIssues.decisionId} = ${decisions.id} and (${decisionTargetIssues.companyId} <> ${companyId} or ${decisionTargetIssues.issueId} not in (${readableIssues})))`,
-          options.outcome ? eq(decisions.status, options.outcome) : undefined,
+          decisionOutcome,
           options.agentId ? eq(decisions.originAgentId, options.agentId) : undefined,
           ...conditions(decisionTime, decisionKey, decisions.title)))
         .orderBy(order(decisionTime), order(decisionKey)).limit(limit + 1),
     ]);
     const interactionItems: DecisionHistoryItem[] = interactionRows.map(({ kind, payload, result, ...row }) => {
       const target = decisionHistoryTarget(payload);
-      const resultOutcome = result && "outcome" in result ? String(result.outcome) : row.outcome;
-      const labels: Record<string, string> = { accepted: "Approved", rejected: "Changes requested", answered: "Answers recorded", cancelled: "Cancelled", expired: "Expired", failed: "Failed", stale_target: "Superseded", superseded_by_newer_request: "Superseded", superseded_by_comment: "Answered in task" };
       return { ...row, title: row.title ?? row.issueTitle, resolvedAt: new Date(row.resolvedAt!).toISOString(),
-        id: `issue_thread_interaction:${row.sourceId}`, sourceKind: "issue_thread_interaction", label: (kind === "request_item_verdicts" ? itemVerdictsHistoryLabel(result) : null) ?? labels[resultOutcome] ?? labels[row.outcome] ?? "Decision recorded", target,
+        id: `issue_thread_interaction:${row.sourceId}`, sourceKind: "issue_thread_interaction",
+        label: interactionHistoryLabel({ kind, status: row.outcome, result, resolvedByUserId: row.resolvedByUserId }),
+        reason: interactionHistoryReason(result), target,
         href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "issue_thread_interaction", row.sourceId, target) };
     });
-    const decisionItems: DecisionHistoryItem[] = decisionRows.map(({ chosenOptionId, options: choices, ...row }) => ({
+    const decisionItems: DecisionHistoryItem[] = decisionRows.map(({ chosenOptionId, options: choices, metadata, ...row }) => ({
       ...row, id: `decision:${row.sourceId}`, sourceKind: "decision", resolvedByAgentId: null,
       resolvedAt: new Date(row.resolvedAt).toISOString(), target: null,
-      label: choices.find((choice) => choice.id === chosenOptionId)?.label ?? (row.outcome === "expired" ? "Expired" : row.outcome === "cancelled" ? "Cancelled" : "Decision recorded"),
+      label: choices.find((choice) => choice.id === chosenOptionId)?.label ?? (row.outcome === "expired" ? "Expired"
+        : row.outcome === "cancelled" ? HISTORY_OUTCOME_LABELS[row.resolvedByUserId ? "withdrawn_by_user" : "cancelled"] : "Decision recorded"),
+      reason: interactionHistoryReason({ reason: metadata.cancelReason }),
       href: decisionHistoryHref(company.prefix, row.issueIdentifier ?? row.issueId, "decision", row.sourceId, null),
     }));
     return pageDecisionHistory([...interactionItems, ...decisionItems], limit, sort);

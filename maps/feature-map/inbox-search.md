@@ -41,6 +41,15 @@ view. Your own cards say **Why me?**, a different person's card shows **For
 addressee and removes it from everyone else's pool (`attention.claimed` activity).
 For you shows "N cards need an owner" while the pool has cards; that count is
 not in the badge.
+Every card carries `closeModes` for one close API
+(`POST /companies/:companyId/attention/:sourceKind/:sourceId/close`):
+**Withdraw** closes an interaction, decision or approval for everyone through
+its own withdraw/cancel, never as consent, and tells the agent; **Archive** and
+**Snooze** hide the card for you only. **Transfer** (`…/transfer`) routes an
+interaction to another person who can answer it. A late second answer gets 409
+"Already answered" naming who answered first. Failed-run, recovery and
+agent-error cards offer only actions they can complete (Retry, Open run, Open
+recovery, Inspect). The Close… menu UI arrives with task 2c.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
 resolutions resize into compact receipts while the same contained Gather Light
@@ -120,6 +129,10 @@ Idle chats without structured requests remain absent.
 [Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
 cover the view partition, the For you badge with per-view counts, and the claim
 service and route permission matrix.
+[Close and transfer tests](../../server/src/__tests__/attention-close.test.ts)
+cover withdraw for every interaction kind (including on a closed task), approval
+and decision cancel, personal archive/snooze, transfer, history labels, and the
+400/403/404/409/422 matrix of the close, transfer and approval-cancel routes.
 [Current-card tests](../../server/src/__tests__/attention-current-cards.test.ts)
 cover the shared active-request predicate with Mine, the 30-day, closed-task,
 decision-deadline and 7-day Unassigned stale rules, stale approval escalation

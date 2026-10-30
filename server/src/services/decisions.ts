@@ -716,17 +716,23 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return resumeDecision(claimed, input.userActor);
   }
 
-  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }) {
+  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }, options: { reason?: string | null } = {}) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
     if (actor.actorType === "agent" && actor.actorId !== current.originAgentId) throw forbidden("Only the origin agent may cancel");
     if (current.status === "cancelled") {
       await continuations.deliver(current.id);
       return (await get(id))!;
     }
-    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
+    // A person who withdraws an out-of-date decision (PAP-749) is recorded as
+    // its closer, with the reason, so history can say who withdrew it.
+    const reason = options.reason?.trim() || null;
+    const byUser = actor.actorType === "user" ? { decidedByUserId: actor.actorId, decidedAt: new Date() } : {};
+    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", ...byUser, updatedAt: new Date(), metadata: { ...current.metadata,
+      ...(reason ? { cancelReason: reason } : {}),
       ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning());
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
-    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
+    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id,
+      ...(reason ? { details: { reason } } : {}) });
     await continuations.deliver(updated.id);
     return (await get(id))!;
   }

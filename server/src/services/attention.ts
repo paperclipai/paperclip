@@ -33,6 +33,7 @@ import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
   AttentionAudience,
   AttentionClaimResult,
+  AttentionCloseMode,
   AttentionDecisionVerb,
   AttentionFeed,
   AttentionFeedQuery,
@@ -48,6 +49,7 @@ import type {
   AttentionSourceKind,
   AttentionStale,
   AttentionSubject,
+  AttentionTransferResult,
   AttentionTriageAttribution,
   AttentionViewCounts,
   AttentionWorkspaceRef,
@@ -66,8 +68,12 @@ import {
 import { executionIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
-import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { canActorReadApproval, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { humanCreatedIssueCondition } from "./issue-participation.js";
+import { attentionAlreadyClosedError } from "./attention-already-closed.js";
+import { inboxDismissalService } from "./inbox-dismissals.js";
+import { assertInteractionAddresseeUserAvailable } from "./issue-thread-interactions.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { activeIssueInteractionCondition, deferrableInteractionCondition } from "./issue-question-context.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
@@ -377,6 +383,25 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
   return verbs;
 }
 
+/**
+ * Which Close… verbs a card supports (PAP-749 plan §2, Rule 6). Everyone can
+ * archive or snooze a card for themselves. Withdraw needs a source with a real
+ * withdraw or cancel: interactions, decisions and approvals. A hire approval is
+ * rejected, not withdrawn, so its pending agent still gets a decision. Budget
+ * cards use Raise budget and Keep paused; reviews, blockers, recovery and
+ * operator alerts have no request to withdraw.
+ */
+export function attentionCloseModes(
+  sourceKind: AttentionSourceKind,
+  subject: Pick<AttentionSubject, "metadata">,
+): AttentionCloseMode[] {
+  if (sourceKind === "productivity_review") return [];
+  const withdrawable = sourceKind === "issue_thread_interaction"
+    || sourceKind === "decision"
+    || (sourceKind === "approval" && subject.metadata?.type !== "hire_agent");
+  return withdrawable ? ["withdraw", "archive", "snooze"] : ["archive", "snooze"];
+}
+
 type CreateAttentionItemInput = Omit<AttentionItem,
   | "id"
   | "dismissalKey"
@@ -385,6 +410,7 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "audience"
   | "stale"
   | "changeFingerprint"
+  | "closeModes"
   | "project"
   | "workspace"
   | "expiresAt"
@@ -422,6 +448,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     // Placeholders; the same post-pass sets these (PAP-749 plan §2, Rules 9-10).
     stale: null,
     changeFingerprint: "",
+    closeModes: attentionCloseModes(input.sourceKind, input.subject),
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     expiresAt: input.expiresAt ?? null,
@@ -1908,10 +1935,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           whyNow: recovery.status === "escalated"
             ? "Recovery action escalated to a human owner."
             : "Recovery action is assigned to a human owner.",
+          // PAP-749 Rule 7: resolving, reassigning or cancelling a recovery
+          // also sets the task's next status, so the card links to the recovery
+          // control on the task instead of offering verbs it cannot complete.
           decisionVerbs: decisionVerbs(
-            { id: "resolve", label: "Resolve", description: "Record the recovery outcome." },
-            { id: "reassign", label: "Reassign", description: "Move the recovery to another owner." },
-            { id: "cancel", label: "Cancel", description: "Cancel the recovery action." },
+            { id: "open_recovery", label: "Open recovery", description: "Resolve, reassign or cancel this recovery on its task." },
           ),
           inlineResolvable: false,
           entryRule: "issue_recovery_actions.status in ('active','escalated') and owner_type in ('user','board')",
@@ -2224,12 +2252,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             },
           },
           whyNow: "Run failed after automatic retries were exhausted.",
-          decisionVerbs: decisionVerbs(
-            { id: "retry", label: "Retry", description: "Retry the failed run or issue." },
-            { id: "reassign", label: "Reassign", description: "Move the work to another owner." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this failed-run attention row." },
-          ),
-          inlineResolvable: true,
+          // PAP-749 Rule 7: offer only what works. Retry uses the task retry
+          // (POST /issues/:id/retry); reassigning happens on the task; hiding
+          // the card is "Archive for me" in the Close… menu.
+          decisionVerbs: issueId
+            ? decisionVerbs(
+                { id: "retry", label: "Retry", description: "Retry the task's failed run." },
+                { id: "inspect", label: "Open run", description: "Open the run log to see why it failed." },
+              )
+            : decisionVerbs(
+                { id: "inspect", label: "Open run", description: "Open the run log to see why it failed." },
+              ),
+          inlineResolvable: Boolean(issueId),
           entryRule: "latest failed/timed_out run has a Bounded retry exhausted lifecycle event.",
           exitRule: "A newer run exists for the same issue/agent pair or the row is dismissed.",
           dedupKey,
@@ -2341,11 +2375,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             metadata: { role: agent.role, errorReason: agent.errorReason },
           },
           whyNow: "Agent is in error status and needs operator action or dismissal.",
+          // PAP-749 Rule 7: the fix happens on the agent page; hiding the alert
+          // is "Archive for me" in the Close… menu.
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the agent error." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
-          inlineResolvable: true,
+          inlineResolvable: false,
           entryRule: "agents.status = 'error'",
           exitRule: "Agent leaves error status or the row is dismissed.",
           dedupKey,
@@ -2565,6 +2600,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+          resolvedAt: issueThreadInteractions.resolvedAt,
         })
         .from(issueThreadInteractions)
         .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
@@ -2586,7 +2624,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
       }
       if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
-        throw conflict("This request is no longer open", { status: row.status });
+        throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
       }
       if (row.addresseeUserId) {
         throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
@@ -2616,8 +2654,345 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           isNull(issueThreadInteractions.addresseeUserId),
         ))
         .returning({ id: issueThreadInteractions.id });
-      if (!updated) throw conflict("Someone else claimed this card first");
+      if (!updated) {
+        const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+          sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+        });
+        throw closed ?? conflict("Someone else claimed this card first");
+      }
       return { ...result, alreadyClaimed: false, previousAddresseeAgentId: row.addresseeAgentId };
     },
+
+    /**
+     * Archive or snooze a card for one person (PAP-749 plan §2, Rule 6). The
+     * source stays open and teammates still see the card. The card is looked up
+     * in this person's own feed, so the dismissal key and change fingerprint
+     * are the ones the list compares; a card the person cannot see is 404.
+     */
+    hideForUser: async (
+      companyId: string,
+      input: {
+        sourceKind: AttentionSourceKind;
+        sourceId: string;
+        userId: string;
+        actor: AuthorizationActor;
+        mode: "archive" | "snooze";
+        until?: string | null;
+        fingerprint?: string | null;
+      },
+    ) => {
+      const feed = await attentionService(db, serviceOptions).list(companyId, {
+        userId: input.userId,
+        actor: input.actor,
+        view: "all",
+        all: true,
+        allowUnscopedAll: true,
+        includeDismissed: true,
+      });
+      const item = feed.items.find((entry) => entry.sourceKind === input.sourceKind && entry.subject.id === input.sourceId);
+      if (!item) {
+        const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+        if (state && !state.open) throw attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state });
+        throw notFound("Card not found");
+      }
+      if (!item.closeModes.includes(input.mode)) {
+        throw unprocessable("This card cannot be hidden.", { code: "attention_close_mode_unsupported", closeModes: item.closeModes });
+      }
+      // The version the person saw; the card returns when its content differs.
+      const fingerprint = input.fingerprint ?? item.changeFingerprint;
+      const dismissals = inboxDismissalService(db);
+      const dismissal = input.mode === "snooze"
+        ? await dismissals.snooze(companyId, input.userId, item.dismissalKey, new Date(input.until!), new Date(), fingerprint)
+        : await dismissals.dismiss(companyId, input.userId, item.dismissalKey, new Date(), fingerprint);
+      return {
+        issueId: attentionItemIssueId(item),
+        itemKey: dismissal.itemKey,
+        fingerprint: dismissal.fingerprint,
+        until: dismissal.snoozedUntil ? dismissal.snoozedUntil.toISOString() : null,
+      };
+    },
+
+    /**
+     * Find and check the source that "Withdraw request" closes (PAP-749 plan §2,
+     * Rule 6): an interaction (withdraw), a decision (cancel) or an approval
+     * (cancel). The caller runs the owner's withdraw flow, which tells the
+     * agent. 422 for cards with no request to withdraw, 404 when the person
+     * cannot read the source, 409 when someone already answered it.
+     */
+    withdrawTarget: async (
+      companyId: string,
+      input: { sourceKind: AttentionSourceKind; sourceId: string; actor: AuthorizationActor },
+    ): Promise<
+      | { sourceKind: "issue_thread_interaction"; issueId: string; issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null } }
+      | { sourceKind: "approval"; issueId: string | null }
+      | { sourceKind: "decision"; issueId: string }
+    > => {
+      if (!WITHDRAWABLE_SOURCE_KINDS.has(input.sourceKind)) {
+        throw unprocessable(WITHDRAW_UNSUPPORTED_TEXT[input.sourceKind] ?? "This card has no request to withdraw.", {
+          code: "attention_close_mode_unsupported",
+          closeModes: attentionCloseModes(input.sourceKind, { metadata: undefined }),
+        });
+      }
+      const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+      if (!state) throw notFound("Card not found");
+      if (input.sourceKind === "approval" && state.approvalType === "hire_agent") {
+        throw unprocessable("Reject this hire request instead of withdrawing it.", {
+          code: "attention_close_mode_unsupported",
+          closeModes: attentionCloseModes("approval", { metadata: { type: "hire_agent" } }),
+        });
+      }
+      if (!state.open) throw attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state });
+      if (input.sourceKind === "issue_thread_interaction") {
+        return { sourceKind: "issue_thread_interaction", issueId: state.issue!.id, issue: state.issue! };
+      }
+      if (input.sourceKind === "decision") return { sourceKind: "decision", issueId: state.issueId! };
+      return { sourceKind: "approval", issueId: state.issueId };
+    },
+
+    /** The 409 for a source someone else closed first, or `null` while it is open. */
+    alreadyClosedError: async (
+      companyId: string,
+      input: { sourceKind: AttentionSourceKind; sourceId: string; actor: AuthorizationActor },
+    ) => {
+      const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+      return state && !state.open
+        ? attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state })
+        : null;
+    },
+
+    /**
+     * Transfer a card to a different person, "Route to @x" (PAP-749 plan §2,
+     * Rule 6). Like Claim, it stores the person as the addressee, so the card
+     * moves to their "For you" and only they may answer it. Any board user
+     * with write access may route a card, as for withdraw; the new owner must
+     * be able to answer it. The caller writes the activity entry.
+     */
+    transfer: async (
+      companyId: string,
+      input: { sourceKind: string; sourceId: string; toUserId: string; actor: AuthorizationActor },
+    ): Promise<AttentionTransferResult & { issueId: string; previousAddresseeAgentId: string | null }> => {
+      if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
+        throw unprocessable("This card has no addressee to transfer. Open it to act on it.");
+      }
+      const readCondition = await issueReadSqlCondition(db, input.actor);
+      const [row] = await db
+        .select({
+          id: issueThreadInteractions.id,
+          kind: issueThreadInteractions.kind,
+          status: issueThreadInteractions.status,
+          addresseeUserId: issueThreadInteractions.addresseeUserId,
+          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+          resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+          resolvedAt: issueThreadInteractions.resolvedAt,
+          issueId: issues.id,
+          issueStatus: issues.status,
+          executionPolicy: issues.executionPolicy,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.id, input.sourceId),
+          eq(issues.companyId, companyId),
+          readCondition,
+        ))
+        .limit(1);
+      if (!row) throw notFound("Card not found");
+      const result = {
+        sourceKind: "issue_thread_interaction" as const,
+        sourceId: row.id,
+        issueId: row.issueId,
+        transferredToUserId: input.toUserId,
+        previousAddresseeUserId: row.addresseeUserId,
+      };
+      if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+        throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
+      }
+      if (row.addresseeUserId === input.toUserId) {
+        return { ...result, alreadyTransferred: true, previousAddresseeAgentId: null };
+      }
+      if (row.kind === "ask_user_questions" && row.conversationAgentId && row.conversationUserId) {
+        // Chat ownership is server-owned: a chat question stays with its owner.
+        throw unprocessable("A chat question stays with the person in the chat.", {
+          code: "interaction_chat_addressee_mismatch",
+        });
+      }
+      if (row.addresseeAgentId) {
+        // A request to an agent that can still run stays with that agent.
+        const companyAgentRows: AgentOrgRow[] = await db
+          .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+          .from(agents)
+          .where(eq(agents.companyId, companyId));
+        const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+        if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+          throw conflict("This request is for an agent that can still answer it");
+        }
+      }
+      // The new owner must be a person who may answer requests on this task.
+      await assertInteractionAddresseeUserAvailable(db, { id: row.issueId, companyId }, {
+        executionPolicy: row.executionPolicy,
+        status: row.issueStatus,
+        assigneeAgentId: row.assigneeAgentId,
+        assigneeUserId: row.assigneeUserId,
+        conversationAgentId: row.conversationAgentId,
+        conversationUserId: row.conversationUserId,
+      }, input.toUserId);
+      // Compare-and-set on the addressee seen above, so two people routing the
+      // same card at once resolve to one winner instead of a silent overwrite.
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({ addresseeUserId: input.toUserId, addresseeAgentId: null, updatedAt: new Date() })
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.id, row.id),
+          inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          row.addresseeUserId === null
+            ? isNull(issueThreadInteractions.addresseeUserId)
+            : eq(issueThreadInteractions.addresseeUserId, row.addresseeUserId),
+        ))
+        .returning({ id: issueThreadInteractions.id });
+      if (!updated) {
+        const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+          sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+        });
+        throw closed ?? conflict("Someone else routed this card first");
+      }
+      return { ...result, alreadyTransferred: false, previousAddresseeAgentId: row.addresseeAgentId };
+    },
   };
+}
+
+const WITHDRAWABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
+  "issue_thread_interaction",
+  "decision",
+  "approval",
+]);
+
+/** Where to go instead, for cards with no request to withdraw (PAP-749 Rules 6-7). */
+const WITHDRAW_UNSUPPORTED_TEXT: Partial<Record<AttentionSourceKind, string>> = {
+  budget_alert: "Budget cards are not withdrawn. Raise the budget or keep it paused, or archive the card for yourself.",
+  recovery_action: "Cancel this recovery on its task, where you also choose the task's next status.",
+  failed_run: "A failed run is not a request. Retry the task, or archive the card for yourself.",
+  agent_error_alert: "Fix the agent on its page, or archive the alert for yourself.",
+  review: "Approve the review or request changes, or archive the card for yourself.",
+  blocker_attention: "Unblock the task on its page, or archive the card for yourself.",
+  join_request: "Approve or reject the join request, or archive the card for yourself.",
+};
+
+function attentionItemIssueId(item: AttentionItem): string | null {
+  if (item.relatedIssue) return item.relatedIssue.id;
+  if (item.subject.kind === "issue") return item.subject.id;
+  const metadataIssueId = item.subject.metadata?.issueId ?? item.subject.metadata?.sourceIssueId;
+  return typeof metadataIssueId === "string" ? metadataIssueId : null;
+}
+
+type SourceCloseState = {
+  open: boolean;
+  status: string;
+  resolvedByUserId: string | null;
+  resolvedByAgentId: string | null;
+  resolvedAt: Date | null;
+  issueId: string | null;
+  issue?: { id: string; companyId: string; status: string; assigneeAgentId: string | null };
+  approvalType?: string;
+};
+
+/**
+ * Open/closed state of a withdrawable source, read under the person's read
+ * rules: `null` when it does not exist or they cannot read it. Used for the
+ * 409 "Already answered by @x" (PAP-749 plan §2, special conditions).
+ */
+async function sourceCloseState(
+  db: Db,
+  companyId: string,
+  sourceKind: AttentionSourceKind,
+  sourceId: string,
+  actor: AuthorizationActor,
+): Promise<SourceCloseState | null> {
+  if (sourceKind === "issue_thread_interaction") {
+    const readCondition = await issueReadSqlCondition(db, actor);
+    const [row] = await db
+      .select({
+        status: issueThreadInteractions.status,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+        resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+        issueId: issues.id,
+        issueStatus: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issueThreadInteractions)
+      .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.id, sourceId),
+        eq(issues.companyId, companyId),
+        readCondition,
+      ))
+      .limit(1);
+    if (!row) return null;
+    return {
+      open: (PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status),
+      status: row.status,
+      resolvedByUserId: row.resolvedByUserId,
+      resolvedByAgentId: row.resolvedByAgentId,
+      resolvedAt: row.resolvedAt,
+      issueId: row.issueId,
+      issue: { id: row.issueId, companyId, status: row.issueStatus, assigneeAgentId: row.assigneeAgentId },
+    };
+  }
+  if (sourceKind === "approval") {
+    const [row] = await db
+      .select({
+        id: approvals.id,
+        type: approvals.type,
+        status: approvals.status,
+        decidedByUserId: approvals.decidedByUserId,
+        decidedAt: approvals.decidedAt,
+        issueId: firstApprovalIssueId(),
+      })
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.id, sourceId)))
+      .limit(1);
+    if (!row || !(await canActorReadApproval(db, actor, row.id))) return null;
+    return {
+      open: (resolvableApprovalStatuses as readonly string[]).includes(row.status),
+      status: row.status,
+      resolvedByUserId: row.decidedByUserId,
+      resolvedByAgentId: null,
+      resolvedAt: row.decidedAt,
+      issueId: row.issueId ?? null,
+      approvalType: row.type,
+    };
+  }
+  if (sourceKind === "decision") {
+    const readCondition = await issueReadSqlCondition(db, actor);
+    const [row] = await db
+      .select({
+        status: decisions.status,
+        decidedByUserId: decisions.decidedByUserId,
+        decidedAt: decisions.decidedAt,
+        updatedAt: decisions.updatedAt,
+        issueId: issues.id,
+      })
+      .from(decisions)
+      .innerJoin(issues, and(eq(issues.id, decisions.originIssueId), eq(issues.companyId, companyId)))
+      .where(and(eq(decisions.companyId, companyId), eq(decisions.id, sourceId), readCondition))
+      .limit(1);
+    if (!row) return null;
+    return {
+      open: row.status === "open",
+      status: row.status,
+      resolvedByUserId: row.decidedByUserId,
+      resolvedByAgentId: null,
+      resolvedAt: row.decidedAt ?? (row.status === "open" ? null : row.updatedAt),
+      issueId: row.issueId,
+    };
+  }
+  return null;
 }

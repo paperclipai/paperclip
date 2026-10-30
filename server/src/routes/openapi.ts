@@ -141,8 +141,12 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  // Attention
+  attentionCloseSchema,
+  attentionTransferSchema,
   // Cost / budget
   createCostEventSchema,
   createFinanceEventSchema,
@@ -1418,6 +1422,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
   "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  "POST /api/approvals/{id}/cancel",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -5705,6 +5712,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/approvals/{id}/cancel",
+  tags: ["approvals"],
+  summary: "Withdraw an out-of-date approval",
+  description:
+    "Requires a board user. Cancels an open approval without a decision: it is never an approval, so the gate stays closed. Records the user and reason, writes approval.cancelled and wakes the requesting agent. Hire requests are rejected instead (422). 409 with code attention_already_closed when it was already resolved.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(cancelApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
   summary: "Resubmit an approval",
@@ -6171,6 +6192,50 @@ registry.registerPath({
   description:
     "Requires a board user with company access. Makes the caller the addressee of an ownerless card, so it leaves every other person's Unassigned pool and joins the caller's For you view. Placement only: the resolver policy still decides who may answer. Only issue_thread_interaction cards can be claimed (422 otherwise); a card already for another person or a runnable agent returns 409; claiming your own card again returns alreadyClaimed=true. Writes an attention.claimed activity entry.",
   request: { params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close",
+  tags: ["inbox"],
+  summary: "Close an attention card: withdraw, archive or snooze",
+  description:
+    "Requires a board user with company write access. mode=withdraw closes the request for everyone because it is out of date; it is never an approval. It runs the source's own withdraw (interactions, including on a closed task) or cancel (decisions, approvals except hire requests), which writes its own activity entry and tells the agent. mode=archive and mode=snooze hide the card for the caller only, until its content changes or until `until`; the source stays open. Cards without a request to withdraw (budget, review, blocker, recovery, failed run, agent error, join request) return 422 for withdraw with the control to use instead. 404 when the caller cannot see the card; 409 with code attention_already_closed and the resolver when someone else answered first. Writes one attention.closed activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionCloseSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/attention/{sourceKind}/{sourceId}/transfer",
+  tags: ["inbox"],
+  summary: "Transfer an attention card to a different person",
+  description:
+    "Requires a board user with company write access. Routes the card to another person (\"Route to @x\"): they become its addressee, so it joins their For you view and only they may answer it. The new owner must be able to answer requests on the task (422 otherwise). Only issue_thread_interaction cards can be transferred (422 otherwise); chat questions stay with the person in the chat (422); a runnable agent's request or an answered card returns 409; routing to the current addressee returns alreadyTransferred=true. Writes an attention.transferred activity entry.",
+  request: {
+    params: z.object({ companyId: z.string(), sourceKind: z.string(), sourceId: z.string().uuid() }),
+    body: jsonBody(attentionTransferSchema),
+  },
   responses: {
     200: r.ok(),
     400: r.badRequest,

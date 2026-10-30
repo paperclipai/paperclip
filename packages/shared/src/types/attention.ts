@@ -275,8 +275,8 @@ export type AttentionViewCounts = Record<AttentionPersonalView, number>;
 
 /**
  * Source kinds whose card names a person through an addressee field, so Claim
- * can store the claimer there (PAP-749 plan §1, Rule 3). Other kinds have no
- * addressee to set yet.
+ * and Transfer can store the new owner there (PAP-749 plan §1, Rule 3; §2,
+ * Rule 6). Other kinds have no addressee to set yet.
  */
 export const ATTENTION_CLAIMABLE_SOURCE_KINDS = ["issue_thread_interaction"] as const;
 export type AttentionClaimableSourceKind = (typeof ATTENTION_CLAIMABLE_SOURCE_KINDS)[number];
@@ -288,6 +288,80 @@ export interface AttentionClaimResult {
   claimedByUserId: string;
   /** `true` when the caller already owned the card; nothing changed. */
   alreadyClaimed: boolean;
+}
+
+/**
+ * The verbs of the Close… menu (PAP-749 plan §2, Rule 6). Each has one effect:
+ * - `withdraw`: closes the request for everyone because it is out of date. It
+ *   is never an approval or consent, and it tells the agent.
+ * - `archive`: hides the card for you only, until it changes. The source stays
+ *   open and teammates still see it.
+ * - `snooze`: hides the card for you only, until a time you pick. It does not
+ *   change a shared deadline.
+ * Transfer is not a close mode; it has its own endpoint.
+ */
+export const ATTENTION_CLOSE_MODES = ["withdraw", "archive", "snooze"] as const;
+export type AttentionCloseMode = (typeof ATTENTION_CLOSE_MODES)[number];
+
+/** Body of `POST /companies/:companyId/attention/:sourceKind/:sourceId/close`. */
+export interface AttentionCloseInput {
+  mode: AttentionCloseMode;
+  /** Why the request is out of date. Shown in history and sent to the agent. */
+  reason?: string | null;
+  /** Snooze end, ISO timestamp in the future. Required for `snooze` only. */
+  until?: string | null;
+  /**
+   * The card's `changeFingerprint` as the viewer saw it, for `archive` and
+   * `snooze`. The card returns when its content differs from this version.
+   * Omitted: the server uses the current version.
+   */
+  fingerprint?: string | null;
+}
+
+/** Result of the close endpoint. */
+export interface AttentionCloseResult {
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  mode: AttentionCloseMode;
+  closedByUserId: string;
+  /** The task the card belongs to, when it has one. */
+  issueId: string | null;
+  /** Snooze end for `snooze`; `null` otherwise. */
+  until: string | null;
+}
+
+/** Body of `POST /companies/:companyId/attention/:sourceKind/:sourceId/transfer`. */
+export interface AttentionTransferInput {
+  /** The person who gets the card ("Route to @x"). */
+  userId: string;
+  reason?: string | null;
+}
+
+/** Result of the transfer endpoint. */
+export interface AttentionTransferResult {
+  sourceKind: AttentionClaimableSourceKind;
+  sourceId: string;
+  transferredToUserId: string;
+  /** The person the card was for before the transfer, if any. */
+  previousAddresseeUserId: string | null;
+  /** `true` when the card already went to that person; nothing changed. */
+  alreadyTransferred: boolean;
+}
+
+/**
+ * Details of the 409 that the close, claim and transfer endpoints return when
+ * a different person already answered or closed the source first (PAP-749
+ * plan §2, "Two persons answer at the same time"). The UI shows "Already
+ * answered by @x".
+ */
+export interface AttentionAlreadyClosedDetails {
+  code: "attention_already_closed";
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  status: string;
+  resolvedByUserId: string | null;
+  resolvedByAgentId: string | null;
+  resolvedAt: string | null;
 }
 
 /**
@@ -336,6 +410,13 @@ export interface AttentionItem {
    * retries, unrelated comments or assignee changes.
    */
   changeFingerprint: string;
+  /**
+   * The Close… menu verbs the server supports for this card (PAP-749 plan §2,
+   * Rule 6). `withdraw` is present only when the source has a real withdraw
+   * or cancel; budget, review, blocker and operator alerts use their own
+   * actions instead.
+   */
+  closeModes: AttentionCloseMode[];
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
   expiresAt: string | null;
@@ -391,6 +472,8 @@ export interface DecisionHistoryItem {
   title: string;
   outcome: string;
   label: string;
+  /** Why the request was withdrawn or skipped, when the person gave a reason. */
+  reason?: string | null;
   resolvedAt: string;
   resolvedByUserId: string | null;
   resolvedByAgentId: string | null;

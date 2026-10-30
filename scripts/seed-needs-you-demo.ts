@@ -42,6 +42,12 @@
  * Dotta through the claim service, with the same `attention.claimed` activity
  * entry the claim route writes. It shows in Dotta's "For you" as "Sent to you"
  * and in nobody's Unassigned pool.
+ *
+ * Close API (PAP-749 task 2b): the "Closed history" group holds an interaction
+ * Dotta withdrew, a decision Scott withdrew and an approval Scott withdrew, made
+ * through the same services the close endpoint calls, with matching
+ * `attention.closed` entries. Riley still starts with no cards, so "transfer a
+ * card to Riley" is a live step in the checklist.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -564,10 +570,38 @@ async function seed(db: Db) {
     await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: daysAgo(3), resolvedByUserId: scott, result: { outcome: "resolved", decision: "accept" }, updatedAt: daysAgo(3) }).where(eq(issueThreadInteractions.id, a.id));
     card("Closed history", "answered interaction");
 
-    const histWithdrawn = await makeIssue({ title: "History: withdrawn", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+    // Withdrawn through the same services the close endpoint calls (task 2b),
+    // each with the `attention.closed` entry the route writes. History shows
+    // "Withdrawn by user" and the reason.
+    const closedEntry = async (userId: string, sourceKind: string, sourceId: string, issueId: string, reason: string) =>
+      logActivity(db, {
+        companyId, actorType: "user", actorId: userId, action: "attention.closed", entityType: "issue", entityId: issueId, issueId,
+        details: { sourceKind, sourceId, mode: "withdraw", reason, until: null, closedByUserId: userId },
+      });
+    const histWithdrawn = await makeIssue({ title: "History: withdrawn by Dotta", status: "todo", createdByUserId: scott, responsibleUserId: scott });
     const w = await makeInteraction(histWithdrawn, "request_confirmation", { prompt: "Withdrawn in the past." }, { title: "Withdrawn" });
-    await db.update(issueThreadInteractions).set({ status: "withdrawn", resolvedAt: daysAgo(2), resolvedByUserId: scott, result: { outcome: "withdrawn_by_user", reason: "No longer needed." }, updatedAt: daysAgo(2) }).where(eq(issueThreadInteractions.id, w.id));
-    card("Closed history", "withdrawn interaction");
+    await interactions.withdrawInteraction({ id: histWithdrawn.id, companyId }, w.id, { reason: "No longer needed." }, { userId: dotta });
+    await db.update(issueThreadInteractions).set({ resolvedAt: daysAgo(2), updatedAt: daysAgo(2) }).where(eq(issueThreadInteractions.id, w.id));
+    await closedEntry(dotta, "issue_thread_interaction", w.id, histWithdrawn.id, "No longer needed.");
+    card("Closed history", "interaction Dotta withdrew (Withdrawn by user)");
+
+    const histDecisionIssue = await makeIssue({ title: "History: decision withdrawn by Scott", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+    const histDecisionRun = await makeOriginRun(db, companyId, worker!.id, histDecisionIssue.id, scott);
+    const histDecision = await decisionsSvc.create({
+      companyId, actor: await boardActorFor(db, companyId, scott), agentId: worker!.id, runId: histDecisionRun,
+      title: "Pick a launch date (withdrawn)", body: "Scott withdrew this because the launch moved.",
+      options: [{ id: "monday", label: "Monday", effects: [] }, { id: "friday", label: "Friday", effects: [] }],
+    } as never) as { id: string };
+    await decisionsSvc.cancel(histDecision.id, { actorType: "user", actorId: scott }, { reason: "The launch moved; this is out of date." });
+    await closedEntry(scott, "decision", histDecision.id, histDecisionIssue.id, "The launch moved; this is out of date.");
+    card("Closed history", "decision Scott withdrew (Withdrawn by user)");
+
+    const histApprovalIssue = await makeIssue({ title: "History: approval withdrawn by Scott", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
+    const histApproval = await approvalSvc.create(companyId, { type: "request_board_approval", status: "pending", requestedByUserId: dotta, payload: { title: "Approve the old vendor (withdrawn)", summary: "Withdrawn as out of date; never approved." } } as never) as { id: string };
+    await db.insert(issueApprovals).values({ companyId, issueId: histApprovalIssue.id, approvalId: histApproval.id });
+    await approvalSvc.cancel(histApproval.id, "We picked a different vendor.", { cancelledByUserId: scott });
+    await closedEntry(scott, "approval", histApproval.id, histApprovalIssue.id, "We picked a different vendor.");
+    card("Closed history", "approval Scott withdrew (cancelled, never approved; history in task 2e)");
 
     const histExpired = await makeIssue({ title: "History: expired", status: "in_progress", createdByUserId: scott, responsibleUserId: scott });
     const e = await makeInteraction(histExpired, "request_confirmation", { prompt: "Expired in the past." }, { title: "Expired" });

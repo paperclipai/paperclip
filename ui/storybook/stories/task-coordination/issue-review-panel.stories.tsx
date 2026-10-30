@@ -65,7 +65,7 @@ const stalledReviewRow: AttentionItem = {
   relatedIssue: null,
   audience: { kind: "pool", userId: null, reason: "none" },
   stale: null,
-  changeFingerprint: "fixture.other",
+  changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"],
   project: null,
   workspace: null,
   detail: null,

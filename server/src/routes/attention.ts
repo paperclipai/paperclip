@@ -1,12 +1,28 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { ATTENTION_SOURCE_KINDS, type AttentionFeedView, type AttentionSortMode } from "@paperclipai/shared";
+import {
+  ATTENTION_SOURCE_KINDS,
+  attentionCloseSchema,
+  attentionTransferSchema,
+  type AttentionCloseResult,
+  type AttentionFeedView,
+  type AttentionSortMode,
+  type AttentionSourceKind,
+  type AttentionTransferResult,
+} from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
 import { decisionHistoryService } from "../services/decision-history.js";
+import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
+import { createDecisionWakeOriginAgent } from "../services/decision-wakeup.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { logActivity } from "../services/activity-log.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { validate } from "../middleware/validate.js";
 import { z } from "zod";
-import { badRequest } from "../errors.js";
+import { badRequest, HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { cancelApprovalAndNotify } from "./approvals.js";
+import { withdrawIssueThreadInteractionAndNotify } from "./issues.js";
 
 const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "all"];
 
@@ -16,9 +32,31 @@ function optionalQueryString(value: unknown, field: string) {
   return value.trim();
 }
 
-export function attentionRoutes(db: Db) {
+export function attentionRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager; decisionServiceOptions?: DecisionServiceOptions } = {},
+) {
   const router = Router();
   const svc = attentionService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: options.pluginWorkerManager });
+  const decisions = decisionService(db, options.decisionServiceOptions ?? {
+    wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat.wakeup),
+  });
+
+  /** Board user on a company card route; returns the source the path names. */
+  function cardRequest(req: Request) {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const userId = req.actor.userId;
+    const sourceKind = req.params.sourceKind as string;
+    if (!(ATTENTION_SOURCE_KINDS as readonly string[]).includes(sourceKind)) {
+      throw badRequest(`sourceKind must be one of ${ATTENTION_SOURCE_KINDS.join(", ")}`);
+    }
+    const sourceId = req.params.sourceId as string;
+    if (!z.string().uuid().safeParse(sourceId).success) throw badRequest("sourceId must be a UUID");
+    return { companyId, userId, sourceKind: sourceKind as AttentionSourceKind, sourceId };
+  }
 
   router.get("/companies/:companyId/attention/history", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -85,21 +123,13 @@ export function attentionRoutes(db: Db) {
   // addressee, so the card leaves every other person's pool. Board users only;
   // it changes where the card shows, never who may answer it.
   router.post("/companies/:companyId/attention/:sourceKind/:sourceId/claim", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
-    if (!req.actor.userId) {
+    const { companyId, userId, sourceKind, sourceId } = cardRequest(req);
+    if (!userId) {
       res.status(403).json({ error: "Board user context required" });
       return;
     }
-    const sourceKind = req.params.sourceKind as string;
-    if (!(ATTENTION_SOURCE_KINDS as readonly string[]).includes(sourceKind)) {
-      throw badRequest(`sourceKind must be one of ${ATTENTION_SOURCE_KINDS.join(", ")}`);
-    }
-    const sourceId = req.params.sourceId as string;
-    if (!z.string().uuid().safeParse(sourceId).success) throw badRequest("sourceId must be a UUID");
 
-    const claim = await svc.claim(companyId, { sourceKind, sourceId, userId: req.actor.userId, actor: req.actor });
+    const claim = await svc.claim(companyId, { sourceKind, sourceId, userId, actor: req.actor });
     if (!claim.alreadyClaimed) {
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -128,6 +158,133 @@ export function attentionRoutes(db: Db) {
       alreadyClaimed: claim.alreadyClaimed,
     });
   });
+
+  // One Close… menu for every card (PAP-749 plan §2, Rule 6). Withdraw runs
+  // the source owner's own withdraw or cancel, which writes its own activity
+  // and tells the agent; archive and snooze hide the card for this person
+  // only. Every close writes one `attention.closed` entry. Board users only.
+  router.post(
+    "/companies/:companyId/attention/:sourceKind/:sourceId/close",
+    validate(attentionCloseSchema),
+    async (req, res) => {
+      const { companyId, userId, sourceKind, sourceId } = cardRequest(req);
+      if (!userId) {
+        res.status(403).json({ error: "Board user context required" });
+        return;
+      }
+      const body = req.body as { mode: "withdraw" | "archive" | "snooze"; reason?: string | null; until?: string | null; fingerprint?: string | null };
+      const reason = body.reason?.trim() || null;
+      let issueId: string | null;
+      let until: string | null = null;
+      let details: Record<string, unknown> = {};
+
+      if (body.mode === "withdraw") {
+        const target = await svc.withdrawTarget(companyId, { sourceKind, sourceId, actor: req.actor });
+        issueId = target.issueId;
+        // A different person may answer between the check and the write. The
+        // first answer wins; the second person gets "Already answered by @x".
+        try {
+          if (target.sourceKind === "issue_thread_interaction") {
+            await withdrawIssueThreadInteractionAndNotify({
+              db,
+              heartbeat,
+              issue: target.issue,
+              interactionId: sourceId,
+              body: { reason: reason ?? undefined },
+              actor: getActorInfo(req),
+              allowClosedIssueForHuman: true,
+            });
+          } else if (target.sourceKind === "approval") {
+            await cancelApprovalAndNotify({ db, heartbeat, approvalId: sourceId, userId, reason });
+          } else {
+            await decisions.cancel(sourceId, { actorType: "user", actorId: userId }, { reason });
+          }
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 409) {
+            throw (await svc.alreadyClosedError(companyId, { sourceKind, sourceId, actor: req.actor })) ?? error;
+          }
+          throw error;
+        }
+      } else {
+        const hidden = await svc.hideForUser(companyId, {
+          sourceKind,
+          sourceId,
+          userId,
+          actor: req.actor,
+          mode: body.mode,
+          until: body.until,
+          fingerprint: body.fingerprint,
+        });
+        issueId = hidden.issueId;
+        until = hidden.until;
+        details = { itemKey: hidden.itemKey, fingerprint: hidden.fingerprint };
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "attention.closed",
+        entityType: issueId ? "issue" : "company",
+        entityId: issueId ?? companyId,
+        issueId,
+        details: { sourceKind, sourceId, mode: body.mode, reason, until, closedByUserId: userId, ...details },
+      });
+      const result: AttentionCloseResult = { sourceKind, sourceId, mode: body.mode, closedByUserId: userId, issueId, until };
+      res.json(result);
+    },
+  );
+
+  // Transfer a card to a different person, "Route to @x" (PAP-749 plan §2,
+  // Rule 6). The new owner becomes the addressee. Board users only.
+  router.post(
+    "/companies/:companyId/attention/:sourceKind/:sourceId/transfer",
+    validate(attentionTransferSchema),
+    async (req, res) => {
+      const { companyId, userId, sourceKind, sourceId } = cardRequest(req);
+      if (!userId) {
+        res.status(403).json({ error: "Board user context required" });
+        return;
+      }
+      const body = req.body as { userId: string; reason?: string | null };
+      const transfer = await svc.transfer(companyId, { sourceKind, sourceId, toUserId: body.userId, actor: req.actor });
+      if (!transfer.alreadyTransferred) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "attention.transferred",
+          entityType: "issue",
+          entityId: transfer.issueId,
+          issueId: transfer.issueId,
+          details: {
+            sourceKind: transfer.sourceKind,
+            sourceId: transfer.sourceId,
+            interactionId: transfer.sourceId,
+            transferredToUserId: transfer.transferredToUserId,
+            transferredByUserId: userId,
+            previousAddresseeUserId: transfer.previousAddresseeUserId,
+            previousAddresseeAgentId: transfer.previousAddresseeAgentId,
+            reason: body.reason?.trim() || null,
+          },
+        });
+      }
+      const result: AttentionTransferResult = {
+        sourceKind: transfer.sourceKind,
+        sourceId: transfer.sourceId,
+        transferredToUserId: transfer.transferredToUserId,
+        previousAddresseeUserId: transfer.previousAddresseeUserId,
+        alreadyTransferred: transfer.alreadyTransferred,
+      };
+      res.json(result);
+    },
+  );
 
   return router;
 }

@@ -767,6 +767,15 @@ describeEmbeddedPostgres("attention service", () => {
       agentName: "Broken Agent",
       failureReasonExcerpt: "adapter config missing",
     });
+    // PAP-749 Rule 7: cards offer only actions they can complete; hiding a
+    // card is the Close… menu, and withdraw only where a request exists.
+    const verbIds = (kind: string) => feed.items.find((item) => item.sourceKind === kind)?.decisionVerbs.map((verb) => verb.id);
+    expect(verbIds("failed_run")).toEqual(["retry", "inspect"]);
+    expect(verbIds("recovery_action")).toEqual(["open_recovery"]);
+    expect(verbIds("agent_error_alert")).toEqual(["inspect"]);
+    expect(verbIds("budget_alert")).toEqual(["raise_budget_and_resume", "keep_paused"]);
+    expect(feed.items.find((item) => item.sourceKind === "budget_alert")?.closeModes).toEqual(["archive", "snooze"]);
+    expect(feed.items.find((item) => item.sourceKind === "issue_thread_interaction")?.closeModes).toEqual(["withdraw", "archive", "snooze"]);
   });
 
   it("returns addressed interactions to board attention after addressee pause or termination", async () => {

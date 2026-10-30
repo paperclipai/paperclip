@@ -1,5 +1,20 @@
-import type { AttentionClaimResult, AttentionFeed, AttentionFeedQuery, AttentionSourceKind, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
+import type {
+  AttentionClaimResult,
+  AttentionCloseInput,
+  AttentionCloseResult,
+  AttentionFeed,
+  AttentionFeedQuery,
+  AttentionSourceKind,
+  AttentionTransferInput,
+  AttentionTransferResult,
+  DecisionHistoryPage,
+  DecisionHistoryQuery,
+} from "@paperclipai/shared";
 import { api } from "./client";
+
+function cardPath(companyId: string, sourceKind: AttentionSourceKind, sourceId: string, action: string) {
+  return `/companies/${companyId}/attention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/${action}`;
+}
 
 export const attentionApi = {
   history: (companyId: string, options: DecisionHistoryQuery = {}) => {
@@ -29,8 +44,15 @@ export const attentionApi = {
   },
   /** Claim an Unassigned card: you become its addressee (PAP-749 plan §1, Rule 3). */
   claim: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
-    api.post<AttentionClaimResult>(
-      `/companies/${companyId}/attention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/claim`,
-      {},
-    ),
+    api.post<AttentionClaimResult>(cardPath(companyId, sourceKind, sourceId, "claim"), {}),
+  /**
+   * One Close… menu verb (PAP-749 plan §2, Rule 6): withdraw the request for
+   * everyone, or archive / snooze the card for yourself. Use the card's
+   * `closeModes` to know which verbs it supports.
+   */
+  close: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string, input: AttentionCloseInput) =>
+    api.post<AttentionCloseResult>(cardPath(companyId, sourceKind, sourceId, "close"), input),
+  /** Route a card to a different person; they become its addressee. */
+  transfer: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string, input: AttentionTransferInput) =>
+    api.post<AttentionTransferResult>(cardPath(companyId, sourceKind, sourceId, "transfer"), input),
 };

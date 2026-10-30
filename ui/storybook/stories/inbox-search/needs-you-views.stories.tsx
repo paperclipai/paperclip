@@ -69,7 +69,7 @@ function card(
     },
     audience,
     stale: null,
-    changeFingerprint: "fixture.me",
+    changeFingerprint: "fixture.me", closeModes: ["archive", "snooze"],
     project: null,
     workspace: null,
     expiresAt: null,

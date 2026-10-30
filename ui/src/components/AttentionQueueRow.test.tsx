@@ -118,6 +118,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     audience: overrides.audience ?? { kind: "pool", userId: null, reason: "none" },
     stale: overrides.stale ?? null,
     changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
+    closeModes: overrides.closeModes ?? ["archive", "snooze"],
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,

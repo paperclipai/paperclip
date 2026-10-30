@@ -42,9 +42,15 @@ export type {
   AttentionAudience,
   AttentionAudienceKind,
   AttentionAudienceReason,
+  AttentionAlreadyClosedDetails,
   AttentionClaimableSourceKind,
   AttentionClaimResult,
+  AttentionCloseInput,
+  AttentionCloseMode,
+  AttentionCloseResult,
   AttentionDecisionVerb,
+  AttentionTransferInput,
+  AttentionTransferResult,
   DecisionHistoryItem,
   DecisionHistoryQuery,
   DecisionHistoryPage,
@@ -72,6 +78,7 @@ export type {
 } from "./attention.js";
 export {
   ATTENTION_CLAIMABLE_SOURCE_KINDS,
+  ATTENTION_CLOSE_MODES,
   ATTENTION_PERSONAL_VIEWS,
   ATTENTION_SOURCE_KINDS,
 } from "./attention.js";
