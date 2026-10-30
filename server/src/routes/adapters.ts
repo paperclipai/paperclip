@@ -526,7 +526,13 @@ export function adapterRoutes(options: {
         }, publications);
       }
     });
-    for (const publication of publications) publishActivity(publication);
+    for (const publication of publications) {
+      try {
+        publishActivity(publication);
+      } catch (error) {
+        logger.error({ err: error, companyId: publication.companyId }, "failed to publish adapter settings activity");
+      }
+    }
 
     if (changed) {
       logger.info({ type: adapterType, disabled }, "Adapter enabled/disabled");

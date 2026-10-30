@@ -28,6 +28,7 @@ import { adapterSettingsService, initializeAdapterSettings } from "./adapter-set
 import { adapterRoutes } from "../routes/adapters.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import * as activities from "./activity-log.js";
 
 const externalDatabaseUrl = process.env.PAPERCLIP_ADAPTER_SETTINGS_TEST_DATABASE_URL;
 const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -60,6 +61,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "synthetic-test-token");
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await fs.rm(directory, { recursive: true, force: true });
   });
@@ -86,6 +88,17 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     expect(await service().inspectStored()).toEqual({ version: 1, revision: 1, disabledTypes: ["codex_local"] });
     expect(legacy.get).not.toHaveBeenCalled();
     expect(legacy.set).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges the committed save when its live activity event fails", async () => {
+    await service().seedIfAbsent({ disabledTypes: [] });
+    const publication = vi.spyOn(activities, "publishActivity").mockImplementation(() => { throw new Error("event unavailable"); });
+    const response = await request(app()).patch("/adapters/codex_local").send({ disabled: true });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(publication).toHaveBeenCalled();
+    expect(await adapterSettingsService(peer, managed).getDisabledTypes()).toEqual(["codex_local"]);
+    const events = await peer.select().from(activityLog).where(eq(activityLog.action, "instance.adapter.updated"));
+    expect(events.some((event) => event.details?.adapterType === "codex_local")).toBe(true);
   });
 
   it("preserves simultaneous first writes and concurrent removals from other connections", async () => {

@@ -12,6 +12,7 @@ import { parseAdapterRegistryEnv } from "./adapter-registry-config.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 
 const SINGLETON_KEY = "adapter-settings:v1";
+let localSettingsMutation: Promise<unknown> = Promise.resolve();
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type AdapterSettingsDb = Pick<Db | Transaction, "select" | "insert" | "update" | "transaction">;
 export type StoredAdapterSettings = { version: 1; revision: number; disabledTypes: string[] };
@@ -75,9 +76,22 @@ export function adapterSettingsService(db: AdapterSettingsDb | undefined, option
         throw forbidden("Adapter availability is managed by the hosting operator", { code: "settings_operator_managed" });
       }
       if (!managed) {
-        const changed = setAdapterDisabled(type, disabled);
-        if (changed && db) await afterChange?.(db, { version: 1, revision: 0, disabledTypes: getDisabledAdapterTypes() });
-        return changed;
+        const mutation = localSettingsMutation.then(async () => {
+          const previous = getDisabledAdapterTypes().includes(type);
+          const changed = setAdapterDisabled(type, disabled);
+          if (!changed || !db || !afterChange) return changed;
+          try {
+            await db.transaction(async (tx) => {
+              await afterChange(tx, { version: 1, revision: 0, disabledTypes: getDisabledAdapterTypes() });
+            });
+          } catch (error) {
+            setAdapterDisabled(type, previous);
+            throw error;
+          }
+          return true;
+        });
+        localSettingsMutation = mutation.catch(() => undefined);
+        return mutation;
       }
       return requireDb().transaction(async (tx) => {
         await seedIfAbsent({ disabledTypes: [] }, tx);
