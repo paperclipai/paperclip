@@ -514,6 +514,7 @@ export function createPostgresRunDispatchAdapter(
   async function nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null> {
     const [row] = await db.select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
         input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined))
       .orderBy(asc(heartbeatRuns.scheduledRetryAt)).limit(1);
     return row?.at?.getTime() ?? null;
@@ -526,6 +527,7 @@ export function createPostgresRunDispatchAdapter(
       .where(
         and(
           eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
           lte(heartbeatRuns.scheduledRetryAt, input.now),
           input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
         ),
