@@ -515,3 +515,58 @@ the next replacement still continues the same provider history. Prepared-task
 resumed and failed-read/retry cases also pass for Codex and Claude fixtures.
 These are scripted-provider component results with remote workspace storage
 available, not live Daytona or distinct-release acceptance.
+
+
+### Bounded qualification campaign on October 30
+
+The follow-up campaign began at 18:33 UTC with an approximately one-hour budget.
+Three GPT-6.1 Sol workers own live Daytona, database load, and distinct-reader
+replacement/rollback; the coordinator owns integration, artifact builds and review.
+The exact native implementation under test is `a0ef3ce7493c8bb76c4766ff007e8a390118d145`.
+Qualification commit `da8c7f6e1837ddd896dfe83a7524812fee813487` adds measurement and
+installed-journey admission only; its native runtime, Runner, shared and database
+production files are byte-identical to that implementation.
+
+The independent Linux database campaign uses an eight-vCPU, 32 GiB disposable
+host, with PostgreSQL and its Node workload each limited to two CPUs and 1536 MiB.
+It preserves the existing 10/2/2 request/renewal/checkpoint pool caps per logical
+server. Steady and aligned-burst ABBA comparisons passed the existing absolute,
+correctness and 10% relative regression gates with 300 controllers and 10,000
+historical tasks. Neither changes snapshot/PRP transaction counts. The separate
+claim-capacity probe waits for natural lease expiry, invokes the production
+claim path for 300 synthetic executions, restores real encrypted checkpoints
+under empty controller directories, and measures current-owner checkpoint and
+renewal work. Synthetic provider references do not establish sandbox existence
+or authenticated provider reattachment.
+
+The closed, sanitized measurements and limits are recorded in
+`2026-10-30-native-controller-qualification-evidence.json`. The earlier failed,
+contended-host measurements remain in `2026-10-30-native-controller-load-evidence.json`.
+Lock measurements use calibrated PostgreSQL wait-start timestamps and sampled
+duration bounds. Observer traffic contributes to the measured database cost;
+short unsampled waits and full HTTP latency remain outside that measurement.
+
+Live qualification uses protected campaign
+[41108162900](https://github.com/paperclipai/paperclip/actions/runs/41108162900).
+Its initial catalog timeout occurred before provider allocation after Azure
+reported a dependency-cache egress limit. A scoped exact-entry cache invalidation
+and targeted retry forced a successful cold install. Only this campaign's
+ephemeral image publisher received a larger, delete-on-termination disk; image
+identity, source admission and provider authorization gates remain in force.
+
+Provider-free package builds pin first reader `59ff89a18fe1312b5f0bb908439bbdb1237b0252`
+and candidate `a0ef3ce7493c8bb76c4766ff007e8a390118d145` in runs
+[41108342354](https://github.com/paperclipai/paperclip/actions/runs/41108342354) and
+[41108352138](https://github.com/paperclipai/paperclip/actions/runs/41108352138).
+The source-process crash probe independently observed B waiting for A's live
+lease and claiming the same execution after natural expiry, with no lease edits.
+Its initial all-turns/single-provider-process assertion also crossed completion
+contract revision 1 to revision 2. The existing Runner attachment policy can
+retire a provider at a changed semantic contract while preserving its conversation;
+phase-specific observations distinguish that boundary from same-contract rollback.
+Earlier strict failures remain retained until that distinction is demonstrated.
+
+The final live, reader, installed-artifact, cleanup and CI outcomes are maintained
+in [PR #18343](https://github.com/paperclipai/paperclip/pull/18343), with their exact
+revisions and evidence limits. Campaign registration, successful artifact builds
+and this plan entry do not themselves certify that a live journey passed.
