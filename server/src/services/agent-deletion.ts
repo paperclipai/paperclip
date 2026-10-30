@@ -8,7 +8,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
-  budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
+  budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments, issueThreadInteractions,
   caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -39,6 +39,10 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+  await tx.update(issueThreadInteractions).set({ createdByAgentId: null })
+    .where(eq(issueThreadInteractions.createdByAgentId, id));
+  await tx.update(issueThreadInteractions).set({ resolvedByAgentId: null })
+    .where(eq(issueThreadInteractions.resolvedByAgentId, id));
   await tx
     .update(issues)
     .set({ assigneeAgentId: null, createdByAgentId: null })
