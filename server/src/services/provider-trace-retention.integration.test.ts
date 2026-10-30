@@ -126,6 +126,31 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
     expect(await store.nextRetentionDeadline()).toBeNull();
     expect(await fs.readdir(directory)).toEqual([]);
   });
+  it("retains an expired local cleanup deadline after filesystem deletion fails", async () => {
+    const companyId = randomUUID(),
+      runId = randomUUID(),
+      traceRef = `${randomUUID()}.ndjson`;
+    const file = path.join(directory, traceRef);
+    await fs.mkdir(file);
+    await db
+      .insert(providerTraceRecords)
+      .values({
+        companyId,
+        runId,
+        traceRef,
+        status: "complete",
+        provider: "codex",
+        requestedBy: "test",
+        expiresAt: new Date(Date.now() - 60_000),
+      });
+    const store = providerTraceStore(db);
+    await expect(store.cleanupExpired()).rejects.toThrow();
+    expect(await store.nextRetentionDeadline()).toBeLessThanOrEqual(Date.now());
+    await fs.rmdir(file);
+    await fs.writeFile(file, "{}\n");
+    await store.cleanupExpired();
+    expect(await store.nextRetentionDeadline()).toBeNull();
+  });
   it.skipIf(!endpoint)(
     "shares capture ownership across routes and workers and releases deleted captures",
     async () => {
@@ -176,17 +201,15 @@ describe.skipIf(!databaseUrl)("provider trace retention and capture ownership", 
       const traceRef = `s3-import-v1:${companyId}/${runId}/${filename}`;
       const bytes = Buffer.from('{"kind":"frame","rawBase64":"e30="}\n');
       await fs.writeFile(path.join(directory, filename), bytes);
-      await db
-        .insert(providerTraceRecords)
-        .values({
-          companyId,
-          runId,
-          traceRef,
-          status: "complete",
-          provider: "codex",
-          requestedBy: "test",
-          expiresAt: new Date(Date.now() + 3600_000),
-        });
+      await db.insert(providerTraceRecords).values({
+        companyId,
+        runId,
+        traceRef,
+        status: "complete",
+        provider: "codex",
+        requestedBy: "test",
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
       const store = providerTraceStore(db);
       expect((await store.download(runId, companyId))!.bytes).toEqual(bytes);
       await store.remove(runId, companyId);

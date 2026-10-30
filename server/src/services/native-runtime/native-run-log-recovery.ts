@@ -9,9 +9,47 @@ import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../l
 import type { RunLogHandle, RunLogReadOptions, RunLogStore } from "../run-log-store.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { compactRunLogChunk } from "../heartbeat/run-log.js";
-import { createNativeRunLogExporter } from "./native-run-log-export.js";
+import { beginIdleTrackedWork } from "../task-admission.js";
+import { agentIdentityService } from "../agent-identity.js";
+import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { logger } from "../../middleware/logger.js";
+import { createNativeRunLogExporter, nativeRunLogSourceWhere } from "./native-run-log-export.js";
 
-const recoveries = new WeakMap<Db, Map<string, Promise<void>>>();
+interface Recovery {
+  work: Promise<void>;
+  controller: AbortController;
+  readers: number;
+}
+const recoveries = new WeakMap<Db, Map<string, Recovery>>();
+function awaitRecovery(recovery: Recovery, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  recovery.readers++;
+  return new Promise<void>((resolve, reject) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return false;
+      finished = true;
+      signal?.removeEventListener("abort", abort);
+      recovery.readers--;
+      return true;
+    };
+    const abort = () => {
+      if (!finish()) return;
+      if (!recovery.readers) recovery.controller.abort(signal!.reason);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    recovery.work.then(
+      () => {
+        if (finish()) resolve();
+      },
+      (error) => {
+        if (finish()) reject(error);
+      },
+    );
+  });
+}
 
 export async function readRecoverableRunLog(
   db: Db,
@@ -26,7 +64,15 @@ export async function readRecoverableRunLog(
     known?.status !== "running" &&
     (known?.logBytes === undefined || known.logBytes === null)
   )
-    await recoverSettledNativeRunLog(db, store, handle.logRef);
+    await recoverSettledNativeRunLog(db, store, handle.logRef, undefined, options?.signal).catch(
+      () => {
+        options?.signal?.throwIfAborted();
+        logger.warn(
+          { runId: handle.logRef.split("/").at(-1) },
+          "Native run log repair is incomplete; serving the published prefix",
+        );
+      },
+    );
   return store.read(handle, options);
 }
 
@@ -37,7 +83,9 @@ export async function recoverSettledNativeRunLog(
   getRedactionOptions: () => Promise<CurrentUserRedactionOptions> = async () => ({
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   }),
+  requestSignal?: AbortSignal,
 ) {
+  requestSignal?.throwIfAborted();
   const binding = /^([a-f0-9-]+)\/([a-f0-9-]+)\/([a-f0-9-]+)$/.exec(logRef);
   if (!binding) throw new Error("invalid_native_run_log_reference");
   let pending = recoveries.get(db);
@@ -46,7 +94,10 @@ export async function recoverSettledNativeRunLog(
     recoveries.set(db, pending);
   }
   const existing = pending.get(logRef);
-  if (existing) return existing;
+  if (existing) return awaitRecovery(existing, requestSignal);
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
+  const finishWork = beginIdleTrackedWork();
   const runId = binding[3]!,
     companyId = binding[1]!;
   const eligible = () =>
@@ -66,15 +117,26 @@ export async function recoverSettledNativeRunLog(
       )})`,
     );
   const recover = (async () => {
+    signal.throwIfAborted();
     const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eligible());
+    signal.throwIfAborted();
     if (!run) return;
-    const redaction = await getRedactionOptions();
+    const [redaction, identityRedactor, secrets] = await Promise.all([
+      getRedactionOptions(),
+      agentIdentityService(db).createExistingLogRedactor(companyId, binding[2]!),
+      createRunSecretRedactionRegistry(db).redactionValuesForRun(companyId, runId),
+    ]);
+    for (const value of secrets)
+      identityRedactor.values.push(...createAgentIdentityRedactor(value).values);
+    identityRedactor.values.sort((left, right) => right.length - left.length);
     const handle = await store.begin({
       companyId,
       agentId: binding[2]!,
       runId,
       previousStore: "s3_segments",
+      signal,
       assertWriterAuthority: async () => {
+        signal.throwIfAborted();
         const [current] = await db
           .select({ id: heartbeatRuns.id })
           .from(heartbeatRuns)
@@ -91,13 +153,16 @@ export async function recoverSettledNativeRunLog(
       companyId,
       runId,
       afterCursor: handle.initialSourceCursor ?? 0,
+      signal,
       enqueue: async (sourceCursor, chunk) => {
         const receipt = await store.enqueue!(handle, {
           stream: "stdout",
           ts: new Date().toISOString(),
           seq: ++sequence,
           sourceCursor,
-          chunk: compactRunLogChunk(redactCurrentUserText(chunk, redaction)),
+          chunk: compactRunLogChunk(
+            redactCurrentUserText(identityRedactor.chunk("stdout", chunk), redaction),
+          ),
         });
         receipts.push(
           receipt.committed.catch((error) => {
@@ -118,9 +183,10 @@ export async function recoverSettledNativeRunLog(
     } catch (error) {
       failure ??= error;
     } finally {
-      const summary = await store.finalize(handle);
+      const summary = await store.finalize(handle, { computeDigest: false });
       if (summary.bytes === null) failure ??= new Error("native_run_log_recovery_incomplete");
       if (!failure && summary.bytes !== null) {
+        signal.throwIfAborted();
         const updated = await db
           .update(heartbeatRuns)
           .set({
@@ -133,10 +199,8 @@ export async function recoverSettledNativeRunLog(
             and(
               eligible(),
               sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(
-                eq(heartbeatRunEvents.runId, runId),
-                eq(heartbeatRunEvents.companyId, companyId),
+                nativeRunLogSourceWhere(companyId, runId),
                 gt(heartbeatRunEvents.seq, lastSourceCursor),
-                sql`${heartbeatRunEvents.sourceEventId} is not null`,
               )})`,
             ),
           )
@@ -146,10 +210,14 @@ export async function recoverSettledNativeRunLog(
     }
     if (failure) throw failure;
   })();
-  pending.set(logRef, recover);
-  try {
-    await recover;
-  } finally {
-    pending.delete(logRef);
-  }
+  const recovery: Recovery = {
+    controller,
+    readers: 0,
+    work: recover.finally(() => {
+      pending.delete(logRef);
+      finishWork();
+    }),
+  };
+  pending.set(logRef, recovery);
+  await awaitRecovery(recovery, requestSignal);
 }

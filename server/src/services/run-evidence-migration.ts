@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   heartbeatRunEvents,
@@ -17,6 +17,10 @@ import {
 } from "./provider-trace-object-store.js";
 import { openLegacyRunLogForMigration, resolveRunLogS3 } from "./run-log-store.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import {
+  createNativeRunLogCoverageVerifier,
+  nativeRunLogSourceWhere,
+} from "./native-runtime/native-run-log-export.js";
 
 const SETTLED = ["succeeded", "failed", "cancelled", "timed_out"];
 export interface RunEvidenceMigrationItem {
@@ -135,6 +139,10 @@ export async function migrateRunEvidence(
         throw new Error("mirror_completeness_unproven");
       }
       const hash = createHash("sha256");
+      const nativeCoverage =
+        run.runtimeMode === "native"
+          ? createNativeRunLogCoverageVerifier(db, run.companyId, run.id)
+          : undefined;
       let offset = 0,
         tail = Buffer.alloc(0),
         sequence = run.lastSequence;
@@ -142,6 +150,7 @@ export async function migrateRunEvidence(
         for await (const chunk of source.stream) {
           const bytes = Buffer.from(chunk);
           hash.update(bytes);
+          await nativeCoverage?.write(bytes);
           tail = Buffer.concat([tail, bytes]).subarray(-262144);
           if (writer) {
             const overlap = Math.min(bytes.length, Math.max(0, writer.head.end - offset));
@@ -175,6 +184,7 @@ export async function migrateRunEvidence(
       }
       item.bytes = offset;
       item.sha256 = digest;
+      const sourceCursor = (await nativeCoverage?.finish()) ?? 0;
       if (writer) {
         if (writer.head.end !== offset) throw new Error("migration_prefix_exceeds_source");
 
@@ -183,22 +193,7 @@ export async function migrateRunEvidence(
           remoteHash.update(await journal.readRange(writer.head, start, 1024 * 1024));
         if (remoteHash.digest("hex") !== digest)
           throw new Error("migration_remote_digest_mismatch");
-        const [nativeSource] =
-          run.runtimeMode === "native"
-            ? await db
-                .select({ seq: heartbeatRunEvents.seq })
-                .from(heartbeatRunEvents)
-                .where(
-                  and(
-                    eq(heartbeatRunEvents.companyId, run.companyId),
-                    eq(heartbeatRunEvents.runId, run.id),
-                    sql`${heartbeatRunEvents.sourceEventId} is not null`,
-                  ),
-                )
-                .orderBy(desc(heartbeatRunEvents.seq))
-                .limit(1)
-            : [];
-        writer.head = { ...writer.head, sequence, sourceCursor: nativeSource?.seq ?? 0 };
+        writer.head = { ...writer.head, sequence, sourceCursor };
         await journal.close(writer);
         const [updated] = await db
           .update(heartbeatRuns)
@@ -210,6 +205,12 @@ export async function migrateRunEvidence(
               eq(heartbeatRuns.logStore, "local_file"),
               eq(heartbeatRuns.logRef, run.logRef),
               drainedWriter(),
+              run.runtimeMode === "native"
+                ? sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(
+                    nativeRunLogSourceWhere(run.companyId, run.id),
+                    gt(heartbeatRunEvents.seq, sourceCursor),
+                  )})`
+                : undefined,
             ),
           )
           .returning({ id: heartbeatRuns.id });

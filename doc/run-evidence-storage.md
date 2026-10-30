@@ -7,6 +7,10 @@ Structured `heartbeat_run_events` retain their existing database path. Native
 events already committed there before a Runner ACK also provide the recovery
 source for an interrupted canonical native log export. No additional event copy
 or payload write is introduced.
+When native object logging uses runtime observability credentials, their log
+redaction values are registered once in the existing encrypted run-secret
+registry. This is bounded redaction metadata, not a transcript copy or a
+per-event write. Agent identity private material stays in its existing key store.
 
 ## Configuration
 
@@ -102,6 +106,9 @@ file SHA-256. It does not re-upload the entire log. Range indexes avoid loading
 all segment descriptors to read a tail. Historical consumers, UTF-8/NDJSON record
 alignment, issue previews, feedback, and customer-success inspection dispatch
 through the persisted backend. Logical reads retain the existing authorization.
+On-demand native repair closes its verified committed range with an exact byte
+count and leaves an unavailable full-file SHA-256 null. It does not make a log
+page request re-download the entire archive to compute that optional digest.
 
 ## Durability boundary
 
@@ -130,6 +137,16 @@ repair leaves final size/digest unknown and preserves the existing source.
 Retained native events are not deleted by Runner cleanup. Recovery adds bounded
 reads and one final metadata update, with no new per-record SQL on the normal
 contiguous output path. Raw optional capture can still be incomplete after a crash.
+Credential-update, retained-cleanup, and trace-reprojection records have separate
+source namespaces and do not enter this log export. Corrupt canonical records
+fail integrity validation. Shared on-demand repair has a 30-second lifetime;
+cancellation removes a waiting reader and aborts storage work when no readers
+remain. It preserves already published cursors so a later request can resume.
+Live export and recovery both redact the existing agent identity and known run
+secrets before publication. Recovery reads existing identity material without
+provisioning a key. If best-effort repair loses ownership or fails, ordinary log
+reads serve the published prefix and leave completion metadata unknown; request
+cancellation still propagates.
 
 The [remote continuity](testing-native-remote-continuity.md) protocol and the
 parent deployment's other filesystem and HTTP handoff requirements still apply.
@@ -178,6 +195,12 @@ then conditionally changes the run's backend/reference. Unknown-completeness
 mirrors, missing/corrupt payloads, and active writers block publication. Existing
 trace bytes, download ordering, integrity state and original expiry are retained.
 Neither path fabricates missing historical data or extends trace retention.
+For native logs, a bounded NDJSON scan must also prove ordered coverage of the
+existing canonical source records. Missing ranges or canonical chunks whose
+identities cannot be verified block publication as
+`native_log_source_coverage_unproven`. A database's latest event cursor alone
+does not establish that its output reached the local file. Keep the original
+volume and resolve blocked inventory before cutover.
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
 the staged object prefix. Resume the importer to finish its verified switch.

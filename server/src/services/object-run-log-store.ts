@@ -31,6 +31,7 @@ interface WriterState {
   flushing?: Promise<void>;
   closed: boolean;
   failure?: unknown;
+  signal?: AbortSignal;
 }
 
 export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunLogStore {
@@ -56,8 +57,22 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   };
   let activeUploads = 0;
   const uploadWaiters: Array<() => void> = [];
-  async function acquireUpload() {
-    if (activeUploads >= 4) await new Promise<void>((resolve) => uploadWaiters.push(resolve));
+  async function acquireUpload(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (activeUploads >= 4)
+      await new Promise<void>((resolve, reject) => {
+        const enter = () => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        };
+        const abort = () => {
+          const index = uploadWaiters.indexOf(enter);
+          if (index !== -1) uploadWaiters.splice(index, 1);
+          reject(signal!.reason);
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        uploadWaiters.push(enter);
+      });
     else activeUploads++;
     return () => {
       const next = uploadWaiters.shift();
@@ -96,12 +111,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     const batch = state.pending.splice(0);
     const bytes = Buffer.concat(batch.map((p) => p.bytes));
     state.flushing = (async () => {
-      const release = await acquireUpload();
+      let release: (() => void) | undefined;
       try {
+        release = await acquireUpload(state.signal);
         state.writer = await state.journal.append(
           state.writer,
           bytes,
-          undefined,
+          state.signal,
           batch.reduce(
             (cursor, item) => Math.max(cursor, item.sequence),
             state.writer.head.sequence,
@@ -124,7 +140,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         state.pendingBytes -= bytes.length;
         totalPendingBytes -= bytes.length;
         capacityChanged();
-        release();
+        release?.();
         state.flushing = undefined;
         schedule(state);
       }
@@ -134,6 +150,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     const state = writers.get(handle);
     if (!state || state.closed) throw new Error("Object run log writer is closed");
+    state.signal?.throwIfAborted();
     if (state.failure) throw state.failure;
     const bytes = Buffer.from(
       `${JSON.stringify({
@@ -163,9 +180,21 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         }
         for (const writer of writers.values())
           if (writer.pending.length) void flush(writer).catch(() => undefined);
-        await new Promise<void>((resolve) => capacityWaiters.add(resolve));
+        await new Promise<void>((resolve, reject) => {
+          const wake = () => {
+            state.signal?.removeEventListener("abort", abort);
+            resolve();
+          };
+          const abort = () => {
+            capacityWaiters.delete(wake);
+            reject(state.signal!.reason);
+          };
+          state.signal?.addEventListener("abort", abort, { once: true });
+          capacityWaiters.add(wake);
+        });
       }
       if (state.closed) throw new Error("Object run log writer is closed");
+      state.signal?.throwIfAborted();
       if (state.failure) throw state.failure;
       state.pendingBytes += bytes.length;
       totalPendingBytes += bytes.length;
@@ -193,10 +222,11 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     async begin(input) {
       const logRef = `${input.companyId}/${input.agentId}/${input.runId}`;
       const store = journal(logRef),
-        current = await store.head();
+        current = await store.head(input.signal);
       const writer = await store.claim({
         expectedOwner: current?.head.owner ?? null,
         assertAuthority: () => options.assertWriterAuthority(input),
+        signal: input.signal,
       });
       const handle: RunLogHandle = {
         store: "s3_segments",
@@ -206,7 +236,14 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         initialSequence: writer.head.sequence,
         initialSourceCursor: writer.head.sourceCursor,
       };
-      writers.set(handle, { journal: store, writer, pending: [], pendingBytes: 0, closed: false });
+      writers.set(handle, {
+        journal: store,
+        writer,
+        pending: [],
+        pendingBytes: 0,
+        closed: false,
+        signal: input.signal,
+      });
       return handle;
     },
     enqueue,
@@ -218,17 +255,21 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       if (!state) throw new Error("Object run log writer not found");
       await flush(state);
     },
-    async finalize(handle) {
+    async finalize(handle, finalizeOptions) {
       const state = writers.get(handle);
       if (!state) throw new Error("Object run log writer not found");
       state.closed = true;
       capacityChanged();
       try {
         await flush(state);
-        state.writer = await state.journal.close(state.writer);
+        state.writer = await state.journal.close(state.writer, state.signal);
+        if (finalizeOptions?.computeDigest === false)
+          return { bytes: state.writer.head.end, sha256: null, compressed: false };
         const hash = createHash("sha256");
         for (let start = 0; start < state.writer.head.end; start += MAX_READ_BYTES) {
-          hash.update(await state.journal.readRange(state.writer.head, start, MAX_READ_BYTES));
+          hash.update(
+            await state.journal.readRange(state.writer.head, start, MAX_READ_BYTES, state.signal),
+          );
         }
         return { bytes: state.writer.head.end, sha256: hash.digest("hex"), compressed: false };
       } catch {

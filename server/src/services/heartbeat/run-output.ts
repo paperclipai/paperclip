@@ -8,6 +8,7 @@ import { publishLiveEvent } from "../live-events.js";
 import { isRunLogStoreType, type RunLogHandle, type RunLogStore } from "../run-log-store.js";
 import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
 import { createNativeRunLogExporter } from "../native-runtime/native-run-log-export.js";
+import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import {
   isHeartbeatRunRuntimeStatusActive,
   publishHeartbeatRunRuntimeProgress,
@@ -30,6 +31,7 @@ export interface HeartbeatRunOutputInput {
   appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
   assertWriterAuthority?: () => Promise<void>;
+  runtimeLogSecretValues?: readonly string[];
 }
 
 /**
@@ -140,6 +142,15 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       .where(eq(heartbeatRuns.id, runId));
 
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    if (
+      handle.store === "s3_segments" &&
+      run.runtimeMode === "native" &&
+      input.runtimeLogSecretValues?.length
+    ) {
+      const registry = createRunSecretRedactionRegistry(db);
+      for (const value of new Set(input.runtimeLogSecretValues))
+        await registry.register(run.companyId, runId, value);
+    }
     const reportRecordingFailure = async () => {
       if (recordingFailureReported) return;
       recordingFailureReported = true;
@@ -252,7 +263,13 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
             companyId: run.companyId,
             runId,
             afterCursor: handle.initialSourceCursor ?? 0,
-            enqueue: (cursor, chunk) => appendIdentityRedactedLog("stdout", chunk, false, cursor),
+            enqueue: (cursor, chunk) =>
+              appendIdentityRedactedLog(
+                "stdout",
+                identityRedactor.chunk("stdout", chunk),
+                false,
+                cursor,
+              ),
             flush: () => runLogStore.flush!(handle!),
           })
         : undefined;

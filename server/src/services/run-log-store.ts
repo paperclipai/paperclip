@@ -60,6 +60,7 @@ export interface RunLogBeginInput {
 
   assertWriterAuthority?: () => Promise<void>;
   previousStore?: RunLogStoreType;
+  signal?: AbortSignal;
 }
 
 export interface RunLogStore {
@@ -73,7 +74,7 @@ export interface RunLogStore {
     event: Parameters<RunLogStore["append"]>[1],
   ): Promise<{ committed: Promise<number> }>;
   flush?(handle: RunLogHandle): Promise<void>;
-  finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
+  finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
@@ -581,7 +582,7 @@ export function getRunLogStore() {
       ? external!.enqueue!(handle, event)
       : Promise.resolve({ committed: local.append(handle, event) }),
     flush: async handle => { if (handle.store === "s3_segments") await external!.flush!(handle); },
-    finalize: handle => handle.store === "s3_segments" ? external!.finalize(handle) : local.finalize(handle),
+    finalize: (handle, options) => handle.store === "s3_segments" ? external!.finalize(handle, options) : local.finalize(handle),
     read: (handle, opts) => {
       if (handle.store === "s3_segments") {
         if (!external) throw new Error("Object run log storage is not configured");

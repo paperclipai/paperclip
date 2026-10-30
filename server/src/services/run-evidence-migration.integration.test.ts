@@ -17,6 +17,10 @@ import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { createProviderTraceObjectStore } from "./provider-trace-object-store.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { formatNativeRunLogEvent } from "./native-runtime/native-run-log-export.js";
+import { nativeSha256 } from "./native-runtime/canonical.js";
+import { createObjectByteJournal } from "./object-byte-journal.js";
+import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
 
 const endpoint = process.env.PAPERCLIP_LOG_TEST_S3_ENDPOINT;
 const databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_EVIDENCE_MIGRATION_DATABASE_URL");
@@ -32,6 +36,8 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await db.execute(
       sql`create table native_run_finalizations(run_id uuid, company_id uuid, lease_expires_at timestamptz)`,
     );
+    await db.execute(sql`create table heartbeat_run_events(company_id uuid,run_id uuid,seq bigint,payload jsonb,
+      source_instance_id text,source_event_id text,source_seq bigint,source_payload_sha256 text,event_type text)`);
     await db.execute(sql`create table provider_trace_records (id uuid primary key, company_id uuid not null, run_id uuid not null,
       status text not null, provider text not null, trace_ref text not null, frame_count int not null default 0,
       byte_count bigint not null default 0, digest text, reason text, requested_by text not null, expires_at timestamptz not null,
@@ -178,4 +184,72 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
       Buffer.concat([native, rehydration]),
     );
   }, 30_000);
+  it("blocks a native archive with a missing committed tail and checkpoints only verified source coverage", async () => {
+    const companyId = randomUUID(),
+      agentId = randomUUID();
+    const runs: string[] = [];
+    for (const complete of [false, true]) {
+      const runId = randomUUID(),
+        sourceInstanceId = randomUUID(),
+        normalizedSessionId = randomUUID();
+      runs.push(runId);
+      const events: PrpEvent[] = [1, 2].map((sourceSeq) => ({
+        schema: "paperclip.prp.event.v1",
+        schemaVersion: 1,
+        runId,
+        sourceInstanceId,
+        sourceSeq,
+        sourceEventId: `${sourceInstanceId}:${sourceSeq}`,
+        sourceKind: "runner",
+        normalizedSessionId,
+        priority: 2,
+        emittedAt: "2026-10-30T00:00:00Z",
+        eventType: "item.delta",
+        payload: { text: `part ${sourceSeq}` },
+      }));
+      const logRef = `${companyId}/${agentId}/${runId}.ndjson`;
+      const bytes = Buffer.from(
+        events
+          .slice(0, complete ? 2 : 1)
+          .map(
+            (event, index) =>
+              JSON.stringify({
+                ts: "then",
+                seq: index + 1,
+                stream: "stdout",
+                chunk: formatNativeRunLogEvent(event),
+              }) + "\n",
+          )
+          .join(""),
+      );
+      await fs.mkdir(path.dirname(path.join(directory, "logs", logRef)), { recursive: true });
+      await fs.writeFile(path.join(directory, "logs", logRef), bytes);
+      await db.execute(sql`insert into heartbeat_runs(id,company_id,agent_id,status,runtime_mode,log_store,log_ref,log_bytes,log_sha256)
+        values(${runId},${companyId},${agentId},'succeeded','native','local_file',${logRef},${complete ? bytes.length : null},${complete ? createHash("sha256").update(bytes).digest("hex") : null})`);
+      for (const [index, event] of events.entries())
+        await db.execute(sql`insert into heartbeat_run_events
+        values(${companyId},${runId},${index + 1},${JSON.stringify({ prpEvent: event })}::jsonb,${sourceInstanceId},${event.sourceEventId},${event.sourceSeq},${nativeSha256(event)},${event.eventType})`);
+    }
+    const migrated = await migrateRunEvidence(db, { apply: true, companyId });
+    expect(migrated.items.find((item) => item.id === runs[0])).toMatchObject({
+      state: "blocked",
+      reason: "native_log_source_coverage_unproven",
+    });
+    expect(migrated.items.find((item) => item.id === runs[1])?.state).toBe("migrated");
+    const provider = createS3StorageProvider({
+      endpoint,
+      bucket,
+      region: "us-east-1",
+      forcePathStyle: true,
+    });
+    const journal = createObjectByteJournal({
+      provider,
+      prefix: `run-logs/segments-v1/${companyId}/${agentId}/${runs[1]}`,
+    });
+    expect((await journal.head())!.head.sourceCursor).toBe(2);
+    const [blocked] = await db.$client.unsafe("select log_store from heartbeat_runs where id=$1", [
+      runs[0]!,
+    ]);
+    expect(blocked!.log_store).toBe("local_file");
+  });
 });

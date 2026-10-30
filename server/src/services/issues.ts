@@ -6729,7 +6729,7 @@ export async function readIssueCommentRunLogText(run: {
   let readTimer: NodeJS.Timeout | undefined;
 
   const readChunks = async () => {
-    if (db && storeType === "s3_segments") await recoverSettledNativeRunLog(db, store, logRef);
+    if (db && storeType === "s3_segments") await recoverSettledNativeRunLog(db, store, logRef, undefined, controller.signal);
     while (nextOffset !== undefined) {
       controller.signal.throwIfAborted();
       const remainingBytes =

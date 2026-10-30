@@ -634,7 +634,8 @@ export function providerTraceStore(db: Db, options: { objectStore?: ProviderTrac
   async function nextRetentionDeadline() {
     const [row] = await db.select({ at: providerTraceRecords.expiresAt, deletedAt: providerTraceRecords.deletedAt })
       .from(providerTraceRecords).where(and(ne(providerTraceRecords.traceRef, EXPIRED_PROVIDER_TRACE_REF),
-        or(isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`, sql`${providerTraceRecords.traceRef} like 's3-import-v1:%'`)))
+        or(isNull(providerTraceRecords.deletedAt), lte(providerTraceRecords.expiresAt, new Date()),
+          sql`${providerTraceRecords.traceRef} like 's3-segments-v1:%'`, sql`${providerTraceRecords.traceRef} like 's3-import-v1:%'`)))
       .orderBy(asc(sql`case when ${providerTraceRecords.deletedAt} is not null then 0 else 1 end`), asc(providerTraceRecords.expiresAt)).limit(1);
     return row ? row.deletedAt ? Date.now() : row.at.getTime() : null;
   }

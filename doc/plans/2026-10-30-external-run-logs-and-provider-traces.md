@@ -451,8 +451,8 @@ claim live-provider or fleet evidence from deterministic fixtures.
   transfer, stored-object, and timing counts. It is a synthetic envelope,
   not a fleet cost forecast. The first index prototype left obsolete COW
   objects; the selected immutable binary index removes that normal growth.
-- Full workspace typecheck and build passed on the rebased storage revision;
-  both are being repeated after native replay and the review fixes.
+- Full workspace typecheck and build passed after native replay and the storage
+  review fixes. The pushed server revision was rebuilt for the final app check.
   The native Postgres package initially lacked its postinstall-created library
   symlinks; its standard hydration helper repaired that local test prerequisite.
 - Native pending-tail qualification passed with the real Rust recovery fixture,
@@ -464,6 +464,11 @@ claim live-provider or fleet evidence from deterministic fixtures.
   its new controller directory had mode 0755; the fixture now creates mode 0700.
   Both failed and successful evidence remain in this chat's temporary artifacts.
   This is a deterministic protocol experiment, not a live model or Railway test.
+- Final app verification used a new web home on `c2cedcd116`. Retained history
+  remained byte-identical (31 records, 6,206 bytes), and a new UI-triggered process
+  run succeeded with every generated record present in its S3-backed transcript.
+  The browser initially reached the listener before startup completed; after
+  readiness, the normal page and API checks passed.
 - Durable log receipts and live log messages follow S3 publication. The native
   export reuses existing control rows, adds no payload writes, and repairs missing
   callback ranges. Interrupted settled archives can be repaired on normal reads
@@ -478,6 +483,14 @@ claim live-provider or fleet evidence from deterministic fixtures.
   clusters exhausted macOS SysV semaphores. Affected suites are running against
   isolated Docker databases. One local full typecheck attempt also lacked sandbox
   permission for tsx IPC; the authorized rerun uses the normal workspace command.
+  The isolated Docker run then passed 1,014 affected storage/native tests and
+  all 27 privacy-route tests. Subsequent targeted review regressions passed for
+  native source classification, native import coverage, shared-reader repair
+  cancellation, serving the published prefix on repair conflicts, and a failed
+  local-file cleanup retaining its deadline. Live and recovered native output
+  redact existing agent identity material; runtime log secrets are registered
+  once through the existing encrypted redaction registry, without copying agent
+  private keys into run contexts.
 - PR: https://github.com/paperclipai/paperclip/pull/18327. Initial CI passed 51
   checks with one E2E teardown lock timeout. That E2E shard passed on the next
   revision; its Runner shard then failed the Antigravity authentication fixture.
