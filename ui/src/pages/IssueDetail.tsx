@@ -4063,12 +4063,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const timeout = window.setTimeout(() => observer.disconnect(), 10_000);
     return () => { observer.disconnect(); window.clearTimeout(timeout); };
   }, [coordinatorWorkspaceEnabled, issue?.id, location.hash, location.key]);
-  const pluginPanels = useTaskPluginPanels(issue, taskChatShellEnabled);
+  const { panels: pluginPanels, isLoading: pluginPanelsLoading } = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
   const openedPluginPanelKeys = useRef(new Set<string>());
   const dismissedPluginPanelKeys = useRef(new Set<string>());
   useEffect(() => {
     for (const panel of pluginPanels) {
+      if (!panel.autoOpen || !panel.runId) continue;
       const key = JSON.stringify([currentUserId, issue?.id, panel.runId, taskPluginPanelId(panel)]);
       if (revealedPluginPanels.current.has(key)) continue;
       revealedPluginPanels.current.add(key);
@@ -6184,6 +6185,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         <IssueGalleryContext.Provider value={openIssueGallery}>
           <TaskSidePanel
             pluginPanels={pluginPanels}
+            pluginPanelsLoading={pluginPanelsLoading}
             openedPluginPanelKeys={openedPluginPanelKeys.current}
             dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
             openBrowserId={openBrowserId}
@@ -6212,6 +6214,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     return () => closePanel();
   }, [
     pluginPanels,
+    pluginPanelsLoading,
     openBrowserId,
     handleBrowserOpened,
     closePanel,
@@ -8800,6 +8803,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   </SheetHeader>
                   <TaskSidePanel
                     pluginPanels={pluginPanels}
+                    pluginPanelsLoading={pluginPanelsLoading}
                     openedPluginPanelKeys={openedPluginPanelKeys.current}
                     dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
                     openBrowserId={openBrowserId}
