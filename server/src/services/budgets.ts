@@ -163,9 +163,6 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
-/** History keeps its original scope IDs after a resource is permanently deleted.
- * Only display reads may use a tombstone; admission and mutations still resolve
- * the actual resource through resolveScopeRecord. Never adopt a foreign scope. */
 async function resolveSummaryScopeRecord(db: Db, companyId: string, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
   let scope: ScopeRecord;
   try {
@@ -941,6 +938,11 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (incident.companyId !== companyId) throw notFound("Budget incident not found");
 
       const policy = await getPolicyRow(incident.policyId);
+      if (policy.companyId !== companyId || policy.scopeType !== incident.scopeType || policy.scopeId !== incident.scopeId) {
+        throw notFound("Budget scope not found");
+      }
+      const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+      if (scope.companyId !== companyId) throw notFound("Budget scope not found");
       if (input.action === "raise_budget_and_resume") {
         const nextAmount = Math.max(0, Math.floor(input.amount ?? 0));
         const observed = await computeObservedSpend(db, policy);

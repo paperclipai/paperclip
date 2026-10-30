@@ -53,12 +53,25 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
     expect(await db.select().from(budgetIncidents)).toEqual(incidentsBefore);
     expect(await db.select().from(costEvents)).toEqual(costsBefore);
   });
-  it("still rejects admission and policy changes for missing agents and projects", async () => {
+  it("still rejects admission, policy changes and incident resolution for missing agents and projects", async () => {
     const { companyId, agentId } = await fixture(), missingId = randomUUID(), service = budgetService(db);
     await expect(service.evaluateAdmission(companyId, missingId)).rejects.toThrow("Agent not found");
     await expect(service.evaluateAdmission(companyId, agentId, { projectId: missingId })).rejects.toThrow("Project not found");
     for (const scopeType of ["agent", "project"] as const) {
       await expect(service.upsertPolicy(companyId, { scopeType, scopeId: missingId, amount: 100 })).rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
+      const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType, scopeId: missingId,
+        windowKind: "calendar_month_utc", amount: 100 }).returning();
+      const [incident] = await db.insert(budgetIncidents).values({ companyId, policyId: policy!.id, scopeType, scopeId: missingId,
+        metric: "billed_cents", windowKind: "calendar_month_utc", windowStart: new Date("2020-01-01"), windowEnd: new Date("2020-02-01"),
+        thresholdType: "hard", amountLimit: 100, amountObserved: 101 }).returning();
+      const before = { policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+        agents: await db.select().from(agents), costs: await db.select().from(costEvents) };
+      for (const action of ["raise_budget_and_resume", "keep_paused"] as const) {
+        await expect(service.resolveIncident(companyId, incident!.id, { action, amount: 200 }, "board"))
+          .rejects.toThrow(`${scopeType === "agent" ? "Agent" : "Project"} not found`);
+        expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+          agents: await db.select().from(agents), costs: await db.select().from(costEvents) }).toEqual(before);
+      }
     }
   });
 
@@ -66,8 +79,19 @@ describe.skipIf(!support.supported)("budget history for deleted scopes", () => {
     const { companyId } = await fixture(), foreignCompanyId = randomUUID(), foreignAgentId = randomUUID();
     await db.insert(companies).values({ id: foreignCompanyId, name: "Other company", issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}` });
     await db.insert(agents).values({ id: foreignAgentId, companyId: foreignCompanyId, name: "Private other-company agent", role: "engineer" });
-    await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: foreignAgentId, windowKind: "calendar_month_utc", amount: 200 });
-    await expect(budgetService(db).overview(companyId)).rejects.toThrow("Budget scope not found");
+    const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: foreignAgentId, windowKind: "calendar_month_utc", amount: 200 }).returning();
+    const [incident] = await db.insert(budgetIncidents).values({ companyId, policyId: policy!.id, scopeType: "agent", scopeId: foreignAgentId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", windowStart: new Date("2020-01-01"), windowEnd: new Date("2020-02-01"),
+      thresholdType: "hard", amountLimit: 200, amountObserved: 201 }).returning();
+    const service = budgetService(db);
+    await expect(service.overview(companyId)).rejects.toThrow("Budget scope not found");
+    const before = { policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+      agents: await db.select().from(agents), costs: await db.select().from(costEvents) };
+    for (const action of ["raise_budget_and_resume", "keep_paused"] as const) {
+      await expect(service.resolveIncident(companyId, incident!.id, { action, amount: 300 }, "board")).rejects.toThrow("Budget scope not found");
+      expect({ policies: await db.select().from(budgetPolicies), incidents: await db.select().from(budgetIncidents),
+        agents: await db.select().from(agents), costs: await db.select().from(costEvents) }).toEqual(before);
+    }
   });
 
 });
