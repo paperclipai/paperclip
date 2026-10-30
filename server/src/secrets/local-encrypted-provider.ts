@@ -50,6 +50,11 @@ function decodeMasterKey(raw: string): Buffer | null {
   return null;
 }
 
+/** Check the configured key without reading, creating, or changing key files. */
+export function isValidLocalEncryptedMasterKey(raw: string): boolean {
+  return decodeMasterKey(raw) !== null;
+}
+
 function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = process.env): Buffer {
   const envKeyRaw = env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {

@@ -1511,6 +1511,45 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+### Managed cloud prerequisites
+
+A nonblank Cloud tenant token or the presence of `PAPERCLIP_MANAGED_CONFIG`
+selects the managed-cloud profile. A supplied blank or invalid managed feature
+document refuses startup. Without either signal, the instance remains self-hosted.
+The managed profile also requires:
+
+- `PAPERCLIP_STORAGE_PROVIDER=s3` or `storage.provider: "s3"` in the canonical
+  database snapshot. An invalid explicit environment value refuses startup even
+  if the snapshot selects S3.
+- An explicit nonblank `PAPERCLIP_STORAGE_S3_BUCKET` or `storage.s3.bucket`.
+  The self-hosted `paperclip` bucket default does not qualify. The region defaults
+  to `us-east-1`; an explicit blank region refuses startup. An optional endpoint
+  must be an HTTP(S) URL without embedded credentials.
+- An external PostgreSQL URL from the environment `DATABASE_URL`.
+  The managed profile never falls back to embedded PostgreSQL.
+- A stable `PAPERCLIP_SECRETS_MASTER_KEY` supplied by the deployment secret store.
+  Use the same value across replacements. The existing provider accepts 32-byte
+  base64, 64-character hex, or a raw 32-byte UTF-8 string. A key file alone does
+  not qualify because a replacement web server may not have that file.
+
+Bootstrap validates the environment database URL and encryption master key before
+opening the database or creating local state. Effective storage validation follows
+canonical snapshot resolution, before signing keys, first-party Telemetry or app
+construction. Raw canonical rows and legacy S3 imports cannot obtain a missing
+bucket from schema defaults. Already-stored nonblank bucket values remain
+canonical, including the deliberate name `paperclip`; prior normalization cannot
+reliably establish their original provenance.
+It does not contact S3 or verify credentials, bucket access, database connectivity,
+or that a key matches existing encrypted data. Operators must qualify ordinary
+S3 put/read/delete with deployment credentials and preserve the existing key.
+AWS credentials continue to use the provider's normal SDK credential chain.
+Local and self-hosted storage and key-file defaults remain unchanged.
+
+These are prerequisites for shared storage and secrets. They do not establish
+that the whole web server is disposable or that all execution and recovery paths
+survive web-server replacement. Run-log/trace storage and producer retention are
+separate changes.
+
 ## Agent Artifact Uploads
 
 When an agent generates a file that a board user or reviewer should inspect as
@@ -2697,6 +2736,24 @@ The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
 and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
+
+## Version-based skill authoring and delivery
+
+Managed content uses `managed-skill-content.ts`: prepare and verify outside the
+publication transaction, then compare the captured head and publish version,
+projections, audit and applicable receipt together. `skill-execution-content.ts`
+owns disposable filesystem bindings. Do not write managed installed directories
+or infer missing content from an absent cache. Keep linked-local behavior explicit.
+
+The [conversion and qualification guide](skill-ephemeral-web-servers.md) documents
+bounded eligibility/verification commands and the one-time writer maintenance
+boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
+`ephemeral-skills-process.test.ts` requires independent disposable Postgres and
+S3 fixtures and starts separate Node processes. The optional
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
+On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
+for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
+collected during builds as hosted performance evidence.
 
 ## App-Shipped Skills Catalog
 
