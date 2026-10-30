@@ -85,6 +85,9 @@ describe("trusted report catalog discovery", () => {
     const known = runnerMatrix.find((execution) => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
     expect(journeyCapabilities(known).map((capability) => capability.id)).toEqual(["questions-and-approvals/questions"]);
     expect(journeyCapabilities({ ...known, suite: { ...known.suite, id: "branch-only" } })).toEqual([]);
+    const product = { ...known, suite: { ...known.suite, id: "product-journeys" } };
+    expect(journeyCapabilities(product).map(capability => capability.id)).toEqual(["questions-and-approvals/questions"]);
+    expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-create" } }).map(capability => capability.id)).toEqual(["tasks/create"]);
   });
 
   it("aggregates unknown suites and renders their cases, missing results, and screenshot gallery", () => {
@@ -213,10 +216,17 @@ describe("trusted report catalog discovery", () => {
     await writeFile(path.join(evidence, "final-state.png"), "fixture");
     await writeFile(
       path.join(bundle, "normalized-results.json"),
-      JSON.stringify({ ...campaign(), suites: [] }),
+      JSON.stringify({ ...campaign([{ ...result(), targetUrl: "https://qa.example.test", matcherResults: [{ matcher: { kind: "json_path", path: "saved", expected: true }, passed: true, detail: "Saved after reload" }] }]), suites: [], presentation: { title: "QA basics", notes: ["Original measurement retained"], links: [{ label: "Provenance", href: "provenance.json" }, { label: "Unsafe destination", href: "javascript:alert(1)" }] } }),
     );
     await regenerateRunnerDashboard({ bundle, historyFile: null });
     const page = await readFile(path.join(bundle, "index.html"), "utf8");
+    expect(page).toContain('data-gallery-target-url="https://qa.example.test/"');
+    expect(page).toContain('href="https://qa.example.test/" target="_blank"');
+    expect(page).toContain("Saved after reload");
+    expect(page).toContain("Original measurement retained");
+    expect(page).toContain('<a href="provenance.json">Provenance</a>');
+    expect(page).not.toContain("javascript:alert(1)");
+    expect(page).not.toContain("Unsafe destination");
     expect(page).toContain(`data-execution-id="${id}"`);
     expect(page).toContain(`data-execution-id="${missingId}"`);
     expect(page).toContain(
@@ -225,6 +235,8 @@ describe("trusted report catalog discovery", () => {
     const normalized = JSON.parse(
       await readFile(path.join(bundle, "normalized-results.json"), "utf8"),
     );
+    expect(normalized.presentation).toEqual({ title: "QA basics", notes: ["Original measurement retained"], links: [{ label: "Provenance", href: "provenance.json" }, { label: "Unsafe destination", href: "javascript:alert(1)" }] });
+    expect(normalized.results[0].targetUrl).toBe("https://qa.example.test");
     expect(normalized.suites).toEqual([
       expect.objectContaining({
         suiteId: "branch-only-chat",

@@ -38,6 +38,28 @@ use crate::provider_events::{
 };
 use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
+fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
+    let mut receipt = serde_json::Map::new();
+    for key in [
+        "statusMs",
+        "statusOffsetMs",
+        "promptMs",
+        "promptOffsetMs",
+        "sidecarMs",
+    ] {
+        if let Some(value) = response
+            .get("timing")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 300_000.0)
+        {
+            receipt.insert(key.to_owned(), json!(value));
+        }
+    }
+    receipt.insert("runnerMs".to_owned(), json!(elapsed.as_secs_f64() * 1000.0));
+    Value::Object(receipt)
+}
+
 fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
     matches!(operation_id, "paperclip_finish" | "paperclip_block")
 }
@@ -350,6 +372,18 @@ impl AcpxProviderDescriptor {
         expected_identity: Option<AcpxProviderSessionIdentity>,
         launch_profile: Option<&AcpxLaunchProfile>,
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
+        let candidate_admission =
+            launch_profile.and_then(|profile| profile.candidate_admission.clone());
+        if let Some(admission) = &candidate_admission {
+            admission
+                .validate_binding(
+                    &self.agent,
+                    &self.model,
+                    &self.run_id,
+                    &self.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
         let transport = self.verified_transport(launch_profile)?;
         // Keep the controller's full authority catalog durable so terminal
@@ -375,6 +409,7 @@ impl AcpxProviderDescriptor {
             operations: provider_operations,
         };
         Ok(AcpxProviderSessionConfig {
+            candidate_admission,
             transport,
             agent: self.agent.clone(),
             model: self.model.clone(),
@@ -873,6 +908,14 @@ impl AcpxCommandExecutor {
         self.state_dir.join(ACPX_PROVIDER_STATE_FILE)
     }
 
+    fn candidate_admission(
+        &self,
+    ) -> Option<&crate::acpx_candidate_admission::AcpxCandidateAdmission> {
+        self.launch_profile
+            .as_ref()
+            .and_then(|profile| profile.candidate_admission.as_ref())
+    }
+
     fn launch_profile_digest(&self) -> Result<String, DurableRunnerError> {
         self.launch_profile
             .as_ref()
@@ -915,6 +958,11 @@ impl AcpxCommandExecutor {
                 )))
             }
         };
+        if self.candidate_admission().is_some() {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot adopt a prior durable runner activation",
+            ));
+        }
         let length = file
             .metadata()
             .map_err(|error| {
@@ -1131,6 +1179,16 @@ impl AcpxCommandExecutor {
             DurableRunnerError::invalid(format!("run.prepare ACPX provider is invalid: {error}"))
         })?;
         descriptor.validate(&self.context)?;
+        if let Some(admission) = self.candidate_admission() {
+            admission
+                .validate_binding(
+                    &descriptor.agent,
+                    &descriptor.model,
+                    &descriptor.run_id,
+                    &descriptor.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         let tool_set = authorized_tool_set(payload)?;
         let launch_profile_digest = self.launch_profile_digest()?;
         if let Some(state) = self.state.as_ref() {
@@ -1160,6 +1218,11 @@ impl AcpxCommandExecutor {
     }
 
     fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+        if self.candidate_admission().is_some() {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot rotate or adopt a live runner authority",
+            ));
+        }
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(
             payload
                 .get("provider")
@@ -1495,12 +1558,14 @@ impl AcpxCommandExecutor {
             .as_ref()
             .map(|state| PathBuf::from(&state.descriptor.cwd))
             .expect("ACPX state exists before turn start");
-        if let Err(error) = self
+        let measure = payload.get("performance").and_then(Value::as_bool) == Some(true);
+        let timing_started = std::time::Instant::now();
+        let start_result = self
             .session
             .as_mut()
             .expect("ACPX session exists before turn start")
-            .start_turn(&provider_turn_id, text, &working_directory)
-        {
+            .start_turn_timed(&provider_turn_id, text, &working_directory, measure);
+        if let Err(error) = &start_result {
             let state = self
                 .state
                 .as_mut()
@@ -1514,6 +1579,15 @@ impl AcpxCommandExecutor {
                 "ACPX turn start failed closed: {error}"
             )));
         }
+        // Copy numeric timing fields only. Sidecar contents never enter the receipt.
+        let timing = if measure {
+            bounded_turn_timing(
+                &start_result.ok().unwrap_or(Value::Null),
+                timing_started.elapsed(),
+            )
+        } else {
+            Value::Null
+        };
         let state = self
             .state
             .as_mut()
@@ -1571,7 +1645,11 @@ impl AcpxCommandExecutor {
             }),
         ));
         Ok(CommandExecution {
-            result: json!({"status": "accepted", "providerTurnId": provider_turn_id}),
+            result: if measure {
+                json!({"status":"accepted", "providerTurnId":provider_turn_id, "timing":timing})
+            } else {
+                json!({"status": "accepted", "providerTurnId": provider_turn_id})
+            },
             events,
         })
     }
@@ -1954,6 +2032,9 @@ impl AcpxCommandExecutor {
     }
 
     fn suspend(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        if self.candidate_admission().is_some() {
+            return self.close_session("candidate runner.suspend retires the owned process");
+        }
         if self
             .state
             .as_ref()
@@ -2189,6 +2270,14 @@ fn goal_terminal_disposition<'a>(
 impl CommandExecutor for AcpxCommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.restore()?;
+        if self.candidate_admission().is_some()
+            && command.command_type == "run.attach"
+            && command.payload.get("paperclipNextAuthority").is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot rotate a live runner authority",
+            ));
+        }
         if command.command_type != "run.attach"
             && self
                 .state
@@ -2571,6 +2660,21 @@ mod tests {
     }
 
     #[test]
+    fn timing_receipt_drops_sidecar_contents_and_invalid_numeric_fields() {
+        let receipt = bounded_turn_timing(
+            &json!({"timing":{
+                "statusMs":10, "statusOffsetMs":0, "promptMs":-1,
+                "promptOffsetMs":"private", "sidecarMs":300001, "prompt":"secret"
+            }}),
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            receipt,
+            json!({"statusMs":10.0,"statusOffsetMs":0.0,"runnerMs":20.0})
+        );
+    }
+
+    #[test]
     fn live_request_snapshot_preserves_durable_turn_and_provider_callback_bindings() {
         use crate::acpx_provider_state::AcpxProviderState;
         use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -2788,6 +2892,7 @@ mod tests {
                 true,
             );
             let launch_profile = AcpxLaunchProfile {
+                candidate_admission: None,
                 authority_digest: format!("sha256:{}", "d".repeat(64)),
                 command: command_path.clone(),
                 args: Vec::new(),
@@ -3244,11 +3349,10 @@ mod tests {
     }
 
     #[test]
-    fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
-        let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v30-identity.json"
-        ))
-        .unwrap();
+    fn pi_profile_admits_its_release_attestation_and_rejects_the_prior_digest() {
+        let current_digest = crate::generated_acpx_profiles::acpx_release_profile("pi")
+            .unwrap()
+            .command_digest;
         let mut value = descriptor("codex");
         value["agent"] = json!("pi");
         value["model"] = json!("openrouter/deepseek/deepseek-v4-flash-0731");
@@ -3258,37 +3362,15 @@ mod tests {
         value["agentRuntimeVersion"] = json!("1.0.0");
         value["piThinkingLevel"] = json!("low");
         value["providerPolicy"] = json!({"readOnly": true});
-        value["commandDigest"] = published["commandDigest"].clone();
+        value["commandDigest"] = json!(current_digest);
         let current: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
         current.validate(&context()).unwrap();
 
-        for prior in [
-            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v16-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v17-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v18-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v19-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v20-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v21-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v22-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
-            include_str!(
-                "../../../../test-fixtures/pi-acp/profile-v24-claude-historical-identity.json"
-            ),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v25-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v26-identity.json"),
-            include_str!("../../../../test-fixtures/pi-acp/profile-v27-identity.json"),
-        ] {
-            let prior: Value = serde_json::from_str(prior).unwrap();
-            value["commandDigest"] = prior["commandDigest"].clone();
-            let rejected: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
-            assert!(rejected.validate(&context()).is_err());
-        }
+        // The last source-bound Pi identity is refused.
+        value["commandDigest"] =
+            json!("sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc");
+        let rejected: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        assert!(rejected.validate(&context()).is_err());
     }
 
     #[test]
@@ -3308,6 +3390,7 @@ mod tests {
         write_artifact(&sidecar, b"qualified sidecar", false);
         let args = vec![sidecar.to_string_lossy().into_owned()];
         let profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: args.clone(),
@@ -3338,6 +3421,36 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_authority_cannot_come_from_descriptor_or_recover_a_prior_runner() {
+        let directory = temporary_directory("candidate-authority");
+        let mut admission = crate::acpx_candidate_admission::test_admission("run-1", "session-1");
+        admission.model = "explicit-test-model".to_owned();
+        let profile = AcpxLaunchProfile {
+            candidate_admission: Some(admission.clone()),
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/qualified/node"),
+            args: vec!["/qualified/acpx-sidecar.js".to_owned()],
+            artifacts: Vec::new(),
+        };
+        let mut injected = descriptor("antigravity");
+        injected["candidateAdmission"] = json!(admission);
+        assert!(serde_json::from_value::<AcpxProviderDescriptor>(injected).is_err());
+        let config = test_config(&directory, Some(profile));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let mut wrong = descriptor("antigravity");
+        wrong["model"] = json!("another-model");
+        assert!(executor.prepare(&json!({"provider":wrong})).is_err());
+        assert!(!executor.state_path().exists());
+        assert!(executor.attach_run(&json!({})).is_err());
+        write_artifact(&executor.state_path(), b"{}", false);
+        let error = executor.restore().unwrap_err().to_string();
+        assert!(error.contains("cannot adopt a prior durable runner"));
+        assert!(executor.session.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     mod darwin_named_transport_cleanup {
         use super::*;
@@ -3357,6 +3470,7 @@ mod tests {
                 write_artifact(&sidecar, b"qualified sidecar", false);
                 let args = vec![sidecar.to_string_lossy().into_owned()];
                 let profile = AcpxLaunchProfile {
+                    candidate_admission: None,
                     authority_digest: format!("sha256:{}", "d".repeat(64)),
                     command: command.clone(),
                     args: args.clone(),
@@ -3478,6 +3592,7 @@ mod tests {
         write_artifact(&command, b"qualified node", true);
         symlink(&command, &command_link).unwrap();
         let profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command_link.clone(),
             args: Vec::new(),
@@ -3536,6 +3651,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -3818,6 +3934,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4141,6 +4258,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4416,6 +4534,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4584,6 +4703,7 @@ mod tests {
         let sidecar = directory.join("sidecar");
         write_artifact(&sidecar, b"qualified sidecar", true);
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: sidecar.clone(),
             args: Vec::new(),

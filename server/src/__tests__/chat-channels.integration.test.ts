@@ -1,9 +1,33 @@
+import { resolveCommittedNativeRecoveryNotices, pendingNativeRecoveryNotices } from "../services/native-runtime/native-recovery-notices.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { nativeResponsePresentationWork } from "../services/native-runtime/native-response-presentation-work.js";
+import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
+import { registerGitHubReviewProjectionWork } from "../services/chat-channels/github/review-projection-work.js";
+import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task-preparation.js";
+import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
+import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
+import { environmentService } from "../services/environments.js";
+import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
+import { chatInboundWakeNoticeWork } from "../services/chat-inbound-wake-notice-work.js";
+import { nativeChatProgressWork } from "../services/chat-native-progress-work.js";
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
+import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
+import { accessService } from "../services/access.js";
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+import { claimTaskRetryInput, releaseUnadmittedTaskRetryInput } from "../services/chat-channels/task-retry-input.js";
+import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
+import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../services/agent-lifecycle.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { chatRunSourceMessageId } from "../services/chat-channels/run-origin.js";
 import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
-import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { budgetPolicies } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -17,10 +41,11 @@ import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@
 import { githubResponseAuthorityFields } from "../services/chat-channels/github/response-authority-read.js";
 import * as activityLogModule from "../services/activity-log.js";
 import * as connectionCredentialBindings from "../services/connection-credential-bindings.js";
-import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates, environments } from "@paperclipai/db";
+import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
 import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../services/paperclip-cloud-connector.js";
 import { buildSlackAppManifest, SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
+import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
 import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
@@ -28,7 +53,7 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-wor
 import { aiConnectionService } from "../services/ai-connections.js";
 import { fastResponseService } from "../services/fast-responses.js";
 import { fastResponseReceipt } from "../services/fast-response-provider.js";
-import { fastResponseRequests } from "@paperclipai/db";
+import { companyFastResponses, fastResponseRequests } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolActionRequests, toolInvocations, toolPolicies } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
@@ -36,6 +61,7 @@ import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
+import { GITHUB_INLINE_RETRY_WINDOW_MS } from "../services/chat-channels/github/retry.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
@@ -129,7 +155,10 @@ import {
   issues,
   nativeRunResults,
   nativeRunFinalizations,
+  statusDecisions,
+  statusDecisionEffects,
   environmentLeases,
+  environments,
   principalPermissionGrants,
   projects,
   projectWorkspaces,
@@ -182,6 +211,9 @@ import {
 } from "../services/chat-teams-personal-recipient.js";
 import * as discordQuestionForms from "../services/chat-discord-question-forms.js";
 import { issueService } from "../services/issues.js";
+import { companyService } from "../services/companies.js";
+import { ensureProjectAccessMember } from "../services/projects.js";
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
@@ -199,6 +231,8 @@ import {
 } from "../services/chat-interaction-publications.js";
 import {
   enqueueChatRunMilestones,
+  enqueueChatRunLifecycleMilestones,
+  enqueueSafeNativeChatProgress,
   githubRunReplyState,
   resolveChatRunPresentationAuthorizationReason,
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
@@ -240,6 +274,7 @@ import type {
 import {
   finalizeNativeRun,
   repairCommittedNativeChatResponse,
+  recoverCommittedNativeChatResponse,
 } from "../services/native-runtime/native-run-finalizer.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
@@ -798,11 +833,13 @@ class FakeChatSdkRuntime {
 
 const TEST_SLACK_BOT_SCOPES =
   "app_mentions:read,assistant:write,channels:history,channels:read,chat:write,commands,files:read,files:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,reactions:read,reactions:write,users:read";
+const discordApplicationPrefix = 1_400_000_000_000_000_000n +
+  BigInt(`0x${randomUUID().replaceAll("-", "").slice(0, 12)}`) * 1000n;
 let discordApplicationSequence = 0n;
 
 function uniqueDiscordApplicationId() {
   discordApplicationSequence += 1n;
-  return (123_456_789_012_345_678n + discordApplicationSequence).toString();
+  return (discordApplicationPrefix + discordApplicationSequence).toString();
 }
 
 function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
@@ -1078,17 +1115,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       secretsTmpDir,
       "master.key",
     );
-    if (externalTestDatabaseUrl) {
-      db = createDb(externalTestDatabaseUrl);
-    } else {
-      tempDb = await startEmbeddedPostgresTestDatabase(
-        "paperclip-chat-channels-",
-      );
-      db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-chat-channels-");
     }
+    // Scheduler tests advance virtual time while PostgreSQL uses real I/O.
+    // Do not expire or time out its connections on those virtual clock jumps.
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, {
+      idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+    });
   }, 90_000);
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
     if (previousKeyFile === undefined)
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
@@ -1139,8 +1177,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   const companyPrefixAttempts = 8;
   const freshCompanyPrefix = () => `C${randomUUID().replaceAll("-", "").slice(0, 7).toUpperCase()}`;
 
-  async function seedCompany(nextIssuePrefix = freshCompanyPrefix) {
-    const companyId = randomUUID();
+  async function seedCompany(nextIssuePrefix = freshCompanyPrefix, companyId = randomUUID()) {
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
     let inserted = false;
@@ -1213,6 +1250,81 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("tracks the actual Board Teams claim and retires recovery when its receipt commits", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    context.controls.beforeConsentReceipt = async () => { entered(); await hold; };
+    let send: ReturnType<typeof context.service.publishBoardMessage> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await context.service.registerTeamsAttemptRecoveryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      send = context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "File with an active claim", `teams-attempt-${randomUUID()}`, "owner-user", [attachment.id]);
+      await ready;
+      const [claim] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+      expect(claim.phase).toBe("consent_sending"); expect(context.consentCards).toHaveLength(1);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(coordinator.nextWakeAt()).toBe(claim.attemptExpiresAt!.getTime());
+      }, { timeout: 5000 });
+      release(); await send;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const [settled] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, claim.id));
+      expect(settled.phase).toBe("awaiting_consent"); expect(settled.attemptId).toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      release(); await send;
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+      // This test intentionally leaves unused consent; do not feed the next global expiry fixture.
+      await db.delete(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+    }
+  });
+
+  it("expires Teams consent from the committed Board transfer without periodic maintenance", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      // Register before the ordinary Board producer, with no transfer rows yet.
+      await context.service.registerTeamsConsentExpiryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      const publication = await context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "A file awaiting consent", `teams-expiry-${randomUUID()}`, "owner-user", [attachment.id]);
+      const [transfer] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.publicationId, publication.id));
+      expect(transfer.phase).toBe("awaiting_consent"); expect(context.consentCards).toHaveLength(1);
+      await settle(); expect(coordinator.nextWakeAt()).toBe(transfer.expiresAt.getTime());
+      const reads = vi.spyOn(db, "select");
+      try { await vi.advanceTimersByTimeAsync(10_000); expect(reads).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); }
+      await vi.advanceTimersByTimeAsync(transfer.expiresAt.getTime() - Date.now() + 1000); await settle();
+      const [expired] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, transfer.id));
+      const [projected] = await db.select().from(chatPublications).where(eq(chatPublications.id, publication.id));
+      expect(expired.phase).toBe("expired"); expect(projected.state).toBe("cancelled");
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
 
   it("retries a colliding company fixture prefix and creates a distinct complete fixture", async () => {
     const existing = await seedCompany();
@@ -2872,6 +2984,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
+      const f = await publicationRetryFixture();
+      await db.update(chatEndpoints).set({ botDisplayName: "Fresh Review Bot" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      const submit = (await githubBotToolsForSession(db, f.session)).find(tool => tool.upstreamToolName === "submit_review")!;
+      expect(submit.parametersSchema).toMatchObject({ properties: {
+        summary: { description: expect.stringContaining("Review body only") },
+        rationale: { description: expect.stringContaining("Do not repeat the summary") },
+      } });
+      const assessment = { ...f.assessment, summary: "## Fresh Review Bot — 2/5\n\n## Fresh Review Bot — 3/5\n\nAdvisory review\n\n### Findings\n\nKeep this section." };
+      const result = await f.service.execute(f.session, "submit_review", assessment, "formatted-summary");
+      expect(result).toMatchObject({ status: "processed", score: 3 });
+      const body = [...f.responseComments.values()][0].body;
+      expect(body).toMatch(/^## Fresh Review Bot — 3\/5\n\nAdvisory review/);
+      expect(body.match(/^## Fresh Review Bot — /gm)).toHaveLength(1);
+      expect(body).toContain("### Findings\n\nKeep this section.");
+      expect(body).toContain(f.assessment.rationale);
+      expect(body).toContain(`Reviewed commit: \`${f.head}\``);
+      expect(f.responseComments.size).toBe(1);
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(review.assessment?.summary).toBe(assessment.summary);
+    });
     it("preserves the published GitHub assessment during passive-response maintenance", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
@@ -3857,7 +3990,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const retry = gateway.executeTool(input);
       release();
       expect(await retry).toMatchObject({ result: { data: { actionId: expect.any(String) } } });
-      await expect.poll(async () => (await f.action())?.status).toBe("processed");
+      // A replay may return the durable receipt while the timed-out request
+      // still publishes. Observe the owner's bounded retry window, not the
+      // assertion library's one-second default.
+      await expect.poll(async () => (await f.action())?.status,
+        { timeout: GITHUB_INLINE_RETRY_WINDOW_MS }).toBe("processed");
       expect(await gateway.executeTool(input)).toMatchObject({ result: { data: { status: "processed" } } });
       const actions = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
         eq(chatActions.kind, "github_review_publication")));
@@ -3865,7 +4002,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(actions[0].status).toBe("processed");
       expect(f.responseComments.size).toBe(1);
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
-    });
+    }, 60_000);
     it("rejects changed requests and revoked access before repeating an unstaged review", async () => {
       const f = await publicationRetryFixture();
       let metadataReads = 0;
@@ -3932,6 +4069,629 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(attempts).toBe(2);
       expect(f.responseWrites).toHaveLength(writes);
     });
+    it("restores terminal GitHub responses and leaves finalized history quiet", async () => {
+      const f = await toolReplyFixture();
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true);
+      try {
+        await worker.ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          const providerWrites = f.responseWrites.length;
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(f.responseWrites).toHaveLength(providerWrites);
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("settles a deleted Board-origin request without starving unrelated terminal GitHub replies", async () => {
+      const invalid = await toolReplyFixture();
+      const valid = await toolReplyFixture();
+      const [message] = await db.insert(issueComments).values({ companyId: invalid.companyId,
+        issueId: invalid.conversation.issueId!, authorType: "user", authorUserId: "owner-user", body: "Board follow-up",
+      }).returning();
+      await initializeRunIdentity(db, { companyId: invalid.companyId, runId: invalid.run.id,
+        issueId: invalid.conversation.issueId!, responsibleUserId: "owner-user", messageIds: [message.id], cause: "instruction" });
+      await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, message.id));
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() })
+        .where(inArray(heartbeatRuns.id, [invalid.run.id, valid.run.id]));
+      const invalidWrites = invalid.responseWrites.length;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      // The denied request must never reach transport; only the valid request
+      // uses this provider, even though discovery covers both companies.
+      const responses = githubResponseCommentService(db, valid.providerFetch);
+      try {
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...valid.responseComments.values()][0]?.body, { timeout: 5000 })
+          .toContain("stopped before completing");
+        const [denied] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, invalid.endpoint.id),
+          eq(chatActions.kind, "github_response_comment")));
+        expect(denied).toMatchObject({ status: "cancelled", result: { retryable: false, code: "authorization_changed" } });
+        expect(invalid.responseWrites).toHaveLength(invalidWrites);
+        expect(valid.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }),
+          { timeout: 5000 }).toEqual({ next: null, active: 0 });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(valid.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["passive", "missing"] as const)("keeps native presentation idle until its committed GitHub outcome: %s", async outcome => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "observed", resultJson: null })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment")));
+      expect(action.status).toBe("processed");
+      const baseline = f.responseWrites.length, originalBody = [...f.responseComments.values()][0].body;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }), { timeout: 5000 })
+          .toEqual({ next: null, active: 0 });
+        expect(f.responseWrites).toHaveLength(baseline);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          expect(f.responseWrites).toHaveLength(baseline);
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        const settlePresentation = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await notifyChatRunMilestones(tx, { companyId: f.companyId, issueId: f.conversation.issueId! });
+          await tx.update(heartbeatRuns).set({ nativePhase: "committed", updatedAt: new Date(), resultJson: {
+            finalizationPhase: "committed", finalizationReasonCode: outcome === "passive" ? "external_chat_response_waiting" : "completed",
+            nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: outcome === "passive" ? "yielded" : "completed",
+              continuation: outcome === "passive" ? { kind: "response_wake", idempotencyKey: "settled-presentation" } : null },
+            presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "none",
+              reasonCodes: [outcome === "passive" ? "yielded_control_plane_wait" : "no_final_response"] },
+          } }).where(eq(heartbeatRuns.id, f.run.id));
+        };
+        await expect(db.transaction(async tx => { await settlePresentation(tx); throw new Error("rollback presentation"); }))
+          .rejects.toThrow("rollback presentation");
+        expect(f.responseWrites).toHaveLength(baseline);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].nativePhase).toBe("observed");
+        await db.transaction(settlePresentation);
+        await expect.poll(async () => (await readChatActionsById(action.id))[0], { timeout: 5000 }).toMatchObject({
+          status: outcome === "passive" ? "cancelled" : "processed", result: { final: true },
+        });
+        if (outcome === "passive") {
+          expect(f.responseWrites).toHaveLength(baseline);
+          expect([...f.responseComments.values()][0].body).toBe(originalBody);
+        } else expect([...f.responseComments.values()][0].body).toContain("without publishing a final response");
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }), { timeout: 5000 })
+          .toEqual({ next: null, active: 0 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes terminal GitHub responses after the outer issue transaction commits", async () => {
+      const f = await toolReplyFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true);
+      try {
+        await worker.ready;
+        const baseline = f.responseWrites.length;
+        const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await issueService(tx as unknown as Db).update(f.conversation.issueId!, { status: "blocked" });
+        };
+        await expect(db.transaction(async tx => { await change(tx); throw new Error("rollback terminal issue"); }))
+          .rejects.toThrow("rollback terminal issue");
+        expect(f.responseWrites).toHaveLength(baseline);
+        let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { entered = resolve; });
+        const pending = db.transaction(async tx => { await change(tx); entered(); await hold; });
+        try { await ready; expect(f.responseWrites).toHaveLength(baseline); }
+        finally { release(); await pending; }
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("keeps an acknowledged paused GitHub request quiet until its new run finishes", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "New request", userId: "42", userName: "octocat", mentioned: true }) });
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect([...f.responseComments.values()][0].body).toContain("paused");
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        const providerWrites = f.responseWrites.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        expect(f.responseWrites).toHaveLength(providerWrites);
+        reads.mockRestore(); writes.mockRestore(); vi.useRealTimers();
+        await coordinator.stop();
+        await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.conversation.issueId!));
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+          status: "failed", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+            endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
+          }) });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull(); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("retains terminal GitHub response work across %s", async mode => {
+      const f = await toolReplyFixture();
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      let worker = responses.registerTerminalResponseWork(coordinator, () => canRun);
+      try {
+        await worker.ready;
+        const baseline = f.responseWrites.length;
+        if (mode === "restart") await coordinator.stop(); else canRun = false;
+        await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+        await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+        expect(f.responseWrites).toHaveLength(baseline);
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = responses.registerTerminalResponseWork(coordinator, () => true);
+          await worker.ready;
+        } else { canRun = true; worker.wake(); }
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("reactivates terminal GitHub response recovery from committed native identity", async () => {
+      const f = await toolReplyFixture();
+      const messageId = String(f.run.contextSnapshot?.wakeCommentId);
+      await db.update(heartbeatRuns).set({ status: "failed", nativeIssueId: f.conversation.issueId,
+        contextSnapshot: {}, updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        const baseline = f.responseWrites.length;
+        await expect(db.transaction(async tx => {
+          await initializeRunIdentity(tx as unknown as Db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+            responsibleUserId: "owner-user", messageIds: [messageId], cause: "instruction" });
+          throw new Error("rollback identity");
+        })).rejects.toThrow("rollback identity");
+        expect(f.responseWrites).toHaveLength(baseline);
+        await initializeRunIdentity(db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+          responsibleUserId: "owner-user", messageIds: [messageId], cause: "instruction" });
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("waits for the existing GitHub publication lease before a terminal response", async () => {
+      const f = await toolReplyFixture();
+      const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.endpointId, f.endpoint.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id,
+          repositoryId: String(resource.metadata.providerRepositoryId), number: 418 }, f.providerFetch, async () => { entered(); await hold; });
+        await ready;
+        const baseline = f.responseWrites.length;
+        await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+        await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).not.toBeNull();
+        expect(f.responseWrites).toHaveLength(baseline);
+        release(); await lease;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { release(); await lease; await coordinator.stop(); }
+    });
+
+    it("finds owed terminal GitHub work beyond a full page of unrelated request history", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const [original] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, original.deliveryId!));
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const history = Array.from({ length: 101 }, (_, index) => ({
+        actionId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        deliveryId: randomUUID(), commentId: randomUUID(), providerId: `retained-request-${index}`,
+      }));
+      await db.insert(issueComments).values(history.map(row => ({ id: row.commentId, companyId: f.companyId,
+        issueId: f.conversation.issueId!, authorUserId: "owner-user", body: "A separate retained request" })));
+      await db.insert(chatDeliveries).values(history.map(row => ({ ...delivery, id: row.deliveryId,
+        providerEventId: row.providerId, deduplicationKey: row.providerId, state: "processed" as const })));
+      await db.insert(chatMessageLinks).values(history.map(row => ({ companyId: f.companyId, endpointId: f.endpoint.id,
+        conversationId: f.conversation.id, deliveryId: row.deliveryId, commentId: row.commentId,
+        providerMessageId: row.providerId, direction: "inbound" })));
+      await db.insert(chatActions).values(history.map(row => ({ ...original, id: row.actionId, deliveryId: row.deliveryId,
+        providerActionId: `github_response:${row.deliveryId}`, result: { code: "fast_response_superseded" } })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const baseline = f.responseWrites.length;
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.responseWrites).toHaveLength(baseline + 1);
+        expect(await db.select().from(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId))))
+          .toEqual(expect.arrayContaining(history.map(row => expect.objectContaining({ id: row.actionId,
+            status: "processed", result: { code: "fast_response_superseded" } }))));
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        await db.delete(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId)));
+      }
+    });
+
+    it.each([false, true])("parks terminal GitHub responses behind the publication owner (uncertain: %s)", async uncertain => {
+      const f = await toolReplyFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      let intercepted = false;
+      let sending: Promise<unknown> | undefined;
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_publication"))))[0];
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        f.setSupplementalProviderFetch(async input => {
+          if (intercepted || !String(input).endsWith("/access_tokens")) return undefined;
+          const publication = await action();
+          if (!publication) return undefined;
+          intercepted = true;
+          if (uncertain) await db.update(chatActions).set({ result: { replyWriteStarted: true } }).where(eq(chatActions.id, publication.id));
+          await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+          entered(); await hold;
+          return undefined;
+        });
+        const baseline = f.responseWrites.length;
+        sending = githubChatReviewService(db, f.providerFetch).execute(f.session, "comment", { body: "Authored final response", idempotencyKey: "terminal-owner-race" });
+        await ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect(f.responseWrites).toHaveLength(baseline);
+        release(); await sending;
+        expect((await action()).status).toBe("cancelled");
+        if (!uncertain) await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        if (uncertain) expect(f.responseWrites).toHaveLength(baseline);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        onTestFinished(() => { reads.mockRestore(); writes.mockRestore(); });
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore(); expect(errors).toEqual([]);
+      } finally { release(); await sending; await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["tree restore", "workspace admission", "exhausted recovery"] as const)("wakes a paused GitHub response from %s", async producer => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(chatActions).set({ result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || '{"final":true}'::jsonb` })
+        .where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "New request", userId: "42", userName: "octocat", mentioned: true }) });
+      const [link] = await db.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.endpointId, f.endpoint.id), eq(chatMessageLinks.providerMessageId, "41802")));
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, link.deliveryId!), eq(chatActions.kind, "github_response_comment"))))[0];
+      let mutate: () => Promise<unknown>;
+      if (producer === "tree restore") {
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+        const tree = issueTreeControlService(db);
+        const actor = { actorType: "user" as const, actorId: "owner-user", userId: "owner-user" };
+        const cancelled = await tree.createHold(f.companyId, issueId, { mode: "cancel", actor });
+        await tree.cancelIssueStatusesForHold(f.companyId, issueId, cancelled.hold.id);
+        const restore = await tree.createHold(f.companyId, issueId, { mode: "restore", actor });
+        mutate = () => tree.restoreIssueStatusesForHold(f.companyId, issueId, restore.hold.id, { actor });
+      } else if (producer === "workspace admission") {
+        const settings = instanceSettingsService(db);
+        const previous = await settings.getExperimental();
+        await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+        onTestFinished(() => settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }));
+        const heartbeat = heartbeatService(db);
+        onTestFinished(() => heartbeat.drainActiveRunExecutions());
+        await db.update(issues).set({ status: "todo", workMode: "standard", responsibleUserId: "owner-user",
+          projectId: null, projectWorkspaceId: null, executionWorkspaceId: null, executionRunId: null, checkoutRunId: null,
+          executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
+        }).where(eq(issues.id, issueId));
+        await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, f.assignedAgentId));
+        mutate = () => heartbeat.wakeup(f.assignedAgentId, { source: "assignment", triggerDetail: "system",
+          reason: "issue_assigned", payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+      } else {
+        await db.update(issues).set({ status: "in_progress", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+        await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: f.assignedAgentId,
+          cause: "uncertain_external_action", status: "active", evidence: { runId: f.run.id }, fingerprint: randomUUID(),
+          nextAction: "Preserve the recorded outcome without replay.",
+        });
+        mutate = () => settleUnrecoverableExecutions(db);
+      }
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect((await action()).result?.pausedVersion).toBeUndefined();
+        await mutate();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+        await expect.poll(async () => (await action()).result?.pausedVersion, { timeout: 5000 }).toEqual(expect.any(String));
+        expect([...f.responseComments.values()][0].body).toContain("paused");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["release", "restart", "drain", "standby"] as const)("wakes GitHub acknowledgements from a real publication lease %s", async mode => {
+      const f = await reviewBotFixture();
+      const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.endpointId, f.endpoint.id));
+      const errors: unknown[] = [];
+      let canRun = true;
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      const register = () => f.service.registerGitHubAcknowledgementWork(coordinator, () => canRun);
+      let worker = register();
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const claimed = new Promise<void>(resolve => { entered = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await worker.ready;
+        expect(errors).toEqual([]);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        expect(coordinator.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore();
+        vi.setSystemTime(Date.now() - 120_000);
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id,
+          repositoryId: String(resource.metadata.providerRepositoryId), number: 418 }, f.providerFetch, async () => { entered(); await hold; });
+        await claimed;
+        if (mode === "restart") await coordinator.stop();
+        if (mode === "drain" || mode === "standby") canRun = false;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+        expect(action.status).toBe("received"); expect(f.responseWrites).toEqual([]);
+        release(); await lease;
+        if (mode === "drain" || mode === "standby") {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(f.responseWrites).toEqual([]);
+          canRun = true; worker.wake();
+        }
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = register(); await worker.ready;
+        }
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].status).toBe("processed");
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(f.responseWrites).toHaveLength(1);
+        expect(f.responseWrites[0].body).toContain("Working on this");
+        const settledReads = vi.spyOn(db, "select"), settledWrites = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(settledReads).not.toHaveBeenCalled(); expect(settledWrites).not.toHaveBeenCalled();
+        settledReads.mockRestore(); settledWrites.mockRestore();
+        expect(errors).toEqual([]);
+      } finally {
+        release(); await lease; await coordinator.stop(); vi.useRealTimers();
+      }
+    });
+
+    it.each(["failure", "expiry", "published", "delivery_unknown", "streaming quarantine"] as const)("releases a GitHub acknowledgement after fast response %s without maintenance polling", async outcome => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse,
+        provider: async () => ({ ...(outcome === "failure" ? { errorCode: "invalid_output", noProviderWork: true } : { text: "I’ll check it." }), receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 8 } }) }) });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        }, { timeout: 5000 });
+        expect(f.responseWrites).toEqual([]);
+        if (outcome === "expiry") await vi.advanceTimersByTimeAsync(job.expiresAt.getTime() - Date.now());
+        else {
+          await fast.process(job);
+          if (outcome === "streaming quarantine") {
+            await db.update(chatPublications).set({ state: "streaming", updatedAt: new Date(0) })
+              .where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+            await vi.advanceTimersByTimeAsync(Math.max(0, job.expiresAt.getTime() - Date.now()));
+            await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(f.responseWrites).toEqual([]);
+            const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+            reads.mockRestore(); writes.mockRestore();
+            await f.service.processPendingPublications();
+          } else if (outcome === "delivery_unknown") {
+            await db.transaction(async tx => {
+              await notifyChatPublicationWork(tx, { companyId: job.companyId, issueId: job.issueId });
+              await tx.update(chatPublications).set({ state: "delivery_unknown" }).where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+            });
+          } else if (outcome === "published") await f.service.processPendingPublications();
+        }
+        let processedAt: number | undefined;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+          expect(action.status).toBe("processed");
+          processedAt ??= Date.now();
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        if (outcome !== "expiry" && outcome !== "streaming quarantine") expect(processedAt).toBeLessThan(job.expiresAt.getTime());
+        expect(f.responseWrites).toHaveLength(["failure", "expiry"].includes(outcome) ? 1 : 0);
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes a GitHub acknowledgement only after the outer fast-response transaction commits", async () => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+      const [job] = await db.update(fastResponseRequests).set({ expiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(fastResponseRequests.companyId, f.companyId)).returning();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        const skip = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(companyFastResponses).set({ enabled: false }).where(eq(companyFastResponses.companyId, f.companyId));
+          expect(await fastResponseService(tx as unknown as Db).process(job)).toMatchObject({ status: "unavailable" });
+          await vi.advanceTimersByTimeAsync(100);
+          expect(f.responseWrites).toEqual([]);
+          expect((await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, job.id)))[0].status).toBe("pending");
+        };
+        await expect(db.transaction(async tx => { await skip(tx); throw new Error("rollback fast response skip"); })).rejects.toThrow("rollback fast response skip");
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(idleWorkSnapshot().active).toBe(0); });
+        expect(f.responseWrites).toEqual([]);
+        expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        await db.transaction(skip);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect(f.responseWrites).toHaveLength(1);
+          expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+        }, { timeout: 10_000 });
+        expect(Date.now()).toBeLessThan(job.expiresAt.getTime());
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["drain", "standby", "shutdown"] as const)("stops GitHub acknowledgement sends at %s between provider requests", async mode => {
+      const f = await reviewBotFixture();
+      f.setSupplementalProviderFetch(async (input, init) => String(input).includes("/issues/418/comments") && init?.method === "POST" ? new Response("unavailable", { status: 503 }) : undefined);
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      expect(action.status).toBe("failed"); expect(action.result?.attempts).toBe(1);
+      await db.update(chatActions).set({ result: { ...action.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, action.id));
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      f.setSupplementalProviderFetch(async input => {
+        if (String(input).includes("/issues/418/comments?")) { entered(); await held; }
+        return undefined;
+      });
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      let worker = f.service.registerGitHubAcknowledgementWork(coordinator, () => canRun);
+      let stopping: Promise<void> | undefined;
+      try {
+        await started;
+        if (mode === "shutdown") stopping = coordinator.stop(); else canRun = false;
+        release(); await worker.ready; await stopping;
+        expect(f.responseWrites).toEqual([]);
+        expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].result?.attempts).toBe(1);
+        canRun = true;
+        if (mode === "shutdown") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = f.service.registerGitHubAcknowledgementWork(coordinator, () => true); await worker.ready;
+        } else worker.wake();
+        await vi.waitFor(() => { expect(f.responseWrites).toHaveLength(1); expect(coordinator.nextWakeAt()).toBeNull(); }, { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally { release(); await stopping; await coordinator.stop(); }
+    });
+
+    it("retries a failed GitHub acknowledgement at its saved deadline", async () => {
+      const f = await reviewBotFixture();
+      let unavailable = true, attempts = 0;
+      f.setSupplementalProviderFetch(async (input, init) => {
+        if (String(input).includes("/issues/418/comments") && init?.method === "POST") { attempts++; if (unavailable) return new Response("unavailable", { status: 503 }); }
+        return undefined;
+      });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+        expect(action.status).toBe("failed"); expect(attempts).toBe(1);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(coordinator.nextWakeAt()).toBe(Date.parse(String(action.result?.retryAt))); });
+        unavailable = false;
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(f.responseWrites).toHaveLength(1); expect(coordinator.nextWakeAt()).toBeNull(); }, { timeout: 10_000 });
+        expect(attempts).toBe(2);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["received", "failed", "cancelled"] as const)("preserves the %s GitHub receipt lifecycle during acknowledgement recovery", async status => {
+      const f = await toolReplyFixture();
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      expect(action.result?.id).toBeTruthy();
+      await db.update(chatActions).set({ status }).where(eq(chatActions.id, action.id));
+      const writes = f.responseWrites.length;
+      await githubResponseCommentService(db, f.providerFetch).tryAcknowledge(action.deliveryId!);
+      const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, action.id));
+      expect(settled.status).toBe(status === "cancelled" ? "cancelled" : "processed");
+      expect(settled.result).toEqual(action.result);
+      expect(f.responseWrites).toHaveLength(writes);
+    });
+
     it("does not post a GitHub working comment when the scheduler declines the request", async () => {
       const f = await reviewBotFixture();
       f.wakeup.mockImplementation(async (agentId, opts) => {
@@ -4063,6 +4823,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect([...f.responseComments.values()][0].body).toContain("without publishing a final response");
       expect([...f.responseComments.values()][0].body).toContain("paperclip-response-state:final");
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+    });
+    it("parks a GitHub acknowledgement until native presentation commits", async () => {
+      const f = await toolReplyFixture();
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      await db.update(chatActions).set({ status: "received", result: null }).where(eq(chatActions.id, action.id));
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", resultJson: {} })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => errors.push(error) });
+      const decision = { schema: "paperclip.run_presentation_decision.v1" as const,
+        commentAction: "none" as const, chosenSource: "none" as const, reasonCodes: ["no_final_response"] };
+      const commit = (database: typeof db) => recordRunPresentationDecision(database, {
+        companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!, decision,
+      });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const quiet = async () => {
+          await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
+            expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+        };
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await expect(db.transaction(async tx => {
+          await commit(tx as unknown as typeof db);
+          expect((await readHeartbeatRunsById(f.run.id))[0].resultJson?.presentationDecision).toBeUndefined();
+          throw new Error("rollback presentation");
+        })).rejects.toThrow("rollback presentation");
+        await quiet();
+        expect(f.responseWrites).toHaveLength(1);
+        await commit(db);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0])
+            .toMatchObject({ status: "processed", result: { final: true } });
+        }, { timeout: 10_000 });
+        expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+        expect(f.responseWrites[1].body).toContain("without publishing a final response");
+        await quiet();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
     it("does not let an unsettled GitHub fallback block a later board message", async () => {
       const f = await toolReplyFixture();
@@ -5945,6 +6753,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    it("wakes GitHub milestone identity restoration only after outer commit and stays quiet on reconfirmation", async () => {
+      const f = await reviewBotFixture();
+      await f.service.revokeLink(f.endpoint.id, f.principal.id);
+      const verified = { githubUserId: "42", login: "octocat" };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      const link = () => db.select().from(chatIdentityLinks).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id), eq(chatIdentityLinks.principalId, f.principal.id),
+      )).then(rows => rows[0]);
+      try {
+        await expect(db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+          throw new Error("rollback identity restoration");
+        })).rejects.toThrow("rollback identity restoration");
+        expect((await link()).status).toBe("revoked");
+        events.length = 0;
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await link()).status).toBe("linked");
+        events.length = 0;
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
+    it("wakes milestone authority only when GitHub guest settings change, after outer commit", async () => {
+      const f = await reviewBotFixture();
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      const configuration = { ...initial.configuration, people: [{
+        kind: "guest" as const, githubUserId: "84", login: "contributor",
+        sponsorUserId: "owner-user", permissionProfile: "restricted" as const, automaticReviews: false,
+      }] };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      try {
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .saveConfiguration(f.endpoint.id, { expectedRevision: initial.revision, configuration }, "owner-user");
+          expect(events).toEqual(["intent"]);
+          expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(false);
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(true);
+        events.length = 0;
+        const current = await f.management.configuration(f.endpoint.id, "owner-user");
+        await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: current.revision, configuration }, "owner-user");
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
     it("scopes guest tasks and rechecks their sponsor before every bot tool", async () => {
       const f = await reviewBotFixture();
       const initial = await f.management.configuration(
@@ -6123,7 +6993,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.wakeup).not.toHaveBeenCalled();
       const allowed = { ...payload, sender: { id: 42, login: "octocat", type: "User" }, issue: { ...payload.issue, user: payload.sender } };
       await send(allowed);
-      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length).toBe(1);
+      // A transient `chat_endpoints` row lock defers admission with a retry
+      // floor of 1000 ms (`chat-channels/inbound/wakeups.ts`), so allow one
+      // deferred retry instead of the 1000 ms poll default.
+      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
       const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
       const comments = await readIssueCommentsByIssueId(conversation.issueId!);
       expect(comments).toHaveLength(1);
@@ -6413,6 +7286,454 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         runId: run.id,
       }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
     });
+    async function reviewCheckWorkerFixture(status: "running" | "failed" = "failed") {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      const event = githubAutomaticReviewEvent({ action: "opened", repository: { id: 97531, full_name: "paperclipai/paperclip" }, sender: { id: 42, login: "octocat" },
+        pull_request: { number: 418, title: "Review", body: "", draft: false, base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) }, user: { id: 42, login: "octocat" }, labels: [] } }, randomUUID())!;
+      const [review] = await db.insert(chatGitHubReviews).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId!, runId: f.run.id, repositoryId: "97531", repository: event.repository, pullNumber: 418, headSha: event.headSha,
+        deliveryId: event.deliveryId, configurationRevision: config.revision, policySnapshot: config.configuration.defaults, event }).returning();
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.run.id));
+      const writes: Record<string, unknown>[] = [], requests: string[] = [];
+      let remoteHead = event.headSha, unavailable = false;
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/418")) { requests.push(url); return Response.json({ head: { sha: remoteHead } }); }
+        if (url.includes("/check-runs?")) { requests.push(url); return Response.json({ check_runs: [] }); }
+        if (url.endsWith("/check-runs") && init?.method === "POST") {
+          requests.push(url);
+          if (unavailable) return Response.json({ message: "injected check outage" }, { status: 503 });
+          writes.push(JSON.parse(String(init.body)));
+          return Response.json({ id: 418, html_url: "https://github.com/checks/418" });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "github_review_check"))))[0];
+      return { ...f, event, review, endpoint, checks, writes, requests, action,
+        enqueue: () => checks.enqueue(endpoint, event, true, "authorized"),
+        setRemoteHead: (value: string) => { remoteHead = value; }, setUnavailable: (value: boolean) => { unavailable = value; } };
+    }
+
+    it("keeps GitHub review check history quiet and wakes from the real enqueue producer", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        await f.enqueue();
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect(f.writes).toEqual([expect.objectContaining({ status: "completed" })]);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+        onTestFinished(() => { reads.mockRestore(); transactions.mockRestore(); });
+        const count = f.requests.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled();
+        expect(f.requests).toHaveLength(count);
+        reads.mockRestore(); transactions.mockRestore();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("defers GitHub review check enqueue until outer commit and discards rollback", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const enqueue = (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) =>
+        githubReviewCheckService(tx as unknown as Db, f.providerFetch).enqueue(f.endpoint, f.event, true, "authorized");
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await enqueue(tx); throw new Error("rollback check"); })).rejects.toThrow("rollback check");
+        expect(await f.action()).toBeUndefined(); expect(f.writes).toEqual([]);
+        let entered!: () => void, release!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+        const pending = db.transaction(async tx => { await enqueue(tx); entered(); await hold; });
+        try { await ready; expect(f.writes).toEqual([]); } finally { release(); await pending; }
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a missed GitHub head webhook only while a review check remains unresolved", async () => {
+      const f = await reviewCheckWorkerFixture("running");
+      await f.enqueue();
+      const errors: unknown[] = [];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(() => f.writes.length, { timeout: 5000 }).toBe(1);
+        expect(f.writes[0].status).toBe("in_progress");
+        const saved = await f.action();
+        expect(Date.parse(String(saved.result?.retryAt))).toBeGreaterThan(Date.now());
+        f.setRemoteHead("c".repeat(40));
+        await vi.advanceTimersByTimeAsync(6000);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("cancelled");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
+        const reads = vi.spyOn(db, "select"), count = f.requests.length;
+        onTestFinished(() => reads.mockRestore());
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(f.requests).toHaveLength(count); reads.mockRestore();
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("retains GitHub review check work across %s", async mode => {
+      const f = await reviewCheckWorkerFixture();
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      let worker = f.checks.registerCheckWork(coordinator, () => canRun);
+      try {
+        await worker.ready;
+        if (mode === "restart") await coordinator.stop(); else canRun = false;
+        await f.enqueue(); expect(f.writes).toEqual([]);
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = f.checks.registerCheckWork(coordinator, () => true); await worker.ready;
+        } else { canRun = true; worker.wake(); }
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("retains the saved GitHub review check retry through restart without an early provider call", async () => {
+      const f = await reviewCheckWorkerFixture();
+      f.setUnavailable(true); await f.enqueue(); await f.checks.processPending();
+      const failed = await f.action();
+      expect(failed).toMatchObject({ status: "failed", result: { attempts: 1, retryable: true } });
+      const future = new Date(Date.now() + 60_000).toISOString();
+      await db.update(chatActions).set({ result: { ...failed.result, retryAt: future } }).where(eq(chatActions.id, failed.id));
+      f.setUnavailable(false);
+      const errors: unknown[] = [];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const count = f.requests.length;
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(Date.parse(future)); expect(f.requests).toHaveLength(count);
+        await vi.advanceTimersByTimeAsync(61_000);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("waits for and wakes from the actual GitHub review check publication lease", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let entered!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id, repositoryId: "97531", number: 418 }, f.providerFetch,
+          async () => { entered(); await hold; });
+        await ready; await f.enqueue();
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).not.toBeNull();
+        expect(f.writes).toEqual([]); release(); await lease;
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { release(); await lease; await coordinator.stop(); }
+    });
+
+    it("wakes a GitHub review check from committed run identity before its future head deadline", async () => {
+      const f = await reviewCheckWorkerFixture("running");
+      await f.enqueue(); await f.checks.processPending();
+      const action = await f.action(), future = new Date(Date.now() + 60_000).toISOString();
+      await db.update(chatActions).set({ result: { ...action.result, retryAt: future } }).where(eq(chatActions.id, action.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(Date.parse(future));
+        const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await initializeRunIdentity(tx as unknown as Db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+            responsibleUserId: "owner-user", messageIds: [String(f.run.contextSnapshot?.wakeCommentId)], cause: "instruction" });
+        };
+        await expect(db.transaction(async tx => { await change(tx); throw new Error("rollback run check"); })).rejects.toThrow("rollback run check");
+        expect(f.writes).toHaveLength(1);
+        await db.transaction(change);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(2); expect(f.writes[1].status).toBe("completed");
+        expect(Date.now()).toBeLessThan(Date.parse(future)); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("finds a GitHub review check after a full page of revoked work and ignores settled history", async () => {
+      const f = await reviewCheckWorkerFixture();
+      await f.enqueue(); const original = await f.action();
+      const pageKey = randomUUID().replaceAll("-", "").slice(0, 9);
+      const prefix = Array.from({ length: 101 }, (_, index) => ({ ...original,
+        id: `00000000-0000-4000-8000-${pageKey}${String(index + 1).padStart(3, "0")}`,
+        providerActionId: `revoked-check-${index}`, payload: { ...original.payload, runtimeGeneration: -1 } }));
+      await db.insert(chatActions).values(prefix);
+      await db.insert(chatActions).values(Array.from({ length: 101 }, (_, index) => ({ ...original,
+        id: randomUUID(), providerActionId: `settled-check-${index}`, status: "processed" })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(async () => (await db.select().from(chatActions).where(and(eq(chatActions.id, original.id))))[0].status,
+          { timeout: 15_000 }).toBe("processed");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 15_000 }).toBeNull();
+        expect(f.writes).toHaveLength(1);
+        const cancelled = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.status, "cancelled")));
+        expect(cancelled).toHaveLength(101); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("stops GitHub review check HTTP after shutdown admission and recovers its durable action", async () => {
+      const f = await reviewCheckWorkerFixture();
+      await f.enqueue();
+      let entered!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+      const guardedProvider: typeof fetch = async (input, init) => {
+        if (String(input).endsWith("/pulls/418")) { entered(); await hold; }
+        return f.providerFetch(input, init);
+      };
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const starting = githubReviewCheckService(db, guardedProvider).registerCheckWork(coordinator, () => true).ready;
+        await ready;
+        const stopped = coordinator.stop(); release(); await stopped; await starting;
+        expect(f.writes).toEqual([]); expect((await f.action()).status).toBe("received");
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { release(); await coordinator.stop(); }
+    });
+
+    async function reviewProjectionFixture(cancelFirst = true) {
+      const f = await reviewBotFixture();
+      const deliveryId = randomUUID();
+      const payload = { action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: { number: 82, title: "Rapid pushes", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [] } };
+      f.setSupplementalProviderFetch(async input => String(input).endsWith("/pulls/82")
+        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } }) : undefined);
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const event = githubAutomaticReviewEvent(payload, deliveryId)!;
+      await checks.enqueue(endpoint, event, true, "authorized");
+      const action = async () => (await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "github_review_check"))))[0];
+      if (cancelFirst) await checks.processPending();
+      const admit = async () => {
+        expect((await f.service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+          event: "pull_request", delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+        }))).status).toBeLessThan(300);
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(endpoint.id)).length,
+          { timeout: 10_000 }).toBe(1);
+        return (await readChatGitHubReviewsByEndpointId(endpoint.id))[0];
+      };
+      const read = async (id: string) => (await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, id)))[0];
+      return { ...f, endpoint, event, action, checks, admit, read };
+    }
+
+    it("wakes stale GitHub review projection repair from real admission and leaves settled history quiet", async () => {
+      const f = await reviewProjectionFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        const review = await f.admit();
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        await f.service.shutdown();
+        const [manual] = await db.insert(chatGitHubReviews).values({ ...review, id: randomUUID(),
+          deliveryId: "run:" + randomUUID() + ":" + review.headSha, state: "queued" }).returning();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect((await f.read(manual.id)).state).toBe("queued"); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes stale GitHub review projection repair when cancellation commits after the review is admitted", async () => {
+      const f = await reviewProjectionFixture(false);
+      let entered!: () => void, release!: () => void;
+      const enteredHead = new Promise<void>(resolve => { entered = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const provider: typeof fetch = async (input, init) => {
+        if (String(input).endsWith("/pulls/82")) { entered(); await hold; }
+        return f.providerFetch(input, init);
+      };
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let dispatch: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        dispatch = githubReviewCheckService(db, provider).processPending();
+        await enteredHead;
+        const review = await f.admit();
+        expect((await f.read(review.id)).state).toBe("queued");
+        release(); await dispatch;
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        expect((await f.action()).result).toMatchObject({ code: "stale_head" }); expect(errors).toEqual([]);
+      } finally { release(); await dispatch; await coordinator.stop(); }
+    });
+
+    it("holds stale GitHub review projection receipt repair until the outer commit and discards rollback", async () => {
+      const f = await reviewProjectionFixture();
+      const review = await f.admit(); await f.service.shutdown();
+      await db.delete(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id));
+      const receipt = (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => retainGitHubReviewReceipt(tx, f.endpoint,
+        review.issueId, review.deliveryId, { context: review.event, revision: review.configurationRevision, policy: review.policySnapshot });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(receipt); throw new Error("rollback projection receipt"); }))
+          .rejects.toThrow("rollback projection receipt");
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(receipt); entered(); await wait; });
+        await held;
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id))[0]?.state, { timeout: 5000 }).toBe("superseded");
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("recovers stale GitHub review projection through %s", async mode => {
+      const f = await reviewProjectionFixture();
+      let canRun = mode === "restart";
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const review = await f.admit(); await f.service.shutdown();
+        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.waitFor(() => {
+          if (mode === "standby") expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+          else expect(idleWorkSnapshot().active).toBe(0);
+        });
+        expect((await f.read(review.id)).state).toBe("queued");
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains failed stale GitHub review projection repair across drain without passive SQL", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+      const failure = new Error("projection write unavailable");
+      const update = vi.spyOn(db, "update").mockImplementationOnce(() => { throw failure; });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1); expect((await f.read(review.id)).state).toBe("queued");
+        canRun = false; update.mockRestore();
+        await vi.advanceTimersByTimeAsync(30_000); await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true; await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toHaveLength(1);
+      } finally { update.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each([false, true])("rechecks assessment ownership after stale GitHub review projection selection waits for a row lock (shutdown: %s)", async shutdown => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const assessment: NonNullable<typeof review.assessment> = { reviewedCommit: review.headSha, score: 4, complete: true,
+        summary: "Reviewed", rationale: "Covered changes", coverage: { reviewedPaths: ["src/a.ts"], omittedPaths: [], limitations: [] }, findings: [] };
+      let locked!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { locked = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+      const pending = db.transaction(async tx => {
+        await tx.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)).for("update");
+        locked(); await held;
+        await tx.update(chatGitHubReviews).set({ assessment }).where(eq(chatGitHubReviews.id, review.id));
+      });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const updates = vi.spyOn(db, "update");
+      try {
+        await ready;
+        const starting = registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => updates.mock.calls.length, { timeout: 5000 }).toBe(1);
+        await expect.poll(async () => {
+          const rows = await db.execute<{ waiting: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and wait_event_type = 'Lock' and query like 'update %chat_github_reviews%') as waiting`);
+          return rows[0].waiting;
+        }, { timeout: 5000 }).toBe(true);
+        let stopped = false;
+        const stopping = shutdown ? coordinator.stop().then(() => { stopped = true; }) : undefined;
+        await Promise.resolve(); expect(stopped).toBe(false);
+        release(); await pending; await starting; await stopping;
+        expect(await f.read(review.id)).toMatchObject({ state: "queued", assessment });
+        expect(coordinator.nextWakeAt()).toBeNull();
+      } finally { release(); await pending; await coordinator.stop(); updates.mockRestore(); }
+    });
+
+    it("drains more than one page of stale GitHub review projections without touching manual history", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, review.deliveryId));
+      const action = await f.action();
+      const extra = Array.from({ length: 105 }, () => ({ id: randomUUID(), receipt: randomUUID() }));
+      await db.insert(chatDeliveries).values(extra.map(item => ({ ...delivery, id: item.id, providerEventId: item.receipt,
+        deduplicationKey: item.receipt, normalizedEvent: { ...delivery.normalizedEvent,
+          githubAutomatic: { context: { ...review.event, deliveryId: item.receipt }, revision: review.configurationRevision, policy: review.policySnapshot } } })));
+      await db.insert(chatActions).values(extra.map(item => ({ ...action, id: randomUUID(), providerActionId: "github-check:" + item.receipt,
+        payload: { ...action.payload, event: { ...review.event, deliveryId: item.receipt } } })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: item.id })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: "run:" + item.id + ":" + review.headSha })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          const rows = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+          expect(rows.filter(row => row.state === "superseded")).toHaveLength(106);
+          expect(rows.filter(row => row.state === "queued")).toHaveLength(105);
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
     it("supersedes a late review projection after its check already rejected the old head", async () => {
       const f = await reviewBotFixture();
       const deliveryId = randomUUID();
@@ -7090,6 +8411,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...context, endpoint, callbacks };
   }
 
+  async function recoverDiscordCommands(service: ChatChannelService) {
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await service.registerCommandWork(coordinator, () => true).ready;
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop();
+    }
+  }
+
   describe("Discord automatic command registration", () => {
     async function retireRegistrationFixture(
       service: ChatChannelService,
@@ -7100,7 +8432,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .select()
           .from(chatDiscordCommandOwners)
           .where(eq(chatDiscordCommandOwners.endpointId, endpointId));
-        await service.configure(endpointId, { action: "remove" }, "owner-user");
+        if ((await service.get(endpointId))?.status !== "archived") {
+          await service.configure(endpointId, { action: "remove" }, "owner-user");
+        }
         expect((await service.get(endpointId))?.status).toBe("archived");
         // Removal retires only this fixture's runtime; immutable application
         // ownership stays available to the no-adoption/tombstone checks.
@@ -7117,6 +8451,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     async function registrationFixture(
       mode: "success" | "unavailable" | "unknown" = "success",
+      receiverOptions: Partial<Pick<ChatChannelServiceOptions, "discordGatewayLeaseTtlMs" | "discordGatewayLeaseRenewalIntervalMs">> = {},
     ) {
       const fixture = await seedCompany();
       const applicationId = uniqueDiscordApplicationId();
@@ -7174,7 +8509,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           return Response.json(command);
         },
       ) as unknown as typeof globalThis.fetch;
-      const context = createService(new FakeChatSdkRuntime(), providerFetch);
+      const context = createService(new FakeChatSdkRuntime(), providerFetch, receiverOptions);
       const endpoint = await context.service.create(
         fixture.companyId,
         {
@@ -7227,6 +8562,217 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
     }
 
+    it("drives receiver discovery through real configure, rotation, pause, and resume producers", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      const settle = async () => vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const quiet = async () => {
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(20_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+      };
+      try {
+        await f.service.registerReceiverWork(coordinator, () => true).ready;
+        await settle(); await quiet();
+        await f.configure(); await settle();
+        const first = f.runtime.get(f.endpoint.id); expect(first).not.toBeNull();
+        await quiet();
+        await f.service.configure(f.endpoint.id, { action: "reconnect", credentials: { ...f.credentials, botToken: "rotated-receiver-token" } }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).not.toBe(first); expect(first!.shutdown).toHaveBeenCalledOnce();
+        // Pause requires completed onboarding; configure/reconnect intentionally
+        // leave this fixture waiting for its first test conversation.
+        const configured = await f.service.get(f.endpoint.id);
+        await db.update(chatEndpoints).set({ status: "active", setup: { ...configured.setup, step: "complete" } })
+          .where(eq(chatEndpoints.id, f.endpoint.id));
+        await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).toBeNull(); await quiet();
+        await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).not.toBeNull(); await quiet();
+        await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).toBeNull(); await quiet();
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); await f.service.shutdown(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("does not rediscover a receiver stopped by a company removal refresh", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let reads: ReturnType<typeof vi.spyOn> | undefined;
+      try {
+        await f.configure(); await f.service.registerReceiverWork(coordinator, () => true).ready;
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        const owned = f.runtime.get(f.endpoint.id)!;
+        reads = vi.spyOn(db, "select");
+        await db.transaction(async tx => {
+          await notifyChatCompanyConfiguration(tx, f.fixture.companyId);
+          await tx.delete(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+        });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        expect(owned.shutdown).toHaveBeenCalledOnce();
+        expect(reads).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+      } finally {
+        reads?.mockRestore(); await coordinator.stop(); vi.useRealTimers(); await f.service.shutdown();
+        await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      }
+    });
+
+    it("takes over a persisted foreign receiver lease at its deadline through the worker", async () => {
+      const f = await registrationFixture();
+      await f.configure(); await f.service.shutdown();
+      const token = randomUUID(), expiresAt = new Date(Date.now() + 500);
+      await db.insert(chatEndpointLeases).values({ companyId: f.fixture.companyId, endpointId: f.endpoint.id,
+        leaseKey: "discord_gateway_runtime", token, expiresAt });
+      const standby = createService(new FakeChatSdkRuntime(), f.providerFetch);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await standby.service.registerReceiverWork(coordinator, () => true).ready;
+        expect(standby.runtime.get(f.endpoint.id)).toBeNull();
+        expect(coordinator.nextWakeAt()).toBeGreaterThanOrEqual(expiresAt.getTime());
+        await vi.waitFor(() => expect(standby.runtime.get(f.endpoint.id)).not.toBeNull(), { timeout: 5000 });
+        const [lease] = await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+        expect(lease.token).not.toBe(token);
+        expect(lease.expiresAt.getTime()).toBeGreaterThan(expiresAt.getTime());
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); await retireRegistrationFixture(standby.service, f.endpoint.id);
+      }
+    });
+
+    it("restarts a receiver after token loss only after the old listener has stopped", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: 50 });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let release!: () => void;
+      const stopped = new Promise<void>(resolve => { release = resolve; });
+      try {
+        await f.configure();
+        await f.service.registerReceiverWork(coordinator, () => true).ready;
+        const old = f.runtime.get(f.endpoint.id)!;
+        old.shutdown.mockImplementation(async () => { await stopped; });
+        await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+        await vi.waitFor(() => expect(old.shutdown).toHaveBeenCalledOnce());
+        await db.transaction(tx => notifyChatEndpointConfiguration(tx, f.endpoint));
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        expect(f.runtime.get(f.endpoint.id)).toBeNull();
+        release();
+        await vi.waitFor(async () => {
+          expect(f.runtime.get(f.endpoint.id)).not.toBeNull();
+          expect(f.runtime.get(f.endpoint.id)).not.toBe(old);
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBeNull();
+        });
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        release(); await coordinator.stop(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("learns the first configured command and cancels its deadline when the endpoint is removed", async () => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await f.configure();
+        expect(f.calls).toEqual(["GET", "POST"]);
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const deadline = coordinator.nextWakeAt();
+        expect(deadline).toBeGreaterThan(Date.now() + 200_000);
+        await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBeNull();
+        });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+        expect(f.calls).toEqual(["GET", "POST"]);
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it.each(["credential rotation", "company deletion"] as const)("updates scheduled registration after real %s", async (mutation) => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let deleted = false;
+      let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        await f.configure();
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const before = coordinator.nextWakeAt()!;
+        const owners = await db.select().from(chatDiscordCommandOwners)
+          .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id));
+        if (mutation === "credential rotation") {
+          await f.service.configure(f.endpoint.id, {
+            action: "reconnect", credentials: { ...f.credentials, botToken: "discord-rotated-secret" },
+          }, "owner-user");
+          const [saved] = await db.select().from(chatActions).where(and(
+            eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "discord_command_registration"),
+          ));
+          const expected = Date.parse(String(saved.result!.retryAt));
+          expect(expected).toBeGreaterThan(before);
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(expected));
+          expect(f.calls).toEqual(["GET", "POST", "GET"]);
+        } else {
+          lifecycle = configureAgentLifecycle(db, {
+            requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+          });
+          await deleteCompany(db, f.fixture.companyId);
+          deleted = true;
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(idleWorkSnapshot().active).toBe(0);
+            expect(coordinator.nextWakeAt()).toBeNull();
+          });
+          expect(await db.select().from(chatDiscordCommandOwners)
+            .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id))).toEqual(owners);
+          await f.service.shutdown();
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+          expect(f.calls).toEqual(["GET", "POST"]);
+        }
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await lifecycle?.stop();
+        await coordinator.stop(); vi.useRealTimers();
+        if (deleted) await f.service.shutdown();
+        else await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
     it("keeps mention setup usable on registration failure and upgrades automatically when due", async () => {
       const f = await registrationFixture("unavailable");
       try {
@@ -7240,7 +8786,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ).toBeTypeOf("function");
         f.available();
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(true);
@@ -7268,6 +8814,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.makeDue();
         restarted = createService(new FakeChatSdkRuntime(), f.providerFetch);
         await restarted.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(restarted.service);
         expect(
           (await restarted.service.get(f.endpoint.id))?.capabilities
             .slashCommands,
@@ -7342,7 +8889,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         };
         f.available(false);
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(f.runtime.endpoints.get(f.endpoint.id)).toBe(original);
         expect(f.runtime.configurations.get(f.endpoint.id)?.callbacks).toBe(
           originalCallbacks,
@@ -7383,7 +8930,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
         );
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(false);
@@ -7985,11 +9532,62 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(posts(f)).toHaveLength(1);
         expect(new URLSearchParams(String(posts(f)[0]![1]!.body)).get("channel")).toBe(f.installerId);
       });
-      it("links the actor's own manager identity without requiring a connect command", async () => {
+      it("signals milestone eligibility around the real Slack account link and stays quiet on reconfirmation", async () => {
         const f = await managedFixture(); await f.provision();
         await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
-        expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
-        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        let release!: () => void, acquired!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const locked = new Promise<void>(resolve => { acquired = resolve; });
+        const lock = db.transaction(async tx => {
+          await tx.execute(sql`lock table chat_identity_links in share mode`);
+          acquired(); await gate;
+        });
+        await locked;
+        const linking = f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() });
+        void linking.catch(() => undefined);
+        try {
+          try {
+            await vi.waitFor(async () => {
+              const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+                where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+                  and query like 'insert into "chat_identity_links"%'`);
+              expect(waiting.count).toBeGreaterThan(0);
+            });
+            expect(events).toEqual(["intent"]);
+            expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          } finally { release(); await lock; await linking; }
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id)))
+            .toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+          events.length = 0;
+          expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
+          expect(events).toEqual([]);
+        } finally { unsubscribe(); }
+      });
+      it("settles a failed Slack account-link intent without committing identity or sending a test message", async () => {
+        const f = await managedFixture(); await f.provision();
+        await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        f.provider.mockClear();
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        await db.execute(sql`create function sleep_slack_link_failure() returns trigger language plpgsql as $$ begin raise exception 'link write unavailable'; end $$`);
+        await db.execute(sql`create trigger sleep_slack_link_failure before insert on chat_identity_links for each row execute function sleep_slack_link_failure()`);
+        try {
+          await expect(f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).rejects.toThrow();
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          expect(posts(f)).toHaveLength(0);
+        } finally {
+          unsubscribe();
+          await db.execute(sql`drop trigger sleep_slack_link_failure on chat_identity_links`);
+          await db.execute(sql`drop function sleep_slack_link_failure()`);
+        }
       });
       it("requires a private Slack challenge for an unknown account before linking and sending the test", async () => {
         const f = await managedFixture(); await f.provision();
@@ -13255,6 +14853,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     await service.test(endpoint.id, "owner-user");
+    const recovery = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    onTestFinished(() => recovery.stop());
+    await service.registerGitHubWebhookRecoveryWork(recovery, () => true).ready;
+    await expect.poll(() => (recovery.nextWakeAt() ?? 0) - Date.now(), { timeout: 5000 }).toBeGreaterThan(30_000);
+    await expect.poll(() => idleWorkSnapshot().active).toBe(0);
     const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
     const credentialRefsBeforeDeletion = await db
       .select({ refs: toolConnections.credentialSecretRefs })
@@ -13281,6 +14884,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "revoked",
       healthMessage: "GitHub App installation was removed",
     });
+    await expect.poll(() => recovery.nextWakeAt(), { timeout: 5000 }).toBeNull();
     await expect(
       db
         .select({
@@ -14545,6 +16149,351 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(recoveredRuntime.webhookRequest).toBeNull();
     await restarted.shutdown();
     await configured.service.shutdown();
+  });
+
+  describe("GitHub webhook recovery scheduling", () => {
+    it.each(["unconfigured", "cloud", "disabled"] as const)("leaves %s recovery quiet", async mode => {
+      const f = mode === "unconfigured" ? null : await githubPreIngressRecoveryFixture();
+      const service = f?.service ?? createService().service;
+      if (f) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        if (mode === "cloud") await db.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          github: { ...endpoint.setup.github, cloudRegistrationId: "relay-owned" } } }).where(eq(chatEndpoints.id, endpoint.id));
+        else await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+        f.requests.length = 0;
+      }
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect(f?.requests ?? []).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["null", "missing", "deleted"] as const)("rejects a %s assigned agent before GitHub recovery can become orphaned", async mode => {
+      const f = await githubPreIngressRecoveryFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      await f.makeScanDue();
+
+
+      const mutation = mode === "null"
+        ? db.execute(sql`update ${chatEndpoints} set assigned_agent_id = null where ${chatEndpoints.id} = ${endpoint.id}`)
+        : mode === "missing"
+          ? db.update(chatEndpoints).set({ assignedAgentId: randomUUID() }).where(eq(chatEndpoints.id, endpoint.id))
+          : db.delete(agents).where(eq(agents.id, endpoint.assignedAgentId));
+      const integrityCode = mode === "null" ? "23502"
+        : mode === "deleted" ? expect.stringMatching(/^(23001|23503)$/) : "23503";
+      await expect(mutation).rejects.toMatchObject({ cause: { code: integrityCode } });
+      expect((await readChatEndpointsById(endpoint.id))[0].assignedAgentId).toBe(endpoint.assignedAgentId);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.id, endpoint.assignedAgentId)))
+        .toEqual([{ id: endpoint.assignedAgentId }]);
+      f.requests.length = 0;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active,
+          scheduled: (coordinator.nextWakeAt() ?? 0) > Date.now() + 30_000 }), { timeout: 5000 })
+          .toEqual({ active: 0, scheduled: true });
+        expect(f.posts).toHaveLength(1);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); vi.useRealTimers(); }
+        expect(f.posts).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("waits for the saved recovery deadline and requests a genuine GitHub redelivery", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      const state = await f.checkpoint();
+      const dueAt = Date.now() + 30_000;
+      await db.update(chatSdkState).set({ value: { ...(state.value as Record<string, unknown>),
+        nextScanAt: new Date(dueAt).toISOString() } }).where(eq(chatSdkState.id, state.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBe(dueAt);
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        await vi.advanceTimersByTimeAsync(16_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(f.posts).toHaveLength(1); });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(await f.ingress()).toBeUndefined(); expect(f.wakeup).not.toHaveBeenCalled();
+        expect((await f.callback()).status).toBe(202);
+        expect(await f.ingress()).toBeDefined();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reactivates recovery from real resume and cancels its deadline on pause", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      await db.update(chatEndpoints).set({ setup: { ...endpoint.setup, step: "complete" } }).where(eq(chatEndpoints.id, endpoint.id));
+      await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        const oldVersion = (await f.checkpoint()).version;
+        await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
+        await expect.poll(async () => (await f.checkpoint()).version, { timeout: 5000 }).toBeGreaterThan(oldVersion);
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return { active: idleWorkSnapshot().active, future: next !== null && next > Date.now() + 30_000 };
+        }, { timeout: 5000 }).toEqual({ active: 0, future: true });
+        await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("reconstructs due GitHub recovery through %s", async mode => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      let canRun = false;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(f.posts).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains GitHub recovery configuration intent through nested commit and rollback", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await tx.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          runtimeGeneration: Number(oldWindow.generation) + 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, endpoint.id));
+      };
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(change); throw new Error("rollback epoch"); })).rejects.toThrow("rollback epoch");
+        expect((await f.checkpoint()).version).toBe(old.version);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(change); entered(); await wait; });
+        await held;
+        expect((await f.checkpoint()).version).toBe(old.version);
+        expect(f.requests).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
+          generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+        // The checkpoint commits before this coordinator pass rearms its deadline.
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return next !== null && next < Date.now() + 90_000;
+        }, { timeout: 5000 }).toBe(true);
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it("preempts a future GitHub recovery window when only credential references change", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
+        await db.transaction(async tx => {
+          await notifyChatEndpointConfiguration(tx, f.endpoint);
+          await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
+            versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
+        });
+        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
+          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
+        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a failed GitHub deadline reconstruction after drain without passive SQL", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: error => errors.push(error) });
+      const reads = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("recovery inventory unavailable"); });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1);
+        reads.mockRestore(); canRun = false;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const passive = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(passive).not.toHaveBeenCalled(); }
+        finally { passive.mockRestore(); }
+        canRun = true;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(errors).toHaveLength(1);
+      } finally { reads.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reconstructs more than one page of GitHub recovery deadlines and dispatches fair batches of five", async () => {
+      const first = await githubPreIngressRecoveryFixture(), second = await githubPreIngressRecoveryFixture();
+      const ids: string[] = [];
+      for (const [f, count] of [[first, 103], [second, 3]] as const) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+        const copies = Array.from({ length: count }, () => ({ id: randomUUID(), connectionId: randomUUID(),
+          appId: BigInt("0x" + randomUUID().replaceAll("-", "").slice(0, 12)).toString() }));
+        await db.insert(toolConnections).values(copies.map(copy => ({ ...connection, id: copy.connectionId, uid: copy.connectionId })));
+        await db.insert(chatEndpoints).values(copies.map(copy => ({ ...endpoint, id: copy.id, connectionId: copy.connectionId,
+          publicId: copy.id, botExternalId: copy.appId, botUsername: "recovery-" + copy.id })));
+        ids.push(...copies.map(copy => copy.id));
+      }
+      const windows = () => db.select({ companyId: chatSdkState.companyId }).from(chatSdkState).where(and(
+        inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await first.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const initial = await windows();
+        expect(initial).toHaveLength(5);
+        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await windows()).toHaveLength(106);
+        }, { timeout: 10_000 });
+        expect(first.requests).toEqual([]); expect(second.requests).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each([
+      ["drain", false, false], ["shutdown", false, false],
+      ["drain", true, false], ["shutdown", true, false],
+      ["drain", false, true], ["shutdown", true, true],
+    ] as const)("preserves a GitHub redelivery stopped before transport (%s, prior receipt: %s, superseded: %s)", async (mode, priorReceipt, superseded) => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      if (priorReceipt) {
+        await f.service.processFailedGitHubWebhookDeliveries(5, f.endpoint.id);
+        const sent = (await f.receipt())!;
+        await db.update(chatActions).set({ result: { ...sent.result, retryAt: new Date(0).toISOString(),
+          requestedAt: new Date(Date.now() - 60_000).toISOString() } }).where(eq(chatActions.id, sent.id));
+        f.setDeliveries([{ ...f.original, id: "9007199254740994", redelivery: true,
+          delivered_at: new Date(Date.now() - 15_000).toISOString() }, f.original]);
+        await f.makeScanDue();
+      }
+      const previous = await f.receipt();
+      let successor: Awaited<ReturnType<typeof f.receipt>>;
+      f.posts.length = 0;
+      let canRun = true, stoppedAfterClaim = false;
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: () => undefined });
+      let stopping: Promise<void> | undefined;
+      const transaction = db.transaction.bind(db);
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        const result = await transaction(callback, options);
+        if (typeof result === "string" && !stoppedAfterClaim) {
+          const receipt = await f.receipt();
+          if (receipt?.id === result && receipt.status === "processing") {
+            if (superseded) {
+              await db.update(chatActions).set({ result: { ...receipt.result,
+                requestedAt: new Date(Date.now() + 1000).toISOString() } }).where(eq(chatActions.id, receipt.id));
+              successor = await f.receipt();
+            }
+            stoppedAfterClaim = true; canRun = false;
+            if (mode === "shutdown") stopping = coordinator.stop();
+          }
+        }
+        return result;
+      }) as Db["transaction"]);
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        await stopping;
+        expect(stoppedAfterClaim).toBe(true); expect(f.posts).toEqual([]);
+        if (superseded) expect(await f.receipt()).toEqual(successor);
+        else if (previous) expect(await f.receipt()).toMatchObject({ status: previous.status,
+          result: previous.result, payload: previous.payload });
+        else expect(await f.receipt()).toBeUndefined();
+        transactions.mockRestore();
+        await coordinator.stop();
+        await f.makeScanDue();
+        canRun = true;
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        if (superseded) {
+          expect(f.posts).toEqual([]);
+          expect(await f.receipt()).toEqual(successor);
+        } else {
+          expect(f.posts).toHaveLength(1);
+          expect(await f.receipt()).toMatchObject({ status: "processed", result: { attempts: priorReceipt ? 2 : 1 } });
+        }
+      } finally { transactions.mockRestore(); await coordinator.stop(); await stopping; }
+    });
+
+    it("joins held GitHub history at shutdown without starting another HTTP request", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      f.setBeforeList(async () => { entered(); await held; });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+      let deliveries = 0;
+      const unrelated = coordinator.register(DELIVERY_QUEUES.feedback, { retryMs: 1000,
+        run: async () => { deliveries++; }, hasPending: async () => false });
+      await unrelated.ready;
+      const worker = f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true);
+      let stopping: Promise<void> | undefined;
+      try {
+        await started;
+        unrelated.wake();
+        await expect.poll(() => deliveries).toBe(2);
+        const count = f.requests.length;
+        let stopped = false;
+        stopping = coordinator.stop().then(() => { stopped = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(stopped).toBe(false);
+        release(); await worker.ready; await stopping;
+        expect(f.requests).toHaveLength(count); expect(f.posts).toEqual([]);
+        expect((await f.checkpoint()).value).toMatchObject({ outcome: "scan_failed" });
+      } finally { release(); await (stopping ?? coordinator.stop()); }
+    });
   });
 
   it("leaves Cloud-managed GitHub webhook recovery to the relay", async () => {
@@ -34623,7 +36572,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("drains bounded Slack chat-origin milestones without admitting an internal issue run", async () => {
+  it("wakes an existing chat milestone when ordinary ingress reactivates its conversation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, wakeup } = await configuredSlackEndpoint(fixture);
+    const thread = makeThread({ channelId: "C-REOPEN-MILESTONE", id: "slack:C-REOPEN-MILESTONE:4100.1", name: "reopen-milestone" });
+    const send = (id: string) => deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id, text: "@maya continue this conversation", mentioned: true }), trigger: "mention" });
+    await send("4100.1");
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    const [link] = await db.select().from(chatMessageLinks).where(and(
+      eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.providerMessageId, "4100.1")));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "failed", errorCode: "low_trust_isolation_unavailable", updatedAt: new Date(),
+      contextSnapshot: { issueId: conversation.issueId, source: "chat:slack", endpointId: endpoint.id, wakeCommentId: link.commentId },
+    });
+    await db.update(chatConversations).set({ state: "unavailable" }).where(eq(chatConversations.id, conversation.id));
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const notice = () => db.select().from(chatPublications).where(and(eq(chatPublications.issueId, conversation.issueId),
+      eq(chatPublications.idempotencyKey, `run:${runId}:failed:${endpoint.id}`)));
+    try {
+      await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(await notice()).toEqual([]);
+      const wakesBefore = wakeup.mock.calls.length;
+      await send("4100.2");
+      expect(wakeup.mock.calls.length).toBe(wakesBefore + 1);
+      // The harness accepts the new wake without creating a run. Existing
+      // projection debt must wake from ingress, not a later run transition.
+      await expect.poll(notice, { timeout: 5000 }).toEqual([
+        expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${endpoint.id}` }),
+      ]);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
+
+  it.each(["milliseconds", "microseconds"])("drains bounded Slack chat-origin milestones without admitting an internal issue run (%s)", async (precision) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -34718,15 +36704,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })),
     ]);
 
-    const inserted: number[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      inserted.push(
-        await enqueueChatRunMilestones(db, {
-          since: new Date("2026-09-05T14:00:00.000Z"),
-          limit: 1,
-        }),
-      );
+    if (precision === "microseconds") {
+      await db.update(heartbeatRuns).set({
+        updatedAt: sql`'2026-09-05T14:59:00.000123Z'::timestamptz`,
+      }).where(inArray(heartbeatRuns.id, resolverRejectedRuns.map(run => run.id)));
     }
+    // Fail a non-advancing pagination loop explicitly instead of leaving a
+    // background query chain running after the test timeout.
+    const select = db.select.bind(db);
+    let reads = 0;
+    const readGuard = vi.spyOn(db, "select").mockImplementation((...args) => {
+      if (args[0] && "runUpdatedAt" in args[0] && ++reads > 100) {
+        throw new Error("Milestone projection did not advance past rejected candidates");
+      }
+      return select(...args);
+    });
+    const inserted: number[] = [];
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        inserted.push(
+          await enqueueChatRunLifecycleMilestones(db, {
+            since: new Date("2026-09-05T14:00:00.000Z"),
+            limit: 1,
+          }),
+        );
+      }
+    } finally { readGuard.mockRestore(); }
     expect(inserted).toEqual([1, 1, 1, 0]);
     const publications = await db
       .select()
@@ -34878,7 +36881,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
         .where(and(eq(chatActions.endpointId, lane.endpoint.id), eq(chatActions.kind, "slack_session_sync"))),
         { timeout: 10_000 }).toEqual([{ status: "processed" }]);
-      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      await vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
       const scans = vi.spyOn(db, "select");
       try {
         await new Promise(resolve => setTimeout(resolve, 1200));
@@ -41377,6 +43383,99 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it.each([
+    ["request_checkbox_confirmation", "accept"],
+    ["request_checkbox_confirmation", "reject"],
+    ["request_checkbox_confirmation", "withdraw"],
+    ["request_checkbox_confirmation", "supersede"],
+    ["suggest_tasks", "accept"],
+    ["suggest_tasks", "reject"],
+    ["connection_intent", "reject"],
+    ["connection_intent", "reassign"],
+  ] as const)("wakes parked Slack %s actions after board %s commits", async (kind, decision) => {
+    const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    try {
+      const thread = makeThread({ channelId: "C-REVIEW", id: "slack:C-REVIEW:4500.1", name: "reviews" });
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread, message: makeMessage({ id: "4500.1", text: "@maya review this change", mentioned: true, userId: `U-REVIEW-${randomUUID()}` }), trigger: "mention" });
+      await qualifySetupRoundTrip(service, endpoint.id);
+      await service.test(endpoint.id, "owner-user");
+      const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+      const sourceRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "succeeded", responsibleUserId: "owner-user", contextSnapshot: { issueId: conversation.issueId, taskId: conversation.issueId, source: "automation" } });
+      const interactions = issueThreadInteractionService(db);
+      const issue = { id: conversation.issueId, companyId: fixture.companyId };
+      const interaction = kind === "connection_intent"
+        ? await interactions.createConnectionIntent(issue, { sourceRunId, addresseeUserId: "owner-user", idempotencyKey: `slack-review:${sourceRunId}`, payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", requestingAgentId: fixture.assignedAgentId, requestingAgentName: "Maya", phase: "requested" } })
+        : await interactions.create(issue, { kind, sourceRunId, payload: kind === "suggest_tasks" ? { version: 1, tasks: [{ clientKey: "docs", title: "Review migration notes" }] } : { version: 1, prompt: "Review migration notes", ...(kind === "request_checkbox_confirmation" ? { options: [{ id: "docs", label: "Migration notes" }], supersedeOnUserComment: decision === "supersede" } : {}) } } as Parameters<typeof interactions.create>[1], { agentId: fixture.assignedAgentId });
+      await service.processPendingPublications();
+      const rows = () => db.select().from(chatPublications).where(and(eq(chatPublications.endpointId, endpoint.id), eq(sql<string>`${chatPublications.payload}->>'interactionId'`, interaction.id)));
+      const [original] = await rows();
+      expect(original?.state).toBe("published");
+      expect(original?.payload.card?.actions).toEqual(expect.arrayContaining([expect.objectContaining({ type: "callback" })]));
+
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "confirmation_response"),
+        eq(sql<string>`${chatActions.payload}->>'interactionId'`, interaction.id),
+        eq(sql<string>`${chatActions.payload}->>'decision'`, decision === "accept" ? "accept" : "reject"),
+      ));
+      expect(action).toBeDefined();
+      await db.update(chatActions).set({ status: "processing" }).where(eq(chatActions.id, action.id));
+      const errors: unknown[] = [];
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const settle = async () => vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      const quiet = async () => {
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+      };
+      await service.registerTerminalConfirmationWork(coordinator, () => true).ready;
+      await settle(); await quiet();
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].status).toBe("processing");
+      const resolve = async (tx: Db) => {
+        const board = issueThreadInteractionService(tx);
+        if (decision === "withdraw") await board.withdrawInteraction(issue, interaction.id, {}, { userId: "owner-user" });
+        else if (decision === "reassign") await board.expireConnectionIntentsForOwnershipChange(issue);
+        else if (decision === "supersede") {
+          const [comment] = await tx.insert(issueComments).values({ companyId: issue.companyId, issueId: issue.id,
+            authorUserId: "owner-user", body: "Use the revised migration plan", createdAt: new Date(Date.now() + 1000) }).returning();
+          await board.expireRequestConfirmationsSupersededByComment(issue, comment, { userId: "owner-user" });
+        }
+        else if (kind === "connection_intent") await board.resolveConnectionIntent(issue, interaction.id,
+          { version: 1, outcome: "declined" }, { userId: "owner-user" });
+        else if (decision === "accept") await board.acceptInteraction(issue, interaction.id,
+          { selectedOptionIds: ["docs"], selectedClientKeys: ["docs"] }, { userId: "owner-user" });
+        else await board.rejectInteraction(issue, interaction.id, {}, { userId: "owner-user" });
+        expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].status).toBe("processing");
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status).toBe("pending");
+      };
+      await expect(db.transaction(async tx => { await resolve(tx as unknown as Db); throw new Error("rollback board decision"); }))
+        .rejects.toThrow("rollback board decision");
+      await settle(); await quiet();
+      await db.transaction(tx => resolve(tx as unknown as Db));
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].status).toBe(["accept", "reject"].includes(decision) ? "processed" : "expired");
+      }, { timeout: 5_000 });
+      await settle(); await quiet();
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator?.stop(); vi.useRealTimers(); await service.shutdown();
+      if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
+      else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
   it.each(["request_confirmation", "request_checkbox_confirmation", "request_item_verdicts", "suggest_tasks", "connection_intent"] as const)("delivers and replaces a Slack %s card through the publication service", async kind => {
     const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
     process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
@@ -41417,13 +43516,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async () => {
+  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async ({ onTestFinished }) => {
+    let receiptWakeObserved = false;
     const fixture = await seedCompany();
     const continuationRunId = randomUUID();
     const resolveNativeQuestion = vi.fn(async () => "not_native" as const);
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, {
         resolveNativeQuestion,
+        questionResolutionPersistBarrier: async () => {
+          // Receipt commit must wake projection before the separate answer write.
+          expect(receiptWakeObserved).toBe(true);
+        },
         wakeup: async (agentId, options) => {
           if (options.contextSnapshot?.source !== "issue.interaction.respond") {
             return { accepted: true };
@@ -41746,6 +43850,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ state: "delivery_unknown", providerMessageId: null })
       .where(eq(chatPublications.id, publication.id));
 
+    const unsubscribeReceipt = subscribeDatabaseWork(db, "chat-run-milestones", (event, hints) => {
+      if (event === "settled" && hints?.has(JSON.stringify({ companyId: fixture.companyId, issueId: conversation.issueId }))) {
+        receiptWakeObserved = true;
+      }
+    });
+    onTestFinished(unsubscribeReceipt);
     const providerAcknowledgement = callbacks.onAction(actionEvent());
     await expect(
       Promise.race([
@@ -44900,7 +47010,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(stillPending.status).toBe("pending");
   });
 
-  it("renders safe Telegram confirmations as opaque one-use buttons and wakes the resolved task", async () => {
+  async function telegramConfirmationRecoveryFixture(decision: "accept" | "reject" = "accept") {
     const fixture = await seedCompany();
     let injectSettlementCrash = true;
     const settlementBarrier = vi.fn(async () => {
@@ -45058,7 +47168,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ),
     ).toBe(true);
     const acceptAction = confirmationActions.find(
-      (action) => action.payload.decision === "accept",
+      (action) => action.payload.decision === decision,
     );
     if (!acceptAction)
       throw new Error("Telegram accept action was not persisted");
@@ -45090,7 +47200,629 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         value: undefined,
       },
     };
-    await expect(callbacks.onAction(actionEvent)).rejects.toThrow(
+    return { fixture, callbacks, onAction: callbacks.onAction, endpoint, service, wakeup, settlementBarrier, dm, conversation, linkedUserId, principal, interaction, publication, acceptAction, actionEvent };
+  }
+
+  it("bounds interaction continuation recovery reads with completed history", async () => {
+    const context = await telegramConfirmationRecoveryFixture();
+    await expect(context.onAction(context.actionEvent))
+      .rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const [action] = await db.select().from(chatActions).where(and(
+      eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+    ));
+    expect(action).toBeDefined();
+    await db.update(chatActions).set({ status: "processing", updatedAt: new Date() }).where(eq(chatActions.id, action.id));
+    const prefix = `continuation-plan:${randomUUID()}:`;
+    await db.execute(sql`
+      INSERT INTO chat_actions (company_id, endpoint_id, kind, provider_action_id, status)
+      SELECT ${context.fixture.companyId}::uuid, ${context.endpoint.id}::uuid,
+        CASE WHEN n <= 10000 THEN 'interaction_wakeup' ELSE 'unrelated_action' END,
+        ${prefix} || n,
+        CASE WHEN n <= 10000 THEN 'processed' ELSE 'processing' END
+      FROM generate_series(1, 20000) AS n
+    `);
+    await db.execute(sql`VACUUM (ANALYZE) chat_actions`);
+    const statements: { sql: string; params: unknown[] }[] = [];
+    const select = db.select.bind(db);
+    const reads = vi.spyOn(db, "select").mockImplementation((...args) => {
+      const selection = select(...args), from = selection.from.bind(selection);
+      vi.spyOn(selection, "from").mockImplementation(table => {
+        const query = from(table);
+        if (table === chatActions) {
+          const execute = query.execute.bind(query);
+          vi.spyOn(query, "execute").mockImplementation(async () => {
+            const statement = query.toSQL();
+            if (statement.params.includes("interaction_wakeup") || statement.sql.includes("'interaction_wakeup'")) {
+              statements.push(statement);
+            }
+            return execute();
+          });
+        }
+        return query;
+      });
+      return selection;
+    });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    try {
+      await context.service.registerInteractionContinuationWork(coordinator, () => true).ready;
+      expect(statements.length).toBeGreaterThan(0);
+      const startup = statements[0], beforeHint = statements.length;
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, DELIVERY_QUEUES.chatInteractionContinuations,
+          JSON.stringify({ companyId: context.fixture.companyId }));
+      });
+      await vi.waitFor(() => expect(statements.length).toBeGreaterThan(beforeHint), { timeout: 5_000 });
+      const scoped = statements.at(-1)!;
+      expect(scoped.params).toContain(context.fixture.companyId);
+      await coordinator.stop(); reads.mockRestore();
+      for (const statement of [startup, scoped]) {
+        expect(await db.$client.unsafe(statement.sql, statement.params as Parameters<typeof db.$client.unsafe>[1]))
+          .toMatchObject([{ id: action.id }]);
+        const result = await db.$client.unsafe(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.sql}`,
+          statement.params as Parameters<typeof db.$client.unsafe>[1],
+        );
+        type PlanNode = { Plans?: PlanNode[]; [key: string]: unknown };
+        const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+        const actionReads = nodes(result[0]["QUERY PLAN"][0].Plan)
+          .filter(node => node["Relation Name"] === "chat_actions");
+        expect(actionReads).toHaveLength(1);
+        expect(Number(actionReads[0]["Actual Rows"]) + Number(actionReads[0]["Rows Removed by Filter"] ?? 0),
+          JSON.stringify({ params: statement.params, actionReads })).toBeLessThanOrEqual(2);
+        expect(Number(actionReads[0]["Shared Hit Blocks"]) + Number(actionReads[0]["Shared Read Blocks"]))
+          .toBeLessThan(20);
+      }
+      await db.update(chatActions).set({ status: "processed" }).where(eq(chatActions.id, action.id));
+      await db.execute(sql`ANALYZE chat_actions`);
+      expect(await db.$client.unsafe(scoped.sql, scoped.params as Parameters<typeof db.$client.unsafe>[1])).toHaveLength(0);
+      const empty = await db.$client.unsafe(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${scoped.sql}`, scoped.params as Parameters<typeof db.$client.unsafe>[1],
+      );
+      expect(empty[0]["QUERY PLAN"][0].Plan["Shared Hit Blocks"]
+        + empty[0]["QUERY PLAN"][0].Plan["Shared Read Blocks"]).toBeLessThan(20);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); reads.mockRestore();
+      await db.delete(chatActions).where(sql`${chatActions.providerActionId} LIKE ${`${prefix}%`}`);
+    }
+  });
+
+  it.each(["accept", "reject", "drain", "restart", "deferred", "failure", "paused endpoint", "future publication", "stale claim"] as const)("wakes interaction continuations from a committed response through %s", async mode => {
+    const context = await telegramConfirmationRecoveryFixture(mode === "reject" ? "reject" : "accept");
+    const errors: unknown[] = [];
+    let canRun = true;
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    const originalWake = context.wakeup.getMockImplementation()!;
+    context.wakeup.mockImplementation(async (...args) => {
+      expect((context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)?.edits).toHaveLength(["paused endpoint", "future publication"].includes(mode) ? 0 : 1);
+      return originalWake(...args);
+    });
+    if (mode === "deferred") context.wakeup.mockResolvedValueOnce(null);
+    if (mode === "failure") context.wakeup.mockRejectedValueOnce(new Error("temporary continuation admission failure"));
+    try {
+      await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+      await settle(); await quiet();
+      if (["drain", "paused endpoint", "future publication"].includes(mode)) canRun = false;
+      if (mode === "restart" || mode === "stale claim") await coordinator.stop();
+      await expect(context.onAction(context.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      if (["drain", "paused endpoint", "future publication"].includes(mode) || mode === "restart" || mode === "stale claim") {
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        expect(context.wakeup).not.toHaveBeenCalled();
+        await quiet();
+        if (mode === "paused endpoint") await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, context.endpoint.id));
+        if (mode === "future publication") await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 60_000) })
+          .where(eq(chatPublications.idempotencyKey, `interaction-resolution:${context.interaction.id}:${context.endpoint.id}`));
+        if (mode === "stale claim") await db.update(chatActions).set({ status: "processing", updatedAt: new Date() }).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ));
+        canRun = true;
+        if (mode === "restart" || mode === "stale claim") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+            canReconcile: () => true, onError: error => errors.push(error) });
+          await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+        } else if (coordinator.nextWakeAt() !== null) {
+          await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        }
+      }
+      if (mode === "stale claim") {
+        const [action] = await db.select().from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ));
+        expect(coordinator.nextWakeAt()).toBe(action.updatedAt.getTime() + 30_000);
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now() - 1));
+        expect(context.wakeup).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      if (mode === "deferred" || mode === "failure") {
+        let retryAt = 0;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          const [action] = await db.select().from(chatActions).where(and(
+            eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+          ));
+          expect(action).toMatchObject({ status: "issued", result: { code: mode === "deferred" ? "interaction_wakeup_deferred" : "interaction_wakeup_failed" } });
+          retryAt = action.updatedAt.getTime() + 30_000;
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBe(retryAt);
+        }, { timeout: 10_000 });
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(Math.max(0, retryAt - Date.now() - 1));
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ))).toEqual([{ status: "processed" }]);
+      }, { timeout: 10_000 });
+      expect(context.wakeup).toHaveBeenCalledTimes(mode === "deferred" || mode === "failure" ? 2 : 1);
+      expect(context.wakeup).toHaveBeenCalledWith(context.fixture.assignedAgentId, expect.objectContaining({
+        idempotencyKey: `interaction:${context.interaction.id}:${mode === "reject" ? "rejected" : "accepted"}`, allowRunCoalescing: false,
+      }));
+      await settle(); await quiet();
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("passes historical continuation prefixes and retains a response committed during dispatch", async () => {
+    const first = await telegramConfirmationRecoveryFixture();
+    const second = await telegramConfirmationRecoveryFixture();
+    await expect(first.onAction(first.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const invalidIds = Array.from({ length: 101 }, (_, index) => `00000000-0000-4000-8002-${String(index + 1).padStart(12, "0")}`);
+    await db.insert(chatActions).values(invalidIds.map(id => ({
+      id, companyId: first.fixture.companyId, endpointId: first.endpoint.id,
+      kind: "interaction_wakeup", providerActionId: `invalid-continuation:${id}`, status: "issued", payload: {},
+    })));
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const originalWake = first.wakeup.getMockImplementation()!;
+    first.wakeup.mockImplementationOnce(async (...args) => { await barrier; return originalWake(...args); });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const ready = first.service.registerInteractionContinuationWork(coordinator, () => true).ready;
+    try {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(first.wakeup).toHaveBeenCalledTimes(1);
+      }, { timeout: 15_000 });
+      await expect(second.onAction(second.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+        eq(chatActions.companyId, second.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+      ))).toEqual([{ status: "issued" }]);
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(first.wakeup).toHaveBeenCalledTimes(2);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 15_000 });
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        inArray(chatActions.id, invalidIds), eq(chatActions.status, "failed"),
+        eq(sql<string>`${chatActions.result}->>'code'`, "interaction_wakeup_payload_invalid"),
+      ))).toHaveLength(101);
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        inArray(chatActions.companyId, [first.fixture.companyId, second.fixture.companyId]),
+        eq(chatActions.kind, "interaction_wakeup"), eq(chatActions.status, "processed"),
+      ))).toHaveLength(2);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await coordinator.stop(); vi.useRealTimers();
+      await db.delete(chatActions).where(inArray(chatActions.id, invalidIds));
+      await first.service.shutdown(); await second.service.shutdown();
+    }
+  });
+
+  it.each(["drain", "standby", "shutdown"] as const)("stops starting continuation publications during %s", async mode => {
+    const context = await telegramConfirmationRecoveryFixture();
+    await expect(context.onAction(context.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const next = await issueThreadInteractionService(db).create(
+      { id: context.conversation.issueId, companyId: context.fixture.companyId },
+      { kind: "request_confirmation", continuationPolicy: "wake_assignee", title: "Next decision",
+        payload: { version: 1, prompt: "A second decision after the accepted response?" } },
+      { agentId: context.fixture.assignedAgentId },
+    );
+    const nextPublication = () => db.select({ state: chatPublications.state }).from(chatPublications).where(
+      eq(chatPublications.idempotencyKey, `interaction:${next.id}:${context.endpoint.id}`));
+    expect(await nextPublication()).toEqual([{ state: "pending" }]);
+    const provider = (context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)!;
+    const originalThread = provider.thread.bind(provider);
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const threadSpy = vi.spyOn(provider, "thread").mockImplementation(threadId => {
+      const thread = originalThread(threadId), edit = thread.adapter.editMessage.bind(thread.adapter);
+      thread.adapter.editMessage = async (...args) => { entered = true; await gate; return edit(...args); };
+      return thread;
+    });
+    let canRun = true;
+    const errors: unknown[] = [];
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const ready = context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+    let stopping: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 10_000 });
+      if (mode === "shutdown") stopping = coordinator.stop(); else canRun = false;
+      release(); await ready; await stopping;
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      expect(provider.edits).toHaveLength(1);
+      expect(await nextPublication()).toEqual([{ state: "pending" }]);
+      expect(context.wakeup).not.toHaveBeenCalled();
+      if (mode === "shutdown") {
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+      } else {
+        canRun = true;
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        expect(await nextPublication()).toEqual([{ state: "published" }]);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await stopping; await coordinator.stop(); vi.useRealTimers();
+      threadSpy.mockRestore(); await context.service.shutdown();
+    }
+  });
+
+  it("defers continuation dispatch until the outer response transaction commits", async () => {
+    const context = await telegramConfirmationRecoveryFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const originalWake = context.wakeup.getMockImplementation()!;
+    context.wakeup.mockImplementation(async (...args) => {
+      expect((context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)?.edits).toHaveLength(1);
+      return originalWake(...args);
+    });
+    try {
+      await context.service.registerInteractionContinuationWork(coordinator, () => true).ready;
+      await settle();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, context.conversation.issueId));
+      const accept = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+        await issueThreadInteractionService(tx as unknown as Db).acceptInteraction(issue, context.interaction.id, {}, { userId: context.linkedUserId });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(context.wakeup).not.toHaveBeenCalled();
+        expect(await db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, context.interaction.id))).toEqual([{ status: "pending" }]);
+        expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ))).toEqual([]);
+      };
+      await expect(db.transaction(async tx => {
+        await accept(tx);
+        throw new Error("rollback outer continuation decision");
+      })).rejects.toThrow("rollback outer continuation decision");
+      await settle();
+      expect(context.wakeup).not.toHaveBeenCalled();
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      await db.transaction(accept);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+      });
+      await settle();
+      expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+        eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+      ))).toEqual([{ status: "processed" }]);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it.each(["accept", "reject", "drain", "restart", "failed selection"] as const)("recovers committed terminal confirmations without polling through %s", async mode => {
+    const context = await telegramConfirmationRecoveryFixture(mode === "reject" ? "reject" : "accept");
+    let canRun = true;
+    const errors: unknown[] = [];
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    try {
+      await context.service.registerTerminalConfirmationWork(coordinator, () => canRun).ready;
+      await settle(); await quiet();
+      if (["drain", "failed selection"].includes(mode)) canRun = false;
+      if (mode === "restart") await coordinator.stop();
+      await expect(context.onAction(context.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      if (["drain", "failed selection", "restart"].includes(mode)) {
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        expect(await db.select({ status: chatActions.status }).from(chatActions)
+          .where(eq(chatActions.id, context.acceptAction.id))).toEqual([{ status: "processing" }]);
+        await quiet();
+        if (mode === "failed selection") {
+          const select = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("temporary confirmation selection failure"); });
+          try {
+            canRun = true;
+            await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+            await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(errors).toHaveLength(1); });
+            canRun = false;
+          } finally { select.mockRestore(); }
+          await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+          await quiet();
+        }
+        canRun = true;
+        if (coordinator.nextWakeAt() !== null) await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+            canReconcile: () => true, onError: error => errors.push(error) });
+          await context.service.registerTerminalConfirmationWork(coordinator, () => canRun).ready;
+        }
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await db.select({ status: chatActions.status }).from(chatActions)
+          .where(eq(chatActions.id, context.acceptAction.id))).toEqual([{ status: "processed" }]);
+      }, { timeout: 10_000 });
+      await settle(); await quiet();
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        eq(sql<string>`${chatActions.payload}->>'interactionId'`, context.interaction.id),
+      ))).toHaveLength(1);
+      expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(
+        eq(activityLog.companyId, context.fixture.companyId),
+        eq(sql<string>`${activityLog.details}->>'interactionId'`, context.interaction.id),
+        eq(sql<string>`${activityLog.details}->>'source'`, "external_chat"),
+      ))).toHaveLength(1);
+      expect(errors).toEqual(mode === "failed selection" ? [expect.objectContaining({
+        errors: [expect.objectContaining({ message: "temporary confirmation selection failure" })],
+      })] : []);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("parks pending confirmation history, passes malformed prefixes, and wakes on the outer interaction commit", async () => {
+    const waiting = await telegramConfirmationRecoveryFixture();
+    const terminal = await telegramConfirmationRecoveryFixture();
+    const pendingIds = Array.from({ length: 101 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`);
+    const invalidIds = Array.from({ length: 101 }, (_, index) => `00000000-0000-4000-8001-${String(index + 1).padStart(12, "0")}`);
+    await db.insert(chatActions).values([...pendingIds, ...invalidIds].map(id => ({
+      ...waiting.acceptAction, id, providerActionId: `confirmation-history:${id}`, status: "processing",
+      conversationId: invalidIds.includes(id) ? null : waiting.conversation.id, result: null,
+    })));
+    await expect(terminal.onAction(terminal.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 30_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    try {
+      await waiting.service.registerTerminalConfirmationWork(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await db.select({ status: chatActions.status }).from(chatActions)
+          .where(eq(chatActions.id, terminal.acceptAction.id))).toEqual([{ status: "processed" }]);
+      }, { timeout: 10_000 });
+      await settle();
+      expect(await db.select({ id: chatActions.id }).from(chatActions)
+        .where(and(inArray(chatActions.id, pendingIds), eq(chatActions.status, "processing")))).toHaveLength(101);
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        inArray(chatActions.id, invalidIds), eq(chatActions.status, "failed"),
+        eq(sql<string>`${chatActions.result}->>'code'`, "confirmation_action_binding_invalid"),
+      ))).toHaveLength(101);
+      await quiet();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, waiting.conversation.issueId));
+      await expect(db.transaction(async tx => {
+        await issueThreadInteractionService(tx as unknown as Db).acceptInteraction(issue, waiting.interaction.id, {}, { userId: waiting.linkedUserId });
+        expect(await db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, waiting.interaction.id))).toEqual([{ status: "pending" }]);
+        throw new Error("rollback outer confirmation decision");
+      })).rejects.toThrow("rollback outer confirmation decision");
+      await settle(); await quiet();
+      expect(await db.select({ id: chatActions.id }).from(chatActions)
+        .where(and(inArray(chatActions.id, pendingIds), eq(chatActions.status, "processing")))).toHaveLength(101);
+      await db.transaction(async tx => {
+        await issueThreadInteractionService(tx as unknown as Db).acceptInteraction(issue, waiting.interaction.id, {}, { userId: waiting.linkedUserId });
+        expect(await db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, waiting.interaction.id))).toEqual([{ status: "pending" }]);
+        expect(await db.select({ id: chatActions.id }).from(chatActions)
+          .where(and(inArray(chatActions.id, pendingIds), eq(chatActions.status, "processing")))).toHaveLength(101);
+      });
+      await settle(); await quiet();
+      expect(await db.select({ id: chatActions.id }).from(chatActions)
+        .where(and(inArray(chatActions.id, pendingIds), eq(chatActions.status, "processing")))).toHaveLength(0);
+      expect(await db.select({ id: chatActions.id }).from(chatActions)
+        .where(and(inArray(chatActions.id, pendingIds), eq(chatActions.status, "processed")))).toHaveLength(1);
+      expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(
+        eq(activityLog.companyId, waiting.fixture.companyId),
+        eq(sql<string>`${activityLog.details}->>'interactionId'`, waiting.interaction.id),
+        eq(sql<string>`${activityLog.details}->>'source'`, "external_chat"),
+      ))).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...pendingIds, ...invalidIds]));
+    }
+  });
+
+  it("bounds terminal confirmation recovery reads with completed history", async () => {
+    const waiting = await telegramConfirmationRecoveryFixture();
+    const prefix = `confirmation-plan:${randomUUID()}:`;
+    await db.execute(sql`
+      INSERT INTO chat_actions (company_id, endpoint_id, kind, provider_action_id, status)
+      SELECT ${waiting.fixture.companyId}::uuid, ${waiting.endpoint.id}::uuid,
+        CASE WHEN n <= 10000 THEN 'confirmation_response' ELSE 'unrelated_action' END,
+        ${prefix} || n,
+        CASE WHEN n <= 10000 THEN 'processed' ELSE 'processing' END
+      FROM generate_series(1, 20000) AS n
+    `);
+    await db.update(chatActions).set({ status: "processing", result: null })
+      .where(eq(chatActions.id, waiting.acceptAction.id));
+    await db.execute(sql`VACUUM (ANALYZE) chat_actions`);
+    const statements: { sql: string; params: unknown[] }[] = [];
+    const select = db.select.bind(db);
+    const reads = vi.spyOn(db, "select").mockImplementation((...args) => {
+      const selection = select(...args), from = selection.from.bind(selection);
+      vi.spyOn(selection, "from").mockImplementation(table => {
+        const query = from(table);
+        if (table === chatActions) {
+          const execute = query.execute.bind(query);
+          vi.spyOn(query, "execute").mockImplementation(async () => {
+            const statement = query.toSQL();
+            if (statement.sql.includes("'confirmation_response'") && statement.sql.includes("'processing'")) {
+              statements.push(statement);
+            }
+            return execute();
+          });
+        }
+        return query;
+      });
+      return selection;
+    });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    try {
+      await waiting.service.registerTerminalConfirmationWork(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(statements.length).toBeGreaterThan(0));
+      const startup = statements[0];
+      const beforeHint = statements.length;
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, DELIVERY_QUEUES.chatTerminalConfirmations,
+          JSON.stringify({ companyId: waiting.fixture.companyId }));
+      });
+      await vi.waitFor(() => expect(statements.length).toBeGreaterThan(beforeHint), { timeout: 5_000 });
+      const scoped = statements.at(-1)!;
+      expect(scoped.params).toContain(waiting.fixture.companyId);
+      await coordinator.stop();
+      reads.mockRestore();
+      for (const statement of [startup, scoped]) {
+        expect(await db.$client.unsafe(statement.sql, statement.params as Parameters<typeof db.$client.unsafe>[1]))
+          .toMatchObject([{ id: waiting.acceptAction.id }]);
+        const result = await db.$client.unsafe(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.sql}`, statement.params as Parameters<typeof db.$client.unsafe>[1],
+        );
+        const plan = result[0]["QUERY PLAN"][0].Plan;
+        type PlanNode = { Plans?: PlanNode[]; [key: string]: unknown };
+        const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+        const actionReads = nodes(plan).filter(node => node["Relation Name"] === "chat_actions");
+        expect(actionReads).toHaveLength(1);
+        expect(Number(actionReads[0]["Actual Rows"]) + Number(actionReads[0]["Rows Removed by Filter"] ?? 0),
+          JSON.stringify({ params: statement.params, actionReads }))
+          .toBeLessThanOrEqual(2);
+        expect(Number(actionReads[0]["Shared Hit Blocks"]) + Number(actionReads[0]["Shared Read Blocks"]))
+          .toBeLessThan(20);
+      }
+      await db.update(chatActions).set({ status: "processed" }).where(eq(chatActions.id, waiting.acceptAction.id));
+      await db.execute(sql`ANALYZE chat_actions`);
+      expect(await db.$client.unsafe(scoped.sql, scoped.params as Parameters<typeof db.$client.unsafe>[1])).toHaveLength(0);
+      const empty = await db.$client.unsafe(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${scoped.sql}`, scoped.params as Parameters<typeof db.$client.unsafe>[1],
+      );
+      expect(empty[0]["QUERY PLAN"][0].Plan["Shared Hit Blocks"]
+        + empty[0]["QUERY PLAN"][0].Plan["Shared Read Blocks"]).toBeLessThan(20);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); reads.mockRestore();
+      await db.delete(chatActions).where(sql`${chatActions.providerActionId} LIKE ${`${prefix}%`}`);
+    }
+  });
+
+  it("retains a confirmation committed while another settlement is in flight", async () => {
+    const first = await telegramConfirmationRecoveryFixture();
+    const second = await telegramConfirmationRecoveryFixture();
+    await expect(first.onAction(first.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    let locked!: () => void, release!: () => void;
+    const lockReady = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const transaction = db.transaction(async tx => {
+      await tx.select({ id: chatActions.id }).from(chatActions).where(eq(chatActions.id, first.acceptAction.id)).for("update");
+      locked(); await held;
+    });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let ready: Promise<unknown> | undefined;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      await lockReady;
+      ready = first.service.registerTerminalConfirmationWork(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        const blocked = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and query like 'update "chat_actions"%'`);
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { timeout: 10_000 });
+      await expect(second.onAction(second.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      expect(await db.select({ status: chatActions.status }).from(chatActions)
+        .where(eq(chatActions.id, second.acceptAction.id))).toEqual([{ status: "processing" }]);
+      release(); await transaction; await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await db.select({ status: chatActions.status }).from(chatActions)
+          .where(inArray(chatActions.id, [first.acceptAction.id, second.acceptAction.id])))
+          .toEqual([{ status: "processed" }, { status: "processed" }]);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      const select = vi.spyOn(db, "select"), queryTransaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(queryTransaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); queryTransaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await transaction; await ready; await coordinator.stop(); vi.useRealTimers();
+    }
+  });
+
+  it("renders safe Telegram confirmations as opaque one-use buttons and wakes the resolved task", async () => {
+    const { fixture, onAction, endpoint, service, wakeup, settlementBarrier, dm, conversation, linkedUserId, principal, interaction, publication, acceptAction, actionEvent } = await telegramConfirmationRecoveryFixture();
+    await expect(onAction(actionEvent)).rejects.toThrow(
       "injected post-interaction confirmation settlement crash",
     );
     expect(settlementBarrier).toHaveBeenCalledTimes(1);
@@ -45269,7 +48001,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ),
       )
       .then((rows) => rows.length);
-    await callbacks.onAction(actionEvent);
+    await onAction(actionEvent);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(dm.post).toHaveBeenCalledTimes(providerPostCountBeforeRedelivery);
     await expect(
@@ -51492,8 +54224,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const registeredCommandId = "888888888888888819";
     let interactionSequence = 0n;
 
-    async function commandFixture() {
-      const fixture = await seedCompany();
+    async function commandFixture(companyId?: string) {
+      const fixture = await seedCompany(undefined, companyId);
       const applicationId = uniqueDiscordApplicationId();
       let holdWork = false;
       const queued: Array<() => void> = [];
@@ -51809,6 +54541,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           });
           coldContexts.push(cold);
           await cold.service.reconcileProviderRuntimes();
+          await recoverDiscordCommands(cold.service);
           return {
             ...cold,
             adapter: await parser(
@@ -52586,8 +55319,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             : lastFreshDiscordMessageId + 1n;
         return lastFreshDiscordMessageId.toString();
       };
-      async function reopenedFixture(includeDuringConfirmationSource = false) {
-        const f = await commandFixture();
+      async function reopenedFixture(includeDuringConfirmationSource = false, companyId?: string) {
+        const f = await commandFixture(companyId);
         const threadId = `discord:${guildId}:${channelId}:${rootMessageId}`;
         const admitMessage = async (message: ReturnType<typeof makeMessage>) => {
           await deliverMessage({
@@ -52734,6 +55467,193 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           bindRun,
         };
       }
+
+      it.each(["action", "delivery"] as const)("wakes a post-close milestone when interrupted inbound acceptance settles its %s receipt", async receipt => {
+        const f = await reopenedFixture();
+        const onError = vi.fn();
+        const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        const notice = () => db.select().from(chatPublications).where(and(
+          eq(chatPublications.issueId, f.conversation.issueId),
+          eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+        ));
+        try {
+          // Crash boundary: the run/wake is durable, but its inbound action has
+          // not yet recorded settlement. Recovery must not dispatch it again.
+          if (receipt === "action") {
+            await db.update(chatActions).set({ status: "issued", result: {}, updatedAt: new Date() })
+              .where(eq(chatActions.id, f.fresh.action.id));
+          } else {
+            // Operator repair of a failed ledger keeps the already-admitted
+            // action/run. Only delivery acceptance needs to commit again.
+            await db.update(chatDeliveries).set({ state: "retry", processedAt: null, nextAttemptAt: null })
+              .where(eq(chatDeliveries.id, f.delivery.id));
+          }
+          await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(await notice()).toEqual([]);
+          const wakesBefore = f.wakeup.mock.calls.length;
+          await expect.poll(async () => {
+            await f.service.processPendingDeliveries(25, f.delivery.id);
+            const [action] = await db.select().from(chatActions).where(eq(chatActions.id, f.fresh.action.id));
+            const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, f.delivery.id));
+            return [action.status, delivery.state];
+          }, { timeout: 10_000 }).toEqual(["processed", "processed"]);
+          expect(f.wakeup.mock.calls.length).toBe(wakesBefore);
+          await expect.poll(notice, { timeout: 5000 }).toEqual([
+            expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+          ]);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(onError).not.toHaveBeenCalled();
+        } finally { await coordinator.stop(); await f.close(); }
+      });
+
+      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility", "cloud_sync"] as const)(
+        "wakes a post-close milestone when %s authority is restored", async owner => {
+          const stackId = randomUUID();
+          const f = await reopenedFixture(false, owner === "cloud_sync" ? cloudTenantPrimaryCompanyId(stackId) : undefined);
+          const previousToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+          const [previousUser] = owner === "cloud_sync"
+            ? await db.select().from(authUsers).where(eq(authUsers.id, "owner-user"))
+            : [];
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const notice = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId),
+            eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+          ));
+          const access = accessService(db);
+          const membership = (await db.select().from(companyMemberships).where(and(
+            eq(companyMemberships.companyId, f.fixture.companyId), eq(companyMemberships.principalId, "owner-user"),
+          )))[0];
+          try {
+            let restore: () => Promise<unknown>;
+            if (owner === "connection") {
+              await toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: false });
+              restore = () => toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: true });
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else if (owner === "identity" || owner === "unlinked") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              if (owner === "unlinked") {
+                restore = () => f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+              } else {
+                const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+                restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+              }
+            } else if (owner === "visibility") {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            } else {
+              // Model existing denied authority without exercising revocation's
+              // unrelated credential cleanup; restoration uses its actual owner.
+              await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+              if (owner === "member") restore = () => access.updateMember(f.fixture.companyId, membership.id, { status: "active" });
+              else if (owner === "member_permissions") restore = () => access.updateMemberAndPermissions(f.fixture.companyId, membership.id, { status: "active", grants: [] }, "owner-user");
+              else if (owner === "cloud_sync") {
+                process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "milestone-cloud-sync-test";
+                let request = 0;
+                restore = () => resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders({
+                  "x-paperclip-cloud-tenant-token": "milestone-cloud-sync-test",
+                  "x-paperclip-cloud-user-id": "owner-user",
+                  "x-paperclip-cloud-user-email": "owner@example.test",
+                  // Change the profile to force an actual sync on replay. The
+                  // debounce must not hide repeated unchanged membership wakes.
+                  "x-paperclip-cloud-user-name": `Owner ${request++}`,
+                  "x-paperclip-cloud-stack-id": stackId,
+                  "x-paperclip-cloud-stack-role": "owner",
+                }));
+              }
+              else if (owner === "ensure_membership") restore = () => access.ensureMembership(f.fixture.companyId, "user", "owner-user", membership.membershipRole, "active");
+              else {
+                const existing = await db.select().from(companyMemberships).where(and(
+                  eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user"),
+                ));
+                restore = () => access.setUserCompanyAccess("owner-user", existing.map(row => row.companyId));
+              }
+            }
+            await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            expect(await notice()).toEqual([]);
+            await restore();
+            await expect.poll(notice, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+            ]);
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            if (owner !== "identity" && owner !== "connection") {
+              const notices: string[] = [];
+              const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => notices.push(event));
+              try { await restore(); expect(notices).toEqual([]); }
+              finally { unsubscribe(); }
+              expect(await notice()).toHaveLength(1);
+            }
+            expect(onError).not.toHaveBeenCalled();
+          } finally {
+            if (previousToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+            else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = previousToken;
+            await coordinator.stop();
+            if (previousUser) await db.update(authUsers).set({
+              name: previousUser.name, email: previousUser.email,
+              emailVerified: previousUser.emailVerified, updatedAt: previousUser.updatedAt,
+            }).where(eq(authUsers.id, previousUser.id));
+            await f.close();
+          }
+        },
+      );
+
+      it.each(["identity", "resource", "visibility"] as const)(
+        "wakes saved post-close native progress when %s authority returns", async owner => {
+          const f = await reopenedFixture();
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const progress = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId), like(chatPublications.idempotencyKey, "%:native:%"),
+          ));
+          try {
+            await db.insert(chatPublications).values({
+              companyId: f.fixture.companyId, endpointId: f.endpoint.id,
+              conversationId: f.conversation.id, issueId: f.conversation.issueId,
+              idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}`,
+              payload: { text: "Maya is working…", progressState: "working" }, state: "published",
+              createdAt: new Date(Date.now() - 60_000),
+            });
+            await db.insert(heartbeatRunEvents).values({
+              companyId: f.fixture.companyId, agentId: f.fixture.assignedAgentId,
+              runId: f.fresh.runId, seq: 1, eventType: "item.completed",
+            });
+            let restore: () => Promise<unknown>;
+            if (owner === "identity") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+              restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            }
+            await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(await progress()).toEqual([]);
+            await restore();
+            await expect.poll(progress, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}:native:making_progress:1` }),
+            ]);
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            const select = vi.spyOn(db, "select");
+            try { await new Promise(resolve => setTimeout(resolve, 1200)); expect(select).not.toHaveBeenCalled(); }
+            finally { select.mockRestore(); }
+            expect(onError).not.toHaveBeenCalled();
+          } finally { await coordinator.stop(); await f.close(); }
+        },
+      );
 
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();
@@ -61008,6 +63928,87 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  it("registers ordinary-notice work through the retry admission transaction", async () => {
+    const context = await deferredFailedRetryNoticeFixture();
+    const events: string[] = [];
+    let eventsBeforeWrite: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatInboundWakeNotices, (event, scopes) => {
+      if ([...scopes ?? []].some(scope => scope !== "*" && JSON.parse(scope).companyId === context.fixture.companyId)) events.push(event);
+    });
+    context.wakeup.mockImplementationOnce(async (_agentId, options) => {
+      const request = options!.durableChatRequest!;
+      await db.transaction(async tx => {
+        events.length = 0;
+        await request.authorize(tx as unknown as Parameters<typeof request.authorize>[0]);
+        eventsBeforeWrite = [...events];
+        await tx.insert(agentWakeupRequests).values({
+          id: request.id, companyId: context.fixture.companyId, agentId: request.agentId,
+          source: options!.source, triggerDetail: options!.triggerDetail, reason: options!.reason,
+          requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+          requestedAt: request.requestedAt, idempotencyKey: request.idempotencyKey,
+          status: "deferred_issue_execution", payload: { ...options!.payload,
+            taskRetryRequestId: context.retry.requestId, _paperclipWakeContext: options!.contextSnapshot },
+        });
+      });
+      return null;
+    });
+    try {
+      await expect(context.admit()).resolves.toMatchObject({ status: "deferred" });
+      expect(eventsBeforeWrite).toContain("intent");
+      expect(eventsBeforeWrite).not.toContain("settled");
+      expect(events).toContain("settled");
+      expect((await readAgentWakeupRequestsById(context.retry.chatActionId!))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    } finally { unsubscribe(); await context.service.shutdown(); }
+  });
+
+  it("registers ordinary-notice intent before a retry-owned receipt is retired", async () => {
+    const context = await deferredFailedRetryNoticeFixture();
+    let release = () => {};
+    let holding: Promise<unknown> | undefined;
+    let retiring: ReturnType<typeof context.admit> | undefined;
+    let unsubscribe = () => {};
+    const events: string[] = [];
+    const signalledScopes: string[] = [];
+    try {
+      expect(await context.admit()).toMatchObject({ status: "deferred" });
+      await reconcileTaskChatRetryReceipts(db);
+      context.wakeup.mockClear();
+      let locked!: () => void;
+      const acquired = new Promise<void>(resolve => { locked = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      context.wakeup.mockImplementationOnce(async () => {
+        holding = db.transaction(async tx => {
+          await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, context.retry.chatActionId!)).for("update");
+          locked();
+          await held;
+        });
+        await acquired;
+        throw Object.assign(new Error("denied at resume"), {
+          details: { code: "chat_failed_run_retry_not_authorized" },
+        });
+      });
+      unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatInboundWakeNotices, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => scope !== "*" && JSON.parse(scope).companyId === context.fixture.companyId)) {
+          events.push(event); signalledScopes.push(...scopes ?? []);
+        }
+      });
+      retiring = context.admit();
+      void retiring.catch(() => undefined);
+      await vi.waitFor(() => expect(context.wakeup).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(events).toContain("intent"), { timeout: 2000 });
+      expect(signalledScopes.map(scope => JSON.parse(scope))).toContainEqual({ companyId: context.fixture.companyId, issueId: context.issue.id });
+      expect(events).not.toContain("settled");
+      expect((await readAgentWakeupRequestsById(context.retry.chatActionId!))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      release(); await holding;
+      await expect(retiring).resolves.toMatchObject({ status: "failed" });
+      expect((await readAgentWakeupRequestsById(context.retry.chatActionId!))[0]).toMatchObject({ status: "failed", runId: null });
+      expect(events).toContain("settled");
+    } finally {
+      release(); await holding; await retiring?.catch(() => undefined);
+      unsubscribe(); await context.service.shutdown();
+    }
+  });
+
   async function failedChatRetryFixture(
     provider: "slack" | "telegram" | "github",
     externalActorId?: string,
@@ -61465,7 +64466,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["contained", "prior_denied_intent", "observability_warning", "observability_reason", "observability_revision", "observability_provenance", "observability_extra", "other_reason", "wrong_issue", "provider_started", "result_extra", "profile", "usage", "output",
+  it.each(["contained", "prior_denied_intent", "observability_opencode", "observability_warning", "observability_reason", "observability_revision", "observability_provenance", "observability_extra", "other_reason", "wrong_issue", "provider_started", "result_extra", "profile", "usage", "output",
     "process", "controller", "active_control", "lease", "accepted_result", "event_source", "extra_event", "source_edited", "principal_revoked"] as const)(
     "retries an authenticated GitHub request after isolated-directory validation failed before allocation: %s", async mode => {
     const f = await failedChatRetryFixture("github", "42", true, false, true);
@@ -61485,7 +64486,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.insert(companyObservability).values({ companyId, revision: randomUUID(), enabled: true,
           destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
           capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
-        const [agent] = await db.update(agents).set({ adapterConfig: { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" } })
+        const [agent] = await db.update(agents).set({ adapterConfig: mode === "observability_opencode"
+          ? { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" }
+          : { provider: "acpx", acpxAgent: "pi", model: "synthetic", homeMode: "preconfigured" } })
           .where(eq(agents.id, agentId)).returning();
         const [run] = await readHeartbeatRunsById(f.runId);
         const prepared = await prepareHeartbeatExecutionConfiguration(db, { run, agent,
@@ -61503,8 +64506,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
         });
         expect(prepared.prepared).toBe(true);
-        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId)))
-          .toMatchObject([{ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } }]);
+        const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+        if (mode === "observability_opencode") {
+          if (!prepared.prepared) throw new Error("Configuration preparation did not finish");
+          expect(prepared.observability?.kind).toBe("opencode");
+          expect(prepared.observability?.environment).toMatchObject({ PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/otel/v1/traces" });
+          expect(events.filter(event => event.eventType === "agent_observability.unavailable")).toHaveLength(0);
+          expect(JSON.stringify(prepared.runtimeConfig)).not.toContain("collector.example");
+        } else {
+          expect(events).toMatchObject([{ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } }]);
+        }
       }
       await appendHeartbeatRunEvent(db, { companyId, agentId, runId: f.runId,
         eventType: "error", stream: "system", level: "error", message: diagnostic });
@@ -61582,7 +64594,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after Retry acceptance" }).where(eq(issueComments.id, String(f.action.payload.commentId)));
         await f.service.processFailedChatRunRetry(response.body.chatActionId);
       }
-      if (!["contained", "prior_denied_intent", "observability_warning"].includes(mode)) {
+      if (!["contained", "prior_denied_intent", "observability_opencode", "observability_warning"].includes(mode)) {
         expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         return;
       }
@@ -61948,13 +64960,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         context.wakeup.mockImplementation(heartbeatService(db).wakeup);
       } else context.wakeup.mockImplementation(async (agentId, opts) => {
         const request = opts.durableChatRequest!;
-        await request.authorize(db);
-        await db.insert(agentWakeupRequests).values({ id: request.id, companyId,
-          agentId, source: opts.source!, triggerDetail: opts.triggerDetail, reason: "budget.blocked",
-          requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
-          requestedAt: request.requestedAt, idempotencyKey: request.idempotencyKey,
-          payload: { ...opts.payload, executionWait: { scopeType: "agent", scopeId: agentId } },
-          status: "skipped", finishedAt: new Date() });
+        await db.transaction(async tx => {
+          await request.authorize(tx);
+          await tx.insert(agentWakeupRequests).values({ id: request.id, companyId,
+            agentId, source: opts.source!, triggerDetail: opts.triggerDetail, reason: "budget.blocked",
+            requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+            requestedAt: request.requestedAt, idempotencyKey: request.idempotencyKey,
+            payload: { ...opts.payload, executionWait: { scopeType: "agent", scopeId: agentId } },
+            status: "skipped", finishedAt: new Date() });
+        });
         return null;
       });
       if (realBudgetIngress) {
@@ -63228,6 +66242,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     "integrity",
     "cleanup",
     "active_environment",
+    "notice_cleanup",
+    "notice_replacement",
     "live_pid",
     "missing_input",
     "late_provider_event",
@@ -63261,6 +66277,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               : providerAccount;
       const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
       let stateDirectory: string | null = null;
+      let noticeCoordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+      let noticeActionId: string | undefined;
+      let noticeEnvironmentId: string | undefined;
       try {
         const nativeSessionId = randomUUID();
         const runnerInstanceId = randomUUID();
@@ -63469,7 +66488,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         // A null account without existing provider-session evidence remains
         // conservatively ineligible for the exhausted-run recovery lane.
-        if (["bootstrap", "checkpoint", "distinct_account"].includes(kind)) {
+        if (["bootstrap", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
           const staged = await attempt;
           await expect(
             context.service.processFailedChatRunRetry(staged.actionId),
@@ -63479,12 +66498,101 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             retryOfRunId: context.runId,
             wakeCommentIds: [context.action.payload.commentId],
           });
+          if (kind === "notice_cleanup" || kind === "notice_replacement") {
+            noticeActionId = staged.actionId;
+            await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+              .where(eq(agentWakeupRequests.id, staged.actionId));
+            const cleanupAttemptId = randomUUID();
+            if (kind === "notice_replacement") {
+              const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
+              noticeEnvironmentId = environment.id;
+            }
+            const [lease] = await db.insert(environmentLeases).values({
+              companyId: context.fixture.companyId, issueId: context.issue.id,
+              heartbeatRunId: context.runId, status: "pending_cleanup", cleanupStatus: "failed",
+              metadata: { pendingCleanupAttemptId: cleanupAttemptId, agentId: context.fixture.assignedAgentId },
+              ...(kind === "notice_replacement" ? { environmentId: noticeEnvironmentId,
+                status: "retained", leasePolicy: "reuse_by_environment", providerLeaseId: randomUUID() } : {}),
+            }).returning();
+            const errors: unknown[] = [];
+            noticeCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+              canReconcile: () => true, onError: error => errors.push(error) });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+            await chatFailedRetryNoticeWork(context.service).register(noticeCoordinator, () => true).ready;
+            await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+              expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+            const replace = (owner: Db, replacesReusableLeaseId = lease.id) => environmentService(owner).acquireLease({
+              companyId: context.fixture.companyId, environmentId: noticeEnvironmentId!, issueId: context.issue.id,
+              leasePolicy: "reuse_by_environment", providerLeaseId: lease.providerLeaseId,
+              metadata: { agentId: context.fixture.assignedAgentId }, replacesReusableLeaseId,
+            });
+            if (kind === "notice_replacement") {
+              await expect(replace(db, randomUUID())).rejects.toThrow("ownership changed");
+              const rollback = new Error("rollback reusable lease handoff");
+              await expect(db.transaction(async tx => {
+                await replace(tx as unknown as Db);
+                throw rollback;
+              })).rejects.toBe(rollback);
+              await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+                expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+              await db.transaction(tx => replace(tx as unknown as Db));
+            } else {
+              expect(await environmentService(db).releaseLease(lease.id, "released", {
+                cleanupStatus: "success", expectedPendingCleanupAttemptId: randomUUID(),
+              })).toBeNull();
+              const rollback = new Error("rollback native lease settlement");
+              await expect(db.transaction(async tx => {
+                await environmentService(tx as unknown as Db).releaseLease(lease.id, "released", {
+                  cleanupStatus: "success", expectedPendingCleanupAttemptId: cleanupAttemptId,
+                });
+                throw rollback;
+              })).rejects.toBe(rollback);
+              await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+                expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+              await db.transaction(async tx => {
+                await environmentService(tx as unknown as Db).releaseLease(lease.id, "released", {
+                  cleanupStatus: "success", expectedPendingCleanupAttemptId: cleanupAttemptId,
+                });
+              });
+            }
+            await vi.waitFor(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+              expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+            }, { timeout: 5000 });
+            const selection = vi.spyOn(context.service, "loadFailedRetryNoticeScopes");
+            try {
+              if (kind === "notice_replacement") await expect(replace(db)).rejects.toThrow("ownership changed");
+              else await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+              await vi.advanceTimersByTimeAsync(1000);
+              expect(selection).not.toHaveBeenCalled();
+            } finally { selection.mockRestore(); }
+            const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+            try {
+              await vi.advanceTimersByTimeAsync(120_000);
+              expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+            } finally { select.mockRestore(); transaction.mockRestore(); }
+            expect(errors).toEqual([]);
+          }
         } else
           await expect(attempt).rejects.toMatchObject({
             details: { code: "chat_failed_run_retry_not_authorized" },
           });
       } finally {
+        await noticeCoordinator?.stop();
+        if (kind === "notice_cleanup" || kind === "notice_replacement") vi.useRealTimers();
         await context.service.shutdown();
+        if (noticeEnvironmentId) {
+          await db.delete(environmentLeases).where(eq(environmentLeases.environmentId, noticeEnvironmentId));
+          await db.delete(environments).where(eq(environments.id, noticeEnvironmentId));
+        }
+        if (noticeActionId) {
+          await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, noticeActionId));
+          await db.delete(chatActions).where(eq(chatActions.id, noticeActionId));
+        }
         if (stateDirectory) {
           if (previousStateDirectory === undefined)
             delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -63504,6 +66612,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const input = { companyId: context.fixture.companyId, issueId: context.issue.id,
         agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user" };
       const stage = () => db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, input));
+      const observedResponseAdmissions: string[] = [];
+      const responseHints: string[] = [];
+      await coordinator.register(DELIVERY_QUEUES.nativeResponsePresentation, {
+        retryMs: 30_000,
+        onSettled: hints => { responseHints.push(...hints ?? []); },
+        run: async () => {
+          const admitted = await db.select({ id: chatActions.id }).from(chatActions).where(and(
+            eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "failed_run_retry"), eq(chatActions.status, "processed"),
+          ));
+          observedResponseAdmissions.push(...admitted.map(row => row.id));
+        },
+        hasPending: async () => false,
+      }).ready;
       context.wakeup.mockClear();
       try {
         let actionId: string;
@@ -63549,6 +66670,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(action?.result.attemptCount).toBe(mode === "retry" ? 2 : 1);
           expect(coordinator.nextWakeAt()).toBeNull();
         }, { timeout: 10_000 });
+        await vi.waitFor(() => expect(observedResponseAdmissions).toContain(actionId), { timeout: 5000 });
+        expect(responseHints.map(hint => JSON.parse(hint))).toContainEqual({ companyId: context.fixture.companyId, issueId: context.issue.id });
         expect(context.wakeup).toHaveBeenCalledTimes(mode === "retry" ? 2 : 1);
         const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, actionId));
         expect(receipts).toHaveLength(1);
@@ -63967,6 +67090,448 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally {
       await context.service.shutdown();
     }
+  });
+
+  async function deferredFailedRetryNoticeFixture(wakeOnDemand = true) {
+    const context = await failedChatRetryFixture("telegram", undefined, true);
+    const companyId = context.fixture.companyId, issueId = context.issue.id, leaseId = randomUUID();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId,
+      nativePhase: "terminal_failure", runnerProfileJson: {},
+      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+        schema: "paperclip.workspace-restore-recovery.v1", runId: context.runId, leaseIds: [leaseId],
+      } },
+    }).where(eq(heartbeatRuns.id, context.runId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: context.runId, phase: "terminal_failure" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, issueId,
+      heartbeatRunId: context.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "retain_on_failure",
+      metadata: { remoteCwd: "/home/daytona/paperclip-workspace", pendingCleanupInFlight: false },
+    });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "system",
+      cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(),
+      nextAction: "Verify and preserve the retained source before continuing.",
+      evidence: { runId: context.runId, automaticRecovery: { replay: "blocked" },
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
+        historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: context.runId, leaseIds: [leaseId] },
+        systemRecovery: { ...createSystemRecovery(context.runId), state: "exhausted", attempts: 2, retriesUsed: 1,
+          attemptId: randomUUID(), firstFailureAt: Date.now() - 1000, deadlineAt: Date.now() + 60_000,
+          preservationOperationIds: [randomUUID()] },
+      },
+    });
+    const retry = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user",
+      actorSource: "cloud_tenant", observedRunId: context.runId, idempotencyKey: randomUUID(),
+      prepareChatRetry: context.service.prepareFailedChatRunRetry });
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "running",
+      runtimeConfig: { heartbeat: { wakeOnDemand, maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, context.fixture.assignedAgentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: context.fixture.assignedAgentId,
+      status: "running", startedAt: new Date() });
+    context.wakeup.mockImplementation(heartbeatService(db).wakeup);
+    return { ...context, retry, admit: () => context.service.processFailedChatRunRetry(retry.chatActionId!) };
+  }
+
+  it.each(["normal", "drain", "failed selection", "stopped", "disabled"] as const)("reactivates failed retry notices from real admission after idle through %s", async mode => {
+    const context = await deferredFailedRetryNoticeFixture(mode !== "disabled");
+    let canRun = true;
+    const errors: unknown[] = [];
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    const selection = vi.spyOn(context.service, "loadFailedRetryNoticeScopes");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    try {
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => canRun).ready;
+      await settle(); await quiet();
+      if (mode === "drain") canRun = false;
+      if (mode === "stopped") await coordinator.stop();
+      if (mode === "failed selection") selection.mockRejectedValueOnce(new Error("temporary retry selection failure"));
+      expect(await context.admit()).toMatchObject({ status: mode === "disabled" ? "failed" : "deferred" });
+      if (mode === "failed selection") {
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(errors).toHaveLength(1); });
+        canRun = false;
+      }
+      if (["drain", "failed selection", "stopped"].includes(mode)) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+        await quiet(); canRun = true;
+        if (coordinator.nextWakeAt() !== null) await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        if (mode === "stopped") {
+          await context.service.processPublicationMaintenance();
+          expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+            canReconcile: () => true, onError: error => errors.push(error) });
+          await chatFailedRetryNoticeWork(context.service).register(coordinator, () => canRun).ready;
+        }
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+          payload: mode === "disabled"
+            ? { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" }
+            : { text: "Your retry is queued.", progressState: "queued" },
+        })]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      await quiet();
+      expect(errors).toEqual(mode === "failed selection" ? [expect.objectContaining({ errors: [expect.objectContaining({ message: "temporary retry selection failure" })] })] : []);
+    } finally {
+      await coordinator.stop(); selection.mockRestore(); vi.useRealTimers(); await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, context.fixture.companyId),
+        inArray(agentWakeupRequests.id, [context.retry.requestId!, context.retry.chatActionId!]), isNull(agentWakeupRequests.runId)));
+    }
+  });
+
+  it.each(["idle", "bounded pass", "requester merge", "agent resume"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
+    const context = await deferredFailedRetryNoticeFixture();
+    const rejectedIds = mode === "bounded pass" ? Array.from({ length: 100 }, () => randomUUID()) : [];
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let ready: Promise<unknown> | undefined;
+    let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
+    const reconcile = context.service.reconcileFailedRetryNotices.bind(context.service);
+    const pass = vi.spyOn(context.service, "reconcileFailedRetryNotices");
+    try {
+      expect(await context.admit()).toMatchObject({ status: "deferred" });
+      const [originalReceipt] = await readAgentWakeupRequestsById(context.retry.chatActionId!);
+      if (mode === "agent resume") {
+        lifecycle = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
+          runHost: async () => "complete", runPlugin: async () => "complete" });
+        await createAgentLifecycle(db).pauseAgent(context.fixture.assignedAgentId);
+        await lifecycle.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "paused", lifecycleState: "paused" });
+      } else if (mode === "requester merge") {
+        expect(originalReceipt.requestedByActorType).toBe("user");
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "another-requester" })
+          .where(eq(agentWakeupRequests.id, originalReceipt.id));
+      } else {
+        await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.issue.id,
+          createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+        }).where(eq(issues.id, context.issue.id));
+      }
+      if (rejectedIds.length) {
+        const [action] = await db.select().from(chatActions).where(eq(chatActions.id, context.retry.chatActionId!));
+        const [receipt] = await readAgentWakeupRequestsById(action.id);
+        await db.insert(chatActions).values(rejectedIds.map(id => ({ ...action, id,
+          providerActionId: `retry-cursor:${id}`, createdAt: new Date(action.createdAt.getTime() + 1000),
+          payload: { ...action.payload, sourceScopeSha256: "invalid-source" },
+        })));
+        await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({ ...receipt, id,
+          idempotencyKey: `retry-cursor:${id}`,
+        })));
+        pass.mockImplementationOnce(async input => {
+          const result = await reconcile(input);
+          expect(result).toMatchObject({ inserted: 0, nextCursor: expect.any(Object) });
+          held = true; await pending; return result;
+        });
+      }
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      ready = chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      else {
+        await ready;
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
+          expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      if (mode === "agent resume") {
+        await createAgentLifecycle(db).resumeAgent(context.fixture.assignedAgentId);
+        await lifecycle!.process(context.fixture.assignedAgentId);
+        expect((await db.select().from(agents).where(eq(agents.id, context.fixture.assignedAgentId)))[0])
+          .toMatchObject({ status: "idle", lifecycleState: "ready" });
+      } else if (mode === "requester merge") {
+        await db.transaction(async tx => {
+          await tx.execute(sql`select id from issues where id = ${context.issue.id} for update`);
+          await createWakeAdmissionWriter().mergeIntoExistingDeferredWake(
+            createAdmissionTransactionScope(context.fixture.companyId, tx as unknown as Db), {
+              companyId: context.fixture.companyId, existingDeferredWakeId: originalReceipt.id,
+              mergedPayload: originalReceipt.payload ?? {}, nextCoalescedCount: 1,
+              manualUserWakeActorId: originalReceipt.requestedByActorId!,
+            });
+        });
+      } else await issueService(db).update(context.issue.id, { visibility: "open" });
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await lifecycle?.stop(); await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id,
+        [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
+      if (rejectedIds.length) await db.delete(chatActions).where(inArray(chatActions.id, rejectedIds));
+    }
+  });
+
+  it("wakes a not-started retry notice after resumed admission is denied", async () => {
+    const context = await deferredFailedRetryNoticeFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    try {
+      expect(await context.admit()).toMatchObject({ status: "deferred" });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      });
+      await reconcileTaskChatRetryReceipts(db);
+      context.wakeup.mockRejectedValueOnce(Object.assign(new Error("denied at resume"), {
+        details: { code: "chat_failed_run_retry_not_authorized" },
+      }));
+      expect(await context.admit()).toMatchObject({ status: "failed" });
+      expect((await readAgentWakeupRequestsById(context.retry.chatActionId!))[0].status).toBe("failed");
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(2);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, context.fixture.companyId),
+        inArray(agentWakeupRequests.id, [context.retry.requestId!, context.retry.chatActionId!]), isNull(agentWakeupRequests.runId)));
+    }
+  });
+
+  it.each(["agent", "tree"] as const)("wakes a failed retry notice only after %s cancellation commits", async kind => {
+    const context = await failedChatRetryFixture("telegram");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let stagedActionId: string | undefined;
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const cancel = (database: typeof db) => kind === "agent"
+      ? heartbeatService(database).cancelInvocationsForAgents([context.fixture.assignedAgentId], "Cancelled retry fixture")
+      : issueTreeControlService(database).cancelUnclaimedWakeupsForTree(context.fixture.companyId, context.issue.id, "Cancelled retry fixture");
+    try {
+      const staged = await db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, {
+        companyId: context.fixture.companyId, issueId: context.issue.id,
+        agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user",
+      }));
+      stagedActionId = staged.actionId;
+      await context.service.processFailedChatRunRetry(staged.actionId);
+      await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+        .where(eq(agentWakeupRequests.id, staged.actionId));
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      const rollback = new Error("rollback retry cancellation");
+      await expect(db.transaction(async tx => { await cancel(tx as unknown as typeof db); throw rollback; })).rejects.toBe(rollback);
+      await settle();
+      expect((await readAgentWakeupRequestsById(staged.actionId))[0].status).toBe("deferred_issue_execution");
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await db.transaction(async tx => { await cancel(tx as unknown as typeof db); });
+      await settle();
+      expect((await readAgentWakeupRequestsById(staged.actionId))[0].status).toBe("cancelled");
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown();
+      if (stagedActionId) {
+        await db.delete(chatActions).where(eq(chatActions.id, stagedActionId));
+        await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, stagedActionId));
+      }
+    }
+  });
+
+  it.each(["manual", "scoped"] as const)("advances failed retry notices past denied history with microsecond timestamps (%s)", async mode => {
+    const context = await failedChatRetryFixture("telegram");
+    const rejectedIds = Array.from({ length: 50 }, () => randomUUID());
+    let stagedActionId: string | undefined;
+    try {
+      const staged = await db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, {
+        companyId: context.fixture.companyId, issueId: context.issue.id,
+        agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user",
+      }));
+      stagedActionId = staged.actionId;
+      await context.service.processFailedChatRunRetry(staged.actionId);
+      const [receipt] = await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+        .where(eq(agentWakeupRequests.id, staged.actionId)).returning();
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, staged.actionId));
+      const before = new Date(action.createdAt.getTime() - 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...action, id, providerActionId: `failed-run-retry:${id}`,
+        payload: { ...action.payload, failedRunId: randomUUID() },
+        createdAt: sql`${before}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `retry-notice-cursor:${id}`,
+      })));
+      if (mode === "manual") {
+        expect(await context.service.enqueueInboundWakeupPublications(50)).toBe(0);
+        expect(await context.service.enqueueInboundWakeupPublications(50)).toBe(1);
+      } else {
+        const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
+        const transaction = vi.spyOn(db, "transaction");
+        try {
+          const first = await context.service.reconcileFailedRetryNotices({ scope, limit: 50 });
+          expect(first).toMatchObject({ inserted: 0, contended: false, nextCursor: expect.any(Object) });
+          expect(transaction).toHaveBeenCalledTimes(50); transaction.mockClear();
+          expect(await context.service.reconcileFailedRetryNotices({ scope, limit: 50, cursor: first.nextCursor }))
+            .toEqual({ inserted: 1, contended: false, nextCursor: null });
+          expect(transaction).toHaveBeenCalledTimes(1);
+        } finally { transaction.mockRestore(); }
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+        idempotencyKey: `wake:${staged.actionId}:queued:${context.endpoint.id}:${context.conversation.id}`,
+        payload: { text: "Your retry is queued.", progressState: "queued" },
+      })]);
+    } finally {
+      await context.service.shutdown();
+      const actionIds = stagedActionId ? [...rejectedIds, stagedActionId] : rejectedIds;
+      await db.delete(chatActions).where(inArray(chatActions.id, actionIds));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, actionIds));
+    }
+  });
+
+  it.each(["task", "company", "startup"] as const)("bounds failed retry notice scope discovery with retained candidates (%s)", async mode => {
+    const context = await failedChatRetryFixture("telegram");
+    const other = await failedChatRetryFixture("telegram");
+    const copiedIds = Array.from({ length: 250 }, () => randomUUID());
+    const stagedIds: string[] = [];
+    try {
+      for (const target of [context, other]) {
+        const staged = await db.transaction(tx => target.service.prepareFailedChatRunRetry(tx, {
+          companyId: target.fixture.companyId, issueId: target.issue.id,
+          agentId: target.fixture.assignedAgentId, failedRunId: target.runId, initiatedByUserId: "owner-user",
+        }));
+        await target.service.processFailedChatRunRetry(staged.actionId);
+        await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+          .where(eq(agentWakeupRequests.id, staged.actionId));
+        stagedIds.push(staged.actionId);
+      }
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, stagedIds[0]));
+      const [receipt] = await readAgentWakeupRequestsById(stagedIds[0]);
+      await db.insert(chatActions).values(copiedIds.map(id => ({
+        ...action, id, providerActionId: `failed_run_retry:${id}`,
+      })));
+      await db.insert(agentWakeupRequests).values(copiedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `retry-discovery-budget:${id}`,
+      })));
+      const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
+      const events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { chatActions, agentWakeupRequests }, capture);
+      let scopes: Array<{ companyId: string; issueId: string }>;
+      try {
+        scopes = await context.service.loadFailedRetryNoticeScopes(
+          mode === "task" ? scope : mode === "company" ? { companyId: scope.companyId } : undefined,
+        );
+      } finally { capture.flush(); }
+      if (mode === "startup") {
+        expect(scopes).toEqual(expect.arrayContaining([scope, {
+          companyId: other.fixture.companyId, issueId: other.issue.id,
+        }]));
+      } else {
+        expect(scopes).toEqual([scope]);
+      }
+      expect(events.at(-1)).toMatchObject({ startedQueries: mode === "task" ? 0 : 1,
+        completedQueries: mode === "task" ? 0 : 1, inFlightAtEnd: 0 });
+      expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1")
+        .reduce((count, event) => count + Number(event.rows), 0)).toBe(mode === "task" ? 0 : scopes.length);
+    } finally {
+      await context.service.shutdown(); await other.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, copiedIds));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, copiedIds));
+    }
+  });
+
+  it("scopes failed retry notices and retains receipt contention without retrying settled history", async () => {
+    const context = await failedChatRetryFixture("telegram");
+    const other = await failedChatRetryFixture("telegram");
+    let release = () => {};
+    let holder: Promise<unknown> | undefined;
+    try {
+      const staged = [];
+      for (const target of [context, other]) {
+        const action = await db.transaction(tx => target.service.prepareFailedChatRunRetry(tx, {
+          companyId: target.fixture.companyId, issueId: target.issue.id,
+          agentId: target.fixture.assignedAgentId, failedRunId: target.runId, initiatedByUserId: "owner-user",
+        }));
+        await target.service.processFailedChatRunRetry(action.actionId);
+        await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+          .where(eq(agentWakeupRequests.id, action.actionId));
+        staged.push(action);
+      }
+      const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
+      expect(await context.service.loadFailedRetryNoticeScopes({ companyId: scope.companyId })).toEqual([scope]);
+      let locked!: () => void;
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      holder = db.transaction(async tx => {
+        await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, staged[0].actionId)).for("update");
+        locked(); await hold;
+      });
+      await ready;
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 0, contended: true, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      release(); await holder;
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 1, contended: false, nextCursor: null });
+      expect(await context.service.loadFailedRetryNoticeScopes({ companyId: scope.companyId })).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(other.endpoint.id)).toEqual([]);
+      await db.update(agentWakeupRequests).set({ status: "cancelled" })
+        .where(eq(agentWakeupRequests.id, staged[0].actionId));
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 1, contended: false, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 0, contended: false, nextCursor: null });
+      expect(await context.service.loadFailedRetryNoticeScopes({ companyId: scope.companyId })).toEqual([]);
+      await db.update(agentWakeupRequests).set({ runId: other.runId })
+        .where(eq(agentWakeupRequests.id, staged[1].actionId));
+      expect(await other.service.loadFailedRetryNoticeScopes({ companyId: other.fixture.companyId })).toEqual([]);
+    } finally { release(); await holder; await context.service.shutdown(); await other.service.shutdown(); }
   });
 
   it.each(["slack", "telegram"] as const)(
@@ -65013,6 +68578,121 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "providerFetch" in configured ? configured.providerFetch : undefined,
     };
   }
+
+  it.each(["replay", "operator retry"] as const)(
+    "wakes saved native progress when %s restores eligibility", async owner => {
+      const context = await safeNativeProgressFixture("telegram", `12${["replay", "operator retry"].indexOf(owner)}`, "channel", "42", true);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      const progress = () => db.select().from(chatPublications).where(and(
+        eq(chatPublications.issueId, context.conversation.issueId),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      const settled = () => vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      try {
+        const run = await context.createRun("saved progress awaiting eligibility");
+        await context.addEvent(run);
+        const [base] = await db.update(chatPublications).set({
+          state: owner === "replay" ? "failed" : "delivery_unknown",
+        }).where(eq(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}`)).returning();
+        const restore = () => owner === "replay"
+          ? context.service.replayPublication(context.endpoint.id, base.id)
+          : context.service.resolvePublication(context.endpoint.id, base.id, "retry_anyway", "owner-user");
+        await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+        await settled(); expect(await progress()).toEqual([]);
+        await restore();
+        await expect.poll(progress, { timeout: 5000 }).toEqual([
+          expect.objectContaining({ idempotencyKey: `run:${run.runId}:working:${context.endpoint.id}:native:making_progress:1` }),
+        ]);
+        await settled();
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+        expect(onError).not.toHaveBeenCalled();
+      } finally { await coordinator.stop(); await retirePublicationFixture(context.service, context.endpoint.id); }
+    },
+  );
+
+  it("advances native progress past suppressed candidates with microsecond timestamps", async () => {
+    const context = await safeNativeProgressFixture("telegram", "119");
+    try {
+      const valid = await context.createRun("eligible after rejected page");
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, valid.runId));
+      const rejectedIds = Array.from({ length: 30 }, () => randomUUID());
+      await db.insert(heartbeatRuns).values(rejectedIds.map(id => ({
+        id, companyId: source.companyId, agentId: source.agentId,
+        runtimeMode: "native", status: "running",
+        contextSnapshot: { ...source.contextSnapshot, endpointId: randomUUID() },
+      })));
+      await db.insert(chatPublications).values(rejectedIds.map(id => ({
+        companyId: context.fixture.companyId, endpointId: context.endpoint.id,
+        conversationId: context.conversation.id, issueId: context.conversation.issueId,
+        idempotencyKey: `run:${id}:working:${context.endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" },
+        state: "published", createdAt: valid.baseCreatedAt,
+      })));
+      const eventAt = new Date(valid.baseCreatedAt.getTime() + 30_000);
+      await db.insert(heartbeatRunEvents).values(rejectedIds.map(runId => ({
+        companyId: source.companyId, runId, agentId: source.agentId,
+        seq: 1, eventType: "item.completed",
+        createdAt: sql`${eventAt.toISOString()}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await context.addEvent(valid, "item.completed", 1, new Date(eventAt.getTime() + 1));
+      const select = db.select.bind(db);
+      let pages = 0;
+      const guard = vi.spyOn(db, "select").mockImplementation((...args) => {
+        if (args[0] && "eventCreatedAt" in args[0] && ++pages > 10) {
+          throw new Error("Native progress pagination did not advance past suppressed candidates");
+        }
+        return select(...args);
+      });
+      try {
+        await expect(enqueueSafeNativeChatProgress(db, { since: eventAt, limit: 1 })).resolves.toBe(1);
+      } finally { guard.mockRestore(); }
+      const progress = await db.select().from(chatPublications).where(and(
+        eq(chatPublications.conversationId, context.conversation.id),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      expect(progress).toEqual([expect.objectContaining({
+        idempotencyKey: `run:${valid.runId}:working:${context.endpoint.id}:native:making_progress:1`,
+      })]);
+    } finally { await retirePublicationFixture(context.service, context.endpoint.id); }
+  });
+
+  it.each(["separate owners", "combined budget"] as const)(
+    "keeps lifecycle and native progress projection independent with %s",
+    async (mode) => {
+      await enqueueChatRunMilestones(db, { since: new Date(0) });
+      const context = await safeNativeProgressFixture("telegram", mode === "separate owners" ? "111" : "112");
+      try {
+        const progressRun = await context.createRun("ongoing work");
+        await context.addEvent(progressRun);
+        const failedRun = await context.createRun("failed work");
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failedRun.runId));
+        const input = { since: new Date(0), limit: 1 };
+        await expect((mode === "separate owners" ? enqueueChatRunLifecycleMilestones : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        const rows = () => db.select({ key: chatPublications.idempotencyKey }).from(chatPublications)
+          .where(eq(chatPublications.conversationId, context.conversation.id));
+        expect((await rows()).map(row => row.key)).toContain(`run:${failedRun.runId}:failed:${context.endpoint.id}`);
+        expect((await rows()).some(row => row.key.includes(":native:"))).toBe(false);
+        if (mode === "separate owners") {
+          await expect(enqueueChatRunLifecycleMilestones(db, input)).resolves.toBe(0);
+        }
+        await expect((mode === "separate owners" ? enqueueSafeNativeChatProgress : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        expect((await rows()).filter(row => row.key.includes(":native:"))).toEqual([
+          { key: `run:${progressRun.runId}:working:${context.endpoint.id}:native:making_progress:1` },
+        ]);
+        await expect(enqueueChatRunMilestones(db, input)).resolves.toBe(0);
+      } finally {
+        await retirePublicationFixture(context.service, context.endpoint.id);
+      }
+    },
+  );
 
   it.each(["issue", "run"] as const)(
     "skips a locked native progress %s while unrelated final and question publications deliver",
@@ -69921,17 +73601,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await vi.waitFor(() =>
         expect(dm.post).toHaveBeenCalledWith(visibleFailure),
       );
-      await expect(
-        db
-          .select({ kind: chatActions.kind, status: chatActions.status })
-          .from(chatActions)
-          .where(eq(chatActions.deliveryId, delivery.id)),
-      ).resolves.toEqual(
-        expect.arrayContaining([
-          { kind: "inbound_wakeup", status: "failed" },
-          { kind: "provider_effect", status: "processed" },
-        ]),
-      );
+      await vi.waitFor(async () => {
+        await expect(
+          db
+            .select({ kind: chatActions.kind, status: chatActions.status })
+            .from(chatActions)
+            .where(eq(chatActions.deliveryId, delivery.id)),
+        ).resolves.toEqual(
+          expect.arrayContaining([
+            { kind: "inbound_wakeup", status: "failed" },
+            { kind: "provider_effect", status: "processed" },
+          ]),
+        );
+      });
     } finally {
       await retirePublicationFixture(service, endpoint.id);
     }
@@ -70638,6 +74320,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       context: Awaited<ReturnType<typeof failedChatRetryFixture>>,
     ) => Promise<void>,
     summary?: (issueId: string) => string,
+    finalize = true,
   ) {
     const context = await failedChatRetryFixture(
       provider,
@@ -70792,7 +74475,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(nativeRunResults)
       .where(eq(nativeRunResults.runId, context.runId));
     const accepted = { resultId: acceptedRow.id };
-    await finalizeNativeRun({
+    if (finalize) await finalizeNativeRun({
       db,
       runId: context.runId,
       workspaceFinalizeStatus: "succeeded",
@@ -70801,7 +74484,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, context.runId));
-    expect(coordinator.phase).toBe("committed");
+    if (finalize) expect(coordinator.phase).toBe("committed");
+    else expect(coordinator.phase).not.toBe("committed");
     await db
       .update(heartbeatRuns)
       .set({
@@ -70829,6 +74513,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       repair,
     };
   }
+
+  it("repairs a committed reply and its recovery notice without reversing row locks", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const scope = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId };
+    let response: Promise<boolean> | undefined;
+    try {
+      const [run] = await readHeartbeatRunsById(context.runId);
+      await projectCommittedRun({ db, run, coordinator: context.coordinator });
+      const notice = await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId: scope.companyId, sourceIssueId: scope.issueId, kind: "active_run_watchdog",
+        ownerType: "system", cause: "native_workspace_sync_out_failed", fingerprint: scope.runId,
+        evidence: { runId: scope.runId }, nextAction: "Retry finalization",
+        wakePolicy: { kind: "resume_native_run", runId: scope.runId },
+      });
+      expect(await pendingNativeRecoveryNotices(db, scope)).toHaveLength(1);
+      await db.transaction(async tx => {
+
+
+        await tx.select().from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, scope.runId)).for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+        response = recoverCommittedNativeChatResponse(db, { ...scope, onlyWhenDue: true });
+
+        void response.catch(() => {});
+        await vi.waitFor(async () => {
+          const [state] = await db.execute(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and ${backend.pid} = any(pg_blocking_pids(pid))
+          ) as blocked`) as unknown as Array<{ blocked: boolean }>;
+          expect(state.blocked).toBe(true);
+        });
+        await tx.execute(sql`set local lock_timeout = '1s'`);
+        await resolveCommittedNativeRecoveryNotices(tx as unknown as Db, scope, true);
+      });
+      await expect(response).resolves.toBe(true);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, notice.id)))[0])
+        .toMatchObject({ status: "resolved", outcome: "restored" });
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, scope.runId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(context.result.summary);
+      expect(await readChatPublicationsByCommentId(comments[0].id)).toHaveLength(1);
+      await expect(recoverCommittedNativeChatResponse(db, scope)).resolves.toBe(false);
+      expect(await pendingNativeRecoveryNotices(db, scope)).toEqual([]);
+    } finally {
+      await response?.catch(() => {});
+      await context.service.shutdown();
+    }
+  });
 
   it.each(["slack", "telegram"] as const)(
     "recovers a committed %s answer once without rerunning or changing review/quarantine evidence",
@@ -70999,6 +74731,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 })
               : context.repair(),
         ).resolves.toBe(false);
+        await expect(recoverCommittedNativeChatResponse(db, {
+          companyId: mutation === "cross_company" ? randomUUID() : context.fixture.companyId,
+          issueId: context.issue.id,
+          runId: mutation === "cross_run" ? randomUUID() : context.runId,
+        })).resolves.toBe(false);
         await expect(
           db
             .select()
@@ -71640,6 +75377,519 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each(["none", "reuse"] as const)("preserves a recorded %s presentation instead of recovering an unsolicited answer", async commentAction => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const presentationDecision = { commentAction, commentId: null, reasonCodes: ["interaction_owns_response"] };
+    try {
+      await db.update(heartbeatRuns).set({ resultJson: { presentationDecision } }).where(eq(heartbeatRuns.id, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, { companyId: context.fixture.companyId,
+        issueId: context.issue.id, runId: context.runId })).resolves.toBe(false);
+      expect(await nativeResponsePresentationWork(db).load({ companyId: context.fixture.companyId, runId: context.runId })).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toEqual({ presentationDecision });
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["create", "legacy", "missing"] as const)("recovers a genuine unanswered %s presentation", async action => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    try {
+      await db.update(heartbeatRuns).set({ resultJson: action === "missing" ? {} : {
+        presentationDecision: { commentId: null, ...(action === "create" ? { commentAction: "create" } : {}) },
+      } }).where(eq(heartbeatRuns.id, context.runId));
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await expect(context.repair()).resolves.toBe(false);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["conversation_done", "attention_request", "same_agent_reason", "monitor_reason", "skip_comment"] as const)(
+    "does not lock durably ineligible %s history on repeated issue milestones", async kind => {
+      const context = await committedChatResponseRecoveryFixture("telegram");
+      await context.service.shutdown();
+      await db.update(heartbeatRuns).set({ status: "succeeded",
+        ...(kind === "skip_comment" ? { contextSnapshot: { skipIssueComment: true } } : {}) }).where(eq(heartbeatRuns.id, context.runId));
+      const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, context.accepted.resultId));
+      const envelope = accepted.resultJson as { result: PrpStructuredRunResult; terminal: PrpTerminalState };
+      if (kind === "conversation_done") {
+        envelope.result = { ...envelope.result, reportedWorkDisposition: "done" };
+        envelope.terminal = { ...envelope.terminal, reportedWorkDisposition: "done" };
+        await db.update(issues).set({ conversationAgentId: context.fixture.assignedAgentId, conversationUserId: "owner-user", conversationState: "active", assigneeUserId: null })
+          .where(eq(issues.id, context.issue.id));
+      } else if (kind === "attention_request") {
+        envelope.result = { ...envelope.result, attentionRequests: [{ kind: "review", summary: "Needs a decision", ownerClass: "human" }] };
+      } else if (kind === "same_agent_reason" || kind === "monitor_reason") {
+        envelope.result = { ...envelope.result, continuation: { ...envelope.result.continuation,
+          kind: kind === "same_agent_reason" ? "same_agent" : "monitor" } as PrpStructuredRunResult["continuation"] };
+        await db.update(statusDecisions).set({ reasonCode: "external_chat_response_waiting" })
+          .where(eq(statusDecisions.id, context.coordinator.decisionId!));
+      }
+      await db.update(nativeRunResults).set({ resultJson: envelope }).where(eq(nativeRunResults.id, accepted.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const work = nativeResponsePresentationWork(db);
+      const worker = work.register(coordinator, () => true);
+      const debug = db.$client.options.debug;
+      const locks: string[] = [];
+      try {
+        await worker.ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+          .toEqual({ active: 0, next: null });
+        db.$client.options.debug = (_connection, query) => {
+          if (query.startsWith("select") && query.includes("for update") && /"(?:issues|heartbeat_runs|native_run_finalizations)"/.test(query)) locks.push(query);
+        };
+        for (let i = 0; i < 3; i++) {
+          await db.transaction(tx => notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id }));
+          await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+            .toEqual({ active: 0, next: null });
+        }
+        expect(locks).toEqual([]);
+        expect(await work.load({ companyId: context.fixture.companyId, issueId: context.issue.id })).toEqual([]);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+        expect(errors).toEqual([]);
+      } finally { db.$client.options.debug = debug; worker.stop(); await coordinator.stop(); }
+    });
+
+  it("leaves fresh-commit accepted-response presentation to the worker when periodic replay skips it", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram", "coordinator", false, undefined, undefined, false);
+    try {
+      await finalizeNativeRun({ db, runId: context.runId, workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true, skipNativeResponsePresentation: true });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toEqual([]);
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["reconciler", "finalizer"])("leaves accepted-response presentation to its worker during periodic %s replay", async caller => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    try {
+      if (caller === "reconciler") {
+        await reconcileNativeFinalizations(db, [context.runId], { skipNativeResponsePresentation: true });
+      } else {
+        await finalizeNativeRun({ db, runId: context.runId, workspaceFinalizeStatus: "succeeded",
+          projectRunStatus: true, skipNativeResponsePresentation: true });
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await expect(context.repair()).resolves.toBe(false);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it("recovers accepted-response work on startup and leaves selected history quiet", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(context.result.summary);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      expect(await work.load({ companyId: context.fixture.companyId })).toEqual([]);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reactivates dormant accepted-response work when the live chat authority registers", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    let replacement: ReturnType<typeof createService> | undefined;
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      replacement = createService(new FakeChatSdkRuntime(), fakeTelegramFetch() as typeof fetch);
+      await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await replacement?.service.shutdown(); }
+  });
+
+  it.each(["issue", "run"])("does not reload dormant accepted-response history for an unrelated %s wake", async scope => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+      };
+      try {
+        await db.transaction(tx => notifyChatRunMilestones(tx, { companyId: context.fixture.companyId,
+          ...(scope === "issue" ? { issueId: randomUUID() } : { runId: randomUUID() }) }));
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect(queries).toHaveLength(1);
+      } finally { db.$client.options.debug = previousDebug; }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); }
+  });
+
+  it.each(["milestone", "finalization"] as const)("ignores repeated unscoped routine %s hints without rebuilding dormant accepted-response history", async source => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+        .toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
+      const debug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+      };
+      try {
+        for (let i = 0; i < 3; i++) {
+          await db.transaction(tx => source === "milestone"
+            ? notifyChatRunMilestones(tx, { companyId: context.fixture.companyId })
+            : notifyNativeFinalizationWork(tx, { companyId: context.fixture.companyId }));
+          await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+            .toEqual({ active: 0, next: null });
+        }
+        expect(queries).toEqual([]);
+      } finally { db.$client.options.debug = debug; }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); }
+  });
+
+  it("wakes dormant accepted-response history from the real company membership restoration owner", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, context.fixture.companyId), eq(companyMemberships.principalId, "owner-user")));
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+        .toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await accessService(db).updateMember(context.fixture.companyId, membership.id, { status: "active" });
+      await expect.poll(async () => ({ count: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ count: 1, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it.each(["commit", "rollback"])("keeps accepted-response work behind the outer %s boundary", async outcome => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      const transaction = db.transaction(async tx => {
+        await tx.transaction(async nested => {
+          await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id, runId: randomUUID() });
+          await nested.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+        });
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+        if (outcome === "rollback") throw new Error("response fixture rollback");
+      });
+      if (outcome === "rollback") await expect(transaction).rejects.toThrow("response fixture rollback");
+      else await transaction;
+      await expect.poll(async () => ({
+        publications: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active,
+        next: coordinator.nextWakeAt(),
+      }), { timeout: 5000 }).toEqual({ publications: outcome === "commit" ? 1 : 0, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("retains the first accepted-response wake through idle drain without passive SQL", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    let canRun = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      canRun = false;
+      await db.transaction(async tx => {
+        await notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id });
+        await tx.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+      });
+      await expect.poll(() => idleWorkSnapshot().active, { timeout: 5000 }).toBe(0);
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("retains a failed accepted-response attempt across drain and retries after resume", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    let release!: () => void, observed!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { observed = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(chatActions).where(eq(chatActions.id, context.action.id)).for("update");
+      observed();
+      await hold;
+    });
+    await locked;
+    let canRun = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
+    try {
+      await worker.ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(errors).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      canRun = false;
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      release(); await holder;
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toHaveLength(1);
+    } finally { release(); await holder; worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reconstructs a future accepted-response deadline without early publication", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const at = new Date(Date.now() + 60_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: at }).where(eq(nativeRunFinalizations.runId, context.runId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: at.getTime() });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("retains an accepted-response deadline that elapses during the locked recovery check", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: context.fixture.companyId });
+    expect(entry?.id).toBe(context.runId);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const due = new Date(Date.now() + 1000);
+    const transaction = db.transaction.bind(db);
+    const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+      await transaction(async tx => {
+        await tx.update(nativeRunFinalizations).set({ nextAttemptAt: due }).where(eq(nativeRunFinalizations.runId, context.runId));
+      });
+      const result = await transaction(callback, options);
+      vi.setSystemTime(due.getTime() + 1);
+      return result;
+    }) as Db["transaction"]);
+    try {
+      const deferred = await work.check(entry);
+      intercept.mockRestore();
+      expect(deferred).toEqual({ ...entry, dueAt: due.getTime() });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await expect(work.check(deferred!)).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { intercept.mockRestore(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes dormant accepted-response recovery after agent resume", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused", lifecycleHolds: ["manual"], lifecycleOperation: null })
+      .where(eq(agents.id, context.binding.agentId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    const lifecycle = configureAgentLifecycle(db, {
+      requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+    });
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, agentId: randomUUID() })).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await createAgentLifecycle(db).resumeAgent(context.binding.agentId);
+      await processAgentLifecycle(db, context.binding.agentId);
+      await expect.poll(async () => (await db.select().from(agents).where(eq(agents.id, context.binding.agentId)))[0].status).toBe("idle");
+      await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { await lifecycle.stop(); worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("wakes accepted-response recovery from the real coordinator retry release", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const store = new NativeRunCoordinatorStore(db, context.binding);
+    await store.claimFinalization({ leaseOwner: "response-recovery-fixture", leaseTtlMs: 1000 });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      await store.markFinalizationRetry({ leaseOwner: "response-recovery-fixture", failureCode: "response_fixture_retry", retryAfterMs: 1000 });
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes accepted-response recovery when its authenticated accepted-result journal arrives late", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram", "port");
+    await db.delete(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, context.runId), eq(heartbeatRunEvents.eventType, "run.result.accepted")));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      const port = new PaperclipControlPlanePort(db, {
+        companyId: context.binding.companyId, issueId: context.binding.issueId,
+        runId: context.runId, agentId: context.binding.agentId, sessionId: context.binding.normalizedSessionId,
+        completionContractId: context.binding.completionContractId,
+        completionContractSha256: context.binding.completionContractSha256,
+        sourceInstanceId: context.binding.runnerSourceInstanceId, controlPlaneSourceInstanceId: `control-${context.runId}`,
+      });
+      await port.appendEvent({
+        schema: "paperclip.prp.event.v1", sourceEventId: `accepted-${context.runId}`, sourceSeq: 1,
+        sourceInstanceId: `control-${context.runId}`, sourceKind: "control_plane",
+        runId: context.runId, normalizedSessionId: context.binding.normalizedSessionId,
+        turnId: `turn-${context.runId}`, eventType: "run.result.accepted", schemaVersion: 1,
+        priority: 0, emittedAt: new Date().toISOString(), payload: { result: context.result },
+      });
+      await expect.poll(async () => ({
+        publications: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active, next: coordinator.nextWakeAt(),
+      }), { timeout: 5000 }).toEqual({ publications: 1, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("defers scheduled accepted-response recovery until the persisted retry is due", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(1);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["pending", "failed"])("defers scheduled accepted-response recovery behind %s status effects", async deliveryState => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      const [effect] = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, context.coordinator.decisionId!));
+      expect(effect).toBeDefined();
+      await db.update(statusDecisionEffects).set({ deliveryState }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(statusDecisionEffects).set({ deliveryState: "delivered" }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
   it("leaves a contended accepted response retryable without reclassifying or partially publishing it", async () => {
     const context = await committedChatResponseRecoveryFixture("telegram");
     let release!: () => void;
@@ -71662,6 +75912,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     try {
       await locked;
       await expect(context.repair()).resolves.toBe(false);
+      await expect(recoverCommittedNativeChatResponse(db, {
+        companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId,
+      })).rejects.toThrow();
       await expect(
         db
           .select()
@@ -72068,6 +76321,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
+  it("restores changed native review metadata once and signals only its committed change", async () => {
+    const context = await committedNativeReviewPublicationFixture("milestone-repair");
+    // Earlier failure cases can leave intent awaiting XID reconciliation on the
+    // suite's shared owner. Subscribing to that owner immediately replays intent.
+    await expect(db.transaction(async tx => {
+      await signalDatabaseWork(tx, "chat-run-milestones");
+      throw new Error("unrelated rolled-back producer");
+    })).rejects.toThrow("unrelated rolled-back producer");
+    const repairDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(repairDb, "chat-run-milestones", event => events.push(event));
+    try {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, context.runId));
+      const input = { companyId: context.fixture.companyId, issueId: coordinator.issueId, runId: context.runId,
+        decisionId: coordinator.decisionId!, resultId: coordinator.resultId!, assessmentId: coordinator.assessmentId! };
+      const savedAt = new Date(Date.now() - 60_000);
+      await db.update(heartbeatRuns).set({ updatedAt: savedAt }).where(eq(heartbeatRuns.id, context.runId));
+      // Already-restored metadata still authorizes materialization by the caller,
+      // but must neither rewrite the run nor wake projection again.
+      await expect(repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
+      expect((await readHeartbeatRunsById(context.runId))[0].updatedAt).toEqual(savedAt);
+      expect(events).toEqual([]);
+      await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+        .where(eq(heartbeatRuns.id, context.runId));
+      await repairDb.transaction(async tx => {
+        expect(await restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input)).toBe(true);
+        expect(events).toEqual(["intent"]);
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toMatchObject({
+        externalChatReviewPresentation: { decisionId: coordinator.decisionId, runId: context.runId },
+      });
+      events.length = 0;
+      await repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
+      expect(events).toEqual([]);
+    } finally {
+      unsubscribe();
+      await repairDb.$client.end({ timeout: 1 });
+      await context.service.shutdown();
+    }
+  });
+
   it.each(["principal_revoked", "gate_changed"] as const)(
     "blocks a committed native review response and selected files at transport after %s",
     async (kind) => {
@@ -72244,10 +76539,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(committed.providerRuntime.slackFilePublicationAttempts).toBe(2);
   });
 
-  async function deferredChatQueueFixture(admissionFails = false) {
+  async function deferredChatQueueFixture(admissionFails = false, beforeAdmission?: (service: ChatChannelService) => Promise<void>, linkedBoardUser = false) {
     const fixture = await seedCompany();
     let ownerId: string | null = null;
     const configured = await configuredSlackEndpoint(fixture, {
+      linkedBoardUser,
       wakeup: async (agentId, opts) => {
         if (admissionFails)
           throw new Error("PRIVATE admission failure token=do-not-publish");
@@ -72303,8 +76599,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const thread = makeThread({
-      channelId: "C-DEFERRED-NOTICE",
-      id: "slack:C-DEFERRED-NOTICE:1999000.1",
+      channelId: "CDEFERREDNOTICE",
+      id: "slack:CDEFERREDNOTICE:1999000.1",
     });
     const send = async (id = "1999000.1") =>
       deliverMessage({
@@ -72314,10 +76610,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         message: makeMessage({
           id,
           text: "@maya exact queued request",
+          userId: linkedBoardUser ? "UBOARD" : undefined,
           mentioned: id === "1999000.1",
         }),
         trigger: id === "1999000.1" ? "mention" : "subscribed_message",
       });
+    await beforeAdmission?.(configured.service);
     await send();
     const [conversation] = await readChatConversationsByEndpointId(configured.endpoint.id);
     const [action] = await db
@@ -72363,6 +76661,651 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       thread,
     };
   }
+
+  it("wakes pre-run FIFO notices from real admission after quiet and becomes quiet again", async () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    const errors: unknown[] = [];
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => errors.push(error) });
+        await chatInboundWakeNoticeWork(channel).register(coordinator, () => true).ready;
+        await settle(); await quiet();
+      });
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+        commentId: context.action.payload.commentId,
+        payload: { text: "Your follow-up is queued.", progressState: "queued" },
+      })]);
+      await quiet();
+      await coordinator!.stop();
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => errors.push(error) });
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle(); await quiet();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown();
+    }
+  });
+
+  it("reconstructs inbound admission committed after the notice worker stops", async () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        await chatInboundWakeNoticeWork(channel).register(coordinator, () => true).ready;
+        await coordinator.stop();
+      });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it.each(["task visibility", "project membership", "task grant"] as const)("wakes a saved inbound notice when %s restores privacy access", async kind => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.conversation.issueId,
+      createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+    }).where(eq(issues.id, context.conversation.issueId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      if (kind === "task visibility") {
+        await issueService(db).update(context.conversation.issueId, { visibility: "open" });
+      } else if (kind === "project membership") {
+        const [project] = await db.insert(projects).values({ companyId: context.fixture.companyId,
+          name: "Private notice project", visibility: "private",
+        }).returning();
+        await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, context.conversation.issueId));
+        await ensureProjectAccessMember(db, { companyId: context.fixture.companyId, projectId: project.id,
+          subjectType: "user", subjectId: String(context.action.payload.requestedByActorId),
+        });
+      } else {
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => { req.actor = { ...boardActor(context.fixture.companyId), isInstanceAdmin: true }; next(); });
+        app.use("/api", issueRoutes(db, createStorageService().storage)); app.use(errorHandler);
+        await request(app).post(`/api/issues/${context.conversation.issueId}/access-grants`).send({
+          subjectType: "user", subjectId: String(context.action.payload.requestedByActorId),
+        }).expect(201);
+      }
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+        payload: { text: "Your follow-up is queued.", progressState: "queued" },
+      })]);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it.each(["startup", "first admission", "failed selection"] as const)("retains inbound notices through %s during drain without passive SQL", async kind => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    let canRun = kind !== "startup";
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        const selection = kind === "failed selection"
+          ? vi.spyOn(channel, "loadInboundWakeNoticeScopes").mockRejectedValueOnce(new Error("temporary notice selection outage"))
+          : undefined;
+        try { await chatInboundWakeNoticeWork(channel).register(coordinator, () => canRun).ready; }
+        finally { selection?.mockRestore(); }
+        canRun = false;
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      canRun = true;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toHaveLength(kind === "failed selection" ? 1 : 0);
+    } finally { await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it("retains admission committed while an empty inbound-notice selection is returning", async () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    let selection: ReturnType<typeof vi.spyOn> | undefined;
+    let ready: Promise<unknown> | undefined;
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const load = channel.loadInboundWakeNoticeScopes.bind(channel);
+        selection = vi.spyOn(channel, "loadInboundWakeNoticeScopes").mockImplementationOnce(async (...args) => {
+          const rows = await load(...args); held = true; await pending; return rows;
+        });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        ready = chatInboundWakeNoticeWork(channel).register(coordinator, () => true).ready;
+        await vi.waitFor(() => expect(held).toBe(true));
+      });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { release(); await ready; selection?.mockRestore(); await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it.each(["tree cancellation", "source removal", "agent cancellation", "budget cancellation", "company archive", "queue rejection", "queue failure"] as const)("wakes a visible pre-run FIFO retirement only after %s commits", async change => {
+    const context = await deferredChatQueueFixture();
+    const releaseRunId = randomUUID();
+    if (change === "queue rejection" || change === "queue failure") {
+      await db.insert(heartbeatRuns).values({ id: releaseRunId, companyId: context.fixture.companyId,
+        agentId: context.fixture.assignedAgentId, status: "succeeded", finishedAt: new Date(),
+        contextSnapshot: { issueId: context.conversation.issueId },
+      });
+    }
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const notices = () => readChatPublicationsByEndpointId(context.endpoint.id);
+    const expectedText = change === "source removal" ? "This queued message was removed."
+      : "This follow-up was not started. Open the task in Paperclip for details.";
+    const retire = async (database: typeof db) => {
+      if (change === "source removal") return issueService(database).tombstoneComment(String(context.action.payload.commentId), {
+        actorType: "user", userId: String(context.action.payload.requestedByActorId),
+      });
+      if (change === "agent cancellation") return heartbeatService(database).cancelInvocationsForAgents(
+        [context.fixture.assignedAgentId], "PRIVATE cancellation",
+      );
+      if (change === "budget cancellation") return heartbeatService(database).cancelBudgetScopeWork({
+        companyId: context.fixture.companyId, scopeType: "company", scopeId: context.fixture.companyId,
+      });
+      if (change === "company archive") return companyService(database).update(context.fixture.companyId, { status: "archived" });
+      if (change === "queue rejection" || change === "queue failure") {
+        const adapter = createPostgresWakeQueueAdapter(database, {
+          resolveResponsibleUserId: async () => "owner-user",
+          getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+          resolveSessionBeforeForWakeup: async () => null,
+        });
+        return adapter.withIssueExecutionLock({ companyId: context.fixture.companyId, runId: releaseRunId, now: new Date() }, async (_locked, ports) => {
+          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, now: new Date() };
+          if (change === "queue rejection") await ports.transaction.cancelDeferredWake({ ...target, reason: "PRIVATE rejection" });
+          else await ports.transaction.failDeferredWake(target);
+          return { outcome: { kind: "released" }, postCommitEffects: [] };
+        });
+      }
+      return issueTreeControlService(database).cancelUnclaimedWakeupsForTree(
+        context.fixture.companyId, context.conversation.issueId, "PRIVATE cancellation",
+      );
+    };
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      await context.service.processPendingPublications(100, { maintenance: false });
+      await settle();
+      expect(await notices()).toEqual([expect.objectContaining({ state: "published" })]);
+      // Company lifecycle owns its root transaction and intentionally rejects
+      // caller transactions. The other service producers support nesting.
+      if (change !== "company archive") {
+        await expect(db.transaction(async tx => {
+          await retire(tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await notices()).toHaveLength(1);
+          throw new Error("outer cancellation rollback");
+        })).rejects.toThrow("outer cancellation rollback");
+        await settle(); expect(await notices()).toHaveLength(1);
+      }
+      await retire(db);
+      await settle();
+      expect(await notices()).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: expectedText, progressState: "failed" },
+      })]));
+      expect(await notices()).toHaveLength(2);
+      await context.service.processPendingPublications(100, { maintenance: false });
+      await settle();
+      expect(context.runtime.endpoints.get(context.endpoint.id)!.edits).toEqual([expect.objectContaining({
+        text: expectedText,
+      })]);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("rechecks source retirement after a queued notice's late provider receipt commits", async () => {
+    const context = await deferredChatQueueFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let publishing: Promise<number> | undefined;
+    const provider = context.runtime.endpoints.get(context.endpoint.id)!;
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      provider.postHook = async () => { held = true; await pending; };
+      publishing = context.service.processPendingPublications(100, { maintenance: false });
+      await vi.waitFor(() => expect(held).toBe(true));
+      await issueService(db).tombstoneComment(String(context.action.payload.commentId), {
+        actorType: "user", userId: "owner-user",
+      });
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      release(); await publishing; provider.postHook = undefined;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This queued message was removed.", progressState: "failed" },
+      })]));
+      await context.service.processPendingPublications(100, { maintenance: false });
+      await settle();
+      expect(provider.edits).toEqual([expect.objectContaining({ text: "This queued message was removed." })]);
+      expect(errors).toEqual([]);
+    } finally { release(); await publishing; provider.postHook = undefined; await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes inbound notice retirement from a signed Slack Stop without a maintenance scan", async () => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    await qualifySetupRoundTrip(context.service, context.endpoint.id, "UBOARD");
+    await context.service.test(context.endpoint.id, "owner-user");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle(); await context.service.processPendingPublications(100, { maintenance: false }); await settle();
+      const body = JSON.stringify({ type: "event_callback", team_id: "T-PAPERCLIP", event_id: "EvSleepQueueStop",
+        event: { type: "agent_session_stopped", channel: "CDEFERREDNOTICE", thread_ts: "1999000.1",
+          event_ts: `${Math.floor(Date.now() / 1000)}.999999`, streaming_message_ts: [], user: "UBOARD" },
+      });
+      const response = await context.service.handleWebhook(context.endpoint.publicId, "slack", signedSlackWebhookRequest({
+        body, contentType: "application/json", url: `https://paperclip.example/api/chat-webhooks/${context.endpoint.publicId}/slack`,
+      }));
+      expect(response.status).toBe(202);
+      await settle();
+      expect(await db.select({ status: chatActions.status, result: chatActions.result }).from(chatActions)
+        .where(and(eq(chatActions.endpointId, context.endpoint.id), eq(chatActions.kind, "slack_session_stop"))))
+        .toEqual([expect.objectContaining({ status: "processed", result: expect.objectContaining({ code: "slack_session_stop_cancelled" }) })]);
+      expect(await readAgentWakeupRequestsById(context.action.id)).toEqual([expect.objectContaining({ status: "cancelled" })]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This follow-up was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it.each(["manual", "scoped"] as const)("advances pre-run FIFO selection past a suppressed page with microsecond timestamps (%s)", async mode => {
+    const context = await deferredChatQueueFixture();
+    const rejectedIds = Array.from({ length: 50 }, () => randomUUID());
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const before = new Date(context.action.createdAt.getTime() - 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() },
+        createdAt: sql`${before}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-cursor-fixture:${id}`,
+      })));
+      // Rejected current authority must not keep the same full page at the
+      // head of every bounded pass and starve the later admitted message.
+      if (mode === "manual") {
+        const first = await context.service.enqueueInboundWakeupPublications(50);
+        const second = await context.service.enqueueInboundWakeupPublications(50);
+        expect(first + second).toBe(1);
+      } else {
+        const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
+        const transaction = vi.spyOn(db, "transaction");
+        try {
+          const first = await context.service.reconcileInboundWakeNotices({ scope, limit: 50 });
+          expect(transaction).toHaveBeenCalledTimes(50);
+          expect(first).toMatchObject({ inserted: 0, contended: false, nextCursor: expect.any(Object) });
+          transaction.mockClear();
+          expect(await context.service.reconcileInboundWakeNotices({ scope, limit: 50, cursor: first.nextCursor }))
+            .toEqual({ inserted: 1, contended: false, nextCursor: null });
+          expect(transaction).toHaveBeenCalledTimes(1);
+        } finally { transaction.mockRestore(); }
+      }
+      const rows = await readChatPublicationsByEndpointId(context.endpoint.id);
+      expect(rows).toEqual([expect.objectContaining({
+        commentId: context.action.payload.commentId,
+        payload: { text: "Your follow-up is queued.", progressState: "queued" },
+      })]);
+    } finally {
+      await context.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
+  it.each(["denied", "contended"] as const)("yields a %s inbound notice backlog between bounded passes without losing work", async mode => {
+    const context = await deferredChatQueueFixture();
+    const other = await deferredChatQueueFixture();
+    const rejectedIds = Array.from({ length: 150 }, () => randomUUID());
+    let release = () => {};
+    let holder: Promise<unknown> | undefined;
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const at = new Date(context.action.createdAt.getTime() + (mode === "denied" ? -1000 : 1000)).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() },
+        createdAt: sql`${at}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-fairness-fixture:${id}`,
+      })));
+      if (mode === "contended") {
+        let locked!: () => void;
+        const ready = new Promise<void>(resolve => { locked = resolve; });
+        const hold = new Promise<void>(resolve => { release = resolve; });
+        holder = db.transaction(async tx => {
+          await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, context.action.id)).for("update");
+          locked(); await hold;
+        });
+        await ready;
+      }
+      const worker = chatInboundWakeNoticeWork(context.service);
+      const [entry] = await worker.load({ companyId: context.fixture.companyId, issueId: context.conversation.issueId });
+      const [otherEntry] = await worker.load({ companyId: other.fixture.companyId, issueId: other.conversation.issueId });
+      const transaction = vi.spyOn(db, "transaction");
+      try {
+        let remaining = await worker.check(entry!);
+        expect(transaction).toHaveBeenCalledTimes(100);
+        expect(remaining).toMatchObject({ cursor: expect.any(Object), contended: mode === "contended" });
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+        // Another scope can finish while the first still has a saved cursor.
+        expect(await worker.check(otherEntry!)).toBeNull();
+        expect(await readChatPublicationsByEndpointId(other.endpoint.id)).toHaveLength(1);
+        transaction.mockClear();
+        remaining = await worker.check(remaining!);
+        expect(transaction).toHaveBeenCalledTimes(51);
+        if (mode === "contended") {
+          expect(remaining).toMatchObject({ cursor: null });
+          expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+          release(); await holder;
+          remaining = await worker.check(remaining!);
+          expect(remaining).not.toBeNull();
+          remaining = await worker.check(remaining!);
+        }
+        expect(remaining).toBeNull();
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+          commentId: context.action.payload.commentId,
+          payload: { text: "Your follow-up is queued.", progressState: "queued" },
+        })]);
+      } finally { transaction.mockRestore(); }
+    } finally {
+      release(); await holder;
+      await context.service.shutdown(); await other.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
+  it("restarts an inbound notice cursor when privacy is restored during a bounded pass", async () => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    const rejectedIds = Array.from({ length: 100 }, () => randomUUID());
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let ready: Promise<unknown> | undefined;
+    const reconcile = context.service.reconcileInboundWakeNotices.bind(context.service);
+    const pass = vi.spyOn(context.service, "reconcileInboundWakeNotices").mockImplementationOnce(async input => {
+      const result = await reconcile(input);
+      expect(result).toMatchObject({ inserted: 0, nextCursor: expect.any(Object) });
+      held = true; await pending; return result;
+    });
+    try {
+      await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.conversation.issueId,
+        createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+      }).where(eq(issues.id, context.conversation.issueId));
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const at = new Date(context.action.createdAt.getTime() + 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() }, createdAt: new Date(at),
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-cursor-reset:${id}`,
+      })));
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      ready = chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      await issueService(db).update(context.conversation.issueId, { visibility: "open" });
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      await context.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
+  it.each(["task", "company", "startup"] as const)("bounds inbound notice scope discovery with denied history (%s)", async mode => {
+    const context = await deferredChatQueueFixture();
+    const other = await deferredChatQueueFixture();
+    const rejectedIds = Array.from({ length: 250 }, () => randomUUID());
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() },
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-discovery-budget:${id}`,
+      })));
+      const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
+      const events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { chatActions, agentWakeupRequests }, capture);
+      let scopes: Array<{ companyId: string; issueId: string }>;
+      try {
+        scopes = await context.service.loadInboundWakeNoticeScopes(
+          mode === "task" ? scope : mode === "company" ? { companyId: scope.companyId } : undefined,
+        );
+      } finally { capture.flush(); }
+      if (mode === "startup") {
+        expect(scopes).toEqual(expect.arrayContaining([scope, {
+          companyId: other.fixture.companyId, issueId: other.conversation.issueId,
+        }]));
+      } else {
+        expect(scopes).toEqual([scope]);
+      }
+      expect(events.at(-1)).toMatchObject({ startedQueries: mode === "task" ? 0 : 1,
+        completedQueries: mode === "task" ? 0 : 1, inFlightAtEnd: 0 });
+      expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1")
+        .reduce((count, event) => count + Number(event.rows), 0)).toBe(mode === "task" ? 0 : scopes.length);
+    } finally {
+      await context.service.shutdown(); await other.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
+  it("reactivates restored ordinary input after an earlier Retry notice wake is consumed", async () => {
+    const context = await deferredChatQueueFixture();
+    const retryId = randomUUID(), intentId = randomUUID();
+    const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
+    const errors: unknown[] = [], events: string[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let unsubscribe = () => {};
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      await db.insert(chatActions).values({ ...context.action, id: retryId,
+        kind: "failed_run_retry", status: "failed", providerActionId: `task-retry-restore:${retryId}`,
+        payload: { issueId: scope.issueId, taskRetryIntentId: intentId },
+      });
+      await db.insert(agentWakeupRequests).values({ ...receipt, id: retryId, status: "failed",
+        idempotencyKey: `task-retry-restore:${retryId}`,
+      });
+      await db.transaction(tx => claimTaskRetryInput(tx, { companyId: scope.companyId,
+        retryActionId: retryId, sourceActionIds: [context.action.id] }));
+      expect((await readAgentWakeupRequestsById(context.action.id))[0]).toMatchObject({
+        status: "coalesced", runId: null, payload: { coalescedIntoWakeupRequestId: retryId },
+      });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const settle = async () => vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await db.transaction(tx => signalDatabaseWork(tx, DELIVERY_QUEUES.chatInboundWakeNotices, JSON.stringify(scope)));
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatInboundWakeNotices, (event, scopes) => {
+        if ([...scopes ?? []].some(value => value !== "*" && JSON.parse(value).companyId === scope.companyId)) events.push(event);
+      });
+      await releaseUnadmittedTaskRetryInput(db, { companyId: scope.companyId, retryActionId: retryId });
+      expect((await readAgentWakeupRequestsById(context.action.id))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(events).toContain("intent"); expect(events).toContain("settled");
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+          commentId: context.action.payload.commentId, payload: { text: "Your follow-up is queued.", progressState: "queued" },
+        })]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally {
+      unsubscribe(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown();
+      await db.delete(chatActions).where(eq(chatActions.id, retryId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, retryId));
+    }
+  });
+
+  it("isolates pre-run FIFO reconciliation scopes and exhausts published history", async () => {
+    const first = await deferredChatQueueFixture();
+    const second = await deferredChatQueueFixture();
+    try {
+      const scope = { companyId: first.fixture.companyId, issueId: first.conversation.issueId };
+      expect(await first.service.loadInboundWakeNoticeScopes({ companyId: scope.companyId })).toEqual([scope]);
+      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 1, contended: false, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(second.endpoint.id)).toEqual([]);
+      expect(await first.service.loadInboundWakeNoticeScopes({ companyId: scope.companyId })).toEqual([]);
+      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false, nextCursor: null });
+      expect(await second.service.reconcileInboundWakeNotices({
+        scope: { companyId: second.fixture.companyId, issueId: second.conversation.issueId },
+      })).toEqual({ inserted: 1, contended: false, nextCursor: null });
+    } finally {
+      await first.service.shutdown(); await second.service.shutdown();
+    }
+  });
+
+  it("retains a contended pre-run FIFO projection and settles cancelled input without a visible notice", async () => {
+    const context = await deferredChatQueueFixture();
+    let release!: () => void;
+    let locked!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, context.action.id)).for("update");
+      locked(); await hold;
+      await tx.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, context.action.id));
+    });
+    try {
+      await ready;
+      const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
+      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: true, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      release(); await holder;
+      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false, nextCursor: null });
+      expect(await context.service.loadInboundWakeNoticeScopes({ companyId: scope.companyId })).toEqual([]);
+    } finally {
+      release(); await holder; await context.service.shutdown();
+    }
+  });
 
   it("keeps one durable pre-run FIFO notice across coalescing and restart, then reuses only its successor lane", async () => {
     const context = await deferredChatQueueFixture();

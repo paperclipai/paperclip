@@ -3,7 +3,11 @@ import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, assets, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, heartbeatRuns, issueAttachments, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, assets, authUsers, companies, companyMemberships, completionContracts, createDb, applyPendingMigrations, subscribeDatabaseWork, type Db, environmentLeases, heartbeatRuns, issueAttachments, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { createHeartbeatQueue } from "../heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "../../__tests__/helpers/heartbeat-queue.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../../middleware/index.js";
 import { issueRoutes } from "../../routes/issues.js";
@@ -31,10 +35,16 @@ describe("reconstruction after confirmed native workspace loss", () => {
   let db: ReturnType<typeof createDb>;
   let runningHeartbeat: ReturnType<typeof heartbeatService> | null = null;
   beforeAll(async () => {
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_RECONSTRUCTION_TEST_DATABASE_URL");
+    if (external) {
+      await applyPendingMigrations(external);
+      db = createDb(external);
+      return;
+    }
     temporary = await startEmbeddedPostgresTestDatabase("workspace-reconstruction-");
     db = createDb(temporary.connectionString);
   }, 30_000);
-  afterAll(async () => { await temporary.cleanup(); });
+  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
   afterEach(async () => {
     if (runningHeartbeat) await drainHeartbeatRunsToQuiescence(db, runningHeartbeat);
     runningHeartbeat = null;
@@ -125,6 +135,28 @@ describe("reconstruction after confirmed native workspace loss", () => {
     } });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, later.runId)))[0].status).toBe("cancelled");
   });
+  it("notifies timer eligibility at outer commit when reconstruction restores actionable work", async () => {
+    const f = await seed();
+    const [agent] = await db.update(agents).set({ runtimeConfig: { heartbeat: {
+      enabled: true, intervalSec: 600, skipTimerWhenNoActionableWork: true,
+    } } }).where(eq(agents.id, f.agentId)).returning();
+    const queue = createHeartbeatQueue(db, createHeartbeatQueueTestDependencies(db));
+    expect(await queue.nextTimerHeartbeatAt(agent)).toBeNull();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.agentTimers, event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        await reconstructNativeWorkspace({ ...f, db: tx as unknown as Db });
+        expect(events).toContain("intent");
+        expect(events).not.toContain("settled");
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
+      });
+      expect(events).toContain("settled");
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("todo");
+      expect(await queue.nextTimerHeartbeatAt(agent)).toBe(agent.createdAt.getTime() + 600_000);
+    } finally { unsubscribe(); }
+  });
+
   it("pins a historical cancelled workspace through public heartbeat startup without replaying its turn", async () => {
     const f = await seed();
     const later = await interveningCancelledRun(f, false);

@@ -1,6 +1,23 @@
 import { readDockerDatabaseReceipt, type DockerRun } from "./docker-postgres.js";
 import path from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
+
+const CONTROLLER_DATABASE_OWNER_FILE = ".runner-e2e-controller-owner.json";
+
+/** Written only after the supervisor has started this fixture's Postgres. */
+export async function recordControllerDatabaseOwnership(input: {
+  configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string;
+}) {
+  const temporaryRoot = await realpath(input.temporaryRoot);
+  const dataDirectory = await realpath(input.dataDirectory);
+  if (!dataDirectory.startsWith(`${temporaryRoot}${path.sep}`)) {
+    throw new Error("Controller database path escaped its fixture-owned root");
+  }
+  await writeFile(path.join(dataDirectory, CONTROLLER_DATABASE_OWNER_FILE), JSON.stringify({
+    version: 1, configPath: await realpath(input.configPath), temporaryRoot,
+    dataDirectory, connectionString: input.connectionString,
+  }), { mode: 0o600 });
+}
 
 export async function assertRunnerDatabaseIsolation(
   configPath: string,

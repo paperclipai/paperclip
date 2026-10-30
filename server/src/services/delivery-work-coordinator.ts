@@ -125,7 +125,7 @@ export function createDeliveryWorkCoordinator(input: {
       } };
       workers.set(queue, worker);
       const ready = Promise.resolve().then(() => { start(); return running; });
-      return { ready, wake };
+      return { ready, ...worker };
     },
     async stop() {
       stopped = true;

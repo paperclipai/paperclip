@@ -9,7 +9,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -207,6 +207,78 @@ describe("agent-created hires use managed AI connections", () => {
     expect(response.body.details).toMatchObject({ code: "ai_connection_pool_no_eligible_member" });
     const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(saved.runtimeConfig.aiConnection).toEqual(f.binding);
+  });
+
+  it.each(["shared", "delegated", "responsible_user", "router"] as const)("saves unrelated edits without probing an unchanged %s connection read from PostgreSQL", async (mode) => {
+    const f = await fixture("openai");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const account = mode === "shared"
+      ? await aiConnectionService(db).save(f.companyId, f.userId, {
+        provider: "openai", method: "api_key", ownership: "shared", name: "Shared save fixture",
+        apiKey: "fixture", agentIds: [f.agentId], allAgents: false,
+      }, "fixture")
+      : f.account;
+    const binding = mode === "router" ? (await poolFixture(f)).binding
+      : mode === "responsible_user" ? f.binding
+        : { provider: "openai", method: "api_key", mode, ...account };
+    const adapterType = mode === "shared" ? "paperclip_runner" : f.adapterType;
+    await db.update(agents).set({ adapterType,
+      ...(adapterType === "paperclip_runner" ? { adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } } : {}),
+      runtimeConfig: { aiConnection: binding },
+    }).where(eq(agents.id, f.agentId));
+    const [before] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session" };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => { throw new Error("The runtime is unavailable; unrelated edits must still save"); });
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    try {
+      for (const patch of [
+        { title: "Updated title" },
+        { adapterConfig: { reasoningEffort: "high" } },
+        { defaultEnvironmentId: null },
+        { runtimeConfig: { ...before.runtimeConfig, heartbeat: { enabled: false } } },
+      ]) {
+        const response = await request(app).patch(`/api/agents/${f.agentId}`).send(patch);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.runtimeConfig.aiConnection).toEqual(binding);
+      }
+      expect(probe).not.toHaveBeenCalled();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved).toMatchObject({ title: "Updated title", adapterConfig: { reasoningEffort: "high" },
+        runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } } });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.agentId), eq(activityLog.action, "agent.updated")))).toHaveLength(4);
+    } finally { unregisterServerAdapter(adapterType); }
+  });
+
+  it.each(["model", "engine", "environment", "harness", "connection"] as const)("probes a changed %s selection and preserves the saved configuration on failure", async (selection) => {
+    const f = await fixture("openai");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    const adapterType = selection === "harness" ? "paperclip_runner" : f.adapterType;
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => ({ adapterType, status: "fail" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "fixture_runtime_unavailable", level: "error" as const, message: "The selected runtime is unavailable" }],
+    }));
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    const patch = selection === "environment" ? { defaultEnvironmentId: environment.id }
+      : selection === "harness" ? { adapterType, adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } }
+        : selection === "connection" ? { runtimeConfig: { aiConnection: { ...f.binding, mode: "delegated", ...f.account } } }
+        : { adapterConfig: { [selection]: selection === "model" ? "changed-model" : "cli" } };
+    try {
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send(patch);
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(probe).toHaveBeenCalledOnce();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved).toMatchObject({ adapterType: f.adapterType, adapterConfig: {}, defaultEnvironmentId: null,
+        runtimeConfig: { aiConnection: f.binding } });
+    } finally { unregisterServerAdapter(adapterType); }
   });
 
   it("does not install a restricted shared connection through pool membership", async () => {

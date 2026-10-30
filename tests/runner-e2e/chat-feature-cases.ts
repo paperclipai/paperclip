@@ -8,7 +8,7 @@ import type { RunnerProfileFixture, RunnerTaskFixture } from "./types.js";
 
 export const CHAT_FEATURE_SUITE = "chat-features";
 export const CHAT_FEATURE_BUDGET_CENTS = 500;
-export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v1";
+export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v2";
 export const CHAT_FEATURE_CASES = ["create-backlog", "delegate-announcement"] as const;
 export type ChatFeatureCase = typeof CHAT_FEATURE_CASES[number];
 export interface ChatScenario {

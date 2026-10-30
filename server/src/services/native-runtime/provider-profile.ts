@@ -18,7 +18,7 @@ import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
-import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acpx-qualification.js";
+import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 import { compatibleCodexModel } from "./codex-model-fallback.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
@@ -38,7 +38,7 @@ export const DEFAULT_ACPX_RUNNER_MODELS = {
 
 export type QualifiedPaperclipRunnerAcpxAgent =
   keyof typeof DEFAULT_ACPX_RUNNER_MODELS;
-type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate;
+type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate | "antigravity";
 
 export type PaperclipRunnerProviderProfile =
   | { provider: "muse"; backend: "muse_external"; model: null; museBindingId: string }
@@ -411,6 +411,7 @@ export function claudeRunnerUnsupportedSettings(config: Record<string, unknown>)
  */
 export function resolvePaperclipRunnerProviderProfile(
   adapterConfig: unknown,
+  context: { companyId?: string } = {},
 ): PaperclipRunnerProviderProfile {
   const config = asRecord(adapterConfig);
   const candidate = config.provider ?? "codex";
@@ -554,6 +555,15 @@ export function resolvePaperclipRunnerProviderProfile(
   const pendingAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === acpxAgent && !profile.qualified);
   if (pendingAcpxProfile) {
     if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
+    if (pendingAcpxProfile.value === "antigravity") {
+      try {
+        if (resolveAntigravityCandidateAdmission({ companyId: context.companyId, model }, process.env)) {
+          return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: "antigravity" };
+        }
+      } catch {
+        throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_qualification_invalid", "Antigravity candidate admission requires the authorized company, exact model and runtime identity.");
+      }
+    }
     // Qualification authority belongs to the isolated server operator. Never
     // read this allowlist from adapter config, credential refs, or run env.
     let qualification: AcpxQualificationCandidate | undefined;
@@ -565,7 +575,7 @@ export function resolvePaperclipRunnerProviderProfile(
     if (qualification) {
       return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: qualification };
     }
-    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting local and Daytona qualification. Its profile is not enabled for production runs.`);
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting native Runner acceptance. Its profile is not enabled for production runs.`);
   }
   if ((acpxAgent === "cursor" || acpxAgent === "pi") && !model) {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "This ACPX agent requires an explicit model ID; there is no default model.");
@@ -602,6 +612,7 @@ export function resolvePaperclipRunnerProviderProfile(
  * profile's immutable remote resource identity.
  */
 export function resolvePaperclipRunnerNativeProviderInput(input: {
+  companyId?: string;
   backend: PaperclipRunnerProviderProfile["backend"];
   adapterConfig: unknown;
   /** Verified image CLI version for a fresh remote Codex run only. */
@@ -625,7 +636,7 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
   } | null;
 }): PaperclipRunnerNativeProviderInput {
   const config = asRecord(input.adapterConfig);
-  const profile = resolvePaperclipRunnerProviderProfile(config);
+  const profile = resolvePaperclipRunnerProviderProfile(config, { companyId: input.companyId });
   if (config.homeMode !== undefined && config.homeMode !== "isolated" && config.homeMode !== "preconfigured") {
     throw new PaperclipRunnerProviderProfileError("paperclip_runner_home_mode_invalid", "homeMode must be isolated or preconfigured");
   }

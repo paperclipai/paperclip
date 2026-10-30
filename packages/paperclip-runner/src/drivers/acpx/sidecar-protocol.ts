@@ -1,3 +1,4 @@
+import type { AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
@@ -39,6 +40,7 @@ export interface AcpxSidecarEvent {
 }
 
 export interface AcpxSidecarOpenParams {
+  candidateAdmission?: AcpxCandidateStartupAdmission;
   runtimeDirectory: string;
   normalizedSessionId: string;
   workingDirectory: string;

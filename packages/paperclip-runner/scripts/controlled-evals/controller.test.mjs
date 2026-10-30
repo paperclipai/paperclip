@@ -22,6 +22,46 @@ import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runn
 
 import { childScript, fixture, success } from './controller-fixture.mjs';
 
+test('expected ACPX profile reaches the child through function and command-line entrypoints', async t => {
+  const profile = { agent: 'claude', agentRuntimeVersion: '0.3.286' };
+  for (const mode of ['function', 'cli']) for (const stale of [false, true]) {
+    const requests = mode === 'function' ? 1 : 0;
+    const f = await fixture(t, { providerProfile: 'claude', builtAcpxProfile: profile, requests });
+    const expectedAcpxProfile = { ...profile, ...(stale ? { agentRuntimeVersion: '0.3.263' } : {}) };
+    let calls = 0;
+    let result;
+    if (mode === 'function') {
+      result = await runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: f.environment, expectedAcpxProfile,
+        transport: async () => { calls++; return success('anthropic'); } });
+    } else {
+      let code = 0;
+      try {
+        await promisify(execFile)(process.execPath, [fileURLToPath(new URL('./run.mjs', runtime)), '--request', f.requests[0].requestPath,
+          '--output', f.requests[0].outputPath, '--expected-acpx-profile', JSON.stringify(expectedAcpxProfile)], {
+          env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: f.environment.ANTHROPIC_API_KEY, PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST: f.manifestPath }, timeout: 15000,
+        });
+      } catch (error) { if (typeof error.code !== 'number') throw error; code = error.code; }
+      result = { code, report: JSON.parse(await readFile(f.requests[0].outputPath, 'utf8')).controllerAccounting };
+    }
+    assert.equal(calls, stale ? 0 : requests);
+    assert.equal(result.code === 0, !stale);
+    assert.equal(result.report.accounting.requests.length, stale ? 0 : requests);
+  }
+});
+
+test('malformed profile arguments fail before opening controlled evidence', async t => {
+  for (const [providerProfile, profiles] of [
+    ['claude', [null, [], 'profile', { overflow: 'x'.repeat(4097) }]],
+    ['codex', [{}]],
+  ]) {
+    const f = await fixture(t, { providerProfile });
+    for (const expectedAcpxProfile of profiles) {
+      await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: {}, expectedAcpxProfile }), /Expected ACPX profile/);
+    }
+    await assert.rejects(stat(f.manifest.outputDirectory), { code: 'ENOENT' });
+  }
+});
+
 test('real child requests reserve before dispatch, stop at the cap and retain only controller credentials', async t => {
   const f = await fixture(t);
   let calls = 0;

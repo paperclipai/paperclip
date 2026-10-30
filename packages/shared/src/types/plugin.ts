@@ -500,10 +500,16 @@ export interface PluginUiSlotDeclaration {
    */
   entityTypes?: PluginUiSlotEntityType[];
   /** Also offer this agent detail tab beside a task while its agent is running.
-   * GET this plugin-relative path with :entityId replaced by the agent ID.
+   * The run must record the declared runtime activity before a task panel appears.
+   * GET this plugin-relative path with :entityId replaced by the agent ID,
+   * and runId/issueId query parameters for the active task.
    * The board/agent-scoped route returns { available: boolean }.
    */
-  taskSidePanel?: { availabilityPath: string };
+  taskSidePanel?: {
+    availabilityPath: string;
+    /** Opaque runtime activity mapped to this view. Absent mappings add no task panel. */
+    activation?: { namespace: string; activityKey: string };
+  };
 
   /**
    * Optional company-scoped route segment for page, routeSidebar, and

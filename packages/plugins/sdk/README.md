@@ -259,17 +259,71 @@ A card or section rendered on the main dashboard. Use this for at-a-glance metri
 
 An additional tab on a project, issue, agent, goal, or run detail page. Rendered when the user navigates to that entity's detail view. Receives `PluginDetailTabProps` with `context.companyId` set to the active company and `context.entityId` / `context.entityType` guaranteed to be non-null, so you can immediately scope data fetches to the relevant entity. Specify which entity types the tab applies to via the `entityTypes` array in the manifest slot declaration. Requires the `ui.detailTab.register` capability.
 
-Agent detail tabs can also appear in task side panels. Add
-`taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability" }` to the
-slot and declare that exact path as a board-only GET API route with
-`companyResolution: { from: "agent", param: "entityId" }`. The route returns
-`{ available: true }` only while its view is in use. The host replaces `:entityId`
-with the task's running agent ID, polls availability and mounts the same component
-with agent context. The plugin owns availability, labels, content and controls.
-No private plugin identifier or provider protocol belongs in Core. Unavailable
-views, access failures, inactive runs and missing plugins contribute no task tab.
-Closing a tab preserves dismissal during polling; available panels remain in the
-launcher. Only tab identity is persisted, never availability responses or secrets.
+Agent detail tabs can also appear in task side panels. Declare a mapping to a
+runtime activity independently of the plugin and slot identifiers:
+
+```ts
+taskSidePanel: {
+  availabilityPath: "/agents/:entityId/view/availability",
+  activation: { namespace: "example.runtime", activityKey: "desktop.used" },
+}
+```
+
+Declare the exact availability path as a board-only GET API route with
+`companyResolution: { from: "agent", param: "entityId" }`. Core maps the declared
+namespace/activity pair to installed agent detail tabs. Runner knows no plugin
+or UI slot. Declarations without `activation` remain valid for agent detail pages
+and contribute no task panel. Activity is a reported fact, not an authorization grant.
+
+#### Runtime activity recording
+
+A runtime client captures Runner's opaque activity context before an eligible
+operation, then sends a structured notification after successful use:
+
+```sh
+context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context)
+# Perform the operation; notify only on success.
+"$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used
+```
+
+Runner supplies the matching absolute executable as
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER` and an atomic endpoint descriptor as
+`PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
+override them. Provider launch boundaries preserve both values. Codex receives
+read access to the helper, descriptor and publisher lock, plus write access to
+one named pipe. The pipe and lock live in a private temporary directory, outside
+durable Runner state. The enclosing directories remain protected.
+
+The helper captures context locally. After success, it publishes newline-delimited
+JSON through a nonblocking pipe. A leading newline terminates an interrupted
+previous write. A read-only file lock serializes publishers with a 500 ms deadline.
+Runner reuses its bounded line reader: 2 KiB per record, 128 queued records and
+16 records per control-loop iteration. Idle transport blocks; cleanup removes
+only its pipe, lock and empty private directory.
+
+A successful helper exit means publication to the pipe. Runner validates context
+against the active run, deduplicates up to 128 activity pairs per authority, and
+persists `runtime.activity.recorded` through its authenticated event stream.
+Warm attachment and process recovery rotate context. The helper accepts no run
+identity. Clients treat this hint as best effort, including with older runtimes.
+Notify only after successful use; exclude help, schema discovery, status probes
+and failures. No agent instruction is required.
+
+Identifiers are 1–160 Unicode code points, excluding C0 controls and DEL.
+Core maps declared activity identifiers to its consumers and applies their
+existing discovery, authorization and availability checks.
+
+Core reads durable activity on mount/reconnect and uses the existing live stream.
+The authorized run binding identifies company, task and agent; caller payloads
+cannot override them. Core replaces `:entityId` with the running agent ID, adds
+`runId` and `issueId`, and requires `{ available: true }`. History/live hints merge
+without losing earlier activity. Only matching current-task activity contributes.
+Readiness and transient discovery failures get at most three attempts; authorization
+failures are not retried. No periodic readiness polling is added. Dismissal stays
+scoped to the current run. Only tab identity is stored in browser state; activity
+remains in the authorized run log. Missing/disabled plugins, failed history reads,
+unavailable views and access failures contribute no task tab. The plugin owns
+labels, content and controls. No private integration identifier belongs in Core.
 
 #### `taskDetailView`
 

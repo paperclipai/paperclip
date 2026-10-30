@@ -60,7 +60,7 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-properties", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "ask-question", "task-properties", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "cloud-onboarding"]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -262,6 +262,22 @@ describe("runner E2E catalog", () => {
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
     ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+  });
+
+  it("bounds ephemeral Daytona lifetime beyond each declared attempt and acquire budget", () => {
+    const environment = runnerEnvironments.find(entry => entry.id === "daytona")!;
+    const payload = environment.buildEnvironment({
+      executionId: "bounded-lifetime", daytonaImage: `runner@sha256:${"a".repeat(64)}`,
+      secretRefs: { DAYTONA_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } },
+    });
+    const config = payload.config as Record<string, unknown>;
+    const lifetimeMs = Number(config.ttlMinutes) * 60_000;
+    expect(Number.isFinite(lifetimeMs)).toBe(true);
+    const cells = runnerMatrix.filter(entry => entry.environment === environment);
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(lifetimeMs, cell.id).toBeGreaterThan(cell.task.attemptTimeoutMs.daytona + Number(config.timeoutMs));
+    }
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {
@@ -530,13 +546,13 @@ describe("runner E2E catalog", () => {
 
   it("uses only declared secret references in generated payloads", () => {
     expect(
-      runnerMatrix.filter(entry => !["provider_connection", "github_review_journey"].includes(entry.task.flow)).every((entry) =>
+      runnerMatrix.filter(entry => !["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(entry.task.flow)).every((entry) =>
         entry.requiredCredentials.includes(entry.profile.credential),
       ),
     ).toBe(true);
     expect(
       runnerMatrix
-        .filter((entry) => entry.environment.id === "daytona" && !["provider_connection", "github_review_journey"].includes(entry.task.flow))
+        .filter((entry) => entry.environment.id === "daytona" && !["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(entry.task.flow))
         .every((entry) =>
           entry.requiredCredentials.includes("DAYTONA_API_KEY"),
         ),

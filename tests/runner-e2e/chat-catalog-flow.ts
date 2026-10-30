@@ -185,6 +185,31 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       if (state) await refresh();
       const runs = await context.allRuns();
       await input.evidence("chat-catalog-runs.json", await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run))));
+      if (["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"].includes(scenario.id)) {
+        for (const [runIndex, run] of runs.entries()) {
+          const inspected = await input.api.get<{ trace: {status: string} | null; entries: Array<{kind?: string; frameId?: number; timestamp?: string; parsed?: unknown}> }>(`/api/heartbeat-runs/${run.id}/provider-trace`);
+          const timings: Array<Record<string, unknown>> = [];
+          const visit = (value: unknown, frame: {frameId?: number; timestamp?: string}) => {
+            if (!value || typeof value !== "object" || timings.length >= 1000) return;
+            const row = value as Record<string, unknown>;
+            const state = row.state as Record<string, unknown> | undefined;
+            if (row.type === "tool" && typeof row.tool === "string" && /^[a-zA-Z0-9_.-]{1,128}$/.test(row.tool) && state) {
+              const time = state.time as Record<string, unknown> | undefined;
+              timings.push({frameId: frame.frameId, observedAt: frame.timestamp, tool: row.tool,
+                status: ["pending", "running", "completed", "error"].includes(String(state.status)) ? state.status : "unknown",
+                startedAtMs: typeof time?.start === "number" ? time.start : null,
+                endedAtMs: typeof time?.end === "number" ? time.end : null,
+                mcpRequestTimedOut: typeof state.error === "string" && state.error.includes("MCP error -32001: Request timed out")});
+            }
+            for (const child of Object.values(row)) if (child && typeof child === "object") {
+              if (Array.isArray(child)) child.forEach(item => visit(item, frame)); else visit(child, frame);
+            }
+          };
+          for (const frame of inspected.entries) if (frame.kind === "frame") visit(frame.parsed, frame);
+          await input.evidence(`opencode-tool-timings-${runIndex}.json`, {scope: "diagnostic-pilot", traceStatus: inspected.trace?.status ?? "unavailable", timings});
+        }
+      }
+
     } catch {
       await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id });
       if (!failed) throw new Error("Scenario evidence collection failed");

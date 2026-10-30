@@ -3,6 +3,8 @@ export {
   withDedicatedDbConnection,
   livenessDb,
   closeLivenessDb,
+  checkpointDb,
+  closeCheckpointDb,
   closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,

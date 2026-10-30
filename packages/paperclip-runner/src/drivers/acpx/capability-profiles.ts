@@ -3,11 +3,11 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 export interface AcpxCapabilityProfile {
   readonly displayName: string;
   readonly qualification: "qualified" | "pending";
-  readonly models: "explicit-provider-verified";
-  readonly permissions: "runner-policy" | "interactive";
+  readonly models: "explicit-provider-verified" | "unverified";
+  readonly permissions: "runner-policy" | "interactive" | "unverified";
   readonly questions: "form" | "cursor-extension" | "semantic-only" | "not-exposed";
   readonly plans: "native" | "cursor-decision" | "semantic-only";
-  readonly tools: "authenticated-mcp" | "owned-extension";
+  readonly tools: "authenticated-mcp" | "owned-extension" | "unverified";
   readonly recovery: "session-load" | "unverified";
   readonly toolRefreshOnResume?: boolean;
   readonly usage: "reported" | "unverified";
@@ -20,6 +20,12 @@ export interface AcpxCapabilityProfile {
 
 /** These are runner integration claims, not a proxy for everything a harness can do. */
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
+  antigravity: {
+    displayName: "Google Antigravity", qualification: "pending", models: "unverified",
+    permissions: "unverified", questions: "not-exposed", plans: "semantic-only", tools: "unverified",
+    recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
+  },
   claude: {
     toolRefreshOnResume: true,
     displayName: "Claude", qualification: "qualified", models: "explicit-provider-verified",

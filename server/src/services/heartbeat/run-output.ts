@@ -174,6 +174,8 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           seq: chunkSeq,
           stream,
           chunk: payloadChunk,
+          logRef: handle?.logRef,
+          logStore: handle?.store,
           truncated: payloadChunk.length !== sanitizedChunk.length,
         },
       });

@@ -4,6 +4,7 @@ import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
+import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
 
 import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
@@ -45,6 +46,7 @@ import { normalizeAcpxPermission, type NormalizedAcpxPermission } from "../drive
 import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
+  assertAcpxProfileReleased,
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
@@ -70,6 +72,7 @@ import {
   type AcpxSidecarRequest,
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
+import { GENERATED_ACPX_SIDECAR_OPEN_PARAMS, GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
@@ -169,6 +172,7 @@ let pendingInput = Promise.resolve();
 let bootstrapFailure: Error | null = null;
 let initializedAgent: QualifiedAcpxAgent | null = null;
 let initializedModel: string | null = null;
+let initializedCandidateAdmission: AcpxCandidateStartupAdmission | undefined;
 let inputClosed = false;
 const tools = new Map<string, PendingTool>();
 const normalizingTools = new Set<string>();
@@ -229,7 +233,7 @@ async function receiveLine(line: string): Promise<void> {
       request.command,
     );
     if (blocked) throw blocked;
-    response(request.id, true, await dispatch(request));
+    response(request.id, true, await dispatch(request, request.params.performance === true ? performance.now() : 0));
   } catch (error) {
     const normalized =
       error instanceof Error ? error : new Error(String(error));
@@ -252,15 +256,19 @@ async function receiveLine(line: string): Promise<void> {
 
 async function dispatch(
   request: AcpxSidecarRequest,
+  receivedAt = 0,
 ): Promise<Record<string, unknown>> {
   if (request.command === "initialize") {
     if (initializedModel)
       throw new Error("ACPX sidecar is already initialized");
-    const agent = requireQualifiedAgent(request.params.agent);
     const model = requiredText(request.params.model, "model");
+    const candidateAdmission = request.params.candidateAdmission === undefined ? undefined
+      : parseAcpxCandidateStartupAdmission(request.params.candidateAdmission, { agent: String(request.params.agent), model });
+    const agent = requireQualifiedAgent(request.params.agent, model, candidateAdmission);
     const profile = resolveQualifiedAcpxProfile(agent, model);
     initializedAgent = agent;
     initializedModel = model;
+    initializedCandidateAdmission = candidateAdmission;
     return {
       protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
       sidecarPid: process.pid,
@@ -289,11 +297,13 @@ async function dispatch(
     if (
       params.agent !== initializedAgent ||
       params.model !== initializedModel
+      || canonicalJson(params.candidateAdmission ?? null) !== canonicalJson(initializedCandidateAdmission ?? null)
     ) {
       throw new Error("ACPX session profile differs from its initialization");
     }
     const openedHost = await AcpxRuntimeHost.open(
       {
+        candidateAdmission: params.candidateAdmission,
         runtimeDirectory: params.runtimeDirectory,
         normalizedSessionId: params.normalizedSessionId,
         workingDirectory: params.workingDirectory,
@@ -375,6 +385,7 @@ async function dispatch(
       throw new Error("ACPX run tool catalog differs from the opened session");
     }
     const attachment = parseAcpxRunAttachment(request.params);
+    if (initializedCandidateAdmission) parseAcpxCandidateStartupAdmission(initializedCandidateAdmission, { agent: initializedAgent!, model: initializedModel!, runId: attachment.runId, normalizedSessionId: openParams!.normalizedSessionId });
     runId = attachment.runId;
     return {
       runId: attachment.runId,
@@ -385,6 +396,7 @@ async function dispatch(
     const activeHost = requireHost();
     if (!runId) throw new Error("attach a run before starting an ACPX turn");
     if (turnId) throw new Error("ACPX sidecar already has an active turn");
+    if (initializedCandidateAdmission) parseAcpxCandidateStartupAdmission(initializedCandidateAdmission, { agent: initializedAgent!, model: initializedModel!, runId, normalizedSessionId: openParams!.normalizedSessionId });
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
@@ -409,8 +421,13 @@ async function dispatch(
     });
     activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
+    const timed = request.params.performance === true;
+    const timingStart = receivedAt;
+    let statusMs = 0;
+    const statusStart = timed ? performance.now() : 0;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
+      if (timed) statusMs = performance.now() - statusStart;
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
         text: boundedText(request.params.message, "message", 1024 * 1024),
@@ -428,8 +445,9 @@ async function dispatch(
     void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
+    const promptStart = timed ? performance.now() : 0;
     await runtimeTurn.promptStarted;
-    return { turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
+    return { ...(timed ? {timing:{statusMs, statusOffsetMs:statusStart-timingStart, promptMs:performance.now()-promptStart, promptOffsetMs:promptStart-timingStart, sidecarMs:performance.now()-timingStart}} : {}), turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
   }
   if (request.command === "turn.steer") {
     const control = parseAcpxTurnControl(request.params);
@@ -1238,13 +1256,17 @@ function safeOutput(value: unknown): Record<string, unknown> {
   };
 }
 
+// Generated from the sidecar schema's closed session.open parameter set.
+const OPEN_PARAMS: ReadonlySet<string> = new Set(GENERATED_ACPX_SIDECAR_OPEN_PARAMS);
+
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "claudeEffort", "grokEffort", "grokDisableWebSearch", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
-  if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
-  const agent = requireQualifiedAgent(value.agent);
+  if (Object.keys(value).some(key => !OPEN_PARAMS.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const model = requiredText(value.model, "model");
+  const candidateAdmission = value.candidateAdmission === undefined ? undefined
+    : parseAcpxCandidateStartupAdmission(value.candidateAdmission, { agent: String(value.agent), model, normalizedSessionId: String(value.normalizedSessionId) });
+  const agent = requireQualifiedAgent(value.agent, model, candidateAdmission);
   if (value.mode !== undefined && agent !== "cursor") throw new Error("mode is supported only for Cursor");
   const piThinkingLevel = resolvePiThinkingLevel(agent, value.piThinkingLevel);
   const claudeEffort = resolveClaudeEffort(agent, value.claudeEffort);
@@ -1260,6 +1282,7 @@ function parseOpenParams(
     );
   }
   return {
+    ...(candidateAdmission ? { candidateAdmission } : {}),
     runtimeDirectory: requiredText(value.runtimeDirectory, "runtimeDirectory"),
     normalizedSessionId: boundedIdentity(
       value.normalizedSessionId,
@@ -1293,7 +1316,8 @@ function parseOpenParams(
 
 function parseProviderPolicy(value: unknown): { readOnly: boolean } {
   const policy = record(value);
-  if (typeof policy.readOnly !== "boolean" || Object.keys(policy).some(key => key !== "readOnly")) {
+  if (typeof policy.readOnly !== "boolean"
+    || Object.keys(policy).some(key => !(GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS as readonly string[]).includes(key))) {
     throw new Error("providerPolicy requires only an explicit readOnly boolean");
   }
   return { readOnly: policy.readOnly };
@@ -1453,10 +1477,12 @@ function requireHost(
   return requireSidecarCommandHost(host, activeHostCleanup, options);
 }
 
-function requireQualifiedAgent(value: unknown): QualifiedAcpxAgent {
-  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot") {
-    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, or pi");
+function requireQualifiedAgent(value: unknown, model?: string, candidateAdmission?: AcpxCandidateStartupAdmission): QualifiedAcpxAgent {
+  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot" && value !== "antigravity") {
+    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, pi, or antigravity");
   }
+  if (candidateAdmission) assertAcpxExecutionAdmission(resolveQualifiedAcpxProfile(value, model ?? ""), candidateAdmission);
+  else assertAcpxProfileReleased(value);
   return value;
 }
 

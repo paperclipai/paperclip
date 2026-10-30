@@ -36,6 +36,20 @@ Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
 
+First-agent onboarding offers only Claude and Codex, subject to instance adapter
+availability. GitHub Copilot and other providers remain available through Add
+agent after onboarding. A saved draft for another provider requires a new choice.
+Old Copilot drafts discard the retired selection and model, including when both
+onboarding providers are disabled. The wizard no longer contains Copilot setup
+UI, connection state, or model discovery; later Add agent retains that support.
+Changing an unavailable saved provider clears its model. If both first-onboarding
+providers are unavailable, the wizard explains how to enable one or use New Agent
+from the Agents page for another provider.
+Claude and Codex are harness choices, not a forced legacy runtime. Automatic
+runner selection uses the execution environment's qualified native runner and
+falls back to legacy on native Windows without changing the onboarding UI.
+Windows should default to native when its runner platform support is qualified.
+
 ### `cli-setup`
 
 Use `paperclipai onboard --help` or `paperclipai run --help` to select an isolated data directory before setup.
@@ -47,6 +61,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `web-wizard`
 
 Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
+
+The [published canary smoke](../../tests/canary-onboarding/canary-onboarding.spec.ts)
+checks the exact installed version through Connect a model. Submitting the agent
+name must save one paused setup record with disabled heartbeats and no task or
+run. The [authenticated release smoke](../../tests/release-smoke/docker-auth-onboarding.spec.ts)
+checks the same held state, then completes that record through Connect without
+creating a second agent. Its Docker harness mocks credential verification; live
+provider authentication remains separate evidence.
+
+Name-only setup defers the runner field while the provisional adapter remains
+held in setup. Choosing a provider updates that same setup record with its
+selected runner. The wizard regression covers a saved native choice followed by
+OpenAI Subscription selection; it does not prove provider authentication.
 
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
@@ -141,6 +168,21 @@ agent-only acceptance, stale plans and newer pending/rejected proposals must not
 admit new work. [Admission controls](../../server/src/__tests__/onboarding-first-task-admission.test.ts)
 exercise native and REST calls against disposable PostgreSQL; live model and
 Cloud onboarding remain separate evidence.
+
+For a native proposal, reject root-level `version` or `supersedeOnUserComment`
+without creating a card. Correct them inside `payload`, preserve the confirmation
+or checkbox approval kind, and verify one pending card after idempotent replay.
+An answered question form still cannot authorize the proposed child task.
+
+After acceptance, reject a new task whose blockers include its onboarding source.
+The rejected command must leave no task, dependency, wake or creation receipt;
+a corrected retry must still create the ready child. Preserve valid blockers for
+other work. Check equivalent UUID spellings and a later child PATCH as well as
+native dependency edits, including the child's own run with a waiting parent and
+no first-class dependency yet. Preserve normal API attempt auditing and allow blocker
+corrections without a new proposal acceptance. The shipped handoff recipe copies the actual approved inputs and
+constraints into the child, then makes the parent depend on the child. Its
+schema and persistence controls do not prove that a live model follows it.
 
 Native completion also requires a saved human proposal decision. An opening
 answer alone must leave the first task in review. Verify that premature native

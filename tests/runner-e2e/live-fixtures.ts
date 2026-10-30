@@ -395,6 +395,9 @@ export async function setupLiveFixtures(input: {
           aiConnection: account.binding,
         };
       }
+      if (execution.suite.id === "chat-features" && ["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"].includes(execution.task.id)) {
+        agent.runtimeConfig = { ...(agent.runtimeConfig as Record<string, unknown>), debug: { providerTrace: "raw" } };
+      }
       return api.post<AgentRecord>(
         `/api/companies/${company.id}/agents`,
         codexSubscription ? codexSubscriptionAgentConfig(agent, process.env, company.id) : agent,

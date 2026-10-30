@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,9 @@ import {
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+
+const readVersion = vi.hoisted(() => vi.fn());
+vi.mock("../api/companySkills", () => ({ companySkillsApi: { version: readVersion } }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -100,6 +104,7 @@ vi.mock("../components/MarkdownEditor", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let root: Root | null = null;
+let queryClient: QueryClient;
 let container: HTMLDivElement | null = null;
 
 async function act(callback: () => void | Promise<void>) {
@@ -111,6 +116,7 @@ async function act(callback: () => void | Promise<void>) {
 afterEach(() => {
   root?.unmount();
   root = null;
+  queryClient?.clear();
   container?.remove();
   container = null;
 });
@@ -191,11 +197,13 @@ async function renderSkillDetail(
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  readVersion.mockReset().mockImplementation(async (_company: string, _skill: string, id: string) => versions.find(version => version.id === id));
   const detail = props.detail ?? makeDetail(versions[0]!);
 
   await act(async () => {
     root?.render(
-      <SkillDetailPage
+      <QueryClientProvider client={queryClient}><SkillDetailPage
         detail={detail}
         loading={false}
         activeTab={props.activeTab ?? "versions"}
@@ -211,7 +219,7 @@ async function renderSkillDetail(
         setDraft={vi.fn()}
         onSave={vi.fn()}
         savePending={false}
-        versions={versions}
+        versions={versions.map(version => ({ ...version, fileInventory: version.fileInventory.map(({ path, kind }) => ({ path, kind })) }))}
         versionsLoading={false}
         attachAgents={[]}
         onSubmitAttach={vi.fn()}
@@ -233,7 +241,7 @@ async function renderSkillDetail(
         onDelete={vi.fn()}
         deletePending={false}
         {...props}
-      />,
+      /></QueryClientProvider>,
     );
   });
 
@@ -783,6 +791,7 @@ describe("SkillDetailPage versions tab", () => {
     const v1 = makeVersion(1, "# Demo Skill\n\nFirst line");
     const v2 = makeVersion(2, "# Demo Skill\n\nSecond line");
     const node = await renderSkillDetail([v2, v1]);
+    expect(readVersion).not.toHaveBeenCalled();
     const viewDiffButtons = buttonsNamed(node, "View diff") as HTMLButtonElement[];
 
     expect(viewDiffButtons).toHaveLength(2);
@@ -794,7 +803,8 @@ describe("SkillDetailPage versions tab", () => {
     expect(dialog.textContent).toContain("Diff");
     expect(selects[0]?.value).toBe(v1.id);
     expect(selects[1]?.value).toBe(v2.id);
-    expect(dialog.textContent).toContain("Second line");
+    await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("Second line")));
+    expect(readVersion).toHaveBeenCalledTimes(2);
 
     await click(viewDiffButtons[1]!);
     dialog = node.querySelector('[role="dialog"]') as HTMLElement;
@@ -803,7 +813,7 @@ describe("SkillDetailPage versions tab", () => {
     expect(selects[0]?.value).toBe("");
     expect(selects[1]?.value).toBe(v1.id);
     expect(dialog.textContent).toContain("Initial");
-    expect(dialog.textContent).toContain("First line");
+    await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("First line")));
     expect(dialog.textContent).not.toContain("Both sides are the same version");
   });
 });
@@ -956,7 +966,7 @@ describe("SkillDetailPage settings", () => {
 
     await act(async () => {
       root?.render(
-        <SkillDetailPage
+        <QueryClientProvider client={queryClient}><SkillDetailPage
           detail={detail}
           loading={false}
           activeTab="overview"
@@ -993,7 +1003,7 @@ describe("SkillDetailPage settings", () => {
           updateSettingsPending={false}
           onDelete={vi.fn()}
           deletePending={false}
-        />,
+        /></QueryClientProvider>,
       );
     });
 

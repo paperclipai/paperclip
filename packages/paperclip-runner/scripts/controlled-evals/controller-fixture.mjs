@@ -19,6 +19,7 @@ import {dirname,join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
+if(${Boolean(options.builtAcpxProfile)})assert.deepEqual(JSON.parse(args.get('--expected-acpx-profile')??'null'),${JSON.stringify(options.builtAcpxProfile ?? null)});
 if(${Boolean(options.failChild)})process.exit(3);
 if(${Boolean(options.resistantDescendant)}) {
  const orphan=${Boolean(options.orphanExit)};

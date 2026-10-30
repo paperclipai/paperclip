@@ -505,6 +505,17 @@ describe("plugin task side-panel declarations", () => {
   it("accepts an optional panel backed by an authorized plugin-local agent route", () => {
     expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.taskSidePanel).toEqual(slot.taskSidePanel);
   });
+  it("accepts an explicit UI-independent activity mapping and preserves legacy declarations", () => {
+    const activation = { namespace: "example.runtime", activityKey: "desktop.used" };
+    expect(pluginUiSlotDeclarationSchema.parse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation } }).taskSidePanel?.activation).toEqual(activation);
+    expect(pluginUiSlotDeclarationSchema.parse(slot).taskSidePanel?.activation).toBeUndefined();
+    for (const value of ["视".repeat(60), "😀".repeat(160)]) {
+      expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation: { namespace: value, activityKey: value } } }).success).toBe(true);
+    }
+    for (const activation of [{ namespace: "", activityKey: "used" }, { namespace: "runtime", activityKey: "😀".repeat(161) }, { namespace: "runtime", activityKey: "\u007f" }, { namespace: "runtime", activityKey: "used", runId: "other" }]) {
+      expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { ...slot.taskSidePanel, activation } }).success).toBe(false);
+    }
+  });
   it("accepts a GET availability route when a POST at the same path is declared first", () => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes: [{ ...route, routeKey: "view.update", method: "POST" }, route] }).success).toBe(true);
   });

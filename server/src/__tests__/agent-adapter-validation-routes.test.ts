@@ -1,6 +1,7 @@
 import express from "express";
 import os from "node:os";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -79,6 +80,8 @@ const mockRemoteAgentProfileService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAntigravityModels = vi.hoisted(() => vi.fn());
+vi.mock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -114,6 +117,7 @@ vi.mock("../services/remote-agent-profiles.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
@@ -242,6 +246,7 @@ async function unregisterTestAdapter(type: string) {
 
 describe("agent routes adapter validation", () => {
   beforeEach(async () => {
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", undefined);
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -334,6 +339,53 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("round-trips the protected YAML projection and forwards its revision to the write lock", async () => {
+    const existing = {
+      ...(await mockAgentService.getById()),
+      adapterConfig: { model: "old", removeMe: true, env: { DEMO_VALUE: "private-fixture" } },
+      metadata: { token: "private-metadata-fixture" },
+    };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    expect(loaded.status).toBe(200);
+    expect(loaded.body.configurationRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(loaded.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(loaded.body)).not.toContain("private-metadata-fixture");
+    const adapterConfig = { ...loaded.body.adapterConfig, model: "new" };
+    delete adapterConfig.removeMe;
+    const saved = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterConfig, replaceAdapterConfig: true, metadata: { ...loaded.body.metadata, label: "new" },
+      expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "new", env: existing.adapterConfig.env }),
+      metadata: { ...existing.metadata, label: "new" },
+    }), expect.objectContaining({ expectedConfigurationRevision: loaded.body.configurationRevision }));
+    expect(mockAgentService.update.mock.calls[0][1].adapterConfig).not.toHaveProperty("removeMe");
+    expect(saved.body.configurationRevision).not.toBe(loaded.body.configurationRevision);
+    expect(JSON.stringify(saved.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(saved.body)).not.toContain("private-metadata-fixture");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated" }));
+  });
+
+  it("rejects stale and unauthorized YAML saves before calling the update service", async () => {
+    const existing = await mockAgentService.getById();
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    const stale = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Stale", expectedConfigurationRevision: "0".repeat(64),
+    }));
+    expect(stale.status).toBe(409);
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_missing_grant", explanation: "No configuration permission" });
+    const denied = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Denied", expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(denied.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it("routes narrow roster edits through authorization, config merging and audit history", async () => {
     const existing = { ...(await mockAgentService.getById()), adapterConfig: { model: "old", cwd: "/workspace" }, runtimeConfig: { heartbeat: { intervalSec: 900 } } };
     mockAgentService.getById.mockResolvedValue(existing);
@@ -359,6 +411,7 @@ describe("agent routes adapter validation", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
   });
@@ -398,6 +451,77 @@ describe("agent routes adapter validation", () => {
       const invalid = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx_codex"));
       expect(invalid.status).toBe(422);
     } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
+  it("loads setup-only Antigravity account metadata without consulting another harness", async () => {
+    const adapters = await import("../adapters/index.js");
+    const list = vi.spyOn(adapters, "listAdapterModels");
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels");
+    const catalog = [{ id: "caller-exact-google-model", label: "Google account model" }];
+    mockAntigravityModels.mockResolvedValue(catalog);
+    try {
+      const app = await createApp();
+      for (const suffix of ["", "&refresh=true"]) {
+        const response = await requestApp(app, base => request(base).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=antigravity${suffix}`));
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body).toEqual(catalog);
+        expect(mockAntigravityModels).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+          companyId: "company-1", binding: { provider: "google", method: "subscription", mode: "responsible_user" },
+        }));
+      }
+      expect(list).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
+  it("refuses another provider binding before Antigravity model discovery", async () => {
+    const app = await createApp();
+    const binding = encodeURIComponent(JSON.stringify({ provider: "openai", method: "subscription", mode: "responsible_user" }));
+    const response = await requestApp(app, base => request(base).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=antigravity&aiConnection=${binding}`));
+    expect(response.status).toBe(422);
+    expect(response.body.error).toContain("Google runtime connection");
+    expect(mockAntigravityModels).not.toHaveBeenCalled();
+  });
+
+  it.each(["create", "hire", "edit"])("refuses pending Antigravity %s before persistence", async action => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
+    const response = action === "edit"
+      ? await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterType: "paperclip_runner", adapterConfig }))
+      : await requestApp(app, base => request(base).post(`/api/companies/company-1/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: "Antigravity", adapterType: "paperclip_runner", adapterConfig }));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details).toMatchObject({ code: "paperclip_runner_acpx_agent_unavailable" });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform === "darwin" && process.arch === "arm64")("saves only the exact company-authorized Antigravity candidate without persisting operator authority", async () => {
+    const [{ QUALIFIED_ACPX_PROFILES }, distributionJson] = await Promise.all([
+      import("../vendor/paperclip-runner/index.js"),
+      readFile(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"),
+    ]);
+    const distributions = JSON.parse(distributionJson);
+    const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
+    const admission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-1", agent: "antigravity",
+      model: adapterConfig.model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+      nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
+      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 };
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(admission));
+    const app = await createApp();
+    const created = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterConfig: expect.objectContaining(adapterConfig) }), expect.any(Object));
+    expect(JSON.stringify(mockAgentService.create.mock.calls)).not.toContain("paperclip.acpx-candidate-admission");
+    expect(QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus).toBe("pending");
+    mockAgentService.create.mockClear();
+    for (const changed of [{ ...admission, companyId: "another-company" }, { ...admission, model: "another-model" }]) {
+      vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(changed));
+      const denied = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
+      expect(denied.status, JSON.stringify(denied.body)).toBe(422);
+    }
+    expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {

@@ -17,6 +17,7 @@ const installedCodexCells = new Set([
   "first-task.runner-codex.local.task-card-accept",
   "everyday-workflows.runner-codex.local.build-revise",
   "agent-chat.runner-codex.local.continuity-restart",
+  "everyday-workflows.runner-codex.daytona.recover-controller",
 ]);
 const installedCopilotCells = new Set([
   "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
@@ -48,7 +49,7 @@ export function assertInstalledCliSelection(env: NodeJS.ProcessEnv, executions: 
   if (!installedCliKeys.every(key => Boolean(env[key])) || executions.length === 0 || executions.some(e => !(
     admitsInstalledChat(e) ||
     (e.profile.id === "runner-acpx-pi" && e.profile.qualificationCandidate === "pi" && e.suite.manualOnly && suites.has(e.suite.id)) ||
-    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && e.environment.id === "local" && installedCodexCells.has(e.id)) ||
+    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && installedCodexCells.has(e.id)) ||
     (e.profile.id === "runner-acpx-copilot" && e.profile.qualificationCandidate === "copilot" && e.suite.manualOnly && installedCopilotCells.has(e.id))
   ))) throw new Error("Installed CLI proof requires complete pins and explicit supported Pi, Codex, or Copilot cases");
   for (const key of overrideKeys) if (env[key] !== undefined) throw new Error(`Installed CLI proof forbids ${key}`);

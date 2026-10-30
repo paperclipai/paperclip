@@ -593,6 +593,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               runnerInstanceId: nativeRunnerInstanceId,
               leaseOwner: runOptions.nativeLeaseOwner,
               restartRecovery: runOptions.nativeRestartRecovery,
+              onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
                 options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",

@@ -1,5 +1,27 @@
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
-import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+
+/** Trusted operator startup authority, separate from saved agent configuration. */
+export const ANTIGRAVITY_CANDIDATE_ADMISSION_ENV = "PAPERCLIP_ACPX_CANDIDATE_ADMISSION";
+
+export function resolveAntigravityCandidateAdmission(
+  input: { companyId?: string; model?: string },
+  hostEnvironment: NodeJS.ProcessEnv = process.env,
+): AcpxCandidateAdmission | undefined {
+  const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
+  if (!encoded || !input.companyId || process.platform !== "darwin" || process.arch !== "arm64") return undefined;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { throw new Error("Invalid Antigravity candidate admission"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Antigravity candidate admission");
+  const record = value as Record<string, unknown>;
+  // Other companies receive no candidate surface or execution authority.
+  if (record.companyId !== input.companyId) return undefined;
+  return parseAcpxCandidateAdmission(value, {
+    companyId: input.companyId,
+    agent: "antigravity",
+    model: input.model ?? (typeof record.model === "string" ? record.model : ""),
+  });
+}
 
 /** Operator-only admission for an exact candidate/model during qualification. */
 export const ACPX_QUALIFICATION_ENV = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";

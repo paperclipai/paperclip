@@ -47,6 +47,13 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  async bytes(path: string): Promise<Buffer> {
+    const response = await this.request.get(path, this.sessionOptions());
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
+    return response.body();
+  }
+
+
   /** Repeated native observation reads retain explicit snapshots, without duplicating full DTO bodies in the browser trace. */
   async getRunObservation<T>(path: string, options?: { timeout: number }): Promise<T> {
     const url = new URL(path, this.baseURL);

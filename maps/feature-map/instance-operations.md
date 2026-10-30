@@ -19,7 +19,7 @@ Agent access: [companion](../agent-access-map/instance-operations.md).
 - `configuration`: `instance-operations/configuration` — configure database, server binding, storage, secrets, and available experimental settings.
 - `diagnostics`: `instance-operations/diagnostics` — use doctor/health output to distinguish readiness from a listening port.
 - `backup`: `instance-operations/backup` — create and inspect backups and verify restore only into a separate disposable target.
-- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets or import a release-matched Linux Pi companion into an owned published installation.
+- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets, stage pending Antigravity assets on macOS ARM64, or import a release-matched Linux Pi companion into an owned published installation.
 
 ## How to get to it (user POV)
 
@@ -33,7 +33,7 @@ Use currently visible instance settings for experiments/access and `paperclipai 
 
 ### `runtime-provisioning`
 
-On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation.
+On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, `paperclipai runtime setup antigravity`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation. Antigravity setup stages a pinned patched macOS ARM64 runtime; it remains unavailable for tasks until native acceptance passes.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -90,6 +90,13 @@ Manual: Use a disposable published installation and its exact runtime release. R
 
 Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypass](../../cli/src/index.ts), [Pi provisioning](../../packages/paperclip-runner/scripts/provision-pi.mjs), [Cursor provisioning](../../packages/paperclip-runner/scripts/provision-cursor.mjs), and [companion importer](../../server/src/services/native-runtime/remote-pi-companion.ts).
 
+Antigravity: [provisioning](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
+[closure/integrity regressions](../../packages/paperclip-runner/scripts/materialize-antigravity-distribution.test.mjs),
+and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
+Exercise public-layout setup and verify both native files and cleanup; separately
+verify that configuration/API/driver/sidecar reject the pending provider. These
+checks do not establish authenticated task execution.
+
 ## Gotchas
 
 - Runtime setup operates on a published installation and verifies package assets. It is not a substitute for an account connection, environment qualification, or a useful task run.
@@ -129,5 +136,5 @@ Capability ID: `instance-operations/diagnostics`.
 
 Scope: cli
 Storybook: No authored story required for doctor/health command results.
-Production: Run doctor against an owned data directory; check readiness and nonzero failures. A listening port alone does not prove readiness; repair requires observing the repaired result.
+Production: Run doctor against an owned data directory; check readiness and nonzero failures. Instance operators can inspect `GET /api/instance/task-drain?upgradeReadiness=1` before a compatible app replacement. Verify that unknown or unsupported executions prevent readiness and that the read does not hold admission; separately prove same-run continuity through an actual upgrade. A listening port alone does not prove readiness; repair requires observing the repaired result.
 Sources: Source: [doctor.ts](../../cli/src/commands/doctor.ts). Tests: [doctor.test.ts](../../cli/src/__tests__/doctor.test.ts)

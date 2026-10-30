@@ -314,6 +314,29 @@ describe("managed GitHub launcher environment", () => {
     }
   });
 
+  it("saves local commits through staged sandbox shells without author setup", async () => {
+    const fixture = await sandbox("usr/bin");
+    await rm(path.join(fixture.bin, "git"));
+    await writeFile(path.join(fixture.root, ".gitconfig"), "[user]\nname = Image User\nemail = image@example.test\n");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "default-local-author", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    const command = async (script: string) => {
+      const result = await fixture.runner.execute({ command: "bash", args: ["--noprofile", "--norc", "-c", script], env });
+      expect(result.exitCode, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    await command("git init -q && printf 'first\\n' > work.txt && git add work.txt && git commit -qm first");
+    await command("printf 'second\\n' >> work.txt && git add work.txt && git commit -qm second");
+    expect(await command("git log --format='%an <%ae>|%cn <%ce>'"))
+      .toBe(Array(2).fill("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>").join("\n"));
+    expect(await command("git show HEAD:work.txt")).toBe("first\nsecond");
+    expect(await readFile(path.join(fixture.root, ".git", "config"), "utf8")).not.toContain("[user]");
+    expect(await readFile(path.join(fixture.root, ".gitconfig"), "utf8")).toContain("Image User");
+    expect(await readdir(env.GH_CONFIG_DIR!)).toEqual([]);
+  });
+
   it("keeps task-only startup free of command probes and host credentials", async () => {
     const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "plugin", remoteCwd: "/project", runnerTask: async () => ({}) };
     await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: false, networkAccess: true }))

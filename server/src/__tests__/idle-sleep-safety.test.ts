@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agentInstructionWorkingCopies, agents, agentApiKeys, agentWakeupRequests, budgetPolicies, companies, companySecretProposals, createDb,
   adapterAuthSessions, environments, environmentLeases, executionWorkspaces,
-  feedbackExports, feedbackVotes,
+  feedbackExports, feedbackVotes, companySkills, companySkillVersions, companySkillRepositorySnapshots,
   heartbeatRuns, issues, issueWatchdogs, issueThreadInteractions, issueQuestionResponseDeliveries,
   projects, projectWorkspaces, routines, routineTriggers, toolApplications, toolConnections, workspaceOperations, executionWorkspaceRuntimeLeases, type Db,
 } from "@paperclipai/db";
@@ -186,6 +186,23 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
     return { companyId, agentId, runId };
   }
+
+  it.each(["true", "false"])("lets optional conversion retries sleep with package storage %s", async enabled => {
+    const previous = process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
+    process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = enabled;
+    try {
+      const { companyId } = await seed();
+      const [skill] = await db.insert(companySkills).values({ companyId, key: "legacy", slug: "legacy", name: "Legacy", markdown: "original" }).returning();
+      await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 1,
+        fileInventory: [{ path: "SKILL.md", kind: "skill", content: "original" }], migrationAt: new Date(Date.now() + 60 * 60_000) });
+      await db.insert(companySkillRepositorySnapshots).values({ companyId, contentHash: "a".repeat(64),
+        fileInventory: [{ path: "SKILL.md", kind: "skill", content: "original" }], migrationAt: new Date(0) });
+      expect(await read()).toEqual(none);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
+      else process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = previous;
+    }
+  });
 
   it("retains committed budget stop intent until its exact generation is delivered", async () => {
     const f = await seed();

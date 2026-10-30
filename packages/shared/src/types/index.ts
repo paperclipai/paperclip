@@ -40,8 +40,13 @@ export type {
 } from "./summary-slot.js";
 export type {
   AttentionDecisionVerb,
+  DecisionHistoryItem,
+  DecisionHistoryQuery,
+  DecisionHistoryPage,
   AttentionDetailImage,
   AttentionFeed,
+  AttentionSummary,
+  AttentionTaskIndex,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
@@ -168,6 +173,7 @@ export type {
   CompanySkillListQuery,
   CompanySkillCategoryCount,
   CompanySkillVersion,
+  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
   CompanySkillStarResult,
   CompanySkillComment,
@@ -729,6 +735,8 @@ export type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueExecutionPolicy,
+  RequiredQualityReview,
+  QualityReviewBinding,
   IssueExecutionState,
   IssueExecutionStage,
   IssueExecutionStageParticipant,
@@ -767,6 +775,9 @@ export type {
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
   RequestConfirmationIssueDocumentTarget,
+  RequestConfirmationIssueAttachmentTarget,
+  ConversationTaskHandoff,
+  ConversationTaskHandoffPage,
   RequestConfirmationCustomTarget,
   RequestConfirmationTarget,
   RequestConfirmationPayload,
@@ -936,7 +947,7 @@ export type {
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
-export type { LiveEvent } from "./live.js";
+export type { LiveEvent, LiveDeliveryClientMessage, LiveDeliveryServerMessage } from "./live.js";
 export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
 export type {
   TimelineActorType,

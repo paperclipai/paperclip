@@ -35,6 +35,11 @@ visible-row details independently when verifying `tasks/organize`: row heights,
 title bounds, and the first-row origin should remain stable. Test nested expansion,
 scrolling to more rows, and detail/back navigation; a collection projection must
 never suppress the full task instruction fetch.
+Coordinator Tasks uses the same index and visible-row enrichment. Needs attention
+resolves pending task IDs in batches of at most 100; it does not fetch enriched
+task detail for every decision. Search and participant filters stay on the server.
+Cold Coordinator detail must stay compact when Classic settings arrive before
+the personal workspace preference. Verify explicit history expansion afterward.
 
 ### `new-task`
 
@@ -43,10 +48,12 @@ Use New task from the global launcher, task list, or project task view.
 ### `task-list`
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
+Filters → **Routine tasks** selects tasks created by routine runs. The
+`/issues?view=all&originKind=routine_execution` link opens that selection.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction and recent exchange first. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -88,7 +95,9 @@ Use a human/unassigned task to verify persistence without invoking a model.
 
 Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
 
-Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
+Task and inbox rows omit the system interruption labels **Thinking**, **Trying again soon**, and **Retry available**. [Shared row tests](../../ui/src/components/IssueRow.test.tsx) cover working, scheduled-retry, and failed interruptions in both row presentations, including suppression of replacement recovery chips. Task status and other relevant badges remain visible; retry controls remain inside the task conversation.
+
+Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 
@@ -136,6 +145,13 @@ schema feedback supports a corrected call before a wait is claimed.
 For a due monitor held by execution recovery, confirm that the schedule remains
 and task activity explains the deferral. Repeated checks must not replay the held
 work. Resolve the hold through its existing recovery action, then verify one wake.
+On a blocked task with a retained monitor, verify that automatic checks show as
+paused. Check now requests one check through normal admission without changing
+the task status. Confirm that an unresolved dependency or recovery hold prevents
+dispatch and does not produce a success message. Backlog and todo tasks must not
+offer Check now. Blocked provider-quota recovery must offer no manual check and
+retain its schedule until the task resumes. Agents and automatic ticks cannot
+check a blocked task.
 Hold native finalization after the provider has stopped, and verify that both
 scheduled and manual checks retain the due monitor. After settlement, verify one
 wake. If its timeout passes during workspace recovery, verify settlement followed

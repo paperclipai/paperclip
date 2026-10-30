@@ -384,6 +384,8 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
+    if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
@@ -439,6 +441,7 @@ export function projectRoutes(db: Db) {
           }
         });
       }
+      if (receiptOnly && runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       if (receiptKey) {
         const [prior] = await tx.select().from(activityLog).where(and(
           eq(activityLog.companyId, companyId), eq(activityLog.action, "project.created"),
@@ -451,6 +454,7 @@ export function projectRoutes(db: Db) {
           return { project, publication: null, duplicate: true };
         }
       }
+      if (receiptOnly) return null;
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
@@ -483,6 +487,7 @@ export function projectRoutes(db: Db) {
       });
       return { project: hydrated ?? project, publication: activity.publication, duplicate: false };
     });
+    if (!result) { res.status(204).end(); return; }
     if (result.publication) publishActivity(result.publication);
     if (result.project.env) await secretsSvc.syncEnvBindingsForTarget?.(companyId, { targetType: "project", targetId: result.project.id }, result.project.env);
     if (result.duplicate) { res.status(200).json(result.project); return; }

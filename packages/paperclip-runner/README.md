@@ -214,6 +214,21 @@ are unavailable. Accepting a native plan ends the planning run successfully whil
 the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
 
+Google Antigravity is an **unqualified, pending** native ACPX integration. The
+explicit `paperclipai runtime setup antigravity` command installs the verified
+Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
+It verifies both the official vendor closure and the separately pinned patched
+closure; npm installation downloads no Antigravity runtime. This setup installs
+assets only. Global release qualification remains pending and normal execution
+admission stays closed. An isolated operator can admit one company, exact model,
+local platform and pinned native closure/profile until a fixed expiry through
+trusted server startup authority. The candidate supports a managed saved Google
+subscription; the recorded acceptance reused the same owner's personal default
+grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
+consent or the separate API-key route. Google Workspace OAuth does not substitute
+for a runtime credential. See the
+[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
+
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
 binds each daemon path and SHA-256, plus `remoteProviderPacks: {"linux-x64": {path, sha256}, "linux-arm64": {path, sha256}}` for
@@ -333,6 +348,10 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
+Use the returned `nextOffset` as `offset` to read the next page. The tool and
+parameter descriptions include these bounds for providers that render numeric
+schema constraints as plain number types.
 Search returns bounded pages of names, descriptions, and input schemas. Each
 page intersects the session's pinned assignments with current gateway grants.
 An individual schema that exceeds a page returns an `inputSchemaRef`. The same
@@ -591,6 +610,22 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
+The runtime activity publisher has an offline final-command regression against the
+qualified Codex executable. Run it on a host that supports Codex's OS sandbox,
+with the pinned executable and the matching freshly built Runner helper:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+PAPERCLIP_RUNTIME_NOTIFICATION_HELPER=/absolute/path/to/paperclip-runnerd \
+cargo test --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  publisher_crosses_real_codex_tool_boundary_without_runner_state_access -- --ignored
+```
+
+This uses `app-server command/exec` without credentials or a model call. It checks
+actual shell discovery, successful durable activity recording, and denial of unrelated
+Runner state, descriptor writes and ambient secrets. The normal suite covers
+bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
+
 ## Direct live protocol qualification
 
 The canonical direct live protocol suite lives in the separate
@@ -818,6 +853,25 @@ success value. The action may already have completed. Reconcile its saved
 result or receipt instead of repeating it. Replaying the same MCP call identity
 reuses the original handler execution, including when delivery failed.
 
+## Prepared harness storage
+
+An execution environment can supply an existing Claude configuration directory
+through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME`, using an absolute, non-symlinked
+path. Runner derives `CLAUDE_CONFIG_DIR` from this value, overriding any separately
+supplied value. This selects persistent harness storage without
+changing the run's permission mode or enabling preconfigured-home behavior.
+`HOME` remains the execution account's home. Each account must use its own
+configuration directory. The environment must publish the selected skills before
+admission; Runner does not copy or delete skills in this directory.
+On Unix, the directory must belong to the Runner user and use mode `0700`;
+the provider lifetime lease rejects group/world access or another owner.
+
+Runner binds the home into recovery identity and uses its existing provider
+lifetime lease. After acquiring that lease, it replaces Core-owned Claude settings
+with the current launch settings. History remains in the account directory.
+Task control files remain in the session runtime directory. Separate directories
+under one OS user are not a credential isolation boundary.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config
@@ -834,7 +888,9 @@ Prepare authentication, skills, and external MCP servers on the execution machin
 before launching. Runner does not install skills, copy or remove credentials, or
 rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
-model, task instructions, and its internal task/completion tools. Local permission
+model, task instructions, and its internal task/completion tools. Claude session
+loads and resumes receive the same native session options as session creation,
+including allowed tools and the selected settings sources. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains
@@ -916,3 +972,30 @@ the host restarts that resource with a new socket. Do not remove its lock marker
 while daemon work might still be running. The socket and its parent must be private,
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
+
+## ACPX controller replacement regression tests
+
+`src/control-plane/acpx-controller-recovery.test.ts` runs the production Rust
+Runner and authenticated PRP controller with a scripted ACPX peer. It covers
+active-turn reconnection, checkpoint restoration after deleting controller
+storage, native transport adoption and old-controller finalization, completion
+while disconnected, a provider crash, and an explicitly closed provider.
+It builds the debug Runner before execution and requires Cargo and a POSIX host.
+No model credentials, provider requests, application server or database are used.
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+  src/control-plane/acpx-controller-recovery.test.ts --maxWorkers=1
+```
+
+Set `PAPERCLIP_ACPX_REPRO_BINARY` to an existing Runner executable to skip the
+Cargo build. All five tests still run. Set `PAPERCLIP_ACPX_REPRO_PROFILES` to an
+alternate `acpx-profiles.json` when that executable uses a different profile
+manifest. Both overrides are optional.
+
+The failure controls distinguish a lost provider from a controller outage;
+matching a diagnostic after explicit close does not identify the cause of a
+hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
+Daytona deployment continuity need their own evidence. See the
+[remote continuity guide](../../doc/testing-native-remote-continuity.md) and the
+[Daytona Product E2E suite](../../tests/runner-e2e/README.md).

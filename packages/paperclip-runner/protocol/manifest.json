@@ -55,17 +55,17 @@
     {
       "path": "schemas/event-v2.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
-      "sha256": "f9e1f36e08aafe8c28218cb3b032423be4d59d3720e26d10dcfb45bc624cdb48"
+      "sha256": "d7aef6f8ce3acf700462b30f52b38153a8a1b4ee86782cfa2991fff258c9e907"
     },
     {
       "path": "schemas/event-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/event.schema.json",
-      "sha256": "1b167f2f5736ebdc9dfe0b3e8c0812337c002141412de8a80901ca3e1b58332e"
+      "sha256": "cee13d1d3c5de444722af5d83e2c96dbba17b1aef8eb6d4c036e9c71fb717f47"
     },
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "a21661fbb7094fb36df235031bddac582785f368981912cf23e86af3d6f9d57f"
+      "sha256": "67611b6d3adbd5731d94d01963e5a35924b7424063851bf60e394fe392685995"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -180,7 +180,7 @@
     },
     {
       "path": "fixtures/evals/native-execution-seeded.json",
-      "sha256": "080a41b9041afda7b34a082d7615a5b6f71b10caeb5386bb99045f34aa38af18",
+      "sha256": "0b878d30ad4b5514a14f7387c3792662cbfeebc7149188ffe304197e41c20e40",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

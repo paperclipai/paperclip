@@ -18,6 +18,12 @@ const secureUrl = z.string().url().refine(value => {
 }, "Expected a credential-free WSS URL");
 
 const credentialValue = z.string().min(1).max(65_536).refine(value => !value.includes("\0"));
+const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}, "Expected a credential-free HTTP broker URL"), token: credentialValue }).strict();
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
@@ -40,6 +46,7 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
     disableCodexWebSearch: z.literal(true).optional(),
+    disableCodexProjectInstructions: z.literal(true).optional(),
     managedProfile: z.record(z.string(), z.unknown()).optional(), agentCoreProfile: z.record(z.string(), z.unknown()).optional(),
   }).strict(),
   approvalPolicy: z.enum(["never", "on-request", "untrusted"]), readOnly: z.boolean(),
@@ -55,6 +62,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("describe") }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), token: credentialValue, model: z.string().min(1).max(1024).optional() }).strict(),
   z.object({ kind: z.literal("prepare"), requirements: environmentRunnerLaunchRequirementsSchema,
+    githubBroker: githubBroker.optional(),
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
@@ -130,6 +138,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
+    githubCredentialBrokerVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

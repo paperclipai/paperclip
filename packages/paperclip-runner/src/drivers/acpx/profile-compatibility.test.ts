@@ -1,60 +1,45 @@
-import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
 import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 
-describe("historical ACPX profile decoding", () => {
-  it("retains each provider's existing revision boundary", () => {
-    expect(isSupportedAcpxProfileVersion("copilot", 17)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("pi", 17)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("pi", 18)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("pi", 23)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("cursor", 15)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("cursor", 16)).toBe(false);
-    for (const agent of ["pi", "copilot"]) {
-      expect(isSupportedAcpxProfileVersion(agent, 16)).toBe(true);
-      const current = QUALIFIED_ACPX_PROFILE_DATA[agent as "pi" | "copilot"].agentProfileVersion;
-      expect(isSupportedAcpxProfileVersion(agent, current)).toBe(true);
-      expect(isSupportedAcpxProfileVersion(agent, Math.max(16, current) + 1)).toBe(false);
+// A profile version changes only to reset saved sessions on purpose. An upstream
+// release changes the commandDigest and keeps the version; a new provider starts
+// at 1. Update this table, with the reason, only for a deliberate reset.
+const PROFILE_VERSIONS: Readonly<Record<string, number>> = {
+  antigravity: 1, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
+};
+
+describe("ACPX profile versions", () => {
+  it("change only for a deliberate session reset", () => {
+    for (const [agent, profile] of Object.entries(QUALIFIED_ACPX_PROFILE_DATA)) {
+      expect(profile.agentProfileVersion, `${agent}: a profile version bump resets every saved ${agent} session. `
+        + "An upstream release changes only the commandDigest. See rules/acpx-profile-identity.mdc.")
+        .toBe(PROFILE_VERSIONS[agent] ?? 1);
     }
-    for (const agent of ["claude", "codex", "grok"]) {
+  });
+});
+
+describe("historical ACPX profile decoding", () => {
+  it("decodes every revision from 1 through the current one so saved runs reach recovery", () => {
+    for (const [agent, current] of Object.entries(QUALIFIED_ACPX_PROFILE_DATA)) {
+      for (let version = 1; version <= current.agentProfileVersion; version += 1) {
+        expect(isSupportedAcpxProfileVersion(agent, version), `${agent} v${version}`).toBe(true);
+      }
+    }
+  });
+  it("does not decode a revision newer than the current one", () => {
+    for (const agent of ["copilot", "grok", "pi", "cursor", "antigravity"] as const) {
+      expect(isSupportedAcpxProfileVersion(agent, QUALIFIED_ACPX_PROFILE_DATA[agent].agentProfileVersion + 1)).toBe(false);
+    }
+  });
+  it("keeps Claude and Codex revisions 1 through 5 decodable", () => {
+    for (const agent of ["claude", "codex"]) {
       expect(isSupportedAcpxProfileVersion(agent, 5)).toBe(true);
       expect(isSupportedAcpxProfileVersion(agent, 6)).toBe(false);
     }
   });
-  it("decodes retained Copilot revisions and the current profile without widening other providers", () => {
-    for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]) {
-      expect(isSupportedAcpxProfileVersion("copilot", version)).toBe(true);
-    }
-    expect(isSupportedAcpxProfileVersion("copilot", QUALIFIED_ACPX_PROFILE_DATA.copilot.agentProfileVersion + 1)).toBe(false);
-    // Preserve Pi history and its current mainline release without admitting the next profile.
-    expect(isSupportedAcpxProfileVersion("pi", 23)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("pi", QUALIFIED_ACPX_PROFILE_DATA.pi.agentProfileVersion)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("pi", QUALIFIED_ACPX_PROFILE_DATA.pi.agentProfileVersion + 1)).toBe(false);
-    for (const agent of ["cursor", "claude", "codex", "grok"]) {
-      expect(isSupportedAcpxProfileVersion(agent, 23)).toBe(false);
-      expect(isSupportedAcpxProfileVersion(agent, 24)).toBe(false);
-      expect(isSupportedAcpxProfileVersion(agent, 25)).toBe(false);
-      expect(isSupportedAcpxProfileVersion(agent, 26)).toBe(false);
-      expect(isSupportedAcpxProfileVersion(agent, 27)).toBe(false);
-    }
-  });
-  it("decodes every retained Copilot identity so saved runs can reach recovery", () => {
-    const root = new URL("../../../test/fixtures/", import.meta.url);
-    const files = readdirSync(root).filter(name => /^copilot-profile-v\d+.*-identity\.json$/u.test(name));
-    expect(files.length).toBeGreaterThan(30);
-    for (const file of files) {
-      const identity = JSON.parse(readFileSync(new URL(file, root), "utf8"));
-      expect(isSupportedAcpxProfileVersion("copilot", identity.declaration.agentProfileVersion), file).toBe(true);
-    }
-  });
-  it.each([0, 1.5, "11", null, undefined, NaN])("rejects invalid revisions: %s", version => {
+  it.each([0, -1, 1.5, "11", null, undefined, NaN, Number.MAX_SAFE_INTEGER + 1])("rejects invalid revisions: %s", version => {
     expect(isSupportedAcpxProfileVersion("cursor", version)).toBe(false);
-  });
-  it("decodes every current release while retaining exact launch admission separately", () => {
-    for (const [agent, current] of Object.entries(QUALIFIED_ACPX_PROFILE_DATA)) {
-      expect(isSupportedAcpxProfileVersion(agent, current.agentProfileVersion)).toBe(true);
-    }
   });
   it.each(["unknown", "toString", "__proto__"])("rejects unregistered providers: %s", agent => {
     expect(isSupportedAcpxProfileVersion(agent, 1)).toBe(false);

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d";
+    "sha256:42e186b921f36accf3087cf64986a88346dcdb0bdf78c2ef44a2c4f8abd3453a";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -142,6 +142,7 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
     let mut config = config(state_dir);
     let command = PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar"));
     config.acpx_launch_profile = Some(AcpxLaunchProfile {
+        candidate_admission: None,
         authority_digest: format!("sha256:{}", "d".repeat(64)),
         command: command.clone(),
         args: vec![
@@ -156,6 +157,116 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
         }],
     });
     config
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+    use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
+    let profiles: Value =
+        serde_json::from_str(include_str!("../../../../acpx-profiles.json")).unwrap();
+    let distributions: Value =
+        serde_json::from_str(include_str!("../../../../antigravity-distributions.json")).unwrap();
+    let profile = &profiles["profiles"]["antigravity"];
+    let admission = AcpxCandidateAdmission::parse_json(&json!({
+        "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
+        "agent":"antigravity", "model":"explicit-test-model", "profileDigest":profile["commandDigest"],
+        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
+        "platform":"darwin", "architecture":"arm64", "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+        "runId":"run-1", "normalizedSessionId":"session-1"
+    }).to_string()).unwrap();
+    let mut config = acpx_config(directory, "turns-reserved-result-terminal");
+    let launch = config.acpx_launch_profile.as_mut().unwrap();
+    *launch.args.last_mut().unwrap() = admission.profile_digest.clone();
+    launch.candidate_admission = Some(admission);
+    let mut payload = prepare_payload(directory, "antigravity");
+    let provider = &mut payload["provider"];
+    for field in [
+        "agentServerPackage",
+        "agentServerVersion",
+        "agentRuntimePackage",
+        "agentRuntimeVersion",
+        "commandDigest",
+    ] {
+        provider[field] = profile[field].clone();
+    }
+    provider["sidecarArgs"] = json!(launch.args);
+    provider["providerPolicy"] = json!({"readOnly":true});
+    (config, payload)
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
+    let directory = temporary_directory("candidate-provider-authority");
+    let (config, mut payload) = candidate_fixture(&directory);
+    for kind in [
+        "codex",
+        "opencode",
+        "openai_dot",
+        "grok_bot",
+        "muse",
+        "claude_managed",
+        "aws_agentcore",
+    ] {
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        let error = executor
+            .execute(&command(
+                1,
+                "run.prepare",
+                json!({"provider":{"kind":kind}}),
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot authorize another provider kind"),
+            "{kind}: {error}"
+        );
+        assert!(!directory.join("acpx-runtime").exists());
+    }
+    payload["paperclipNextAuthority"] = json!({});
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(executor
+        .execute(&command(1, "run.attach", payload))
+        .unwrap_err()
+        .to_string()
+        .contains("cannot rotate a live runner authority"));
+    assert!(!directory.join("acpx-provider-state.json").exists());
+    fs::write(directory.join("codex-provider-state.json"), b"{}").unwrap();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(recovered
+        .poll_events()
+        .unwrap_err()
+        .to_string()
+        .contains("cannot adopt a prior durable runner activation"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption() {
+    let directory = temporary_directory("candidate-cold-session");
+    let (config, payload) = candidate_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    let opened = executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(opened.result["status"], "started");
+    let closed = executor
+        .execute(&command(3, "runner.suspend", json!({})))
+        .unwrap();
+    assert_eq!(closed.result["status"], "closed");
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["lifecycle"], "closed");
+    executor.shutdown().unwrap();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert!(recovered.poll_events().is_err());
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn pi_acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {

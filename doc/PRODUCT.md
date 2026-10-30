@@ -49,6 +49,12 @@ start execution. This preference does not change the org chart or permissions.
 
 ### Agent Execution
 
+Agents have an **Advanced** tab for editing their settings across all configuration tabs
+as a versioned YAML document. Instructions, skills, tools, channels, trust,
+secret operations, API keys, and revision restore use their existing domain APIs.
+It edits the same configuration as the regular settings pages, validates before saving, preserves masked secrets, and rejects
+stale edits. See [Agent configuration YAML](agent-configuration-yaml.md).
+
 Existing Claude, Codex, and Grok Build agents can upgrade from the legacy runner on their
 Harness / Runtime page when Paperclip Runner is the qualified default for their
 environment. One action saves pending edits and translates compatible settings
@@ -87,6 +93,12 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Automatic monitor checks pause when a task is blocked. A person can use Check now
+to request one check of a retained monitor through normal execution admission.
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
+cannot start reports that result instead of claiming it was queued.
+
 The experimental Cases feature also supports persistent work records and
 prompt-driven agent handoffs. Native case creation requires kickoff and creates
 one primary task; later handoffs move that same task
@@ -122,8 +134,15 @@ choice stays selected while task data refreshes.
 
 ### Task collection creation filters
 
+The task Filters menu also offers **Routine tasks**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Search and pagination apply the routine origin filter on the server.
+
 Tasks and project lists hide agent-created and system-created tasks by default.
-The Filters menu's **show agent-created tasks** checkbox includes routine runs,
+The Filters menu's **Show agent-created tasks** checkbox includes routine runs,
 recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks
 remain bot-created for this filter even when a human starts the conversation. The choice is saved per company
 and collection; Clear filters restores the hidden default. Nested lists preserve
@@ -186,6 +205,12 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+Authored and unproven legacy versions retain an independent recovery copy. Unused Git
+packages with an exact restore recipe may expire; later use requires access to that
+original repository and commit.
+External package storage keeps repository contents out of the control-plane database;
+per-turn checks reuse verified local files while rechecking current skill access.
+See [automatic storage and recovery](skill-package-storage.md).
 
 Project-derived skills inherit current project access. Access through any originating
 project is sufficient, including the responsible-user restrictions on agent execution.

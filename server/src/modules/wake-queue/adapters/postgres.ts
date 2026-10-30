@@ -1,3 +1,8 @@
+import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
+import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
+import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
@@ -267,6 +272,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             throw error;
           }
           const now = new Date();
+          await notifyChatInboundWakeNotices(tx, { companyId, issueId });
           await tx
             .update(agentWakeupRequests)
             .set({
@@ -312,6 +318,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async cancelDeferredWake({ companyId, wakeId, reason, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
@@ -343,6 +350,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async failDeferredWake({ companyId, wakeId, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({
@@ -472,6 +480,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async finalizePromotedWake(input) {
+      await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issue.id });
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -688,6 +697,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       sessionBefore,
       now,
     }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId: issue.id });
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -949,6 +959,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
+      await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.activeExecutionRunId });
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
@@ -989,6 +1000,41 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
     async mergeIntoExistingDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
+      if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+      const [prior] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.existingDeferredWakeId),
+        eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+      )).for("update");
+      if (!prior) throw new Error("wake-queue: the deferred wake to merge into was not found for this company");
+      const priorPayload = parseObject(prior.payload), issueId = readNonEmptyString(priorPayload.issueId);
+      const priorCommentId = readNonEmptyString(priorPayload.commentId), priorActor = readNonEmptyString(prior.requestedByActorId);
+      const [priorComment] = prior.requestedByActorType === "user" && priorActor && issueId && isUuidLike(issueId) &&
+        priorCommentId && isUuidLike(priorCommentId) ? await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
+          eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, issueId), eq(issueComments.id, priorCommentId),
+          eq(issueComments.authorType, "user"), eq(issueComments.authorUserId, priorActor),
+          isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+        )) : [];
+      if ((input.coalescedReceipt || priorComment?.body.trim()) &&
+          (readNonEmptyString(input.mergedPayload.issueId) !== issueId || (input.coalescedReceipt &&
+            (input.coalescedReceipt.agentId !== prior.agentId || readNonEmptyString(input.coalescedReceipt.payload.issueId) !== issueId))))
+        throw new Error("wake-queue: merged receipt does not match the saved queue scope");
+      if (priorComment?.body.trim()) {
+        const [recorded] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, prior.agentId),
+          eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.requestedByActorType, "user"),
+          eq(agentWakeupRequests.requestedByActorId, priorActor!),
+          prior.runId ? eq(agentWakeupRequests.runId, prior.runId) : isNull(agentWakeupRequests.runId),
+          sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.payload}->>'commentId' = ${priorComment.id}`,
+          sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${prior.id}`,
+        )).limit(1);
+        if (!recorded) await tx.insert(agentWakeupRequests).values({
+          companyId: input.companyId, agentId: prior.agentId, source: prior.source, triggerDetail: prior.triggerDetail,
+          reason: prior.reason, payload: { issueId, commentId: priorComment.id, coalescedIntoWakeupRequestId: prior.id },
+          status: "coalesced", coalescedCount: 1, requestedByActorType: "user", requestedByActorId: priorActor,
+          requestedAt: prior.requestedAt, finishedAt: new Date(), runId: prior.runId,
+        });
+      }
       const rows = await tx
         .update(agentWakeupRequests)
         .set({
@@ -1020,6 +1066,9 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         await tx.insert(agentWakeupRequests).values({
           ...input.coalescedReceipt,
           companyId: input.companyId,
+          agentId: prior.agentId,
+          runId: prior.runId,
+          payload: { ...input.coalescedReceipt.payload, coalescedIntoWakeupRequestId: prior.id },
           status: "coalesced",
           coalescedCount: 1,
           finishedAt: new Date(),
@@ -1113,6 +1162,13 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           )
           .orderBy(asc(issues.id));
 
+        for (const issue of candidateIssues) {
+          if (issue.executionRunId === run.id || issue.checkoutRunId === run.id) {
+            await notifyExternalConversationSettlement(tx, { companyId: input.companyId, issueId: issue.id });
+            await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: issue.id });
+            await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: issue.id });
+          }
+        }
         // Two separate updates: a retry can move `executionRunId` to a new run
         // while `checkoutRunId` still points at this one finishing.
         await tx

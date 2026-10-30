@@ -22,6 +22,7 @@ export const attemptDirectory = (manifest, attemptId) => join(manifest.outputDir
 
 async function runChild(input) {
   const child = spawn(process.execPath, ['--import', input.loader, input.cli, '--request', input.requestPath, '--output', input.artifactPath, '--gateway-config', input.descriptorPath,
+    ...(input.expectedAcpxProfile ? ['--expected-acpx-profile', input.expectedAcpxProfile] : []),
     ...(input.observabilityPath ? ['--observability-config', input.observabilityPath] : [])], {
     cwd: input.cwd, env: input.environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -65,11 +66,17 @@ export function controlledResultArtifact(artifact, report, attempt) {
     controllerAccounting: report };
 }
 
-export async function runControlledEval({ manifestPath, requestPath, outputPath, environment = process.env, signal, transport, otlpTransport }) {
+export async function runControlledEval({ manifestPath, requestPath, outputPath, expectedAcpxProfile, environment = process.env, signal, transport, otlpTransport }) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Controlled eval process ownership requires Linux or macOS');
   signal?.throwIfAborted();
   const { manifest, manifestSha256 } = validateManifest(await readJson(manifestPath));
   const request = await readJson(requestPath, 8_388_608), attempt = bindRequest(manifest, request);
+  let profileArgument;
+  if (expectedAcpxProfile !== undefined) {
+    if (request.provider !== 'acpx' || expectedAcpxProfile === null || typeof expectedAcpxProfile !== 'object' || Array.isArray(expectedAcpxProfile)) throw new Error('Expected ACPX profile requires an ACPX request and JSON object');
+    profileArgument = canonical(expectedAcpxProfile);
+    if (Buffer.byteLength(profileArgument) > 4096) throw new Error('Expected ACPX profile exceeds its 4096-byte bound');
+  }
   assertHostedAdmission(manifest, attempt, environment);
   try { await lstat(outputPath); throw new Error('Controlled output already exists'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -152,7 +159,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     failureStage = 'child_failed';
     signal?.throwIfAborted();
     if (Date.now() >= deadlineAt) throw new Error('Controlled attempt deadline reached before spawn');
-    child = await runChild({ cli: stagedCli, loader, requestPath: retainedRequestPath, artifactPath, descriptorPath, observabilityPath: observability?.descriptorPath,
+    child = await runChild({ cli: stagedCli, loader, requestPath: retainedRequestPath, artifactPath, descriptorPath, expectedAcpxProfile: profileArgument, observabilityPath: observability?.descriptorPath,
       cwd: request.session.workingDirectory ?? root, environment: childEnvironment, deadlineAt, signal, closeGateway: () => Promise.all([gateway.close(), observability?.close()]) });
     failureStage = 'output_retention_failed';
     for (const stream of ['stdout', 'stderr']) await writeFile(join(root, `${stream}.log`), redact(child[stream]), { flag: 'wx', mode: 0o600 });
@@ -222,10 +229,12 @@ if (await isEntrypoint(import.meta.url)) {
   const cancel = () => controller.abort();
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
   try {
-    const { values } = parseArgs({ options: { request: { type: 'string' }, output: { type: 'string' } } });
+    const { values } = parseArgs({ options: { request: { type: 'string' }, output: { type: 'string' }, 'expected-acpx-profile': { type: 'string' } } });
     if (!values.request || !values.output || !process.env.PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST) throw new Error('A controlled manifest, request and output are required');
+    const rawProfile = values['expected-acpx-profile'];
+    if (rawProfile !== undefined && Buffer.byteLength(rawProfile) > 4096) throw new Error('Expected ACPX profile exceeds its 4096-byte bound');
     const result = await runControlledEval({ manifestPath: process.env.PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST,
-      requestPath: values.request, outputPath: values.output, signal: controller.signal });
+      requestPath: values.request, outputPath: values.output, expectedAcpxProfile: rawProfile === undefined ? undefined : JSON.parse(rawProfile), signal: controller.signal });
     process.exitCode = result.code;
   } catch { process.stderr.write('Controlled Runner eval admission or retention failed; inspect retained controller evidence.\n'); process.exitCode = 2; }
   finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
