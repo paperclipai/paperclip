@@ -19,6 +19,10 @@ const limit = (options: Page) => Math.min(50, Math.max(1, options.limit ?? 10));
 const legacyManaged = (skill: typeof companySkills.$inferSelect) => skill.sourceType === "local_path" && skill.metadata?.sourceKind === "managed_local";
 const linkedLocal = (skill: typeof companySkills.$inferSelect) => skill.sourceType === "local_path"
   && !legacyManaged(skill) && skill.metadata?.sourceKind !== "paperclip_bundled";
+function coversInstalledInventory(skill: typeof companySkills.$inferSelect, files: Array<{ path: string }>) {
+  const paths = new Set(files.map(file => file.path));
+  return paths.has("SKILL.md") && skill.fileInventory.every(file => typeof file.path === "string" && paths.has(file.path));
+}
 
 async function legacyFiles(skill: typeof companySkills.$inferSelect, signal?: AbortSignal) {
   if (!skill.sourceLocator || !path.isAbsolute(skill.sourceLocator)) return null;
@@ -82,18 +86,23 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
     for (const skill of skills) {
       options.signal?.throwIfAborted();
       const catalogOrigin = skill.sourceType === "catalog" && !skill.metadata?.originVersionId;
-      const needsConversion = legacyManaged(skill) || catalogOrigin || !skill.currentVersionId;
-      if (linkedLocal(skill) || !needsConversion) {
-        results.push({ skillId: skill.id, companyId: skill.companyId, status: linkedLocal(skill) ? "linked_local" : "unchanged", versionId: skill.currentVersionId });
+      if (linkedLocal(skill)) {
+        results.push({ skillId: skill.id, companyId: skill.companyId, status: "linked_local", versionId: skill.currentVersionId });
         continue;
       }
       try {
+        const version = skill.currentVersionId ? await store.version(skill.companyId, skill.id, skill.currentVersionId) : null;
+        const complete = version && coversInstalledInventory(skill, await store.versionInventory(version));
+        if (!legacyManaged(skill) && !catalogOrigin && complete) {
+          results.push({ skillId: skill.id, companyId: skill.companyId, status: "unchanged", versionId: skill.currentVersionId });
+          continue;
+        }
         const pins = await protectedVersions(db, skill.companyId);
         if (pins.versions === null) throw new Error("Active run lacks an exact durable skill selection; settle or snapshot it on the legacy server first");
-        const version = skill.currentVersionId ? await store.version(skill.companyId, skill.id, skill.currentVersionId) : null;
         const saved = version ? await store.versionFiles(version) : null;
         const local = await legacyFiles(skill, options.signal);
-        const files = local ?? saved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
+        const completeSaved = saved && coversInstalledInventory(skill, saved) ? saved : null;
+        const files = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
           ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id) : null);
         const origin = catalogOrigin && typeof skill.metadata?.originSnapshotLocator === "string"
           ? await legacyFiles({ ...skill, sourceLocator: skill.metadata.originSnapshotLocator }, options.signal) : null;
@@ -101,7 +110,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
           throw new Error("Catalog reset snapshot is unavailable; preserve the original installed package before conversion");
         }
         if (!files?.length || !files.some(file => file.path === "SKILL.md")) throw new Error("Neither complete legacy files nor a saved version is available");
-        if (!local && skill.fileInventory.some(file => !files.some(saved => saved.path === file.path))) {
+        if (!local && !coversInstalledInventory(skill, files)) {
           throw new Error("Saved version does not cover the installed inventory");
         }
         if (!options.apply) {
@@ -158,6 +167,13 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
       if (pins.versions === null) status = "unsupported_active_run";
       else if (!linkedLocal(skill) && !skill.currentVersionId) status = "missing_current_version";
       else if (skill.sourceType === "catalog" && !skill.metadata?.originVersionId) status = "legacy_catalog_origin";
+      else if (status === "version_backed" && skill.currentVersionId) {
+        try {
+          const version = await store.version(skill.companyId, skill.id, skill.currentVersionId);
+          if (!version) status = "unavailable_current_version";
+          else if (!coversInstalledInventory(skill, await store.versionInventory(version))) status = "incomplete_current_version";
+        } catch { status = "unavailable_current_version"; }
+      }
       results.push({ skillId: skill.id, companyId: skill.companyId, sourceType: skill.sourceType, versionId: skill.currentVersionId, status });
     }
     return { inspected: skills.length, after: skills.at(-1)?.id ?? null, results, contentVerified: false };
@@ -202,6 +218,15 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
             ? version.releaseId ? "database_release_snapshot" : "database_snapshot"
             : "incomplete_database_snapshot";
         }
+        // A valid archive can still be an incomplete legacy installation. Compare
+        // only the current head: historical revisions may legitimately omit files
+        // that were added later. Inventory reads do not load SQL package bodies.
+        const [installed] = await db.select().from(companySkills).where(and(
+          eq(companySkills.companyId, version.companyId), eq(companySkills.id, version.companySkillId),
+          eq(companySkills.currentVersionId, version.id),
+        ));
+        if (installed && !linkedLocal(installed)
+          && !coversInstalledInventory(installed, await store.versionInventory(version))) status = "incomplete_current_version";
       } catch { status = "unavailable_or_corrupt_package"; }
       results.push({ companyId: version.companyId, skillId: version.companySkillId, versionId: version.id, packageId, status });
     }

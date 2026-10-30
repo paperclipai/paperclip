@@ -137,6 +137,13 @@ old volume does not roll back committed content. Filesystem-authoritative binari
 require an explicit reverse migration and are unsupported rollback targets.
 A routine compatible A → B upgrade needs no skills conversion or filesystem copy.
 
+A current version ID alone does not establish conversion completeness. Eligibility
+and independent verification compare its file inventory with the installed record
+and report `incomplete_current_version` when supporting files are missing. Installation
+conversion can reacquire a complete exact pinned source; unavailable or unpinned
+sources remain blockers. Historical versions are not compared with newer installed
+inventories, since later revisions may legitimately add files.
+
 ## Qualification
 
 The focused service suite covers publication rollback/conflict, supporting and binary

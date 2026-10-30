@@ -292,6 +292,38 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect(await service.readFile(companyId, skill.id, "support.txt")).toMatchObject({ content: "complete supporting content" });
   });
 
+  it.each([false, true])("blocks an incomplete installed repository version and converts only its exact source (package: %s)", async packaged => {
+    const companyId = await company(), service = companySkillService(db);
+    process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = String(packaged);
+    const skill = await service.createLocalSkill(companyId, { name: "Partial legacy repository", markdown: "# Installed revision" });
+    process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = "true";
+    const commit = "a".repeat(40);
+    await db.update(companySkills).set({ sourceType: "github", sourceLocator: `https://github.com/fixture/skills/tree/${commit}/fixture`,
+      sourceRef: commit, metadata: { owner: "fixture", repo: "skills", repoSkillDir: "fixture" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }],
+    }).where(eq(companySkills.id, skill.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "incomplete_current_version" });
+      expect((await maintenance.verifyVersions({ id: skill.currentVersionId! })).results[0]).toMatchObject({ status: "incomplete_current_version" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await maintenance.installations({ id: skill.id, apply: true, writersStopped: true })).results[0]).toMatchObject({ status: "blocked" });
+      expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBe(skill.currentVersionId);
+      fetchMock.mockImplementation(async url => {
+        expect(String(url)).toBe(`https://raw.githubusercontent.com/fixture/skills/${commit}/fixture/reference.md`);
+        return new Response("Exact installed supporting content");
+      });
+      expect((await maintenance.installations({ id: skill.id, apply: true, writersStopped: true })).results[0]).toMatchObject({ status: "converted" });
+      expect(await service.readFile(companyId, skill.id, "reference.md")).toMatchObject({ content: "Exact installed supporting content" });
+      expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
+      expect((await maintenance.verifyVersions({ companyId })).results.every(row => row.status !== "incomplete_current_version")).toBe(true);
+      const calls = fetchMock.mock.calls.length;
+      expect((await maintenance.installations({ id: skill.id })).results[0]).toMatchObject({ status: "unchanged" });
+      expect(fetchMock).toHaveBeenCalledTimes(calls);
+    } finally { fetchMock.mockRestore(); }
+  });
+
   it("rejects unsafe legacy sources without publishing a partial conversion", async () => {
     const companyId = await company();
     const directory = path.join(root, `unsafe-${randomUUID()}`);

@@ -359,3 +359,30 @@ handoff, and production volume removal are outside this slice.
   was independently inspected through the tenant console and confirms those
   bytes, hashes and actual execution. The repository rule also produced the useful
   independent-requests `Promise.all()` recommendation.
+- The complete affected suites passed all 33 tests in 65.65 seconds. The Studio
+  fix is `417270ab18`; current master `3b84c89885` merged without conflicts as
+  `5afd8c3b056f6c0fceeb121c0f398beb72317e2b`. Post-merge server typecheck,
+  all 33 affected tests, map checks and UI token gates passed again.
+- The independent OS-process replacement matrix passed again on `5afd8c3b05`
+  (two scenarios, 54.24 seconds). A/B/C version IDs were
+  `56c4b315-082f-4caa-8788-02e10b45d3a4`,
+  `ed03e467-3a81-4256-849e-53ece688e5aa`, and
+  `9ff5d4ce-43e7-4b2e-883d-8b010fc5c42b`. Cold read was 522.16 ms,
+  two downloads/899 bytes; warm preparation was 143.72 ms with zero downloads.
+  Reported RSS was 881,639,424 bytes and disposable home content 820 bytes.
+  These are local fixture measurements, not hosted latency claims.
+- Candidate request `9a03542e-ea41-4ea1-94c8-7dd1ae38c621` prepares in Cloud
+  run `41118819981` and builds in Core run `41118878753`. The tenant remains on
+  the verified rollback image until this candidate is deployed.
+- Review at `5afd8c3b05` found that existing partial repository versions could
+  bypass conversion and be reported as eligible. Installation conversion,
+  eligibility and independent verification now compare the current saved inventory
+  with the installed inventory. Missing files block readiness; conversion can use
+  only complete saved/local content or the exact pinned remote source. Both JSONB
+  and packaged legacy regressions pass, including upstream failure with an unchanged
+  head, exact-commit repair and unchanged complete installations. The entire managed
+  content suite passed 16 tests. Build `41118878753` was cancelled before deployment
+  so hosted acceptance will use a candidate containing this correction.
+- Full workspace typecheck passed after allowing the migration launcher's local IPC
+  socket. The initial sandbox attempt failed with `listen EPERM` before that check
+  could run. The workspace build is running separately.
