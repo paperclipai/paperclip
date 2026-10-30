@@ -117,7 +117,7 @@
     "svix": "1.76.1",
     "tar-stream": "3.2.0",
     "ws": "^8.22.0",
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [
