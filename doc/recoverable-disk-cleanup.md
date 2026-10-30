@@ -573,7 +573,6 @@ processed in batches of 50; a full batch continues immediately.
 Rows have no foreign keys, so they outlive a deleted workspace, issue or company long
 enough to remove the stored object. Each run that changes anything logs its counts.
 
-
 ## Isolated repository sources
 
 For a while, workspace preparation gave some isolated `git_worktree` workspaces their
@@ -698,3 +697,43 @@ the old path. The workspace is
 rebuilt as a worktree of the shared clone at the standard location, with the saved commit
 and restore point imported and applied as before. Without a shared clone, the old
 behavior applies.
+
+## Managed Claude transcripts
+
+When `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED=true`, managed Claude
+keeps each task's transcripts in
+`<instance>/companies/<company>/agents/<agent>/claude-transcripts/<scope>/`. The
+`task.json` file in that directory names the task, and each run that uses the
+directory rewrites it.
+
+Cleanup registers with the same delivery-work-coordinator every other background
+sweep uses, instead of polling on a timer. A pass deletes a transcript directory
+when all of these hold:
+
+- `task.json` was last written before the window;
+- the task's issue is `done` or `cancelled` and was closed before the window. A task
+  that is not an issue, or whose issue or agent no longer exists, only needs the
+  first condition;
+- no run of the agent for that issue is queued, running, or unfinished. For a task
+  that is not an issue, no run of the agent at all may be live.
+
+It runs at server readiness, also when retention is off, so directories kept while
+it was on still expire. It checks at most 200 directories per batch and schedules
+its next pass for the earliest of: when a directory becomes due (last used plus the
+retention window), when a recently closed issue's window ends, one day later while
+a directory is held back by an open issue or a live run, and one hour later after a
+failed deletion. With no transcript directories left, no deadline is scheduled and
+the worker stays idle; a run that retains a new scope wakes it directly. In one transaction it locks
+and checks the issue, renames the directory to `.retiring-<scope>.<UUID>`, checks the
+runs again, and removes the agent's `claude_local` task session for the task, so a
+reopened issue starts a fresh session. The session is kept when another transcript
+directory of the same task, for example after a credential change, was used within
+the window. If a run appeared or the transaction fails, the rename is undone. Only
+after the transaction commits is the directory renamed to `.expired-<UUID>` and
+deleted. A later pass restores an unconfirmed `.retiring-*` directory and finishes
+an interrupted deletion.
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED` | `false` | Set `true` to keep managed Claude transcripts between runs |
+| `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS` | `7` | Days an issue must be closed, and its transcripts unused, before they are deleted (minimum `1`) |

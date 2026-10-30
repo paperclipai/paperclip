@@ -3010,6 +3010,13 @@ Environment overrides:
   restore point is kept after its issue tree closes (see
   `doc/recoverable-disk-cleanup.md`). The default is `90` and the minimum is `1`. A
   negative, empty, or non-numeric value falls back to the default.
+- `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED=true` keeps managed Claude
+  transcripts between runs of a task so the session can resume (see
+  `doc/connections/AI-CONNECTIONS.md`). It is off by default.
+  `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS=<days>` sets how long an issue
+  stays closed before its transcripts are deleted (see
+  `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
+  negative, empty, or non-numeric value falls back to the default.
 
 Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
 `db-backup-to-s3.failure` in the backup directory, beside the backup directory,

@@ -563,6 +563,32 @@ requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
 
+Managed Claude (`claude_local`) on a local target can keep its conversation
+transcripts so that a later run of the same task resumes the session. This is off by
+default. Set `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED=true` to turn it
+on. When it is off, managed Claude behaves like managed Grok: the transcripts are
+deleted with the temporary home and each run starts a fresh provider session.
+
+When it is on, transcripts are stored in
+`companies/<company>/agents/<agent>/claude-transcripts/`. Each task and session
+identity (grant, responsible user, credential, and credential epoch) gets its own
+directory, so a replaced credential does not see the earlier conversations.
+Credentials stay in the temporary home and cleanup still deletes them. The ACP
+engine ignores the temporary-home paths in its session fingerprint only when the
+transcripts are kept. Runs without a task, such as unscoped timer wakes, remote
+targets, and other harnesses keep nothing.
+
+Private file modes do not isolate agents that run as the same OS user. Workspace
+filesystem confinement mounts only the run's own transcript directory, so a confined
+run cannot read other tasks' transcripts. An unconfined local run executes as the
+server's OS user and can read every transcript directory, the same as any other
+server-owned file. Turn retention on only when every local agent on the instance may
+see the conversations of the others, for example on a single-owner instance.
+
+A scheduled cleanup pass deletes the transcripts of a task after its issue has been
+closed for `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS` days (see
+`doc/recoverable-disk-cleanup.md`).
+
 Quota polling has a 20-second response deadline. Once a managed OAuth refresh
 starts, it has its own 60-second request lifetime so the replacement token body
 can still be read and committed after the dashboard stops waiting. A successful
