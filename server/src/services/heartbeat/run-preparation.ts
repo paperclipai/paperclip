@@ -2959,6 +2959,7 @@ export function createHeartbeatRunPreparation(db: Db) {
       .select({
         testRunId: companySkillTestRuns.id,
         skillId: companySkillTestRuns.skillId,
+        skillKey: companySkillsTable.key,
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
@@ -2972,8 +2973,13 @@ export function createHeartbeatRunPreparation(db: Db) {
         and(
           eq(companySkillVersions.id, companySkillTestRuns.skillVersionId),
           eq(companySkillVersions.companyId, companySkillTestRuns.companyId),
+          eq(companySkillVersions.companySkillId, companySkillTestRuns.skillId),
         ),
       )
+      .innerJoin(companySkillsTable, and(
+        eq(companySkillsTable.id, companySkillTestRuns.skillId),
+        eq(companySkillsTable.companyId, companySkillTestRuns.companyId),
+      ))
       .where(
         and(
           eq(companySkillTestRuns.companyId, companyId),
@@ -3002,6 +3008,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     return {
       testRunId: row.testRunId,
       skillId: row.skillId,
+      skillKey: row.skillKey,
       inputId: row.inputId ?? null,
       skillVersionId: row.skillVersionId,
       revisionNumber: row.revisionNumber,

@@ -66,6 +66,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -2230,6 +2231,31 @@ export async function commitNativeStatusDecision(input: {
       updated = projected;
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
+      }
+      // Native task completion bypasses the REST issue route. Commit the Studio
+      // output with the authoritative task status so restart cannot lose it.
+      // The durable test row, not a mutable task mode, identifies the obligation.
+      if (issue.status !== updated.status && (updated.status === "done" || updated.status === "cancelled")) {
+        const testRun = await companySkillService(tx as unknown as Db).completeTestRunForIssue({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          outcome: updated.status === "done" ? "succeeded" : "cancelled",
+          error: updated.status === "cancelled" ? "Harness issue was cancelled" : null,
+        });
+        if (testRun) {
+          const { publication } = await persistActivity(tx as unknown as Db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "native-status-committer",
+            runId: input.runId,
+            action: "company.skill_test_run_completed",
+            entityType: "company_skill_test_run",
+            entityId: testRun.id,
+            issueId: input.issueId,
+            details: { issueId: input.issueId, status: testRun.status, outputDocumentKey: testRun.outputDocumentKey },
+          });
+          publications.push(publication);
+        }
       }
       materialized.unshift({
         effectKind: "issue_status_projection",
