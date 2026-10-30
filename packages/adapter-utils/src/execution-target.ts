@@ -1263,6 +1263,88 @@ export async function ensureAdapterExecutionTargetFile(
 }
 
 /**
+ * Write UTF-8 `content` to `filePath` on the execution target and verify the
+ * number of bytes that landed there.
+ *
+ * Local targets use Node fs. Remote (SSH/sandbox) targets stream the content
+ * to the target shell over stdin, so a payload that would exceed the Linux
+ * argv/env limits (a single argv or environment string of MAX_ARG_STRLEN bytes
+ * or more makes spawn fail with E2BIG) never travels as a command-line
+ * argument. The remote path reads the size back with `wc -c` before it
+ * returns: a silently truncated prompt file would run the agent on partial
+ * input, which is worse than failing the run.
+ *
+ * Throws an Error with a human-readable message on failure.
+ */
+export async function writeAdapterExecutionTargetFile(
+  runId: string,
+  target: AdapterExecutionTarget | null | undefined,
+  filePath: string,
+  content: string,
+  options: AdapterExecutionTargetShellOptions,
+): Promise<void> {
+  const expectedBytes = Buffer.byteLength(content, "utf8");
+  const onLog = options.onLog ?? (async () => {});
+  const silent: AdapterExecutionTargetProcessOptions["onLog"] = async () => {};
+
+  if (!target || target.kind === "local") {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content, "utf8");
+    const writtenBytes = (await fs.stat(filePath)).size;
+    if (writtenBytes !== expectedBytes) {
+      throw new Error(
+        `Writing "${filePath}" landed ${writtenBytes} of ${expectedBytes} bytes.`,
+      );
+    }
+    return;
+  }
+
+  if (!filePath.startsWith("/")) {
+    throw new Error(`File path must be an absolute POSIX path on the remote target: "${filePath}"`);
+  }
+  const env = sanitizeRemoteExecutionEnv(options.env);
+  const timeoutSec = options.timeoutSec ?? 60;
+  const graceSec = options.graceSec ?? 5;
+  const write = await runAdapterExecutionTargetProcess(
+    runId,
+    target,
+    "sh",
+    ["-c", `mkdir -p ${shellQuote(path.posix.dirname(filePath))} && cat > ${shellQuote(filePath)}`],
+    {
+      cwd: options.cwd,
+      env,
+      stdin: content,
+      timeoutSec,
+      graceSec,
+      onLog,
+    },
+  );
+  if (write.timedOut || (write.exitCode ?? 1) !== 0) {
+    const detail = (write.stderr || write.stdout || "").trim();
+    throw new Error(`Failed to write "${filePath}" on the remote target${detail ? `: ${detail}` : "."}`);
+  }
+  const verify = await runAdapterExecutionTargetProcess(
+    runId,
+    target,
+    "sh",
+    ["-c", `wc -c < ${shellQuote(filePath)}`],
+    {
+      cwd: options.cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: silent,
+    },
+  );
+  const writtenBytes = Number.parseInt((verify.stdout ?? "").trim(), 10);
+  if (!verify.timedOut && (verify.exitCode ?? 1) === 0 && writtenBytes === expectedBytes) return;
+  const observed = Number.isFinite(writtenBytes) ? `${writtenBytes}` : "an unreadable size";
+  throw new Error(
+    `Writing "${filePath}" on the remote target landed ${observed} of ${expectedBytes} bytes.`,
+  );
+}
+
+/**
  * Ensure a working directory exists (and is a directory) on the execution target.
  *
  * For local targets this delegates to the local `ensureAbsoluteDirectory` helper

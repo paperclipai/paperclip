@@ -4708,6 +4708,56 @@ export async function ensureCommandResolvable(
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+/**
+ * Linux rejects a spawn when a single argv or environment string reaches
+ * MAX_ARG_STRLEN bytes (32 * PAGE_SIZE: 131072 on 4 KiB hosts), and rejects a
+ * combined argv+env above ARG_MAX. Both surface as a bare `spawn E2BIG` that
+ * names no sizes, which hides the real cause — an oversized prompt or context
+ * payload passed as an argument or environment value. Report what was about to
+ * be spawned so the caller can move that payload to a file or to stdin.
+ */
+function formatE2bigSpawnErrorMessage(
+  command: string,
+  cwd: string,
+  target: SpawnTarget,
+  env: NodeJS.ProcessEnv,
+  cause: Error,
+): string {
+  const argvEntries = [target.command, ...target.args];
+  let argvBytes = 0;
+  let largestArgIndex = 0;
+  let largestArgBytes = -1;
+  argvEntries.forEach((value, index) => {
+    const bytes = Buffer.byteLength(value ?? "", "utf8") + 1;
+    argvBytes += bytes;
+    if (bytes > largestArgBytes) {
+      largestArgBytes = bytes;
+      largestArgIndex = index;
+    }
+  });
+  let envEntries = 0;
+  let envBytes = 0;
+  let largestEnvKey = "";
+  let largestEnvBytes = -1;
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    envEntries += 1;
+    const bytes = Buffer.byteLength(`${key}=${value}`, "utf8") + 1;
+    envBytes += bytes;
+    if (bytes > largestEnvBytes) {
+      largestEnvBytes = bytes;
+      largestEnvKey = key;
+    }
+  }
+  return [
+    `Failed to start command "${command}" in "${cwd}": ${cause.message} (argument list too long).`,
+    `Linux rejects one argv or environment string of 131072 bytes or more (MAX_ARG_STRLEN on 4 KiB pages), and a combined argv+env above ARG_MAX.`,
+    `argv: ${argvEntries.length} entries, ${argvBytes} bytes total, largest entry #${largestArgIndex} with ${largestArgBytes} bytes.`,
+    `env: ${envEntries} entries, ${envBytes} bytes total, largest "${largestEnvKey}" with ${largestEnvBytes} bytes.`,
+    `Move the oversized payload to a file or to stdin instead of argv or env.`,
+  ].join(" ");
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -4768,13 +4818,33 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
-          cwd: target.cwd ?? opts.cwd,
-          env: childEnv,
-          detached: process.platform !== "win32",
-          shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-        }) as ChildProcessWithEvents;
+        const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
+        const describeSpawnFailure = (err: Error): Error => {
+          const errno = (err as NodeJS.ErrnoException).code;
+          const msg =
+            errno === "ENOENT"
+              ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
+              : errno === "E2BIG"
+                ? formatE2bigSpawnErrorMessage(command, opts.cwd, target, childEnv, err)
+                : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
+          return new Error(msg, { cause: err });
+        };
+        // Node validates the payload before it forks: an argv or environment
+        // string above the kernel limit throws synchronously instead of
+        // emitting `error` on the child, so both paths need the same message.
+        let child: ChildProcessWithEvents;
+        try {
+          child = spawn(target.command, target.args, {
+            cwd: target.cwd ?? opts.cwd,
+            env: childEnv,
+            detached: process.platform !== "win32",
+            shell: false,
+            stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          }) as ChildProcessWithEvents;
+        } catch (error) {
+          void target.cleanup?.();
+          throw describeSpawnFailure(error as Error);
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
@@ -4940,13 +5010,7 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
-          const errno = (err as NodeJS.ErrnoException).code;
-          const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
-          const msg =
-            errno === "ENOENT"
-              ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
-              : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
-          reject(new Error(msg));
+          reject(describeSpawnFailure(err));
         });
 
         child.on("exit", () => {
