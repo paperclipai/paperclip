@@ -2,6 +2,7 @@
 
 import { act, StrictMode } from "react";
 import { buildClaudeLocalConfig } from "../../../packages/adapters/claude-local/src/ui/build-config";
+import { buildCodexRunnerConfig } from "../adapters/codex-local/config-fields";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot } from "react-dom/client";
@@ -463,8 +464,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return root;
     }
 
-    it.each([true, false, undefined])("offers only Claude and Codex with native runner setting %s", async enableNativeRunner => {
+    it.each([true, false, undefined].flatMap(enableNativeRunner =>
+      (["paperclip", "legacy"] as const).map(defaultRunner => ({ enableNativeRunner, defaultRunner })),
+    ))("offers the same Claude and Codex choices with $defaultRunner availability and native runner setting $enableNativeRunner", async ({ enableNativeRunner, defaultRunner }) => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false, enableNativeRunner });
+      mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local"].map(type =>
+        setupAdapterInfo({ type, defaultRunner, supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"] }),
+      ));
       const root = await openProviderChoices();
       try {
         const sources = [...document.body.querySelectorAll("button[aria-checked]")];
@@ -473,6 +479,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           expect.stringContaining("Claude"), expect.stringContaining("OpenAI"),
         ]);
         expect(document.body.textContent).not.toContain("GitHub Copilot");
+        expect(document.body.textContent).not.toContain("Windows");
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).runner).toBe("auto");
       } finally { await act(async () => root.unmount()); }
     });
 
@@ -3809,31 +3817,41 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(document.body.textContent).not.toContain("Start sign-in again");
       }
 
-      it.each(["paperclip", "legacy"] as const)("waits for Claude runner discovery before saved subscription verification (%s)", async defaultRunner => {
+      it.each(providers.flatMap(([adapterType, provider, source]) =>
+        (["paperclip", "legacy"] as const).map(defaultRunner => ({ adapterType, provider, source, defaultRunner })),
+      ))("waits for $adapterType discovery before verification and keeps $defaultRunner routing automatic", async ({ adapterType, provider, source, defaultRunner }) => {
         let finish!: (value: import("../api/adapters").AdapterInfo[]) => void;
         mockAdaptersApi.list.mockReturnValue(new Promise<import("../api/adapters").AdapterInfo[]>(resolve => { finish = resolve; }));
-        mockAdapterBuild.buildAdapterConfig.mockImplementation(values => buildClaudeLocalConfig(values!));
-        const { root, queryClient } = await openStep4({ adapterType: "claude_local" });
+        mockAdapterBuild.buildAdapterConfig.mockImplementation(values => adapterType === "claude_local"
+          ? buildClaudeLocalConfig(values!) : buildCodexRunnerConfig(values!));
+        const { root, queryClient } = await openStep4({ adapterType });
         try {
           await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
-            currentUserId: "user-1", connections: [{ id: "saved", grantId: "grant", companyId: "company-new", provider: "anthropic", method: "subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
+            currentUserId: "user-1", connections: [{ id: "saved", grantId: "grant", companyId: "company-new", provider, method: "subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
           }));
-          await pickSource(/Claude/);
+          await pickSource(source);
           await settle();
           expect(button("Connect").disabled).toBe(true);
           await act(async () => button("Connect").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           await settle();
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
           expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-          await act(async () => finish([setupAdapterInfo({ type: "claude_local", defaultRunner, supportedRunners: ["paperclip", "legacy"] })]));
+          await act(async () => finish([setupAdapterInfo({ type: adapterType, defaultRunner, supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"] })]));
           await settle();
           expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
           expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
           const tested = mockAgentsApi.testEnvironment.mock.calls[0] as unknown as [string, string, { adapterConfig: Record<string, unknown> }];
           const hired = mockAgentsApi.hire.mock.calls[0] as unknown as [string, { adapterConfig: Record<string, unknown> }];
+          expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(expect.objectContaining({ adapterType, runner: "auto", resolvedRunner: defaultRunner }));
+          expect(tested[1]).toBe(adapterType);
+          expect(tested[2]).not.toHaveProperty("runner");
+          expect(hired[1]).toMatchObject({ adapterType, onboardingFirstAgent: true });
+          expect(hired[1]).not.toHaveProperty("runner");
           expect(hired[1].adapterConfig).toEqual(tested[2].adapterConfig);
-          if (defaultRunner === "paperclip") expect(hired[1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
-          else expect(hired[1].adapterConfig.maxTurnsPerRun).toBe(1000);
+          if (adapterType === "claude_local") {
+            if (defaultRunner === "paperclip") expect(hired[1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+            else expect(hired[1].adapterConfig.maxTurnsPerRun).toBe(1000);
+          }
           expect(hired[1].adapterConfig).not.toHaveProperty("resolvedRunner");
         } finally { await act(async () => root.unmount()); }
       });

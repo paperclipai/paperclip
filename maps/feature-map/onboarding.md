@@ -42,6 +42,10 @@ agent after onboarding. A saved draft for another provider requires a new choice
 Changing an unavailable saved provider clears its model. If both first-onboarding
 providers are unavailable, the wizard explains how to enable one or use New Agent
 from the Agents page for another provider.
+Claude and Codex are harness choices, not a forced legacy runtime. Automatic
+runner selection uses the execution environment's qualified native runner and
+falls back to legacy on native Windows without changing the onboarding UI.
+Windows should default to native when its runner platform support is qualified.
 
 ### `cli-setup`
 
