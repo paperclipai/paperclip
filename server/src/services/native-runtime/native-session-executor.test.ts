@@ -1046,7 +1046,7 @@ fs.readFileSync = function(path, ...args) {
     }
   }, 15_000);
 
-  it("preserves a real listening process and its marker when a health RPC times out", async () => {
+  it.each(["timeout", "gateway"] as const)("preserves a real listening process and its marker through a %s health outage", async failure => {
     const root = await mkdtemp(join(tmpdir(), "runner-health-listener-"));
     const marker = join(root, "identity");
     const fixture = join(root, "listener.cjs");
@@ -1054,6 +1054,7 @@ fs.readFileSync = function(path, ...args) {
     let child: ReturnType<typeof spawn> | undefined;
     let probes = 0;
     let healthyProbes = 0;
+    const failedProbes = failure === "gateway" ? 3 : 1;
     let releaseExitProbe!: () => void;
     const exitProbeReady = new Promise<void>(resolve => { releaseExitProbe = resolve; });
     let settled = false;
@@ -1070,8 +1071,11 @@ fs.readFileSync = function(path, ...args) {
         await writeFile(marker, `${input.args![4]}\n${child.pid}\n2026-10-19T00:00:00.000Z\nrunner-health\n`);
         return ok;
       }
-      if (label === "paperclip-runner-monitor" && ++probes === 1) return { ...ok, exitCode: null, timedOut: true };
-      if (label === "paperclip-runner-monitor" && probes > 2) await exitProbeReady;
+      if (label === "paperclip-runner-monitor" && ++probes <= failedProbes) {
+        if (failure === "gateway") throw new Error("Request failed with status code 502");
+        return { ...ok, exitCode: null, timedOut: true };
+      }
+      if (label === "paperclip-runner-monitor" && probes > failedProbes + 1) await exitProbeReady;
       const observed = await new Promise<{ exitCode: number | null; signal: null; timedOut: boolean; stdout: string; stderr: string }>(resolve => {
         execFile(input.command, input.args ?? [], { timeout: 2_000 }, (error, stdout, stderr) => resolve({
           exitCode: error ? typeof error.code === "number" ? error.code : null : 0,
@@ -1189,7 +1193,7 @@ fs.readFileSync = function(path, ...args) {
       expect(await failure).toEqual({ stage: "process_verification", reason: "probe_timeout" });
       expect(handle.isExitConfirmed?.()).toBe(false);
       const probes = execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-monitor");
-      expect(probes.map(([x]) => x.timeoutMs)).toEqual([10_000, 10_000, 9_500]);
+      expect(probes.map(([x]) => x.timeoutMs)).toEqual([10_000, 10_000, 9_250]);
       expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
     } finally { vi.useRealTimers(); }
   });
