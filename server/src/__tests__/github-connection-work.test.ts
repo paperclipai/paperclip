@@ -62,7 +62,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   async function fixture(ids: string[] = []) {
     bindings = []; leases = 0; failBindings = false; githubRequests = 0;
     const companyId = randomUUID(); companyIds.push(companyId);
-    const [company] = await db.insert(companies).values({ id: companyId, name: "GitHub work test", issuePrefix: "GWT" }).returning();
+    const [company] = await db.insert(companies).values({ id: companyId, name: "GitHub work test", issuePrefix: `GW${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}` }).returning();
     const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: randomUUID(), name: "GitHub", type: "mcp_server", status: "active" }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, uid: randomUUID(), name: "GitHub", status: "active", enabled: true,
       transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} }).returning();
