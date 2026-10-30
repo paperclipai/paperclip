@@ -454,7 +454,10 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
 
 function shouldHideNiceModeStderr(text: string): boolean {
   const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  return (
+    normalized.startsWith("[paperclip] skipping saved session resume") ||
+    normalized.startsWith("[paperclip] adapter execution timeout:")
+  );
 }
 
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
