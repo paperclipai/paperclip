@@ -8052,6 +8052,45 @@ export function issueRoutes(
     return rawId;
   }
 
+  // `parentId`, `parentIssueId` and `descendantOf` point at an issue, so they
+  // also accept a human identifier (e.g. "PAP-4382"). Resolve it to the UUID
+  // before the UUID validation; any other value still reaches that validation
+  // unchanged and gets its 422. An issue the caller cannot read gets the same
+  // 404 as a missing one, so the filter cannot be used to probe for issues.
+  async function resolveIssueIdentifierQueryParams(
+    req: Request,
+    companyId: string,
+  ): Promise<
+    | { ok: true; query: Record<string, unknown> }
+    | { ok: false; body: { error: string; identifier: string } }
+  > {
+    const resolved: Record<string, unknown> = { ...req.query };
+    for (const name of ["parentId", "parentIssueId", "descendantOf"] as const) {
+      const raw = req.query[name];
+      if (typeof raw !== "string") continue;
+      const trimmed = raw.trim();
+      if (trimmed.length === 0 || isUuidLike(trimmed)) continue;
+      const identifier = normalizeIssueReferenceIdentifier(trimmed);
+      if (!identifier) continue;
+      const issue = await svc.getByIdentifier(identifier);
+      if (
+        !issue
+        || issue.companyId !== companyId
+        || !(await decideIssueAccess(req, issue, "issue:read")).allowed
+      ) {
+        return {
+          ok: false,
+          body: {
+            error: name === "descendantOf" ? "descendant_not_found" : "parent_not_found",
+            identifier,
+          },
+        };
+      }
+      resolved[name] = issue.id;
+    }
+    return { ok: true, query: resolved };
+  }
+
   async function resolveIssueProjectAndGoal(issue: {
     companyId: string;
     projectId: string | null;
@@ -8599,7 +8638,12 @@ export function issueRoutes(
       });
       return;
     }
-    const uuidQuery = parseIssueListUuidQueryParams(req.query);
+    const identifierQuery = await resolveIssueIdentifierQueryParams(req, companyId);
+    if (!identifierQuery.ok) {
+      res.status(404).json(identifierQuery.body);
+      return;
+    }
+    const uuidQuery = parseIssueListUuidQueryParams(identifierQuery.query);
     if (!uuidQuery.ok) {
       res.status(422).json({ error: uuidQuery.error });
       return;
@@ -8854,7 +8898,12 @@ export function issueRoutes(
       return;
     }
 
-    const countUuidQuery = parseIssueListUuidQueryParams(req.query);
+    const countIdentifierQuery = await resolveIssueIdentifierQueryParams(req, companyId);
+    if (!countIdentifierQuery.ok) {
+      res.status(404).json(countIdentifierQuery.body);
+      return;
+    }
+    const countUuidQuery = parseIssueListUuidQueryParams(countIdentifierQuery.query);
     if (!countUuidQuery.ok) {
       res.status(422).json({ error: countUuidQuery.error });
       return;
