@@ -601,7 +601,7 @@ describe("startServer feedback export wiring", () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
     cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
-    cloudRuntimeStartupMocks.bootstrap.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
       suppressed: false,
       reason: null,
@@ -613,10 +613,13 @@ describe("startServer feedback export wiring", () => {
 
   it("awaits saved Cloud configuration before telemetry, authentication and app construction", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
+    vi.stubEnv("HOST", "0.0.0.0");
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", undefined);
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     let release: (() => void) | undefined;
     cloudRuntimeStartupMocks.initialize.mockImplementationOnce(() => new Promise<null>(resolve => {
       release = () => {
-        loadConfigMock.mockReturnValue(buildTestConfig({ telemetryEnabled: false, authDisableSignUp: true, port: 4321 }));
+        loadConfigMock.mockReturnValue(buildTestConfig({ telemetryEnabled: false, authDisableSignUp: true, port: 4321, host: "0.0.0.0", bind: "all" }));
         resolve(null);
       };
     }));
@@ -627,6 +630,7 @@ describe("startServer feedback export wiring", () => {
       expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
       expect(createBetterAuthInstanceMock).not.toHaveBeenCalled();
       expect(createAppMock).not.toHaveBeenCalled();
+      expect(loadConfigMock).not.toHaveBeenCalled();
       release!();
       const started = await starting;
       await settleStartupHousekeeping();
@@ -1567,7 +1571,7 @@ describe("startServer authenticated auth origin setup", () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
-    cloudRuntimeStartupMocks.bootstrap.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
@@ -1630,7 +1634,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     cloudRuntimeStartupMocks.initialize.mockReset().mockResolvedValue(null);
-    cloudRuntimeStartupMocks.bootstrap.mockReturnValue(buildTestConfig());
+    cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
   });

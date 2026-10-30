@@ -56,6 +56,7 @@ beforeEach(() => {
   vi.stubEnv("PAPERCLIP_CONFIG", configPath);
   vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-token");
   vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+  vi.stubEnv("DATABASE_MIGRATION_URL", undefined);
   vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", undefined);
   vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", undefined);
   vi.stubEnv("PAPERCLIP_AUTH_BASE_URL_MODE", undefined);
@@ -115,6 +116,20 @@ describe("Cloud configuration file boundary", () => {
     expect(() => loadCloudBootstrapConfig()).toThrow(/must use PostgreSQL/);
   });
 
+  it.each(["", "   "])("treats an empty migration URL as absent (%j)", (migrationUrl) => {
+    vi.stubEnv("DATABASE_URL", "postgres://bootstrap:password@127.0.0.1/runtime");
+    vi.stubEnv("DATABASE_MIGRATION_URL", migrationUrl);
+    expect(loadCloudBootstrapConfig().databaseMigrationUrl).toBeUndefined();
+  });
+
+  it("normalizes and validates an explicit migration URL", () => {
+    vi.stubEnv("DATABASE_URL", "postgres://bootstrap:password@127.0.0.1/runtime");
+    vi.stubEnv("DATABASE_MIGRATION_URL", "  postgres://migration:password@127.0.0.1/runtime  ");
+    expect(loadCloudBootstrapConfig().databaseMigrationUrl).toBe("postgres://migration:password@127.0.0.1/runtime");
+    vi.stubEnv("DATABASE_MIGRATION_URL", "https://wrong.example.test");
+    expect(() => loadCloudBootstrapConfig()).toThrow("DATABASE_MIGRATION_URL must use PostgreSQL");
+  });
+
   it("preserves local config file behavior without managed signals", () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
     fs.writeFileSync(configPath, JSON.stringify(legacyConfig()));
@@ -156,6 +171,19 @@ describePostgres("Cloud runtime configuration in PostgreSQL", () => {
     vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", "authenticated");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://environment.example.test");
     expect(loadConfig()).toMatchObject({ databaseMode: "postgres", authBaseUrlMode: "explicit", secretsStrictMode: true, telemetryEnabled: true });
+  });
+
+  it("loads the saved authenticated mode before validating an environment host bind", async () => {
+    fs.writeFileSync(configPath, JSON.stringify(legacyConfig()));
+    vi.stubEnv("HOST", "0.0.0.0");
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", undefined);
+    expect(loadCloudBootstrapConfig()).toEqual({
+      databaseMode: "postgres",
+      databaseUrl: database.connectionString,
+      databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
+    });
+    await initializeCloudRuntimeConfig(first);
+    expect(loadConfig()).toMatchObject({ deploymentMode: "authenticated", host: "0.0.0.0", port: 3210 });
   });
 
   it("imports existing choices without credentials and restores them from a second client and new home", async () => {

@@ -105,7 +105,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
-import { loadCloudBootstrapConfig, loadConfig } from "./config.js";
+import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { createIncompleteTaskWatchdogScanReporter } from "./services/task-watchdog-diagnostics.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
@@ -293,8 +293,8 @@ async function startServerWithDatabaseTeardown(
   // sentry.ts.
   await sentryReady;
   ensureDecisionSigningSecret();
-  let config = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
-  if (!isCloudManagedInstance()) initializeRuntimeConfigConsumers(config);
+  const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
+  if ("deploymentMode" in startupConfig) initializeRuntimeConfigConsumers(startupConfig);
   
   type MigrationSummary =
     | "skipped"
@@ -396,7 +396,7 @@ async function startServerWithDatabaseTeardown(
     }
   }
 
-  function assertCloudDatabaseContract(): void {
+  function assertCloudDatabaseContract(config: Config): void {
     if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
       return;
     }
@@ -489,17 +489,19 @@ async function startServerWithDatabaseTeardown(
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
-  assertCloudDatabaseContract();
-  if (config.databaseUrl) {
-    const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
+  if ("deploymentMode" in startupConfig) assertCloudDatabaseContract(startupConfig);
+  if (startupConfig.databaseUrl) {
+    const migrationUrl = startupConfig.databaseMigrationUrl ?? startupConfig.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
-  
-    db = createDb(config.databaseUrl);
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+
+    db = createDb(startupConfig.databaseUrl);
+    pluginMigrationDb = startupConfig.databaseMigrationUrl ? createDb(startupConfig.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
-    activeDatabaseConnectionString = config.databaseUrl;
-    startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+    activeDatabaseConnectionString = startupConfig.databaseUrl;
+    startupDbInfo = { mode: "external-postgres", connectionString: startupConfig.databaseUrl };
   } else {
+    if (!("deploymentMode" in startupConfig)) throw new Error("Cloud bootstrap requires an external PostgreSQL connection");
+    const config = startupConfig;
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -720,7 +722,7 @@ async function startServerWithDatabaseTeardown(
   await initializeAdapterSettings(db as any);
   
   await initializeCloudRuntimeConfig(db as any);
-  if (isCloudManagedInstance()) config = loadConfig();
+  let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
 
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better

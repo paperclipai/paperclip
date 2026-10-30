@@ -1,5 +1,6 @@
 import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
 import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { StartupRefusalError } from "./startup-refusals.js";
 import type { PaperclipConfig } from "@paperclipai/shared";
 import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
@@ -464,12 +465,22 @@ export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()
   };
 }
 
-export function loadCloudBootstrapConfig(): Config {
+export type CloudBootstrapConfig = {
+  databaseMode: "postgres";
+  databaseUrl: string;
+  databaseMigrationUrl: string | undefined;
+};
+
+export function loadCloudBootstrapConfig(): CloudBootstrapConfig {
   if (!isCloudManagedInstance()) throw new Error("Cloud bootstrap configuration requires a managed instance");
   const url = process.env.DATABASE_URL?.trim();
-  if (!url) throw new Error("Cloud bootstrap requires DATABASE_URL from the environment");
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { throw new Error("Cloud bootstrap DATABASE_URL must use PostgreSQL"); }
-  if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error("Cloud bootstrap DATABASE_URL must use PostgreSQL");
-  return { ...loadConfig(null), databaseMode: "postgres", databaseUrl: url };
+  if (!url) throw new StartupRefusalError("database-contract-unmet", "Cloud bootstrap requires DATABASE_URL from the environment");
+  const migrationUrl = process.env.DATABASE_MIGRATION_URL?.trim() || undefined;
+  for (const [name, value] of [["DATABASE_URL", url], ["DATABASE_MIGRATION_URL", migrationUrl]]) {
+    if (!value) continue;
+    let parsed: URL;
+    try { parsed = new URL(value); } catch { throw new Error(`Cloud bootstrap ${name} must use PostgreSQL`); }
+    if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error(`Cloud bootstrap ${name} must use PostgreSQL`);
+  }
+  return { databaseMode: "postgres", databaseUrl: url, databaseMigrationUrl: migrationUrl };
 }

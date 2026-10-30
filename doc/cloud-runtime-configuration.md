@@ -17,7 +17,9 @@ existing validation at application startup.
    `DATABASE_MIGRATION_URL`. Cloud requires a PostgreSQL URL and never falls back
    to embedded PostgreSQL. Credentials, trust keys, provider configuration and
    deployment wiring needed before the database connection remain supplied by
-   the environment or the existing secret system.
+   the environment or the existing secret system. This phase parses only the
+   database connection record. Runtime mode, host binding and authentication
+   checks wait until the saved snapshot has loaded.
 2. After schema migration and database connection, startup reads the private
    runtime configuration row. An existing invalid row or a database error stops
    startup. Neither condition selects a legacy file or an old process snapshot.
