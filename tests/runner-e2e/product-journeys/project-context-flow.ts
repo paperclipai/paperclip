@@ -37,11 +37,15 @@ export async function projectTaskContext(context: JourneyContext, session: Targe
 
   // Open the project from its list, then open its task from that project's Tasks view.
   await page.goto(`${api.origin}/${company.issuePrefix}/projects`);
-  await page.getByRole("link").filter({ hasText: projectName }).first().click();
+  const projectListLink = page.locator("main#main-content").getByRole("link").filter({ hasText: projectName });
+  await expect(projectListLink).toHaveCount(1);
+  await projectListLink.click();
   await page.reload();
   await expect(page.getByText(projectName, { exact: true }).first()).toBeVisible();
   const projectTasks = await api.get<ProjectContextObservation["projectTasks"]>(`/api/companies/${company.id}/issues?projectId=${createdProject.id}&limit=100&offset=0`);
-  await page.getByRole("link").filter({ hasText: taskTitle }).first().click();
+  const projectTaskLink = page.locator("main#main-content").getByRole("link").filter({ hasText: taskTitle });
+  await expect(projectTaskLink).toHaveCount(1);
+  await projectTaskLink.click();
   await page.reload();
   await expect(page.getByText(taskTitle, { exact: true }).first()).toBeVisible();
   await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible();
