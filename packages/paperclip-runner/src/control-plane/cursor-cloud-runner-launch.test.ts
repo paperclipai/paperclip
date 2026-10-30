@@ -43,6 +43,109 @@ async function currentCloudScopeHeader(runtime: string, sessionId: string): Prom
   return `Bearer ${checkpoint.relayTurnToken}`;
 }
 
+it("settles a create rejected during real-facade Stop before cold recovery and the next run", async () => {
+  const root = await mkdtemp("/tmp/cc-rejected-stop-");
+  const runtime = join(root, "cloud"), stateDirectory = join(root, "session");
+  const configPath = join(runtime, "config.json"), socketPath = join(root, "mcp.sock"), proxyPath = join(root, "proxy.cjs");
+  const fetchLog = join(root, "fetches.jsonl"), remotePath = join(root, "remote.json");
+  const createSeen = join(root, "create-seen"), stopHeld = join(root, "stop-held"), releaseStop = join(root, "release-stop");
+  const releaseCreate = join(root, "release-create"), rejected = join(root, "rejected");
+  const normalizedSessionId = "cloud-rejected-stop-session";
+  buildPrivateCursorCloudProxy(proxyPath);
+  const providerNodeCommand = await privateCloudNodeCommand(root);
+  const prelude = Buffer.from(`;(() => {
+    const assert = require('node:assert/strict'), fs = require('node:fs'), fsp = require('node:fs/promises');
+    const paths = ${JSON.stringify({ createSeen, stopHeld, releaseStop, releaseCreate, rejected, fetchLog, remotePath })};
+    const wait = async path => { const end = Date.now() + 15000; while (!fs.existsSync(path)) { assert.ok(Date.now() < end, 'controlled gate expired'); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    const rename = fsp.rename; let held = false;
+    fsp.rename = async function(from, to) {
+      await rename.call(this, from, to);
+      if (!held && /checkpoint-[a-f0-9]{64}\\.json$/.test(String(to)) && JSON.parse(fs.readFileSync(to, 'utf8')).phase === 'stopping') {
+        held = true; fs.writeFileSync(paths.stopHeld, 'held'); await wait(paths.releaseStop);
+      }
+    };
+    const now = '2026-10-30T00:00:00Z', json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+    globalThis.fetch = async (input, init = {}) => {
+      const target = new URL(String(input)), method = init.method ?? 'GET'; assert.equal(target.origin, 'https://api.cursor.com');
+      fs.appendFileSync(paths.fetchLog, JSON.stringify({ method, path: target.pathname, pid: process.pid }) + '\\n');
+      if (method === 'POST' && target.pathname === '/v1/agents') {
+        if (!fs.existsSync(paths.rejected)) {
+          fs.writeFileSync(paths.createSeen, 'seen'); await wait(paths.releaseCreate); fs.writeFileSync(paths.rejected, 'rejected');
+          return json({ message: 'controlled definitive rejection' }, 422);
+        }
+        const body = JSON.parse(String(init.body));
+        const run = { id: 'run-33333333-3333-4333-8333-333333333333', agentId: body.agentId, status: 'RUNNING', createdAt: now, updatedAt: now };
+        fs.writeFileSync(paths.remotePath, JSON.stringify(run));
+        return json({ agent: { id: body.agentId, status: 'ACTIVE', env: { type: 'cloud' }, url: 'https://cursor.com/agents/' + body.agentId, createdAt: now, updatedAt: now, latestRunId: run.id }, run });
+      }
+      assert.ok(fs.existsSync(paths.remotePath), 'rejected create must not be reconciled as accepted work');
+      const run = JSON.parse(fs.readFileSync(paths.remotePath, 'utf8'));
+      const runPath = '/v1/agents/' + run.agentId + '/runs/' + run.id;
+      if (method === 'GET' && target.pathname === runPath + '/stream') return new Response(new ReadableStream({ start(controller) {
+        init.signal?.addEventListener('abort', () => { try { controller.close(); } catch {} }, { once: true });
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+      if (method === 'POST' && target.pathname === runPath + '/cancel') { run.status = 'CANCELLED'; fs.writeFileSync(paths.remotePath, JSON.stringify(run)); return json({ id: run.id }); }
+      if (method === 'GET' && target.pathname === runPath) return json(run);
+      throw new Error('Unexpected controlled Cloud request');
+    };
+  })();\n`);
+  const built = await readFile(proxyPath), firstLine = built.indexOf(10) + 1;
+  await writeFile(proxyPath, Buffer.concat([built.subarray(0, firstLine), prelude, built.subarray(firstLine)]), { mode: 0o600 });
+  await mkdir(runtime, { mode: 0o700 });
+  const cursorCloud = { schema: "paperclip.cursor-cloud.config.v1" as const, repos: [{ url: "https://github.com/example/repo" }] };
+  await writeFile(configPath, JSON.stringify({ ...cursorCloud, binding: { companyId: "company", agentId: "agent", issueId: "issue", normalizedSessionId } }), { mode: 0o600 });
+  const identity = { runnerInstanceId: "runner-cloud-rejected", environmentLeaseId: "lease-cloud-rejected", runId: "00000000-0000-4000-8000-000000000781", normalizedSessionId, turnId: "turn-rejected", itemId: "item-rejected" };
+  const environment = { PATH: process.env.PATH, CURSOR_API_KEY: "synthetic-key", PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH: configPath,
+    PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT: join(runtime, "artifacts"), PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH: socketPath,
+    PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN: "synthetic-token", PAPERCLIP_CURSOR_CLOUD_RELAY_URL: "https://relay.example.test/mcp",
+    PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT: String(Date.now() + 60_000) };
+  const options = { provider: "cursor_cloud" as const, cursorCloud, stateDirectory, runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand,
+    cursorCloudProxyPath: proxyPath, cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
+    lifecyclePolicy: { mode: "per_turn" as const }, environment };
+  const first = createRunnerdCodexTransport({ ...options, prpIdentity: identity }), bundles = [first];
+  let stop: Promise<unknown> | undefined;
+  try {
+    await first.transport.request("thread/start", { cwd: root, model: "pinned-model", baseInstructions: "Only the assigned task.", dynamicTools: [] });
+    await first.transport.request("turn/start", { input: [{ type: "text", text: "Controlled rejected task" }] });
+    await vi.waitFor(async () => expect(await readFile(createSeen, "utf8")).toBe("seen"));
+    const checkpointPath = join(runtime, `checkpoint-${createHash("sha256").update(normalizedSessionId).digest("hex")}.json`);
+    expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "creating", pendingOperation: "create_agent" });
+    let stopDone = false;
+    stop = first.transport.request("turn/interrupt", {}).finally(() => { stopDone = true; });
+    await vi.waitFor(async () => expect(await readFile(stopHeld, "utf8")).toBe("held"));
+    await writeFile(releaseCreate, "release");
+    await vi.waitFor(async () => expect(await readFile(rejected, "utf8")).toBe("rejected"));
+    expect(stopDone).toBe(false);
+    expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "stopping", pendingOperation: "create_agent" });
+    await writeFile(releaseStop, "release"); await stop;
+    expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "idle", terminalStatus: "REJECTED", pendingOperation: null, requestedAgentId: null });
+    expect((await readFile(fetchLog, "utf8")).trim().split("\n").map(line => JSON.parse(line))).toMatchObject([{ method: "POST", path: "/v1/agents" }]);
+    await first.transport.close(); expect(first.evidence().runnerExited).toBe(true);
+    await expect(stat(socketPath)).rejects.toHaveProperty("code", "ENOENT");
+    const stopped = JSON.parse(await readFile(join(stateDirectory, "runner", "codex-provider-state.json"), "utf8"));
+    expect(stopped).toMatchObject({ lifecycle: "prepared", providerTerminationReceipt: { remoteStopped: true, remoteRunId: null } });
+    const recovered = createRunnerdCodexTransport({ ...options, prpIdentity: identity, resumeProviderSession: { driverSessionId: normalizedSessionId, providerSessionId: normalizedSessionId } }); bundles.push(recovered);
+    await expect(recovered.transport.request("thread/read", {})).resolves.toMatchObject({ thread: { id: normalizedSessionId } });
+    expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "idle", terminalStatus: "REJECTED", pendingOperation: null });
+    await recovered.transport.close(); expect(recovered.evidence().runnerExited).toBe(true);
+    const next = createRunnerdCodexTransport({ ...options, prpIdentity: { ...identity, runId: "00000000-0000-4000-8000-000000000782", turnId: "turn-next", itemId: "item-next" }, baseInstructions: "Only the next assigned task." }); bundles.push(next);
+    await next.transport.request("thread/read", {});
+    await next.transport.request("turn/start", { input: [{ type: "text", text: "Next admitted task" }] });
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(remotePath, "utf8"))).toMatchObject({ status: "RUNNING" }));
+    await next.transport.request("turn/interrupt", {}); await next.transport.close();
+    expect(next.evidence().runnerExited).toBe(true);
+    expect(JSON.parse(await readFile(remotePath, "utf8"))).toMatchObject({ status: "CANCELLED" });
+    const creates = (await readFile(fetchLog, "utf8")).trim().split("\n").map(line => JSON.parse(line)).filter(call => call.method === "POST" && call.path === "/v1/agents");
+    expect(creates).toHaveLength(2); expect(creates[1].pid).not.toBe(creates[0].pid);
+    await expect(stat(socketPath)).rejects.toHaveProperty("code", "ENOENT");
+  } finally {
+    await writeFile(releaseCreate, "release"); await writeFile(releaseStop, "release");
+    await stop?.catch(() => undefined);
+    for (const bundle of bundles) await bundle.transport.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("opens and closes the real Cloud facade without a provider prompt", async () => {
   const root = await mkdtemp("/tmp/cc-runner-launch-");
   const runtime = join(root, "cloud");
