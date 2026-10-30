@@ -861,7 +861,8 @@ jobs:
       # pnpm build reaches the Runner package's build:binary step; without the
       # shared Rust cache that is a ~3m40s cold compile of all third-party
       # crates (run 35036001734, 2026-09-15). Same restore-only contract as
-      # Verify Paperclip Runner.
+      # Verify Paperclip Runner, except that this job skips the restore when
+      # the Runner release crate below is restored and marked.
 
       # rust-cache hashes its absolute cache paths into the entry's version,
       # and GitHub only serves an entry whose key and version both match. The
@@ -919,32 +920,21 @@ jobs:
           fi
           rustup toolchain list
 
-      - name: Restore Runner Rust dependencies (read only)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
-          # Mirror the master writer: these also feed the cache key.
-          cache-workspace-crates: false
-          cache-bin: false
-          # Restore only. Never let a pull request evict master's entry.
-          save-if: false
-
-      # The Runner's own crate is the one thing the entry above leaves out:
-      # rust-cache drops workspace crates when it saves, and a fresh checkout
-      # would invalidate cargo's mtime fingerprints for them anyway. So this
-      # job compiled paperclip-runner-core in release mode on every run,
-      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
-      # the 239 master commits of the preceding week left its inputs alone.
-      # The master Rust lane in release-verify.yml saves that crate's release
-      # artifacts (about 70 MB) under a key made from the compiler, the
-      # checkout root and a hash of every input the build reads. A pull
+      # The Runner's own crate is the one thing the dependency entry below
+      # leaves out: rust-cache drops workspace crates when it saves, and a
+      # fresh checkout would invalidate cargo's mtime fingerprints for them
+      # anyway. So this job compiled paperclip-runner-core in release mode on
+      # every run, 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while
+      # 221 of the 239 master commits of the preceding week left its inputs
+      # alone. The master Rust lane in release-verify.yml saves that crate's
+      # release artifacts (about 70 MB) under a key made from the compiler,
+      # the checkout root and a hash of every input the build reads. A pull
       # request whose merge tree carries byte-identical inputs restores them
-      # and marks them newer than the checkout, so cargo keeps them; any
-      # other pull request misses and compiles exactly as before. Exact key
-      # only: a prefix match would hand cargo another revision's output. The
-      # path list and the key live in scripts/runner-release-crate-cache.mjs
-      # and must match the writer's; a guard test holds them together.
+      # and marks them newer than the checkout, so cargo keeps them; any other
+      # pull request misses and compiles exactly as before. Exact key only: a
+      # prefix match would hand cargo another revision's output. The path list
+      # and the key live in scripts/runner-release-crate-cache.mjs and must
+      # match the writer's; a guard test holds them together.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
@@ -963,13 +953,40 @@ jobs:
           key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
+        id: runner_release_crate_mark
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      # The crate restore above runs first because a marked crate makes this
+      # restore pointless here. The Build job only needs cargo for the release
+      # paperclip-runnerd, and a marked crate already holds that binary, built
+      # by the master writer from byte-identical inputs. This entry is ~1.1 GB
+      # compressed: in run 40326666492 (2026-10-26) it downloaded in 5s and
+      # took 61s to unpack, then cargo reported `Finished ... in 0.16s`. So
+      # on a mark it is skipped and `pnpm build` gets
+      # PAPERCLIP_RUNNER_RELEASE_CRATE_RESTORED=1, which makes the Runner's
+      # build:binary reuse the restored binary instead of running cargo (see
+      # packages/paperclip-runner/scripts/build-runner-binary.mjs). A miss or
+      # a discarded partial restore leaves the mark unset, and this restore
+      # and cargo run exactly as before.
+      - name: Restore Runner Rust dependencies (read only)
+        if: ${{ steps.runner_release_crate_mark.outputs.marked != 'true' }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
 
       - name: Build Runner Evalbook viewer
         run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
 
       - name: Build
+        env:
+          PAPERCLIP_RUNNER_RELEASE_CRATE_RESTORED: ${{ steps.runner_release_crate_mark.outputs.marked == 'true' && '1' || '0' }}
         run: pnpm build
 
       # The production image starts the server from this bundle with plain

@@ -21,10 +21,12 @@
 //   hashed-inputs print the hashFiles() patterns that make up the key
 //   scope         print the compiler/checkout part of the key
 //   mark-current  make a restored artifact set newer than the checkout, or
-//                 discard an incomplete one so cargo rebuilds instead
+//                 discard an incomplete one so cargo rebuilds instead; under
+//                 GitHub Actions it also writes `marked=true|false` to
+//                 $GITHUB_OUTPUT
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, rmSync, statSync, utimesSync, lstatSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, rmSync, statSync, utimesSync, lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -199,6 +201,8 @@ function main(argv) {
     case "mark-current": {
       const result = markCurrent();
       process.stdout.write(`${JSON.stringify(result)}\n`);
+      // The Build job reads this to skip the dependency restore and cargo.
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `marked=${result.action === "marked"}\n`);
       return 0;
     }
     default:

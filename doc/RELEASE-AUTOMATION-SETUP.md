@@ -439,6 +439,19 @@ miss. `pnpm build`
 then prints `Finished release profile` in well under a second for that crate.
 On a miss nothing changes: cargo compiles the crate as before.
 
+The Build job goes one step further, because the release `paperclip-runnerd`
+is the only thing it needs cargo for. It restores and marks the crate before
+the dependency entry, and on a mark (`marked=true` in the mark step's output)
+it skips the dependency restore. That entry is ~1.1 GB compressed and took
+61s to unpack in run 40326666492, after which cargo did nothing. `pnpm build`
+then runs with `PAPERCLIP_RUNNER_RELEASE_CRATE_RESTORED=1`, and the Runner's
+`build:binary` (`scripts/build-runner-binary.mjs`) stages the restored binary
+instead of running cargo, which would otherwise recompile every dependency.
+A miss, a discarded restore, or a missing binary leaves cargo and the
+dependency restore exactly as before. The writer never sets the variable, so
+the entry is always built by cargo. The other readers keep the dependency
+restore and run cargo as before.
+
 The trust boundary is unchanged: only master writes, a pull request can only
 restore master's entry, and it restores only artifacts built from inputs
 byte-identical to its own merge tree.
