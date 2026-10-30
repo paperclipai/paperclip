@@ -171,3 +171,47 @@ handoff, and production volume removal are outside this slice.
   the fixture's first message. The assertion now uses the existing 30-second
   cold-start budget; the exact browser journey passed locally in 12.5 seconds.
   No feature-disable behavior or fixture completion assertions changed.
+
+- Latest code review of `07fffa749511a39b05b2dbc43adcce842195398a` is 5/5,
+  with zero unresolved review threads. Hosted candidate build is run
+  `41101360597`; baseline A remains deployed until it completes.
+- Provider console independently confirmed external Neon Postgres and S3 on A,
+  with `PAPERCLIP_HOME=/tmp/ephemeral-skills-a`, deployment
+  `5fc05d1a-2451-465c-8a15-16b18d1e0d3d`, replica
+  `f7393d02-49b6-40b9-ae94-db9181300bf4`. A temporary marker was written to
+  that home so a later container can prove the predecessor's local state is absent.
+- Imported the smaller `vercel-labs/agent-skills` repository at exact commit
+  `93f5a2dee1a270015473e19d24a758a012fa058b`: skill
+  `3e9f2b84-2d15-49f9-a5c0-8596f4c6e313`, source
+  `0c03e633-d22e-4a63-b5a5-843823f2eb7b`, 75 admitted files.
+  Early pin attempts were rejected by the existing Beta skills gate. The late
+  error toast was confirmed; read-only DB inspection showed no saved pin.
+- Beta skills is a tenant preference, so fleet feature override correctly
+  rejected it as non-managed. Test-only env campaign
+  `fleet-campaign-1793366873607` exposed only this preference, preserving the
+  complete existing hidden-settings list and temporary A home. It succeeded at
+  `2026-10-30T18:04:20.150Z`: one target, two keys, zero removed keys, unchanged
+  Computer images. The tenant's normal Experimental UI then saved Beta skills
+  enabled. No fleet default, identity, permission, or volume policy changed.
+- The preference campaign replaced A's container: deployment
+  `9ba9202e-7f47-4edd-b501-aa807760b132`, replica
+  `d2131533-f4d2-4173-b984-ca46beaef61c`. Provider console observed the
+  predecessor marker absent, then wrote a new A2 marker for the next replacement.
+- Repository assignment saved through the library UI as historical version
+  `918e2066-b241-4cdc-934a-db896138240b` (revision 1, `GitHub 93f5a2de`).
+  Explicit source refresh to main published current revision 2
+  `fa3bb9ac-fcd9-443b-970c-f62590f881dc` (`GitHub 1a2c79d4`); automatic
+  updates remain paused for this fixture.
+- Remote task EPH-4 (`e561a058-3e2d-4f90-9899-a69c6539ed42`), run
+  `9917cfa3-caed-400a-b1a0-58183e2e2614`, passed after A's temporary state
+  was replaced. Managed v6 hashes/output/mode matched EPH-3. The repository
+  wrapper delivered revision 1 while revision 2 was current. Independently read
+  exact-commit upstream contents matched the delivered instruction digest
+  `50b55178a2da8ee931850193596601fa0517cd800e171366a903769f25bf4dda`
+  and `rules/async-parallel.md` digest
+  `6d2f841896279e976dfcdc1ac89e70771ac188baadfd43c096b5706cb838b961`.
+  The agent used the rule to recommend parallel independent fetches and saved
+  paths, command results and API history in task document `immutable-pin-proof`.
+- Required CI gates `ci / verify` and `ci / e2e` passed on `07fffa749`.
+  Latest check rollup: 52 success, two skipped, one cancelled advisory review
+  job; Greptile separately completed at 5/5 with no unresolved threads.
