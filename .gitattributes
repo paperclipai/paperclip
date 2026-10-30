@@ -1,1 +1,7 @@
-patches/*.patch whitespace=-space-before-tab
+patches/*.patch whitespace=-space-before-tab eol=lf
+packages/paperclip-runner/src/drivers/acpx/generated-*.ts eol=lf
+packages/paperclip-runner/src/protocol/generated/*.ts eol=lf
+packages/paperclip-runner/runner/crates/runner-core/src/generated_*.rs eol=lf
+# Migration journal hashes are computed over raw file bytes; a CRLF checkout
+# breaks hash matching and makes applied migrations look pending.
+packages/db/src/migrations/*.sql eol=lf
