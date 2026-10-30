@@ -5635,6 +5635,33 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row?.executionLockedAt).toBeInstanceOf(Date);
   });
 
+  it("clears blocked-state metadata when checkout starts blocked work", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, agentId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume blocked work",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      unblockDescriptor: { owner: "board", action: "Approve access" },
+      blockedTransitionAt: new Date("2026-10-30T10:00:00.000Z"),
+      blockedOwnerNotifiedAt: new Date("2026-10-30T10:05:00.000Z"),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["blocked"], null)).resolves.toMatchObject({
+      status: "in_progress",
+      unblockDescriptor: null,
+      blockedTransitionAt: null,
+      blockedOwnerNotifiedAt: null,
+    });
+  });
+
   it("does not let stale release clobber a successor checkout lock", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -12012,6 +12012,11 @@ export function issueService(db: Db) {
       });
 
       const now = new Date();
+      const blockedCheckoutTransitionPatch = {
+        unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+        blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+        blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+      };
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         issueCompany.companyId,
         id,
@@ -12089,6 +12094,7 @@ export function issueService(db: Db) {
             assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
+            ...blockedCheckoutTransitionPatch,
             status: "in_progress",
             startedAt: now,
             updatedAt: now,
@@ -12201,6 +12207,7 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
+            ...blockedCheckoutTransitionPatch,
             status: "in_progress",
             updatedAt: now,
           };
