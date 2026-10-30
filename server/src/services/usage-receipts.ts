@@ -19,6 +19,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { knownRunCostCents } from "./budget-exposure.js";
 import { createLiveRunUsageProjection, liveRunUsageCostCents } from "./budget-live-usage.js";
 import { budgetServiceInTransaction } from "./budgets.js";
+import { createHeartbeatRunState, normalizeAdapterRunUsage, normalizeUsageTotals } from "./heartbeat/run-state.js";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -27,6 +28,7 @@ const checkpointSchema = z.object({
   attemptId: z.string().uuid().optional(), usage: usage.optional(),
   usageByModel: z.array(z.object({ model: z.string().min(1).max(250), usage, costUsd: z.number().finite().nonnegative() })).max(500).optional(),
   usageBasis: z.enum(["per_run", "session_cumulative"]).nullable().optional(),
+  usageSessionId: z.string().max(250).nullable().optional(),
   provider: z.string().max(250).nullable().optional(), biller: z.string().max(250).nullable().optional(),
   model: z.string().max(250).nullable().optional(), billingType: z.string().max(100).nullable().optional(),
   costUsd: price, cacheAdjustedCostUsd: price,
@@ -40,6 +42,10 @@ const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
+  // Session totals that a converted `session_cumulative` receipt was derived
+  // from. Saved with the charge, so the next run of the same session subtracts
+  // them even when this run never reaches completion.
+  sessionUsage: usage.optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
@@ -109,6 +115,9 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
         provider: receipt.provider ?? "unknown", biller: receipt.biller ?? receipt.provider ?? "unknown", model: receipt.model ?? "unknown", billingType,
         costUsd: receipt.costUsd ?? null, costUsdExact: receipt.costUsdExact ?? null, cacheAdjustedCostUsd: receipt.cacheAdjustedCostUsd ?? null,
         usageByModel: receipt.usageByModel ?? null, usageSource: receipt.usageBasis ?? "per_run", providerRequestId: receipt.providerRequestId ?? null,
+        ...(envelope.sessionUsage && receipt.usageSessionId ? { rawInputTokens: envelope.sessionUsage.inputTokens, rawInputIncludesCached: false,
+          rawCachedInputTokens: envelope.sessionUsage.cachedInputTokens ?? 0, rawOutputTokens: envelope.sessionUsage.outputTokens,
+          rawUsageSessionId: receipt.usageSessionId } : {}),
         accountingReceiptReady: previous.accountingCaptureFailed !== true && receipt.complete && receipt.usageBasis !== "session_cumulative", accountingReceiptId: envelope.id,
         accountingReceiptSequence: envelope.sequence, accountingReceiptReceivedAt: envelope.receivedAt,
         costStatus: receipt.costStatus ?? null,
@@ -232,7 +241,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
   await syncDirectory(directory);
   await recoverPendingRunUsageReceipts(db, input, directory);
   const bound = await db.update(heartbeatRuns).set({ usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb` })
-    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson });
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson, agentId: heartbeatRuns.agentId });
   if (bound.length !== 1) throw conflict("Run cannot accept a new usage recorder");
   let sequence = 0;
   let currentAttempt = "default";
@@ -254,6 +263,21 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
   }
   const projectLiveUsage = createLiveRunUsageProjection(initialLiveUsage);
+  // A baseline belongs to the thread that reported the totals. A fresh thread
+  // has no earlier run, so its totals count from zero.
+  const sessionBaselines = new Map<string, Promise<ReturnType<typeof normalizeUsageTotals> | undefined>>();
+  const readSessionBaseline = (sessionId: string) => {
+    let baseline = sessionBaselines.get(sessionId);
+    if (!baseline) sessionBaselines.set(sessionId, baseline = createHeartbeatRunState(db).resolveNormalizedUsageForSession({
+      agentId: bound[0].agentId, runId: input.runId, sessionId,
+      rawUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, usageBasis: "session_cumulative",
+    }).then(resolution => resolution.previousRawUsage, error => {
+      sessionBaselines.delete(sessionId);
+      logger.warn({ err: error, runId: input.runId }, "Session usage baseline unavailable; receipt keeps cumulative totals until completion");
+      return undefined;
+    }));
+    return baseline;
+  };
   let chain = Promise.resolve();
   let captureFailed = bound[0].usageJson?.accountingCaptureFailed === true;
   let finishFailedCapture: (() => void) | undefined;
@@ -289,7 +313,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     if (!attempts.has(attempt)) currentAttempt = attempt;
     const previous = attempts.get(attempt);
     const priced = priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
-      complete: parsed.complete && !(previous?.usage && !parsed.usage) }));
+      usageSessionId: parsed.usageSessionId ?? previous?.usageSessionId, complete: parsed.complete && !(previous?.usage && !parsed.usage) }));
     priced.pricingProvenance ??= {
       source: priced.costUsd != null || priced.costUsdExact != null || priced.cacheAdjustedCostUsd != null ? "provider_reported" : "unknown",
       version: "accounting-receipt/v1",
@@ -332,7 +356,14 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
-    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
+    // Without the reporting thread no baseline is provably its own: keep the
+    // cumulative totals for completion, which resolves the run's session.
+    const baseline = receipt.usageBasis === "session_cumulative" && receipt.usageSessionId ? await readSessionBaseline(receipt.usageSessionId) : undefined;
+    const journaled = baseline === undefined ? receipt : priceAnthropicReceipt(priceCodexReceipt({ ...receipt, usageBasis: "per_run",
+      usage: normalizeAdapterRunUsage(normalizeUsageTotals(receipt.usage), baseline, "session_cumulative") ?? undefined,
+      costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, usageByModel: undefined }));
+    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(),
+      receipt: journaled, ...(journaled === receipt ? { liveCostCents } : { sessionUsage: receipt.usage, liveCostCents: liveRunUsageCostCents(journaled) }) };
     const file = await spoolUsageReceipt(envelope, directory);
     try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
     catch (error) {

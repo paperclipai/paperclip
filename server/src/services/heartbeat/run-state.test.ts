@@ -472,12 +472,16 @@ describePostgres("heartbeat run state database wiring", () => {
     await db.insert(heartbeatRuns).values({
       companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "cumulative",
       createdAt: new Date("2026-01-01T00:00:00Z"),
-      usageJson: { rawInputTokens: 800, rawCachedInputTokens: 100, rawOutputTokens: 80 },
+      usageJson: { rawInputTokens: 800, rawInputIncludesCached: false, rawCachedInputTokens: 100, rawOutputTokens: 80 },
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "cumulative",
+      createdAt: new Date("2026-01-01T12:00:00Z"), usageJson: { accountingReceiptReady: false, inputTokens: 0 },
     });
     const [current] = await db.insert(heartbeatRuns).values({
       companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "cumulative",
       createdAt: new Date("2026-01-02T00:00:00Z"),
-      usageJson: { rawInputTokens: 1000, rawCachedInputTokens: 125, rawOutputTokens: 100 },
+      usageJson: { rawInputTokens: 1000, rawInputIncludesCached: false, rawCachedInputTokens: 125, rawOutputTokens: 100 },
     }).returning();
     const rawUsage = { inputTokens: 1000, cachedInputTokens: 125, outputTokens: 100 };
     const input = { agentId: agent.id, runId: current.id, sessionId: "cumulative", rawUsage };
@@ -489,6 +493,23 @@ describePostgres("heartbeat run state database wiring", () => {
     expect(await state.resolveNormalizedUsageForSession({ ...input, usageBasis: "per_run" })).toEqual({
       normalizedUsage: rawUsage, previousRawUsage: null, derivedFromSessionTotals: false,
     });
+  });
+
+  it("reads a historical Codex baseline whose raw input included cache reads", async () => {
+    const { companyId, agent, state } = await fixture();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "legacy-codex",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      usageJson: { rawInputTokens: 13_000_000, rawCachedInputTokens: 9_000_000, rawOutputTokens: 400_000 },
+    });
+    const [current] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "legacy-codex",
+      createdAt: new Date("2026-01-02T00:00:00Z"),
+    }).returning();
+    expect(await state.resolveNormalizedUsageForSession({
+      agentId: agent.id, runId: current.id, sessionId: "legacy-codex", usageBasis: "session_cumulative",
+      rawUsage: { inputTokens: 5_000_000, cachedInputTokens: 10_000_000, outputTokens: 500_000 },
+    })).toMatchObject({ normalizedUsage: { inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 100_000 } });
   });
 
   it("uses the selected session's usage and summary for compaction", async () => {

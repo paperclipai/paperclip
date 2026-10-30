@@ -13,6 +13,8 @@ import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { priceAnthropicReceipt } from "../anthropic-pricing.js";
+import { priceCodexReceipt } from "../codex-pricing.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
@@ -456,6 +458,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       usageBasis: adapterResult.usageBasis ?? null,
     });
     const normalizedUsage = sessionUsageResolution.normalizedUsage;
+    const billed: AdapterExecutionResult = adapterResult.usageBasis === "session_cumulative" && normalizedUsage
+      ? { ...adapterResult, ...priceAnthropicReceipt(priceCodexReceipt({ ...adapterResult, usage: normalizedUsage, usageBasis: "per_run", complete: adapterResult.usageComplete !== false })) }
+      : adapterResult;
     const runErrorMessage =
       outcome === "cancelled"
         ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
@@ -550,11 +555,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             ? "timed_out"
             : "failed";
 
-    const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
-      ? null : resolveCacheAdjustedCostUsd(adapterResult);
+    const cacheAdjustedCostUsd = billed.costUsdExact != null && billed.cacheAdjustedCostUsd == null
+      ? null : resolveCacheAdjustedCostUsd(billed);
     const usageJson: Record<string, unknown> = {
       accountingReceiptReady: adapterResult.usageComplete !== false,
-      costUsdExact: adapterResult.costUsdExact ?? null,
+      costUsdExact: billed.costUsdExact ?? null,
       providerRequestId: adapterResult.providerRequestId ?? null,
       ...(normalizedUsage ?? {}),
       ...(adapterResult.usageByModel ? { usageByModel: adapterResult.usageByModel } : {}),
@@ -593,15 +598,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         readNonEmptyString(adapterResult.provider) ?? "unknown",
       biller: resolveLedgerBiller(adapterResult),
       model: readNonEmptyString(adapterResult.model) ?? "unknown",
-      ...(adapterResult.costUsd != null
-        ? { costUsd: adapterResult.costUsd }
+      ...(billed.costUsd != null
+        ? { costUsd: billed.costUsd }
         : {}),
       ...(cacheAdjustedCostUsd != null
         ? { cacheAdjustedCostUsd }
         : {}),
-      pricingProvenance: adapterResult.pricingProvenance,
-      costStatus: adapterResult.costStatus ?? resolveLedgerCostStatus({
-        costUsd: cacheAdjustedCostUsd ?? (adapterResult.costUsdExact != null ? Number(adapterResult.costUsdExact) : null),
+      pricingProvenance: billed.pricingProvenance,
+      costStatus: billed.costStatus ?? resolveLedgerCostStatus({
+        costUsd: cacheAdjustedCostUsd ?? (billed.costUsdExact != null ? Number(billed.costUsdExact) : null),
         billingType: normalizeLedgerBillingType(adapterResult.billingType),
         inputTokens: normalizedUsage?.inputTokens ?? 0,
         cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,

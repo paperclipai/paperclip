@@ -187,7 +187,7 @@ describe("codex execute", () => {
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
       expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 });
-      expect(result.usageBasis).toBe("per_run");
+      expect(result.usageBasis).toBe("session_cumulative");
       expect(result.costUsd).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
@@ -807,16 +807,18 @@ if (process.argv.includes("resume")) {
 }
 `, "utf8");
     await fs.chmod(commandPath, 0o755);
+    const onUsage = vi.fn(async () => {});
     try {
       const result = await execute({
         runId: `resume-stop-${started}`,
         agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: "existing-session", sessionParams: null, sessionDisplayId: "existing-session", taskKey: null },
         config: { engine: "cli", command: commandPath, cwd: root, promptTemplate: "Test resume." },
-        context: {}, onLog: async () => {},
+        context: {}, onLog: async () => {}, onUsage,
       });
       expect((await fs.readFile(attemptsPath, "utf8")).trim().split("\n")).toHaveLength(started ? 1 : 2);
       expect(result.sessionId).toBe(started ? "existing-session" : "fresh-session");
+      if (!started) expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ usageBasis: "session_cumulative", usageSessionId: "fresh-session" }));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -943,6 +945,44 @@ process.exit(1);
       );
     } finally {
       vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("labels a resumed CLI thread's totals as session-cumulative usage", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-usage-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, `#!/usr/bin/env node
+if (!process.argv.includes("resume")) process.exit(3);
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-thread-1" }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 15000000, cached_input_tokens: 10000000, output_tokens: 500000 } }));
+`, { mode: 0o755 });
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    try {
+      const onUsage = vi.fn(async () => {});
+      const result = await execute({
+        runId: "run-resume-usage",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex Coder", adapterType: "codex_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "codex-thread-1", sessionParams: { sessionId: "codex-thread-1", cwd: workspace }, sessionDisplayId: "codex-thread-1", taskKey: null },
+        config: { engine: "cli", command: commandPath, cwd: workspace, promptTemplate: "Follow the paperclip heartbeat." },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onUsage,
+      });
+      expect(result).toMatchObject({ exitCode: 0, sessionId: "codex-thread-1", usageBasis: "session_cumulative",
+        usage: { inputTokens: 5000000, cachedInputTokens: 10000000, outputTokens: 500000 } });
+      expect(onUsage).toHaveBeenCalled();
+      // The receipt names the thread its totals belong to, so the server never
+      // subtracts another thread's baseline from them.
+      for (const [receipt] of onUsage.mock.calls as unknown as Array<[object]>) expect(receipt).toMatchObject({ usageBasis: "session_cumulative", usageSessionId: "codex-thread-1" });
+    } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });

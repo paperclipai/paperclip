@@ -1388,7 +1388,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const consumeAccounting = createCodexJsonlParser();
       const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
         const parsed = consumeAccounting(stdout);
-        return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
+        return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: parsed.usageBasis, usageSessionId: parsed.sessionId, provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
       });
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
@@ -1504,7 +1504,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           usageComplete: attempt.parsed.usageComplete,
           costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
-          usageBasis: "per_run",
+          usageBasis: attempt.parsed.usageBasis,
           provider: "openai",
           biller,
           model,

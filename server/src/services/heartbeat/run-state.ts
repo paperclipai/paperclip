@@ -11,6 +11,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -1280,7 +1281,15 @@ export function createHeartbeatRunState(db: Db) {
   ) {
     const conditions = [
       eq(heartbeatRuns.agentId, agentId),
-      eq(heartbeatRuns.sessionIdAfter, sessionId),
+      // An interrupted run never gets `sessionIdAfter`, but a usage receipt
+      // charged from session totals saved them with their session.
+      or(
+        eq(heartbeatRuns.sessionIdAfter, sessionId),
+        and(isNull(heartbeatRuns.sessionIdAfter), sql`${heartbeatRuns.usageJson}->>'rawUsageSessionId' = ${sessionId}`),
+      )!,
+      sql`(coalesce(${heartbeatRuns.usageJson}->'rawInputTokens', ${heartbeatRuns.usageJson}->'inputTokens', '0'::jsonb) > '0'::jsonb
+        or coalesce(${heartbeatRuns.usageJson}->'rawCachedInputTokens', ${heartbeatRuns.usageJson}->'cachedInputTokens', '0'::jsonb) > '0'::jsonb
+        or coalesce(${heartbeatRuns.usageJson}->'rawOutputTokens', ${heartbeatRuns.usageJson}->'outputTokens', '0'::jsonb) > '0'::jsonb)`,
     ];
     if (opts?.excludeRunId) {
       conditions.push(sql`${heartbeatRuns.id} <> ${opts.excludeRunId}`);
@@ -1337,7 +1346,11 @@ export function createHeartbeatRunState(db: Db) {
     const previousRun = await getLatestRunForSession(agentId, sessionId, {
       excludeRunId: runId,
     });
-    const previousRawUsage = readRawUsageTotals(previousRun?.usageJson);
+    let previousRawUsage = readRawUsageTotals(previousRun?.usageJson);
+    const previousUsageJson = previousRun?.usageJson;
+    if (previousRawUsage && previousUsageJson?.rawInputTokens !== undefined && previousUsageJson.rawInputIncludesCached !== false) {
+      previousRawUsage = { ...previousRawUsage, inputTokens: Math.max(0, previousRawUsage.inputTokens - previousRawUsage.cachedInputTokens) };
+    }
     return {
       normalizedUsage: normalizeAdapterRunUsage(rawUsage, previousRawUsage, usageBasis),
       previousRawUsage,
