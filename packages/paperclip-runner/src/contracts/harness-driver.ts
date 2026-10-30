@@ -1,8 +1,9 @@
+import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
 } from "../protocol/replay-contract.js";
-import type { NativeSessionCapabilities, NativeUserMessage } from "./types.js";
+import type { NativeSessionCapabilities, NativeTurnControlCapabilities, NativeUserMessage } from "./types.js";
 import {
   PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
   parsePaperclipQuestionResponse,
@@ -57,6 +58,7 @@ export interface OpenHarnessSessionInput {
 }
 
 export interface HarnessSessionRecoveryOptions {
+  normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
   signal: AbortSignal;
 }
@@ -135,9 +137,11 @@ export type HarnessRuntimeRequestResolution =
       response: PaperclipQuestionResponse;
     };
 
-export type HarnessRuntimeRequestAction = HarnessRuntimeRequestResolution["action"];
+export type HarnessRuntimeRequestAction =
+  HarnessRuntimeRequestResolution["action"];
 
-export type HarnessRuntimeRequestHandoffResult = "handed_off" | "already_settled";
+export type HarnessRuntimeRequestHandoffResult =
+  "handed_off" | "already_settled";
 
 /**
  * A runtime-input handoff commits its durable state transition before the
@@ -174,7 +178,9 @@ function plainRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function parseAnswers(value: unknown): Record<string, { answers: string[] }> | null {
+function parseAnswers(
+  value: unknown,
+): Record<string, { answers: string[] }> | null {
   const fields = plainRecord(value);
   if (fields === null || Object.keys(fields).length === 0) return null;
   const parsed: Record<string, { answers: string[] }> = {};
@@ -210,7 +216,12 @@ export function parseHarnessRuntimeRequestResolution(
     );
   }
   const action = rawAction as HarnessRuntimeRequestAction;
-  if (action !== "submit" && ("answers" in candidate || "content" in candidate || "response" in candidate)) {
+  if (
+    action !== "submit" &&
+    ("answers" in candidate ||
+      "content" in candidate ||
+      "response" in candidate)
+  ) {
     throw new HarnessRuntimeRequestResolutionError(
       requestKind,
       `${action} does not carry submitted form data`,
@@ -239,7 +250,10 @@ export function parseHarnessRuntimeRequestResolution(
     try {
       return {
         action,
-        response: parsePaperclipQuestionResponse(questionSet, candidate.response),
+        response: parsePaperclipQuestionResponse(
+          questionSet,
+          candidate.response,
+        ),
       };
     } catch (error) {
       throw new HarnessRuntimeRequestResolutionError(
@@ -344,10 +358,14 @@ export function harnessRuntimeRequestOutcome(
     itemId: request.itemId,
     ...(outcome.action ? { action: outcome.action } : {}),
     ...(outcome.reason ? { reason: outcome.reason } : {}),
-    ...(outcome.response ? { response: structuredClone(outcome.response) } : {}),
+    ...(outcome.response
+      ? { response: structuredClone(outcome.response) }
+      : {}),
     ...(request.input
       ? {
-          ...(request.origin?.adapter ? { adapter: request.origin.adapter } : {}),
+          ...(request.origin?.adapter
+            ? { adapter: request.origin.adapter }
+            : {}),
           requestType: "input" as const,
         }
       : {}),
@@ -385,7 +403,7 @@ export function harnessRuntimeInputExpiredOutcome(
 export interface HarnessThreadGoal {
   threadId: string;
   objective: string;
-  status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+  status: "active" | "paused" | "blocked" | "limited" | "usageLimited" | "budgetLimited" | "complete";
   tokenBudget: number | null;
   tokensUsed: number;
   timeUsedSeconds: number;
@@ -394,9 +412,15 @@ export interface HarnessThreadGoal {
 }
 
 export type HarnessGoalOperation =
-  | { action: "get" }
-  | { action: "set"; objective: string; tokenBudget?: number | null }
-  | { action: "pause" | "resume" | "clear" };
+  | { action: "get"; requestId?: string }
+  | {
+      action: "set";
+      objective: string;
+      tokenBudget?: number | null;
+      status?: HarnessThreadGoal["status"];
+      requestId?: string;
+    }
+  | { action: "pause" | "resume" | "clear"; requestId?: string };
 
 export interface HarnessThreadLineageEntry {
   threadId: string;
@@ -431,13 +455,22 @@ export interface AcpxSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   /** Missing on legacy snapshots; those used the historical approve-reads behavior. */
-  permissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+  /** Effective provider mode identifier, bound to the session identity. */
+  mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
+  providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
 export type PersistedHarnessProviderIdentity = AcpxSessionIdentity;
 
 export interface PersistedHarnessSession {
   driverKind: string;
+  /** Execution-host startup root, revalidated before a cold provider launch. */
+  workingDirectory?: string;
   driverSessionId: string;
   providerSessionId?: string | null;
   runId?: string;
@@ -445,6 +478,7 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
+  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
   /** Exact accepted provider turn that spent the disposition-only allowance. */
@@ -469,21 +503,42 @@ export interface HarnessSessionRecoveryResult {
 }
 
 export interface HarnessSession {
+  supportsTurnReasoning?(): boolean;
+  turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;
     providerSessionId?: string | null;
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
-  attachRun?(input: { runId: string }): Promise<void> | void;
+  attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
-  }): Promise<{ turnId: string; effectiveCollaborationMode?: "default" | "plan" }>;
-  steer?(input: { turnId: string; message: NativeUserMessage; correlationId?: string }): Promise<void>;
-  interrupt?(input: { turnId?: string; reason?: string; signal?: AbortSignal }): Promise<void>;
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
+  }): Promise<{
+    turnId: string;
+    effectiveCollaborationMode?: "default" | "plan";
+  }>;
+  steer?(input: {
+    /** Queued follow-ups remain distinct from active-turn steering. */
+    mode?: "steer" | "follow_up";
+    turnId: string;
+    message: NativeUserMessage;
+    correlationId?: string;
+  }): Promise<void>;
+  interrupt?(input: {
+    turnId?: string;
+    reason?: string;
+    signal?: AbortSignal;
+  }): Promise<void>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
+    /** Durable controller command identity, distinct from the native request identity. */
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
@@ -502,6 +557,8 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  /** Relinquish controller authority without semantically closing the session. */
+  detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean }): Promise<void>;
 }
 

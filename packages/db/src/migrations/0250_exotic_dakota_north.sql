@@ -1,0 +1,2 @@
+ALTER TABLE "issue_thread_interactions" ADD COLUMN IF NOT EXISTS "origin_comment_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "native_run_finalizations" ADD COLUMN IF NOT EXISTS "control_deadline_at" timestamp with time zone;

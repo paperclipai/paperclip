@@ -1,3 +1,4 @@
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
@@ -38,7 +39,7 @@ import {
 } from "@paperclipai/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import {
   createFeedbackRedactionState,
   finalizeFeedbackRedactionSummary,
@@ -111,7 +112,7 @@ const feedbackExportColumns = getTableColumns(feedbackExports);
 const instructionsSvc = agentInstructionsService();
 
 type FeedbackTraceShareClient = {
-  uploadTraceBundle(bundle: FeedbackTraceBundle): Promise<{ objectKey: string }>;
+  uploadTraceBundle(bundle: FeedbackTraceBundle, signal?: AbortSignal): Promise<{ objectKey: string }>;
 };
 
 type FeedbackServiceOptions = {
@@ -157,7 +158,10 @@ function contentTypeForPath(filePath: string) {
 }
 
 function normalizeInstanceGeneralSettings(raw: unknown) {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  // Stored rows can carry retired keys (for example keyboardShortcuts) until
+  // the settings row is rewritten. Strip them instead of failing closed, or a
+  // stale key would reset the sharing preference to "prompt" on this path.
+  const parsed = instanceGeneralSettingsSchema.strip().safeParse(raw ?? {});
   if (parsed.success) return parsed.data;
   return instanceGeneralSettingsSchema.parse({});
 }
@@ -1168,12 +1172,23 @@ async function buildAgentContext(
     : [];
 
   const usage = asRecord(run?.usageJson) ?? {};
+  const externalInstructions = agentInstructionsBundleMode({
+    id: agent.id,
+    companyId: agent.companyId,
+    name: agent.name,
+    adapterConfig: agent.adapterConfig,
+  }) === "external";
+  if (externalInstructions) {
+    state.omittedFields.add("bundle.agentContext.runtime.configuredInstructionsFilePath");
+    state.omittedFields.add("bundle.agentContext.runtime.configuredInstructionsRootPath");
+    state.omittedFields.add("bundle.agentContext.instructions");
+  }
   const runtime = {
     configuredModel: asString(adapterConfig.model),
     configuredInstructionsBundleMode: asString(adapterConfig.instructionsBundleMode),
     configuredInstructionsEntryFile: asString(adapterConfig.instructionsEntryFile),
-    configuredInstructionsFilePath: asString(adapterConfig.instructionsFilePath),
-    configuredInstructionsRootPath: asString(adapterConfig.instructionsRootPath),
+    configuredInstructionsFilePath: externalInstructions ? null : asString(adapterConfig.instructionsFilePath),
+    configuredInstructionsRootPath: externalInstructions ? null : asString(adapterConfig.instructionsRootPath),
     heartbeatPolicy: sanitizeFeedbackValue(runtimeConfig.heartbeat ?? null, state, "bundle.agentContext.runtime.heartbeatPolicy", 400),
     provenanceMode: run ? "source_run" : "vote_time_snapshot",
     sourceRun: run
@@ -1218,12 +1233,14 @@ async function buildAgentContext(
       : null,
   };
 
-  const instructionsBundle = await instructionsSvc.getBundle({
-    id: agent.id,
-    companyId: agent.companyId,
-    name: agent.name,
-    adapterConfig: agent.adapterConfig,
-  }).catch(() => null);
+  const instructionsBundle = externalInstructions
+    ? null
+    : await instructionsSvc.getBundle({
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      adapterConfig: agent.adapterConfig,
+    }).catch(() => null);
 
   let entryDigest: string | null = null;
   let entryBody: string | null = null;
@@ -1699,6 +1716,15 @@ async function buildFeedbackTraceBundleFromRow(
 }
 
 export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
+  // Serialize explicit flushes and the worker's batches so callers cannot
+  // upload the same trace concurrently. HTTP vote handlers only save and notify.
+  let exportFlush: Promise<unknown> = Promise.resolve();
+  function serializeExportFlush<T>(operation: () => Promise<T>): Promise<T> {
+    const result = exportFlush.then(operation, operation);
+    exportFlush = result.catch(() => undefined);
+    return result;
+  }
+
   return {
     listIssueVotesForUser: async (issueId: string, authorUserId: string) =>
       db
@@ -1770,13 +1796,23 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       return row ? buildFeedbackTraceBundleFromRow(db, row) : null;
     },
 
+    hasPendingFeedbackTraces: async () => {
+      const pending = options.shareClient
+        ? or(eq(feedbackExports.status, "pending"), eq(feedbackExports.status, "failed"))
+        : eq(feedbackExports.status, "pending");
+      return (await db.select({ id: feedbackExports.id }).from(feedbackExports)
+        .where(pending).limit(1)).length > 0;
+    },
+
     flushPendingFeedbackTraces: async (input?: {
       companyId?: string;
       traceId?: string;
       limit?: number;
       now?: Date;
-    }) => {
+      signal?: AbortSignal;
+    }) => serializeExportFlush(async () => {
       const shareClient = options.shareClient;
+      input?.signal?.throwIfAborted();
       if (!shareClient) {
         const filters = [eq(feedbackExports.status, "pending")];
         if (input?.companyId) {
@@ -1845,12 +1881,13 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       let failed = 0;
 
       for (const row of rows) {
+        if (input?.signal?.aborted) break;
         const attemptAt = input?.now ?? new Date();
         attempted += 1;
 
         try {
           const bundle = await buildFeedbackTraceBundleFromRow(db, row);
-          await shareClient.uploadTraceBundle(bundle);
+          await shareClient.uploadTraceBundle(bundle, input?.signal);
 
           await db
             .update(feedbackExports)
@@ -1884,7 +1921,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
         sent,
         failed,
       };
-    },
+    }),
 
     saveIssueVote: async (input: {
       issueId: string;
@@ -2055,6 +2092,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           })
           .where(eq(feedbackVotes.id, savedVote.id));
 
+        if (sharedWithLabs) await notifyDeliveryWork(tx, DELIVERY_QUEUES.feedback);
         const [savedTrace] = await tx
           .insert(feedbackExports)
           .values({

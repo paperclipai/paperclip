@@ -21,6 +21,84 @@ import type { AuthorizationActor, AuthorizationDecision } from "../services/auth
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
+  it("strips stored task shell selectors before secret resolution and provider projection", async () => {
+    const unsafe = {BASH_ENV:"/workspace/hook.sh",ZDOTDIR:"/workspace",GH_CONFIG_DIR:"/workspace/gh",PAPERCLIP_GITHUB_LAUNCHER_DIR:"/workspace/forged"};
+    const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config) => ({config,secretKeys:new Set(),manifest:[]}));
+    const result = await resolveExecutionRunAdapterConfig({companyId:"company-1",adapterType:"paperclip_runner",
+      executionRunConfig:{env:{...unsafe,CUSTOM_VALUE:"allowed"}},
+      secretsSvc:{resolveAdapterConfigForRuntime} as any});
+    expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[1]).toMatchObject({env:{CUSTOM_VALUE:"allowed"}});
+    for (const key of Object.keys(unsafe)) {
+      expect(result.resolvedConfig.env).not.toHaveProperty(key);
+      expect(result.configuredTaskEnvironment).not.toHaveProperty(key);
+      expect((resolveAdapterConfigForRuntime.mock.calls[0]?.[1] as {env:object}).env).not.toHaveProperty(key);
+    }
+  });
+  it.each(["many variables", "large value"])("keeps legacy adapter configuration compatible with %s", async kind => {
+    const env = kind === "many variables"
+      ? Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`CUSTOM_${index}`, "value"]))
+      : { CUSTOM_VALUE: "x".repeat(65_536) };
+    const result = await resolveExecutionRunAdapterConfig({ companyId: "company-1", adapterType: "process", executionRunConfig: { env }, secretsSvc: {
+      resolveAdapterConfigForRuntime: vi.fn(async (_companyId, config) => ({ config, secretKeys: new Set(), manifest: [] })),
+    } as any });
+    expect(result.resolvedConfig.env).toEqual(env);
+  });
+
+  it("captures scoped resolved task values and rejects configured markers", async () => {
+    const key = "PAPERCLIP_CONFIGURED_ENV_KEYS";
+    const secret = { type: "secret_ref", secretId: "pages-secret" };
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1", agentId: "agent-1", environmentId: "environment-1", projectId: "project-1", routineId: "routine-1",
+      executionRunConfig: { env: { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: secret, SHARED: "agent", [key]: '["HOST_SECRET"]' } },
+      environmentEnv: { SHARED: "environment", [key]: '["HOST_SECRET"]' },
+      projectEnv: { SHARED: "project", [key]: '["HOST_SECRET"]' },
+      routineEnv: { SHARED: "routine", [key]: '["HOST_SECRET"]' },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(async (companyId, config) => {
+          expect(companyId).toBe("company-1");
+          expect(config.env[key]).toBeUndefined();
+          return { config: { ...config, env: { ...config.env, PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "resolved-task-secret" } }, secretKeys: new Set(["PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY"]), manifest: [] };
+        }),
+        resolveEnvBindings: vi.fn(async (companyId, env) => {
+          expect(companyId).toBe("company-1");
+          expect(env[key]).toBeUndefined();
+          return { env, secretKeys: new Set(), manifest: [] };
+        }),
+      } as any,
+    });
+    expect(result.configuredTaskEnvironment).toEqual({
+      PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "resolved-task-secret", SHARED: "routine",
+    });
+    expect(result.resolvedConfig.env).not.toHaveProperty(key);
+    expect(result.configuredTaskEnvironment).not.toHaveProperty(key);
+  });
+
+  it("does not preflight or resolve legacy GitHub token bindings for managed executions", async () => {
+    const assertNoGitHubBinding = (env: Record<string, unknown>) => {
+      for (const key of Object.keys(env)) if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN)$/.test(key)) {
+        throw new Error("Unavailable legacy GitHub secret must not be resolved at startup");
+      }
+    };
+    const missing = { type: "user_secret_ref", key: "old-github-token", required: true };
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1", agentId: "agent-1", environmentId: "environment-1",
+      projectId: "project-1", routineId: "routine-1", managedGitHubCredentials: true,
+      executionRunConfig: { env: { GH_TOKEN: missing, AGENT_VALUE: "ok" } },
+      environmentEnv: { GITHUB_TOKEN: missing, ENVIRONMENT_VALUE: "ok" },
+      projectEnv: { GH_ENTERPRISE_TOKEN: missing, PROJECT_VALUE: "ok" },
+      routineEnv: { GITHUB_ENTERPRISE_TOKEN: missing, PAPERCLIP_GIT_TOKEN: missing, ROUTINE_VALUE: "ok" },
+      secretsSvc: {
+        collectMissingRuntimeBindings: vi.fn(async (_companyId, env) => { assertNoGitHubBinding(env); return []; }),
+        resolveAdapterConfigForRuntime: vi.fn(async (_companyId, config) => {
+          assertNoGitHubBinding(config.env); return { config, secretKeys: new Set(), manifest: [] };
+        }),
+        resolveEnvBindings: vi.fn(async (_companyId, env) => {
+          assertNoGitHubBinding(env); return { env, secretKeys: new Set(), manifest: [] };
+        }),
+      } as any,
+    });
+    expect(result.resolvedConfig.env).toEqual({ AGENT_VALUE: "ok", ENVIRONMENT_VALUE: "ok", PROJECT_VALUE: "ok", ROUTINE_VALUE: "ok" });
+  });
   it("overlays environment, project, and routine env on top of agent env and unions secret keys", async () => {
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
       config: {
@@ -168,6 +246,8 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentId: "environment-1",
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
+        PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/environment/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
@@ -175,16 +255,19 @@ describe("resolveExecutionRunAdapterConfig", () => {
         env: {
           PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "secret-api-key", version: "latest" },
           PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
+          PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/agent/claude",
           AGENT_ONLY: "agent-only",
         },
       },
       projectEnv: {
         PAPERCLIP_API_KEY: "project-api-key",
+        paperclip_runner_prepared_harness_home: "/project/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_PROJECT: "project-cloud",
         PROJECT_ONLY: "project-only",
       },
       routineEnv: {
         PAPERCLIP_API_KEY: "routine-api-key",
+        PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/routine/claude",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ROUTINE: "routine-cloud",
         ROUTINE_ONLY: "routine-only",
       },
@@ -224,6 +307,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       ROUTINE_ONLY: "routine-only",
     });
     expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_API_KEY");
+    expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_RUNNER_NETWORK_ACCESS");
   });
 
   it("skips project env resolution when the project has no bindings", async () => {
@@ -301,6 +385,81 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
     expect(resolveEnvBindings.mock.calls[2]?.[2]).toMatchObject({
       allowedBindingIds: ["binding-1"],
+    });
+  });
+
+  it("does not project brokered GitHub credentials across a low-trust boundary", async () => {
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      trustedEnvProjection: {
+        GH_TOKEN: "brokered-github-token",
+        GITHUB_TOKEN: "brokered-github-token",
+      },
+      trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({});
+    expect(result.secretKeys).toEqual(new Set());
+  });
+
+  it("does not let a brokered projection satisfy low-trust push preflight", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project"],
+        reason: "push_write_credential_missing",
+        remediation: "Bind an explicitly allowed GitHub write credential.",
+      },
+      trustedEnvProjection: { GH_TOKEN: "brokered-github-token" },
+      trustedEnvSecretKeys: ["GH_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: { reason: "push_write_credential_missing" },
+      },
     });
   });
 

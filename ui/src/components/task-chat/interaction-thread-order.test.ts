@@ -127,7 +127,7 @@ describe("interactionThreadAnchorMs", () => {
     expect(interactionThreadAnchorMs(confirmation(), CREATED_MS)).toBe(CREATED_MS);
   });
 
-  it("re-anchors a resolved card to its resolution time", () => {
+  it("places a resolved confirmation at the decision time", () => {
     const resolved = confirmation({
       status: "accepted",
       result: result("accepted"),
@@ -136,7 +136,29 @@ describe("interactionThreadAnchorMs", () => {
     expect(interactionThreadAnchorMs(resolved, CREATED_MS)).toBe(RESOLVED_MS);
   });
 
-  it("never drags a resolved card above its own request slot", () => {
+  it("keeps an answered question card where the question was originally asked", () => {
+    const answeredQuestion = confirmation({
+      kind: "ask_user_questions",
+      status: "answered",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "environment",
+          prompt: "Which environment?",
+          selectionMode: "single",
+          options: [{ id: "production", label: "Production" }],
+        }],
+      },
+      result: {
+        version: 1,
+        answers: [{ questionId: "environment", optionIds: ["production"] }],
+      },
+      resolvedAt: new Date(RESOLVED_MS),
+    } as never);
+    expect(interactionThreadAnchorMs(answeredQuestion, CREATED_MS)).toBe(CREATED_MS);
+  });
+
+  it("never drags a resolved confirmation above its own request slot", () => {
     // Clock skew: resolvedAt reads earlier than the handoff/created fallback.
     const resolved = confirmation({
       status: "accepted",

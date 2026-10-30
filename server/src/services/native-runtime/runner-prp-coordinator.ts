@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { agents, completionContracts, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  completionContracts,
+  heartbeatRuns,
+  issues,
+} from "@paperclipai/db";
 import {
   DurablePrpControlPlane,
   type PaperclipSemanticToolDefinition,
@@ -67,6 +72,8 @@ export interface PreparedRunnerPrpSession {
     readonly turnId?: string;
     readonly providerSessionId?: string;
   }>;
+  waitForCommand(commandId: string, timeoutMs?: number): Promise<Record<string, unknown> | null>;
+  waitForGoalEvent(requestId: string, timeoutMs?: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -107,11 +114,17 @@ function validateInput(input: PrepareRunnerPrpSessionInput): void {
 }
 
 function completionCriterionIds(value: unknown): string[] | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   const criteria = (value as Record<string, unknown>).criteria;
   if (!Array.isArray(criteria)) return null;
   const ids = criteria.map((criterion) => {
-    if (typeof criterion !== "object" || criterion === null || Array.isArray(criterion)) return null;
+    if (
+      typeof criterion !== "object" ||
+      criterion === null ||
+      Array.isArray(criterion)
+    )
+      return null;
     const id = (criterion as Record<string, unknown>).id;
     return typeof id === "string" && id.length > 0 ? id : null;
   });
@@ -198,7 +211,8 @@ export function runnerPrpCoordinator(
         binding.run.driverKind !== "codex" ||
         !binding.run.completionContractId ||
         !binding.run.completionContractSha256 ||
-        binding.completionContract.canonicalSha256 !== binding.run.completionContractSha256 ||
+        binding.completionContract.canonicalSha256 !==
+          binding.run.completionContractSha256 ||
         binding.issue.assigneeAgentId !== input.agentId ||
         binding.issue.executionRunId !== input.runId ||
         ["paused", "terminated", "pending_approval", "error"].includes(
@@ -242,10 +256,17 @@ export function runnerPrpCoordinator(
         };
       };
       let completedRun: CompletedRun | null = null;
+      const observedGoalRequests = new Map<string, string | null>();
+      const goalEventWaiters = new Map<
+        string,
+        Set<{ resolve: () => void; reject: (error: Error) => void }>
+      >();
       let resolveTerminal!: (value: CompletedRun) => void;
-      const terminalEvent = new Promise<CompletedRun>((resolveTerminalPromise) => {
-        resolveTerminal = resolveTerminalPromise;
-      });
+      const terminalEvent = new Promise<CompletedRun>(
+        (resolveTerminalPromise) => {
+          resolveTerminal = resolveTerminalPromise;
+        },
+      );
       const authority = new DurablePrpControlPlane({
         stateDirectory: resolve(stateRoot, input.runId),
         identity: {
@@ -287,6 +308,8 @@ export function runnerPrpCoordinator(
       try {
         registration = await registerRunnerPrpAuthority({
           companyId: input.companyId,
+          issueId: input.issueId,
+          agentId: input.agentId,
           runId: input.runId,
           authority,
         });
@@ -343,7 +366,11 @@ export function runnerPrpCoordinator(
         },
         waitForTerminal: async (timeoutMs = 60 * 60 * 1_000) => {
           if (released) throw new Error("runner_prp_session_released");
-          if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 24 * 60 * 60 * 1_000) {
+          if (
+            !Number.isInteger(timeoutMs) ||
+            timeoutMs < 1_000 ||
+            timeoutMs > 24 * 60 * 60 * 1_000
+          ) {
             throw new Error("runner_prp_terminal_timeout_invalid");
           }
           if (completedRun) return completedRun;
@@ -366,6 +393,58 @@ export function runnerPrpCoordinator(
             ]);
           } finally {
             if (timer) clearTimeout(timer);
+          }
+        },
+        waitForCommand: async (commandId, timeoutMs = 30_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            const outcome = authority.commandOutcome(commandId);
+            if (!outcome) throw new Error(`runner_prp_command_missing:${commandId}`);
+            if (outcome.status === "completed") return outcome.result;
+            if (outcome.status === "failed" || outcome.status === "rejected") {
+              const message = outcome.result && typeof outcome.result.message === "string"
+                ? outcome.result.message
+                : `runner_prp_command_${outcome.status}:${commandId}`;
+              throw new Error(message);
+            }
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 10);
+              timer.unref();
+            });
+          }
+          throw new Error(`runner_prp_command_timeout:${commandId}`);
+        },
+        waitForGoalEvent: async (requestId, timeoutMs = 30_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          if (observedGoalRequests.has(requestId)) {
+            const error = observedGoalRequests.get(requestId);
+            if (error) throw new Error(error);
+            return;
+          }
+          let timer: NodeJS.Timeout | null = null;
+          let resolveGoalEvent!: () => void;
+          let rejectGoalEvent!: (error: Error) => void;
+          const goalEvent = new Promise<void>((resolve, reject) => {
+            resolveGoalEvent = resolve;
+            rejectGoalEvent = reject;
+          });
+          const waiter = { resolve: resolveGoalEvent, reject: rejectGoalEvent };
+          const waiters = goalEventWaiters.get(requestId) ?? new Set<typeof waiter>();
+          waiters.add(waiter);
+          goalEventWaiters.set(requestId, waiters);
+          try {
+            await Promise.race([
+              goalEvent,
+              new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("runner_prp_goal_event_timeout")), timeoutMs);
+                timer.unref();
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+            waiters.delete(waiter);
+            if (waiters.size === 0) goalEventWaiters.delete(requestId);
           }
         },
         release: async () => {

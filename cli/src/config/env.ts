@@ -6,6 +6,7 @@ import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@papercl
 import { resolveConfigPath } from "./store.js";
 
 const JWT_SECRET_ENV_KEY = "PAPERCLIP_AGENT_JWT_SECRET";
+const TOOL_ACTION_SIGNING_SECRET_ENV_KEY = "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET";
 const PAPERCLIP_OWNED_ENV_KEY_PATTERN = /^PAPERCLIP_[A-Z0-9_]+$/;
 function resolveEnvFilePath(configPath?: string) {
   return path.resolve(path.dirname(resolveConfigPath(configPath)), ".env");
@@ -88,6 +89,25 @@ export function ensureAgentJwtSecret(configPath?: string): { secret: string; cre
 
   if (!existingFile) {
     writeAgentJwtEnv(secret, envFilePath);
+  }
+
+  return { secret, created };
+}
+
+export function ensureToolActionSigningSecret(configPath?: string): { secret: string; created: boolean } {
+  loadAgentJwtEnvFile(resolveEnvFilePath(configPath));
+  const existingEnv = process.env[TOOL_ACTION_SIGNING_SECRET_ENV_KEY];
+  if (isNonEmpty(existingEnv)) {
+    return { secret: existingEnv.trim(), created: false };
+  }
+
+  const envFilePath = resolveEnvFilePath(configPath);
+  const existingFile = readPaperclipEnvEntries(envFilePath)[TOOL_ACTION_SIGNING_SECRET_ENV_KEY];
+  const secret = isNonEmpty(existingFile) ? existingFile.trim() : randomBytes(32).toString("hex");
+  const created = !isNonEmpty(existingFile);
+
+  if (created) {
+    mergePaperclipEnvEntries({ [TOOL_ACTION_SIGNING_SECRET_ENV_KEY]: secret }, envFilePath);
   }
 
   return { secret, created };

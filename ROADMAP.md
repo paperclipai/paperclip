@@ -4,6 +4,8 @@ This document expands the roadmap preview in `README.md`.
 
 Paperclip is still moving quickly. The list below is directional, not promised, and priorities may shift as we learn from users and from operating real AI companies with the product.
 
+Status tracks the default branch: ✅ available, 🟡 partial or experimental, ⚪ planned. Check [release notes](https://github.com/paperclipai/paperclip/releases) for packaged versions. Some capabilities require instance settings, plugins, or provider setup.
+
 We value community involvement and want to make sure contributor energy goes toward areas where it can land.
 
 We may accept contributions in the areas below, but if you want to work on roadmap-level core features, please coordinate with us first in Discord (`#dev`) before writing code. Bugs, docs, polish, and tightly scoped improvements are still the easiest contributions to merge.
@@ -48,9 +50,9 @@ Paperclip should support explicit review and approval stages as first-class work
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 
-### ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, self-hosted Kubernetes)
+### ✅ Cloud / Sandbox agent support
 
-We want agents to run in more remote and sandboxed environments while preserving the same Paperclip control-plane model. This makes the system safer, more flexible, and more useful outside a single trusted local machine.
+Sandbox provider plugins support remote execution while preserving the Paperclip control-plane model. Providers include E2B, Cloudflare, Daytona, Modal, Novita, and Kubernetes. Execution requires a configured provider and a compatible adapter; environment and isolated-workspace surfaces depend on instance settings.
 
 ### ✅ Artifacts & Work Products
 
@@ -76,17 +78,45 @@ Secrets need to be centrally managed without giving every agent every credential
 
 Operators need a durable record of what changed and who initiated it. Activity history and clear action attribution make human, agent, and system actions inspectable across the control plane.
 
-### ✅ Self-healing runs & automatic recovery
+### ✅ Bounded run recovery
 
-Agent work should recover from routine failures without waiting for a human to notice every stalled run. Recovery policies can retry safe work, route failures, and keep the issue lifecycle aligned with what actually happened.
+Recovery policies handle supported transient failures and interrupted runs, retain task ownership, and surface recovery actions when work needs human intervention. Retries are bounded and remain subject to budgets, approvals, and pause gates.
 
 ### ✅ Agent evals & feedback
 
-Agent performance should be measurable over time, not judged only from anecdotes. Evals, saved results, and structured feedback create a loop for improving skills, prompts, models, and employee quality.
+Skill Studio provides saved test inputs, test runs, results, and version history. Task and document feedback helps people improve procedures. Automatic organizational learning remains a separate roadmap item below.
 
-### ⚪ Memory / Knowledge
+### ✅ Connected Apps
 
-We want a stronger memory and knowledge surface for companies, agents, and projects. That includes durable memory, better recall of prior decisions and context, and a clearer path for knowledge-style capabilities without turning Paperclip into a generic chat app.
+Apps and Connections provide a service catalog, custom MCP connections, personal and shared accounts, agent access controls, and per-action Allowed / Ask first / Off policies. Supported AI accounts also use Connections. Setup varies by provider and deployment; not every integration is one-click. Broader provider coverage and simpler setup remain ongoing work.
+
+### ✅ Personal & Shared AI Accounts
+
+Connect supported subscription accounts or API keys and choose personal defaults or shared accounts for compatible agents. Human access and agent eligibility are separate controls; account selection stays independent of the model and harness. See [AI Connections](doc/connections/AI-CONNECTIONS.md).
+
+### ✅ Shared Agents Use Personal GitHub Identities
+
+Shared agents can use the GitHub identity of the person whose instructions they are executing. Managed Git and GitHub operations resolve that identity through delegation and follow-up work, subject to connection permissions. See [GitHub identity during agent execution](doc/execution-github-identity.md).
+
+### ✅ Skill Version History & Restore
+
+Save skill versions, inspect earlier contents, and restore a previous version as a new revision. Saved test inputs and results support comparison as procedures evolve.
+
+### ✅ Document Comments & Revision History
+
+Leave comments on specific passages in task documents, follow revision history, and restore previous document revisions. Annotations carry into agent review context so feedback stays attached to the work.
+
+### ✅ Company-Wide Search
+
+Search tasks, comments, documents, agents, projects, and artifacts within company access boundaries. Filters and matching excerpts help people find relevant work and its outputs.
+
+### ✅ Multi-Model & Multi-Harness Teams
+
+Choose models and supported harnesses per agent while keeping tasks, skills, and history in one organization. Built-in adapters cover Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Pi, Hermes, Grok, Kimi Code, OpenClaw, and process or HTTP integrations.
+
+### 🟡 Memory / Knowledge
+
+Experimental memory connections support Mem0, Zep, Supermemory, Cognee, and Honcho. The optional LLM Wiki plugin provides another knowledge workflow. A broader memory and knowledge surface for companies, agents, and projects remains a direction for future work. See [memory connections](doc/connections/MEMORY.md) for setup and availability.
 
 ### ⚪ MAXIMIZER MODE
 
@@ -94,7 +124,7 @@ This is the direction for higher-autonomy execution: more aggressive delegation,
 
 ### ⚪ Work Queues
 
-Paperclip should support queue-style work streams for repeatable inputs like support, triage, review, and backlog intake. That would make it easier to route work continuously without turning every system into a one-off workflow.
+Paperclip should support queue-style work streams for repeatable inputs like support, triage, review, and backlog intake. That would make it easier to route work continuously without turning every system into a one-off workflow. Existing decision queues group items awaiting input; this milestone concerns continuous work intake and routing.
 
 ### ⚪ Self-Organization
 
@@ -104,11 +134,11 @@ As companies grow, agents should be able to propose useful structural changes su
 
 Paperclip should get better at turning completed work into reusable organizational knowledge. That includes capturing playbooks, recurring fixes, and decision patterns so future work starts from what the company has already learned.
 
-### ⚪ CEO Chat
+### 🟡 Agent Chat (including CEO Chat)
 
-We want a lighter-weight way to talk to leadership agents, but those conversations should still resolve to real work objects like plans, issues, approvals, or decisions. This should improve interaction without changing the core task-and-comments model.
+Experimental Agent Chat provides persistent conversations with any agent, including leadership. Conversations keep their history and plans, then hand execution off to linked tasks. Agent Chat is off by default. Experimental chat and email connectors provide additional entry points through configured external services; they have separate setup and access controls.
 
-### 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
+### 🟡 Cloud deployments
 
 Local-first remains important, but Paperclip also needs a cleaner shared deployment story. Teams should be able to run the same product in hosted or semi-hosted environments without changing the mental model.
 
@@ -121,7 +151,3 @@ A desktop app can make Paperclip feel more accessible and persistent for day-to-
 ### ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
 
 Existing ticket systems should be able to feed work into Paperclip without becoming the agent control plane themselves. Asana, Linear, and Jira can act as familiar on-ramps while Paperclip owns execution, governance, and outcomes.
-
-### ⚪ Connected Apps (one-click integrations, e.g. Vercel)
-
-Common services should connect without bespoke setup for every company. One-click integrations can package credentials, permissions, and useful workflows for apps such as Vercel while keeping access governed and auditable.

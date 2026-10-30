@@ -20,7 +20,7 @@ export const createTaskAction = {
     "idempotency": "required",
     "disabledByDefault": false,
     "realBindingStatus": "live_codex",
-    "realServiceBinding": "issues.createChild",
+    "realServiceBinding": "issues.create / issues.createChild",
     "prpEvidence": "semantic-operation item event plus company-entity state diff and audit record",
     "prpBindingStatus": "bound",
     "legacyAliases": [
@@ -28,8 +28,8 @@ export const createTaskAction = {
     ]
   },
   "documentation": {
-    "title": "Create child task",
-    "description": "Create one durable standard child under the active task.",
+    "title": "Create task",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include the actual required inputs and constraints in self-contained child instructions.",
     "note": null
   },
   "examples": {
@@ -76,8 +76,8 @@ export const createTaskAction = {
       "schema": "paperclip.semantic-tool.v1",
       "operationId": "create_task",
       "version": 1,
-      "title": "Create child task",
-      "description": "Create one durable standard child under the active task. Use only when a real ownership, parallelism, dependency, review, or lifecycle boundary justifies delegation.",
+      "title": "Create task",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include the actual required inputs and constraints in self-contained child instructions.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -106,9 +106,10 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Child task description.",
+            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets.",
             "maxLength": 20000
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": [
               "string",
@@ -116,6 +117,10 @@ export const createTaskAction = {
             ],
             "description": "Optional agent assignee. Omit to assign the current agent.",
             "maxLength": 20000
+          },
+          "status": {
+            "enum": ["backlog", "todo"],
+            "description": "Initial status. Use backlog to save work without executing it. Defaults to todo (blocked when dependencies are unresolved)."
           },
           "priority": {
             "enum": [
@@ -127,13 +132,28 @@ export const createTaskAction = {
           },
           "blockedByTaskIds": {
             "type": "array",
-            "description": "Initial blocker task ids.",
+            "description": "Tasks that must finish before this new task can execute. Parent-child linkage is not a blocker; do not list a parent that is waiting for this child.",
             "items": {
               "type": "string",
               "minLength": 1
             },
             "maxItems": 200,
             "uniqueItems": true
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project ID for the task."
+          },
+          "initialPlan": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200000,
+            "description": "Relevant markdown plan saved on the new task before execution starts."
           }
         },
         "required": [
@@ -147,7 +167,7 @@ export const createTaskAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -163,7 +183,7 @@ export const createTaskAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1
@@ -184,13 +204,43 @@ export const createTaskAction = {
           "task": {
             "type": "object",
             "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "identifier": { "type": ["string", "null"] },
-              "parentId": { "type": "string", "minLength": 1 },
-              "status": { "type": "string", "minLength": 1 },
-              "assigneeActorId": { "type": ["string", "null"] }
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "identifier": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parentId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "projectId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
+          "assigneeActorId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             },
-            "required": ["id", "identifier", "parentId", "status", "assigneeActorId"],
+            "required": [
+              "id",
+              "identifier",
+              "parentId",
+              "status",
+              "assigneeActorId"
+            ],
             "additionalProperties": false
           }
         },
@@ -221,16 +271,23 @@ export const createTaskAction = {
             "minLength": 1
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets."
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": "string"
+          },
+          "status": {
+            "enum": ["backlog", "todo"],
+            "description": "Initial status. Use backlog to save work without executing it. Defaults to todo (blocked when dependencies are unresolved)."
           },
           "priority": {
             "type": "string"
           },
           "blockedByTaskIds": {
             "type": "array",
+            "description": "Tasks that must finish before this new task can execute. Parent-child linkage is not a blocker; do not list a parent that is waiting for this child.",
             "items": {
               "type": "string"
             }

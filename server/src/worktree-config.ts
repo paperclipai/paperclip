@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   mergePaperclipConfig,
@@ -15,6 +16,7 @@ import {
 } from "@paperclipai/shared/worktree-port-registry";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { rewriteUrlPort } from "./url-utils.js";
+import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -454,6 +456,8 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     return { repairedConfig: false, repairedEnv: false };
   }
 
+  applyEmptyWorktreeSigningSecrets(path.resolve(path.dirname(context.configPath), ".."));
+
   process.env.PAPERCLIP_HOME = context.homeDir;
   process.env.PAPERCLIP_INSTANCE_ID = context.instanceId;
   process.env.PAPERCLIP_CONFIG = context.configPath;
@@ -530,6 +534,15 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     }
   }
 
+  const existingContents = fs.existsSync(context.envPath)
+    ? fs.readFileSync(context.envPath, "utf8")
+    : null;
+  const existingEnvEntries = parseEnvFile(existingContents ?? "");
+  const toolActionSigningSecret =
+    nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    nonEmpty(existingEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    randomBytes(32).toString("hex");
+
   const managedEnvEntries: Record<string, string> = {
     PAPERCLIP_HOME: context.homeDir,
     PAPERCLIP_INSTANCE_ID: context.instanceId,
@@ -538,13 +551,11 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     PAPERCLIP_IN_WORKTREE: "true",
     PAPERCLIP_DB_BACKUP_ENABLED: "false",
     PAPERCLIP_WORKTREE_NAME: context.worktreeName,
+    PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
   };
 
   process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
-
-  const existingContents = fs.existsSync(context.envPath)
-    ? fs.readFileSync(context.envPath, "utf8")
-    : null;
+  process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = toolActionSigningSecret;
   const repairedContents = updateEnvFileContents(
     existingContents ?? emptyWorktreeEnvFileContents(),
     managedEnvEntries,

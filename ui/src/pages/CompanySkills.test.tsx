@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act as reactAct, type ComponentProps, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
-import type { CatalogSkill, CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
   InstallPreviewDialog,
   SkillDetailPage,
+  buildDiscoveryCards,
   defaultInstallAgentSelection,
   getSkillVersionDiffSelection,
   resolveDiscoveryTab,
@@ -16,6 +17,9 @@ import {
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+
+const readVersion = vi.hoisted(() => vi.fn());
+vi.mock("../api/companySkills", () => ({ companySkillsApi: { version: readVersion } }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -100,19 +104,19 @@ vi.mock("../components/MarkdownEditor", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let root: Root | null = null;
+let queryClient: QueryClient;
 let container: HTMLDivElement | null = null;
 
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
   });
-  await result;
 }
 
 afterEach(() => {
   root?.unmount();
   root = null;
+  queryClient?.clear();
   container?.remove();
   container = null;
 });
@@ -193,11 +197,13 @@ async function renderSkillDetail(
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  readVersion.mockReset().mockImplementation(async (_company: string, _skill: string, id: string) => versions.find(version => version.id === id));
   const detail = props.detail ?? makeDetail(versions[0]!);
 
   await act(async () => {
     root?.render(
-      <SkillDetailPage
+      <QueryClientProvider client={queryClient}><SkillDetailPage
         detail={detail}
         loading={false}
         activeTab={props.activeTab ?? "versions"}
@@ -213,7 +219,7 @@ async function renderSkillDetail(
         setDraft={vi.fn()}
         onSave={vi.fn()}
         savePending={false}
-        versions={versions}
+        versions={versions.map(version => ({ ...version, fileInventory: version.fileInventory.map(({ path, kind }) => ({ path, kind })) }))}
         versionsLoading={false}
         attachAgents={[]}
         onSubmitAttach={vi.fn()}
@@ -235,7 +241,7 @@ async function renderSkillDetail(
         onDelete={vi.fn()}
         deletePending={false}
         {...props}
-      />,
+      /></QueryClientProvider>,
     );
   });
 
@@ -250,9 +256,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
   await act(async () => {
     root?.render(
       <DiscoveryGrid
-        tab="all"
-        tabCounts={{ all: 0, installed: 0, catalog: 0, bundled: 0 }}
-        onTabChange={vi.fn()}
+        tab="installed"
         categories={[]}
         categoryTotal={0}
         activeCategory={null}
@@ -269,7 +273,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
         onCreate={vi.fn()}
         onImport={vi.fn()}
         onImportFromProject={vi.fn()}
-        onBrowseCatalog={vi.fn()}
+        onBrowseDiscover={vi.fn()}
         onScan={vi.fn()}
         scanPending={false}
         scanStatus={null}
@@ -338,7 +342,7 @@ function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
 
-async function click(button: HTMLButtonElement) {
+async function click(button: HTMLElement) {
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
@@ -376,14 +380,86 @@ describe("getSkillVersionDiffSelection", () => {
   });
 });
 
-describe("DiscoveryGrid Studio entry points", () => {
-  it("links the header Studio button to Skill Studio", async () => {
-    const node = await renderDiscoveryGrid();
-    const studioLink = Array.from(node.querySelectorAll("a")).find((link) =>
-      link.textContent?.includes("Studio"),
-    );
+describe("DiscoveryGrid IA presentation", () => {
+  it("uses the shared cards and toolbar for My Skills and preserves opening and creation actions", async () => {
+    const onOpenCard = vi.fn();
+    const onCreate = vi.fn();
+    const skill: CompanySkillListItem = {
+      ...makeDetail(makeVersion(1, "# My Review Skill"), { id: "my-skill", name: "My Review Skill" }),
+      catalogKind: null, originHash: null, packageName: null, packageVersion: null,
+    };
+    const card = buildDiscoveryCards([skill], [])[0]!;
+    const node = await renderDiscoveryGrid({ collectionView: "authored", cards: [card], totalCount: 1, onOpenCard, onCreate, showBrowseRails: false });
+    expect(node.querySelector('input[aria-label="Search my skills"]')).not.toBeNull();
+    expect(node.querySelector('h1')?.textContent).toBe("My Skills");
+    const skillButton = Array.from(node.querySelectorAll<HTMLElement>('[role="button"]')).find(button => button.textContent?.includes("My Review Skill"))!;
+    await click(skillButton);
+    expect(onOpenCard).toHaveBeenCalledWith(card);
+    const create = buttonsNamed(node, "Create new skill")[0]!;
+    await click(create);
+    expect(onCreate).toHaveBeenCalledOnce();
+    expect(node.textContent).not.toContain("Recently visited");
+  });
 
-    expect(studioLink?.getAttribute("href")).toBe("/skills/studio");
+  it("makes the search scope explicit for Installed and Discover", async () => {
+    let node = await renderDiscoveryGrid({ tab: "installed" });
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
+
+    root?.unmount();
+    container?.remove();
+    root = null;
+    container = null;
+
+    node = await renderDiscoveryGrid({ tab: "discover" });
+    expect(node.querySelector('input[aria-label="Search discoverable skills"]')).not.toBeNull();
+    expect(node.textContent).not.toContain("Catalog");
+  });
+
+  it("distinguishes installation from agent enablement on cards", async () => {
+    const installedCard = {
+      key: "installed",
+      skillId: "skill-installed",
+      catalogRef: null,
+      name: "Installed Skill",
+      slug: "installed",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+      sourceBadge: "local" as const,
+      sourceLabel: "Local workspace",
+    };
+    const availableCard = {
+      ...installedCard,
+      key: "available",
+      skillId: null,
+      catalogRef: "catalog-available",
+      name: "Available Skill",
+      slug: "available",
+      installed: false,
+      sourceBadge: "catalog" as const,
+      sourceLabel: "Paperclip catalog",
+    };
+    const node = await renderDiscoveryGrid({
+      tab: "discover",
+      cards: [installedCard, availableCard],
+      totalCount: 2,
+    });
+
+    expect(node.textContent).toContain("Not enabled for any agents");
+    expect(node.textContent).toContain("Available to install");
+    expect(node.textContent).toContain("Local workspace");
+    expect(node.textContent).toContain("Paperclip catalog");
   });
 
   it("uses the create callback from the New menu and empty state", async () => {
@@ -394,6 +470,17 @@ describe("DiscoveryGrid Studio entry points", () => {
     await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
 
     expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses one Discover action instead of Catalog or Bundled navigation", async () => {
+    const onBrowseDiscover = vi.fn();
+    const node = await renderDiscoveryGrid({ onBrowseDiscover });
+
+    await click(buttonsNamed(node, "Discover skills")[0] as HTMLButtonElement);
+
+    expect(onBrowseDiscover).toHaveBeenCalledOnce();
+    expect(node.textContent).not.toContain("Browse catalog");
+    expect(node.textContent).not.toContain("Bundled tab");
   });
 
   it("keeps folder creation in the compact rail control", async () => {
@@ -408,6 +495,29 @@ describe("DiscoveryGrid Studio entry points", () => {
 
     expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
     expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("removes category and folder browse rails while keeping search available", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      categories: [{ slug: "design", count: 1 }],
+      categoryTotal: 1,
+      showBrowseRails: false,
+    });
+
+    expect(node.querySelector('nav[aria-label="Skill folders"]')).toBeNull();
+    expect(node.querySelector("aside")).toBeNull();
+    expect(node.textContent).not.toContain("Browse by category");
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
+  });
+
+  it("omits bulk selection when its entry point is not supplied", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      onToggleSelectMode: undefined,
+    });
+
+    expect(buttonsNamed(node, "Select")).toHaveLength(0);
   });
 
   it("keeps folder creation available when no folder rail exists", async () => {
@@ -548,15 +658,74 @@ describe("DiscoveryGrid Studio entry points", () => {
 describe("skills discovery tab routing", () => {
   it("opens the folder-first installed view when the URL has no tab", () => {
     expect(resolveDiscoveryTab(null)).toBe("installed");
-    expect(resolveDiscoveryTab("all")).toBe("all");
+    expect(resolveDiscoveryTab("all")).toBe("discover");
+    expect(resolveDiscoveryTab("catalog")).toBe("discover");
+    expect(resolveDiscoveryTab("bundled")).toBe("discover");
   });
 
-  it("keeps All explicit and makes Installed the canonical default URL", () => {
-    const allParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "all");
-    expect(allParams.toString()).toBe("tab=all");
+  it("uses Discover as the only explicit discovery URL and Installed as the default", () => {
+    const discoverParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "discover");
+    expect(discoverParams.toString()).toBe("tab=discover");
 
     const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
     expect(installedParams.toString()).toBe("folder=my");
+  });
+});
+
+describe("skills discovery card reconciliation", () => {
+  it("renders one installed card when installed and catalog data share a key", () => {
+    const installed = {
+      id: "installed-new",
+      key: "PaperclipAI/Review",
+      name: "Review",
+      slug: "review",
+      updatedAt: new Date("2026-08-30T00:00:00Z"),
+      folderId: null,
+      authorName: "Paperclip",
+      packageVersion: "2.0.0",
+      sourceRef: null,
+      tagline: null,
+      description: "Installed copy",
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      attachedAgentCount: 2,
+      forkCount: 0,
+      catalogKind: "optional",
+      forkedFromSkillId: null,
+      sourceBadge: "catalog",
+      sourceLabel: "Paperclip",
+    } as unknown as CompanySkillListItem;
+    const olderDuplicate = {
+      ...installed,
+      id: "installed-old",
+      key: "paperclipai/review",
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+    } as CompanySkillListItem;
+    const catalog = {
+      id: "catalog-review",
+      key: "paperclipai/review",
+      name: "Review",
+      slug: "review",
+      kind: "optional",
+      category: "quality",
+      description: "Catalog copy",
+      packageName: "Paperclip",
+      packageVersion: "2.0.0",
+      tags: [],
+    } as unknown as CatalogSkill;
+
+    const cards = buildDiscoveryCards([olderDuplicate, installed], [catalog, { ...catalog, id: "catalog-duplicate" }]);
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      skillId: "installed-new",
+      catalogRef: "catalog-review",
+      installed: true,
+      agentCount: 2,
+      sourceKind: "optional",
+    });
   });
 });
 
@@ -622,6 +791,7 @@ describe("SkillDetailPage versions tab", () => {
     const v1 = makeVersion(1, "# Demo Skill\n\nFirst line");
     const v2 = makeVersion(2, "# Demo Skill\n\nSecond line");
     const node = await renderSkillDetail([v2, v1]);
+    expect(readVersion).not.toHaveBeenCalled();
     const viewDiffButtons = buttonsNamed(node, "View diff") as HTMLButtonElement[];
 
     expect(viewDiffButtons).toHaveLength(2);
@@ -633,7 +803,8 @@ describe("SkillDetailPage versions tab", () => {
     expect(dialog.textContent).toContain("Diff");
     expect(selects[0]?.value).toBe(v1.id);
     expect(selects[1]?.value).toBe(v2.id);
-    expect(dialog.textContent).toContain("Second line");
+    await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("Second line")));
+    expect(readVersion).toHaveBeenCalledTimes(2);
 
     await click(viewDiffButtons[1]!);
     dialog = node.querySelector('[role="dialog"]') as HTMLElement;
@@ -642,7 +813,7 @@ describe("SkillDetailPage versions tab", () => {
     expect(selects[0]?.value).toBe("");
     expect(selects[1]?.value).toBe(v1.id);
     expect(dialog.textContent).toContain("Initial");
-    expect(dialog.textContent).toContain("First line");
+    await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("First line")));
     expect(dialog.textContent).not.toContain("Both sides are the same version");
   });
 });
@@ -658,7 +829,7 @@ describe("SkillDetailPage settings", () => {
     expect(node.textContent).toContain("Organization / Engineering / Code Review");
   });
 
-  it("shows a direct fork action for read-only skills", async () => {
+  it("shows a direct make-a-copy action for read-only GitHub skills", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onFork = vi.fn();
     const node = await renderSkillDetail([v1], {
@@ -675,7 +846,7 @@ describe("SkillDetailPage settings", () => {
 
     expect(node.textContent).not.toContain("Fork or import locally");
 
-    const forkButton = buttonsNamed(node, "Fork")[0] as HTMLButtonElement;
+    const forkButton = buttonsNamed(node, "Make a copy")[0] as HTMLButtonElement;
     expect(forkButton).toBeTruthy();
 
     await click(forkButton);
@@ -795,7 +966,7 @@ describe("SkillDetailPage settings", () => {
 
     await act(async () => {
       root?.render(
-        <SkillDetailPage
+        <QueryClientProvider client={queryClient}><SkillDetailPage
           detail={detail}
           loading={false}
           activeTab="overview"
@@ -832,7 +1003,7 @@ describe("SkillDetailPage settings", () => {
           updateSettingsPending={false}
           onDelete={vi.fn()}
           deletePending={false}
-        />,
+        /></QueryClientProvider>,
       );
     });
 
@@ -899,11 +1070,6 @@ describe("install-time agent enablement", () => {
         />,
       );
     });
-    // The dialog seeds its slug/agent state in passive effects; give them a
-    // macrotask to flush before interacting.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     const node = container as ParentNode;
     expect(node.textContent).toContain("Enable for agents");
@@ -945,15 +1111,9 @@ describe("install-time agent enablement", () => {
 
     // Dialog opens before the agents query resolves: nothing to select yet.
     await act(async () => renderDialog([]));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     // The agents arrive later; the untouched selection must pick them up.
     await act(async () => renderDialog(agentOptions));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     await click(buttonsNamed(container as ParentNode, "Install skill")[0] as HTMLButtonElement);
 
@@ -984,9 +1144,6 @@ describe("install-time agent enablement", () => {
           onConfirm={onConfirm}
         />,
       );
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     const node = container as ParentNode;

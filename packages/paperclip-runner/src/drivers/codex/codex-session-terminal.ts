@@ -1,34 +1,51 @@
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { isNativeRestartInterruption } from "../../contracts/native-session-backend.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
 import type { CodexSessionState } from "./codex-session-state.js";
-import type { SemanticResultAdmission, TerminalReplayConflict } from "./codex-driver-types.js";
-import { canonicalJson, record, terminalState, text, tryParseResult } from "./codex-driver-values.js";
+import type {
+  SemanticResultAdmission,
+  TerminalReplayConflict,
+} from "./codex-driver-types.js";
+import {
+  RUNNERD_CANONICAL_ITEM,
+  canonicalJson,
+  record,
+  terminalState,
+  text,
+  tryParseResult,
+} from "./codex-driver-values.js";
 
 export function captureResultFromItem(
   state: CodexSessionState,
-    item: Record<string, unknown>,
-    turnId: string,
-  ): boolean {
-    if (state.conversationMode === "direct") return true;
-    if (
-      text(item.type) !== "agentMessage" ||
-      !isRetainableCodexPayload(item.text)
-    )
-      return true;
-    const result = tryParseResult(item.text);
-    if (result !== null && isRetainableCodexPayload(result)) {
-      const admission = admitResult(state, result, text(item.id), turnId);
-      if (admission === "conflict") {
-        state.failProtocol(
-          "conflicting_semantic_result",
-          "Provider agentMessage supplied a different schema-valid semantic result after one was committed.",
-        );
-        return false;
-      }
-    }
+  item: Record<string, unknown>,
+  turnId: string,
+): boolean {
+  if (state.conversationMode === "direct") return true;
+  // Runnerd is the semantic authority for its canonical PRP stream. Its
+  // normalized activity items can still contain schema-shaped assistant
+  // text after paperclip_finish, but re-parsing that text here would create
+  // a second, potentially conflicting result from one provider turn.
+  if ((item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM] === true)
     return true;
+  if (
+    text(item.type) !== "agentMessage" ||
+    !isRetainableCodexPayload(item.text)
+  )
+    return true;
+  const result = tryParseResult(item.text);
+  if (result !== null && isRetainableCodexPayload(result)) {
+    const admission = admitResult(state, result, text(item.id), turnId);
+    if (admission === "conflict") {
+      state.failProtocol(
+        "conflicting_semantic_result",
+        "Provider agentMessage supplied a different schema-valid semantic result after one was committed.",
+      );
+      return false;
+    }
   }
+  return true;
+}
 
 export function admitResult(
   state: CodexSessionState,
@@ -38,7 +55,10 @@ export function admitResult(
   ): SemanticResultAdmission {
     const fingerprint = canonicalJson(result);
     if (state.resultFingerprint !== null) {
-      return state.resultFingerprint === fingerprint ? "identical" : "conflict";
+      const same = state.normalizeReplayPayload
+        ? replayFingerprint(state, JSON.parse(state.resultFingerprint)) === replayFingerprint(state, result)
+        : state.resultFingerprint === fingerprint;
+      return same ? "identical" : "conflict";
     }
     state.result = structuredClone(result);
     state.resultFingerprint = fingerprint;
@@ -67,7 +87,8 @@ export function admitResult(
 
 function finalize(
   state: CodexSessionState,turnStatus: string): void {
-    if (state.conversationMode === "direct") return;
+  if (state.conversationMode === "direct" || state.conversationMode === "prepared") return;
+    if (state.currentGoal?.status === "active") return;
     if (state.terminal) return;
     if (state.result === null) {
       state.emit("harness.diagnostic", {
@@ -151,7 +172,19 @@ export function mapTerminalTurn(
       { turnId },
     );
     finalize(state, status);
+    if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
+        !state.dispositionOnlyRecoveryConsumed) {
+      // Orchestration may use the paid restart attempt for one same-thread
+      // continuation. Its accepted turn id uses the existing durable marker.
+      state.terminal = false;
+      state.dispositionOnlyRecoveryAvailable = true;
+    }
   }
+
+function replayFingerprint(state: CodexSessionState, value: unknown): string {
+  const payload = { value };
+  return canonicalJson(state.normalizeReplayPayload?.(payload) ?? payload);
+}
 
 function terminalFingerprint(
   state: CodexSessionState,
@@ -176,7 +209,9 @@ export function terminalReplayConflict(
       candidate !== null &&
       state.resultFingerprint !== null &&
       state.resultTurnId === turnId &&
-      canonicalJson(candidate) !== state.resultFingerprint
+      (state.normalizeReplayPayload
+        ? replayFingerprint(state, candidate) !== replayFingerprint(state, JSON.parse(state.resultFingerprint))
+        : canonicalJson(candidate) !== state.resultFingerprint)
     ) {
       return {
         code: "conflicting_semantic_result",
@@ -186,9 +221,10 @@ export function terminalReplayConflict(
     const semanticResult = state.resultTurnId === turnId
       ? state.result
       : candidate;
-    if (
-      terminalFingerprint(state, turn, semanticResult) !== expectedFingerprint
-    ) {
+    const actualFingerprint = terminalFingerprint(state, turn, semanticResult);
+    if (state.normalizeReplayPayload
+      ? replayFingerprint(state, JSON.parse(actualFingerprint)) !== replayFingerprint(state, JSON.parse(expectedFingerprint))
+      : actualFingerprint !== expectedFingerprint) {
       return {
         code: "conflicting_turn_terminal",
         message: "changed from its committed terminal fingerprint",

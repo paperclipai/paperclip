@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import {
+  DEPLOYMENT_MODES,
   findPaperclipConfigKeyWarnings,
   paperclipConfigSchema,
   type PaperclipConfig,
+  type DeploymentMode,
 } from "@paperclipai/shared";
 import { ZodError } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { getCloudRuntimeConfigSnapshot, toPaperclipConfig } from "./services/cloud-runtime-config-snapshot.js";
 
 function formatConfigValidationError(error: ZodError): string {
   return error.issues
@@ -17,6 +21,7 @@ function formatConfigValidationError(error: ZodError): string {
 }
 
 export function readConfigFile(): PaperclipConfig | null {
+  if (isCloudManagedInstance()) return toPaperclipConfig(getCloudRuntimeConfigSnapshot().config);
   const configPath = resolvePaperclipConfigPath();
 
   if (!fs.existsSync(configPath)) return null;
@@ -44,4 +49,12 @@ export function readConfigFile(): PaperclipConfig | null {
 
     throw error;
   }
+}
+
+/** Resolve the same deployment mode without loading config.ts's dotenv/startup side effects. */
+export function resolveDeploymentMode(fileConfig = readConfigFile()): DeploymentMode {
+  const fromEnv = process.env.PAPERCLIP_DEPLOYMENT_MODE;
+  return fromEnv && DEPLOYMENT_MODES.includes(fromEnv as DeploymentMode)
+    ? fromEnv as DeploymentMode
+    : fileConfig?.server.deploymentMode ?? "local_trusted";
 }

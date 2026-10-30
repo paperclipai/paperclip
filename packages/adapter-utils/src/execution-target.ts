@@ -1,8 +1,12 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import { githubLauncherSource } from "./github-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -18,10 +22,12 @@ import {
 import type {
   AdditionalSourceStagingFailure,
   SandboxAdditionalSource,
+  WorkspaceDurableSeedPaths,
+  WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
-export {
-  resolveReferencedSourceIgnore,
-} from "./sandbox-managed-runtime.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+export { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 export type {
   AdditionalSourceStagingFailure,
   ReferencedSourceIgnoreResolution,
@@ -32,16 +38,21 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  runSandboxBridgeControlCommand,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
+  syncRemoteTextFilesWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
 } from "./sandbox-callback-bridge.js";
 import {
   createHttp2BridgeServer,
+  BridgeProcessCapacityError,
+  type BridgeBodyReservation,
   type Http2BridgeForwardHandler,
 } from "./http2-bridge-server.js";
 import {
@@ -80,15 +91,22 @@ import {
 } from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
+import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
+export function postedIssueCommentLogMarker(
+  method: string,
+  requestPath: string,
+  status: number,
+  body: Buffer | string,
+) {
   if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
     return null;
   }
+  const bodyText = typeof body === "string" ? body : body.toString("utf8");
   try {
-    const parsed = JSON.parse(body) as { id?: unknown };
+    const parsed = JSON.parse(bodyText) as { id?: unknown };
     return typeof parsed.id === "string" && parsed.id.length > 0 ? `comment id: ${parsed.id}\n` : null;
   } catch {
     return null;
@@ -145,6 +163,8 @@ export interface EffectiveExecutionCapabilities {
   readonly incrementalSessionOutput: boolean;
   readonly concurrentSyncOperations: boolean;
   readonly duplexCommandStream: boolean;
+  /** Provider can expose a private authenticated WebSocket endpoint for runnerd. */
+  readonly runnerWebSocketIngress: boolean;
 }
 
 /**
@@ -153,10 +173,22 @@ export interface EffectiveExecutionCapabilities {
  */
 export interface EffectiveSandboxCapabilities extends EffectiveExecutionCapabilities {}
 
+export interface SandboxLeaseAcquisition {
+  outcome: "created" | "resumed" | "replacement";
+  providerLeaseId: string;
+  previousProviderLeaseId?: string;
+  reason?: "not_found" | "expired" | "identity_mismatch" | "resume_failed";
+}
+
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /** Host-bound plugin task RPC. Both sides validate the wire contract. */
+  runnerTask?: (operation: unknown) => Promise<unknown>;
+  runnerTaskProjectIds?: readonly string[];
+  /** Private Core-issued identity for a bounded, tool-free setup probe. */
+  runnerTaskProbe?: { runId: string; sessionId: string };
   /**
    * Read-only effective capability snapshot for this sandbox target. The host
    * resolves it from the provider declaration ∩ the verified worker methods ∩
@@ -171,12 +203,27 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * environment. Absent means no grant.
    */
   readonly enableSandboxDuplexBridge?: boolean;
+  /** Host-owned lifecycle override for paperclip_runner in this environment. */
+  readonly runnerLifecyclePolicy?:
+    | { mode: "per_turn"; idleTimeoutMs: null }
+    | { mode: "warm"; idleTimeoutMs: number }
+    | null;
+  /** Whether this environment is configured to reuse its provider lease. */
+  readonly reusableLeaseConfigured?: boolean;
+  /** Host-observed provenance for this exact sandbox acquisition. */
+  readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
+  /** Host-only provider operation. It is never serialized into the sandbox. */
+  getRunnerIngressEndpoint?: (input: {
+    leaseId: string;
+    port: number;
+    path: string;
+  }) => Promise<RunnerIngressEndpoint>;
   /**
    * Sandbox-backed adapter runs stream the agent CLI's stdout/stderr
    * incrementally via a log-tail loop beside the callback bridge instead of
@@ -224,6 +271,12 @@ export interface PreparedAdapterExecutionTargetRuntime {
    * stage referenced projects, or when every requested project staged.
    */
   additionalSourceFailures: AdditionalSourceStagingFailure[];
+  workspaceSyncSnapshot: {
+    baseline: DirectorySnapshot;
+    gitSnapshot: GitWorkspaceSnapshot | null;
+    repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
+  } | null;
+  cleanupWorkspaceSnapshot?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -233,9 +286,15 @@ export interface AdapterExecutionTargetProcessOptions {
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
+  /** Sandbox-only: request the provider's persistent process session for a
+   * long-lived command. The host still gates this on provider capabilities. */
+  useSession?: boolean;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /** Trusted invocation observation, not a turn completion callback. Called only
+   * after local child close or a remotely observed exit, including nonzero exits. */
+  onProcessStopped?: () => void;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -301,6 +360,20 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * bridge path never sets it, so the method is absent there.
    */
   markOrderlyCompletion?(): void;
+  /**
+   * Register a listener for a newly latched terminal loss. The listener
+   * fires at most once, and only for a loss that flips the disposition to
+   * failed — never for a clean channel end that orders after a
+   * host-observed orderly completion. Returns a function that unregisters
+   * the listener.
+   *
+   * The caller uses this to abort an in-flight Agent Client Protocol turn
+   * the moment the channel dies, instead of waiting for the turn to return
+   * a terminal result on its own (a dead channel can leave a turn with
+   * nothing to return). The file bridge path never sets it, so the method
+   * is absent there.
+   */
+  onLoss?(listener: (reason: DuplexLossReason) => void): () => void;
   stop(): Promise<void>;
 }
 
@@ -311,13 +384,9 @@ export interface AdapterExecutionTargetProcessSessionBridgeHandle {
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
-// 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
-// last-resort kill switch, not the primary hang detector: genuinely hung runs
-// are caught much earlier by the adapters' output-inactivity monitors (e.g.
-// codex-local's 7-minute monitor). The value intentionally matches the
-// recovery watchdog's ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS (4h) in
-// server/src/services/recovery/service.ts so healthy long runs are never
-// killed by the adapter before the watchdog would even consider them stuck.
+// Four-hour wall-clock backstop for sandbox-backed adapter runs. Keep this
+// execution limit independent of the earlier informational silence warnings
+// and the short deadlines for bridge control operations.
 export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 14_400;
 
 function parseObject(value: unknown): Record<string, unknown> {
@@ -346,6 +415,7 @@ function parseEffectiveExecutionCapabilities(value: unknown): EffectiveExecution
     incrementalSessionOutput: parsed.incrementalSessionOutput === true,
     concurrentSyncOperations: parsed.concurrentSyncOperations === true,
     duplexCommandStream: parsed.duplexCommandStream === true,
+    runnerWebSocketIngress: parsed.runnerWebSocketIngress === true,
   };
 }
 
@@ -613,12 +683,19 @@ function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | 
 
 type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
 
+// The Secure Shell command runner's own output buffer. This value used to
+// derive from the bridge body limit (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES
+// * 4`), so a bridge limit rise silently grew it too. It now stands on its
+// own local constant, independent of the bridge body limit, so a later
+// bridge limit change never resizes this buffer as a side effect.
+const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
+
 function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
     return createSshCommandManagedRuntimeRunner({
       spec: target.spec,
       defaultCwd: target.remoteCwd,
-      maxBufferBytes: DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES * 4,
+      maxBufferBytes: SSH_COMMAND_MAX_BUFFER_BYTES,
     });
   }
   return requireSandboxRunner(target);
@@ -645,6 +722,9 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
     await ensureSandboxCommandResolvable(
       command,
       target,
+      sanitizeRemoteExecutionEnv(Object.fromEntries(
+        Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      )),
       options.installCommand?.trim() || null,
       options.timeoutSec,
     );
@@ -658,6 +738,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
+  env: Record<string, string>,
 ): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
@@ -665,6 +746,7 @@ async function probeSandboxCommandResolvable(
     command: "sh",
     args: ["-c", probeScript],
     cwd: target.remoteCwd,
+    env,
     timeoutMs: target.timeoutMs ?? 15_000,
   });
   return {
@@ -677,6 +759,7 @@ async function probeSandboxCommandResolvable(
 async function ensureSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
+  env: Record<string, string>,
   installCommand: string | null,
   timeoutSec?: number | null,
 ): Promise<void> {
@@ -687,7 +770,7 @@ async function ensureSandboxCommandResolvable(
   // the first step honestly reflects whether the binary is on PATH. The
   // sandbox provider is responsible for sourcing login profiles (e2b mirrors
   // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
-  let probe = await probeSandboxCommandResolvable(command, target);
+  let probe = await probeSandboxCommandResolvable(command, target, env);
   if (probe.resolved) return;
   if (probe.timedOut) {
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
@@ -709,6 +792,7 @@ async function ensureSandboxCommandResolvable(
         command: "sh",
         args: shellCommandArgs(installCommand),
         cwd: target.remoteCwd,
+        env,
         timeoutMs: installTimeoutMs,
       });
       if (installResult.timedOut) {
@@ -722,7 +806,7 @@ async function ensureSandboxCommandResolvable(
     } catch (err) {
       installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
     }
-    probe = await probeSandboxCommandResolvable(command, target);
+    probe = await probeSandboxCommandResolvable(command, target, env);
     if (probe.resolved) return;
     if (probe.timedOut) {
       throw new Error(`Timed out checking command "${command}" on sandbox target.`);
@@ -808,6 +892,8 @@ export async function runAdapterExecutionTargetProcess(
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
+        ...(options.useSession !== undefined ? { useSession: options.useSession } : {}),
+        ...(options.useSession === true ? { commandTimeoutMs: Math.max(0, options.timeoutSec) * 1000 } : {}),
         // The tail loop already streams incremental chunks; suppress the
         // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
@@ -821,6 +907,7 @@ export async function runAdapterExecutionTargetProcess(
       // after the clean process completion cannot latch a false mid-run loss. A
       // control channel that died before this clean completion still fails the
       // run closed.
+      if (!result.timedOut && typeof result.exitCode === "number" && Number.isInteger(result.exitCode) && result.exitCode >= 0) options.onProcessStopped?.();
       const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
@@ -839,7 +926,7 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  return await runChildProcess(runId, command, args, {
+  const result = await runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
@@ -851,6 +938,13 @@ export async function runAdapterExecutionTargetProcess(
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+  // Closing an SSH client on timeout/disconnect does not prove the remote
+  // provider exited. SSH status 255 is transport failure, never a stop receipt.
+  if (!target || target.kind === "local" ||
+      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
+    options.onProcessStopped?.();
+  }
+  return result;
 }
 
 export async function runAdapterExecutionTargetShellCommand(
@@ -1347,8 +1441,23 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
@@ -1367,6 +1476,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // so the host pack time rides one `pack` span under the `stage.sync` step. The
   // SSH and local lanes ignore it. The default is a no-op.
   runtimeSpan?: RuntimeSpanRunner;
+  /**
+   * Sandbox copy-back retry delays. Environment probes restore into a throwaway
+   * temp workspace and pass `[]` so a failed restore does not stall the Test.
+   */
+  workspaceRestoreRetryDelaysMs?: readonly number[];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -1377,6 +1491,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       assetDirs: {},
       additionalSourceDirs: {},
       additionalSourceFailures: [],
+      workspaceSyncSnapshot: null,
       restoreWorkspace: async () => {},
     };
   }
@@ -1389,6 +1504,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
+      workspaceFileMode: input.workspaceFileMode,
+      workspaceExclude: input.workspaceExclude,
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
@@ -1402,6 +1519,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       // The SSH transport does not stage referenced projects (it is out of scope), so it never
       // reports a per-project staging failure.
       additionalSourceFailures: [],
+      workspaceSyncSnapshot: null,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1421,8 +1539,22 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: input.workspaceExclude,
+    workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,
@@ -1431,6 +1563,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
     runtimeSpan: input.runtimeSpan,
+    workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
   });
   return {
     target,
@@ -1439,6 +1572,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     assetDirs: prepared.assetDirs,
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
+    workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
+    cleanupWorkspaceSnapshot: prepared.cleanupWorkspaceSnapshot,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
@@ -1449,6 +1584,223 @@ export function runtimeAssetDir(
   fallbackRemoteCwd: string,
 ): string {
   return prepared.assetDirs[key] ?? path.posix.join(fallbackRemoteCwd, ".paperclip-runtime", key);
+}
+
+type GitHubLauncherLocation = {
+  runId: string; target: AdapterExecutionTarget | null | undefined;
+};
+
+/** Keep sandbox housekeeping within the producer-owned Runner runtime. */
+export function githubOperationLauncherDirectory(input: GitHubLauncherLocation): string {
+  // Only controller-generated run IDs may name a removable directory.
+  if (!/^[a-zA-Z0-9_-]+$/.test(input.runId)) throw new Error("Invalid GitHub launcher run ID");
+  return input.target?.kind === "remote"
+    ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime",
+        ...(input.target.transport === "sandbox" ? ["paperclip-runner"] : []), "github", input.runId)
+    : path.join(os.tmpdir(), "paperclip-github-runtime", input.runId);
+}
+
+/** Call only after execution settles, before releasing its remote environment lease. */
+export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocation): Promise<void> {
+  const directory = githubOperationLauncherDirectory(input);
+  if (input.target?.kind === "remote") {
+    const result = await adapterExecutionTargetCommandRunner(input.target).execute({
+      command: "sh", args: ["-c", `rm -rf -- ${shellQuote(directory)}`],
+      cwd: input.target.remoteCwd, timeoutMs: 5_000,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not clean managed GitHub launchers");
+  } else {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function githubOperationLauncherBasePath(
+  target: AdapterCommandCapableExecutionTarget | null,
+  env: Record<string, string>,
+): Promise<string> {
+  if (!target) return env.PATH || process.env.PATH || "/usr/bin:/bin";
+  const configuredPath = sanitizeRemoteExecutionEnv(env).PATH;
+  if (configuredPath !== undefined) return configuredPath;
+
+  // The provider owns login/profile setup. Query its effective PATH before
+  // staging BASH_ENV, rather than substituting the controller's toolchain or
+  // a minimal PATH that hides legacy NVM/user-local agent installations.
+  const result = await adapterExecutionTargetCommandRunner(target).execute({
+    command: "sh",
+    args: ["-c", "printf '\\000%s\\000' \"$PATH\""],
+    cwd: target.remoteCwd,
+    timeoutMs: 15_000,
+  });
+  // Frame the value so login banners cannot become executable search paths.
+  const remotePath = result.stdout.match(/\0([^\0]+)\0/)?.[1];
+  if (result.timedOut || result.exitCode !== 0 || !remotePath) {
+    throw new Error("Could not resolve remote PATH for managed GitHub launchers");
+  }
+  return remotePath;
+}
+
+/** Read only execution-target Git context; never import the controller's credentials into SSH. */
+export async function prepareGitHubExecutionEnvironment(input: {
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  hostCredentials: boolean;
+  networkAccess: boolean;
+}): Promise<Record<string, string>> {
+  const script = String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const env = {};
+env.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify(['/etc/resolv.conf','/etc/hosts','/etc/nsswitch.conf','/etc/ssl/certs','/etc/ssl/cert.pem'].flatMap(p => { try { return [fs.realpathSync(p)]; } catch { return []; } }));
+if (process.argv[1] === 'host') {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GH_CONFIG_DIR|GIT_CONFIG_(GLOBAL|SYSTEM|NOSYSTEM|COUNT|KEY_\d+|VALUE_\d+)|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH_COMMAND|GIT_SSH)$/.test(key)) env[key] = value;
+  }
+  env.PAPERCLIP_GITHUB_HOST_HOME = process.env.HOME || '';
+  env.GH_CONFIG_DIR ||= path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || '', '.config'), 'gh');
+}
+try {
+  const top = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
+  if (fs.realpathSync(top) === fs.realpathSync(process.cwd())) {
+    env.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
+  }
+} catch {}
+process.stdout.write("\0" + JSON.stringify(env) + "\0");
+`;
+  const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
+  const remote = input.target?.kind === "remote" ? input.target : null;
+  let discovered: Record<string, string>;
+  if (remote?.transport === "sandbox" && remote.runnerTask) {
+    if (input.hostCredentials) throw new Error("Task-only Runner environments cannot import host GitHub credentials");
+    discovered = {};
+  } else if (remote) {
+    // A legacy SSH host may run a standalone agent binary without Node. Use
+    // only the shell and Git, and emit bounded, NUL-framed environment records.
+    const probe = String.raw`
+printf '\0PAPERCLIP_GIT_CONTEXT_V1\0'
+if [ "$1" = host ]; then
+  for key in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN PAPERCLIP_GIT_TOKEN GH_CONFIG_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_ASKPASS SSH_ASKPASS SSH_AUTH_SOCK GIT_SSH_COMMAND GIT_SSH; do
+    eval 'value=${"$"}{'"$key"'-}'
+    [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+  done
+  index=0
+  while [ "$index" -lt 32 ]; do
+    for prefix in GIT_CONFIG_KEY_ GIT_CONFIG_VALUE_; do
+      key="$prefix$index"
+      eval 'value=${"$"}{'"$key"'-}'
+      [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+    done
+    index=$((index + 1))
+  done
+  printf 'PAPERCLIP_GITHUB_HOST_HOME\0%s\0' "$HOME"
+  printf 'GH_CONFIG_DIR\0%s\0' "${"$"}{GH_CONFIG_DIR:-${"$"}{XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+fi
+for file in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/ssl/certs /etc/ssl/cert.pem; do
+  index=0
+  while [ -L "$file" ] && [ "$index" -lt 40 ]; do
+    target=$(readlink "$file") || break
+    case "$target" in /*) file="$target" ;; *) file="$(dirname "$file")/$target" ;; esac
+    index=$((index + 1))
+  done
+  if [ -e "$file" ]; then
+    parent=$(cd "$(dirname "$file")" && pwd -P) || continue
+    printf 'PAPERCLIP_RUNNER_NETWORK_ROOT\0%s\0' "$parent/$(basename "$file")"
+  fi
+done
+cwd=$(pwd -P)
+top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
+if [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$cwd" ]; then
+  for kind in --git-common-dir --git-dir; do
+    root=$(git rev-parse --path-format=absolute "$kind" 2>/dev/null) || continue
+    root=$(cd "$root" && pwd -P) || continue
+    printf 'PAPERCLIP_GIT_METADATA_ROOT\0%s\0' "$root"
+  done
+fi
+printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
+`;
+    const result = await adapterExecutionTargetCommandRunner(remote).execute({
+      command: "sh", args: ["-c", probe, "paperclip-git-context", input.hostCredentials ? "host" : "managed"],
+      // The caller's cwd belongs to the controller. Copied sandbox/SSH
+      // workspaces can live at a different path on the execution target.
+      cwd: remote.remoteCwd, timeoutMs: 15_000,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+    const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
+    if (payload === undefined) throw new Error("Could not read execution-target Git context");
+    discovered = {};
+    const records = payload.split("\0");
+    const roots: string[] = [];
+    const networkRoots: string[] = [];
+    for (let index = 0; index + 1 < records.length; index += 2) {
+      const key = records[index]!;
+      const value = records[index + 1]!;
+      if (key === "PAPERCLIP_GIT_METADATA_ROOT") roots.push(value);
+      else if (key === "PAPERCLIP_RUNNER_NETWORK_ROOT") networkRoots.push(value);
+      else discovered[key] = value;
+    }
+    discovered.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify([...new Set(roots)]);
+    discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify([...new Set(networkRoots)]);
+  } else {
+    const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
+    try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
+    catch { throw new Error("Could not read execution-target Git context"); }
+  }
+  // Controller-derived roots and mode must not be replaced by agent bindings.
+  return { ...discovered, ...input.env,
+    ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
+    PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
+    PAPERCLIP_RUNNER_NETWORK_ROOTS: discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS ?? "[]",
+    PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
+    PAPERCLIP_RUNNER_NETWORK_ACCESS: input.networkAccess ? "enabled" : "disabled",
+  };
+}
+
+/** Stage token-free launchers next to the execution, not in shared global Git config. */
+export async function prepareGitHubOperationLaunchers(input: {
+  runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+}): Promise<Record<string, string>> {
+  const remote = input.target?.kind === "remote" ? input.target : null;
+  const directory = githubOperationLauncherDirectory(input);
+  const configDirectory = path.posix.join(directory, "gh-config");
+  const basePath = await githubOperationLauncherBasePath(remote, input.env);
+  const managedPath = basePath ? `${directory}:${basePath}` : directory;
+  // Login shells may reorder PATH through /etc/profile or path_helper. Restore
+  // the managed launchers after startup without loading a host user's profile.
+  // Empty merge overrides clear host identity before launch, but Git treats
+  // them as an explicit empty author. Remove them once the shell has inherited
+  // its final environment; preserve nonempty per-operation identity values.
+  const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
+    .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
+    .join("");
+  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
+  const files: Record<string, string> = Object.fromEntries([
+    // Remote launchers live beneath the checkout. Pin their own package scope
+    // so an enclosing project's "type": "module" cannot reinterpret require().
+    ["package.json", '{"type":"commonjs"}\n'],
+    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
+  ]);
+  if (remote) {
+    const runner = adapterExecutionTargetCommandRunner(remote);
+    await syncRemoteTextFilesWithHashSkip({
+      runner, remoteCwd: remote.remoteCwd,
+      files: Object.entries(files).map(([program, body]) => ({
+        remoteDir: directory, remotePath: path.posix.join(directory, program), body,
+        label: "GitHub operation launcher", action: "stage GitHub operation launcher",
+        lockDir: path.posix.join(directory, `.${program}.lock`),
+        executable: program === "git" || program === "gh",
+      })),
+      ensureDirectories: [configDirectory], action: "stage GitHub operation launchers",
+      timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
+    });
+  } else {
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
+    for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
+  }
+  return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
+    GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
 }
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {
@@ -1477,15 +1829,30 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 }
 
 /**
- * Read the forward response body into a string. The per-request `maxBodyBytes`
- * limit rejects a body larger than the configured per-request ceiling.
+ * Read the forward response body into a `Buffer`, with no text decoding. The
+ * per-request `maxBodyBytes` limit rejects a body larger than the configured
+ * per-request ceiling.
  *
- * This function reserves no process-wide byte budget: it enforces only the
- * one request's own ceiling. See the "Known behavior: aggregate retained
- * body bytes" section in `doc/observability.md` for the accepted aggregate
- * ceiling this leaves across every concurrent route.
+ * When the caller passes a `reservation`, this reserves each chunk's bytes
+ * against it immediately after `reader.read()` yields the chunk, and before
+ * `Buffer.from(value)` copies it — the allocation happens inside that
+ * expression, so reserving only before the later `chunks.push` would let the
+ * copy happen first. It also reserves the concatenated buffer's own byte
+ * count before `Buffer.concat` allocates it: the chunk array and the
+ * concatenated buffer are two separate live copies. A denied reservation
+ * cancels the reader and throws {@link BridgeProcessCapacityError}, copying
+ * no further chunk. This function never releases the reservation; the
+ * stream owner that created it does, once the whole forward call settles.
+ *
+ * With no `reservation`, this function enforces only the one request's own
+ * ceiling, exactly as it did before this parameter existed — the queue
+ * transport calls it with no reservation, and its behavior must not change.
  */
-async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
+async function readBridgeForwardResponseBody(
+  response: Response,
+  maxBodyBytes: number,
+  reservation?: BridgeBodyReservation,
+): Promise<Buffer> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1495,7 +1862,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
   }
 
   if (!response.body) {
-    return "";
+    return Buffer.alloc(0);
   }
 
   const reader = response.body.getReader();
@@ -1511,9 +1878,17 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
       await reader.cancel().catch(() => undefined);
       throw bridgeResponseBodyLimitError(maxBodyBytes);
     }
+    if (reservation && !reservation.reserve(chunkBytes)) {
+      await reader.cancel().catch(() => undefined);
+      throw new BridgeProcessCapacityError();
+    }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks, totalBytes).toString("utf8");
+  if (reservation && !reservation.reserve(totalBytes)) {
+    await reader.cancel().catch(() => undefined);
+    throw new BridgeProcessCapacityError();
+  }
+  return Buffer.concat(chunks, totalBytes);
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -1654,6 +2029,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
+  // Failure diagnostics are best effort: stalled or failed run-log persistence
+  // must not prevent sending shutdown or removing the bridge's session files.
+  const logFailureWithoutWaiting = (message: string) => {
+    void Promise.resolve().then(() => onLog("stderr", message)).catch(() => undefined);
+  };
   const runner = requireSandboxRunner(target);
   // Run one unit of run-time work under its named wrapper span when a span
   // runner is injected. Without a runner, run the work under the current run
@@ -1712,15 +2092,51 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     command: input.command,
     args: input.args,
     cwd: input.cwd || target.remoteCwd,
-    env: sanitizeRemoteExecutionEnv(launchEnv),
+    // The ACP engine has already projected this launch env from explicit
+    // adapter/runtime inputs and registered contributions. Compare against an
+    // empty inherited baseline so an explicit identity value (notably PATH)
+    // is not reclassified as ambient merely because it equals the host value.
+    env: sanitizeRemoteExecutionEnv(launchEnv, {}),
   }), "utf8").toString("base64");
+  // Base64 plus JSON escaping can push an otherwise valid child environment
+  // past Linux's per-argument/per-variable exec limit. Keep small launches on
+  // the existing path; upload larger envelopes in bounded chunks instead.
+  const commandEnv: Record<string, string> = {};
+  if (commandPayload.length <= 64 * 1024) {
+    commandEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64 = commandPayload;
+  } else {
+    const payloadPath = path.posix.join(sessionDir, "command.b64");
+    const runPayloadSetup = async (script: string) => {
+      const result = await runSandboxBridgeControlCommand(runner, {
+        command: shellCommand,
+        args: shellCommandArgs(script),
+        cwd: target.remoteCwd,
+        timeoutMs,
+        bypassSession: true,
+      });
+      if (result.timedOut || result.exitCode !== 0) {
+        throw new Error("Failed to stage sandbox process session command payload.");
+      }
+    };
+    try {
+      // The envelope can contain credentials. Its upload intermediates stay
+      // inside a private session directory, and the wrapper deletes it before
+      // spawning the child. Teardown removes it if the wrapper cannot start.
+      await runPayloadSetup(`umask 077 && mkdir -m 700 ${shellQuote(sessionDir)}`);
+      await client.writeTextFile(payloadPath, commandPayload);
+      await runPayloadSetup(`chmod 600 ${shellQuote(payloadPath)}`);
+    } catch (error) {
+      await client.remove(sessionDir).catch(() => undefined);
+      throw error;
+    }
+  }
 
   // Legacy poll path: background the wrapper with `nohup` and read its output
   // event files with the host poll below. The streamed path launches the wrapper
   // as one foreground session command further down instead, so skip this.
   if (!streamOutput) {
     await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
-    const startResult = await runner.execute({
+    const startResult = await runSandboxBridgeControlCommand(runner, {
       command: shellCommand,
       args: shellCommandArgs(
         [
@@ -1728,7 +2144,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           // I3: no numeric process identifier anywhere. Background the
           // wrapper and let it go; do not capture `$!`.
           `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
-            `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
+            Object.entries(commandEnv).map(([key, value]) => `${key}=${shellQuote(value)} `).join("") +
             `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
         ].join("\n"),
       ),
@@ -1740,8 +2156,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       // The wrapper launch is bridge plumbing. Keep it off the persistent
       // session so it never queues behind an in-run session command.
       bypassSession: true,
+    }).catch(async (error) => {
+      await client.remove(sessionDir).catch(() => undefined);
+      throw error;
     });
     if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
+      await client.remove(sessionDir).catch(() => undefined);
       throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);
     }
   }
@@ -1764,7 +2184,49 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // a big earlier chunk, so the wrapper reads the stdin bytes out of order and
   // corrupts a large prompt on the stdin path.
   let stdinWriteChain: Promise<void> = Promise.resolve();
+  let stdinDeliveryFailed = false;
+  const writeStdinFile = async (filePath: string, body: string) => {
+    // Retry the same sequence, never the ACP request or the tool itself. Each
+    // upload uses private temporary paths, and the wrapper drops sequences it
+    // already consumed when a provider loses the final rename's response.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await client.writeTextFile(filePath, body);
+        return;
+      } catch (error) {
+        // Plugin RPC preserves provider messages but not HTTP error classes.
+        // Match the Daytona SDK and Cloudflare bridge's gateway diagnostics
+        // exactly; shell failures and auth errors must still fail immediately.
+        const gatewayFailure = error instanceof Error && (
+          /^Request failed with status code (502|503|504)$/.test(error.message) ||
+          /^Cloudflare sandbox bridge request failed with HTTP (502|503|504)\.$/.test(error.message)
+        );
+        if (!gatewayFailure || attempt >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+  };
   let pollTimer: NodeJS.Timeout | null = null;
+  let terminalEvidenceRecorded = false;
+  const recordTerminalEvidence = (
+    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    event: { type?: string; code?: number | null; signal?: string | null },
+  ) => {
+    if (terminalEvidenceRecorded) return;
+    terminalEvidenceRecorded = true;
+    // Remote frames are untrusted. Keep the retained diagnostic bounded and
+    // independent of messages, commands, paths, payloads, and provider errors.
+    const outcome = event.type === "exit" ? "exit" : "error";
+    const code = typeof event.code === "number" && Number.isInteger(event.code)
+      && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
+    const signal = typeof event.signal === "string" && [
+      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
+      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
+    ].includes(event.signal) ? event.signal : "unknown";
+    logFailureWithoutWaiting(
+      `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
+    );
+  };
   const pendingRemoteEvents: Array<{
     type?: string;
     stream?: "stdout" | "stderr";
@@ -1791,22 +2253,30 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
+    // `stopping` can already be set by a terminal frame buffered before auth.
+    // Use the socket's outbound state instead: once end() has been called,
+    // another write would destroy it and truncate the frame still draining.
+    // This also covers input-delivery failure, which ends the socket directly.
+    if (socket.writableEnded || socket.destroyed) return true;
     socket.write(jsonLine(event));
-    if (event.type === "exit") {
+    if (event.type === "exit" || event.type === "error") {
       stopping = true;
+      // Flush the terminal frame and all earlier output before closing. An
+      // immediate destroy can discard the cause and leave only connection_close.
       socket.end();
-    } else if (event.type === "error") {
-      stopping = true;
-      socket.destroy();
     }
     return true;
   };
 
-  const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+  const deliverRemoteEvent = (
+    event: (typeof pendingRemoteEvents)[number],
+    source: "remote_event" | "output_poll" | "output_stream" = "remote_event",
+  ) => {
     if (event.type === "shutdownAck") {
       signalShutdownAcknowledged();
       return;
     }
+    if (event.type === "exit" || event.type === "error") recordTerminalEvidence(source, event);
     if (socket) {
       writeRemoteEventToSocket(event);
       return;
@@ -1848,6 +2318,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     nextSocket.on("close", () => {
       clearTimeout(authTimer);
       liveSockets.delete(nextSocket);
+      if (authenticated && !stopping) recordTerminalEvidence("proxy_close", { type: "error" });
     });
     nextSocket.on("data", (chunk) => {
       connectionBuffer += chunk;
@@ -1895,19 +2366,30 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           // Chain this write after the previous one, so the atomic rename for
           // file N finishes before the write for file N+1 starts. Keep the
           // per-message `sandbox.agentSession.sendInput` span inside the chain.
-          const write = stdinWriteChain.then(() =>
-            runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-              client.writeTextFile(filePath, jsonLine(stdinPayload)),
-            ),
-          );
-          // The next message chains after this write on success or failure, so a
-          // failed write never blocks the chain. This mirrors the wrapper
-          // `writeChain` pattern for its event files.
-          stdinWriteChain = write.then(() => undefined, () => undefined);
-          // Keep the failure behavior: send one error line, then destroy the socket.
-          write.catch((error) => {
-            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-            nextSocket.destroy();
+          stdinWriteChain = stdinWriteChain.then(async () => {
+            if (stdinDeliveryFailed) return;
+            try {
+              await runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+                writeStdinFile(filePath, jsonLine(stdinPayload)),
+              );
+            } catch {
+              stdinDeliveryFailed = true;
+              stopping = true;
+              recordTerminalEvidence("input_delivery", { type: "error" });
+              const message = "ACP process session input delivery failed.";
+              // Flush the diagnostic before closing; destroy() can discard it
+              // and leave only ACP's generic connection_close error. Do not
+              // expose provider error text, which may contain a command payload.
+              // A remote terminal frame may already be draining while this
+              // accepted stdin write fails. end(data) would write after end
+              // and discard that first failure just like socket.write(data).
+              if (!nextSocket.writableEnded && !nextSocket.destroyed) {
+                nextSocket.end(jsonLine({ type: "error", message }));
+              }
+              // stop() awaits this input chain before sending shutdown. Run-log
+              // persistence must not hold teardown open when it stalls or fails.
+              logFailureWithoutWaiting(`[paperclip] ${message}\n`);
+            }
           });
         }
       }
@@ -1935,8 +2417,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
+      // A stuck log sink must not strand the adapter waiting for this failure.
+      deliverRemoteEvent({ type: "error", message }, "output_poll");
       return;
     } finally {
       if (!stopping) {
@@ -2007,14 +2489,6 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       for (const line of text.split(/\n/)) parseFrameLine(line);
     };
 
-    const launchEnvForStream =
-      typeof input.env === "function" ? await input.env() : input.env;
-    const streamCommandPayload = Buffer.from(JSON.stringify({
-      command: input.command,
-      args: input.args,
-      cwd: input.cwd || target.remoteCwd,
-      env: sanitizeRemoteExecutionEnv(launchEnvForStream),
-    }), "utf8").toString("base64");
     await onLog(
       "stdout",
       `[paperclip] Starting streamed ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`,
@@ -2053,7 +2527,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             cwd: target.remoteCwd,
             env: {
               PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
-              PAPERCLIP_PROCESS_SESSION_COMMAND_B64: streamCommandPayload,
+              ...commandEnv,
               PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
             },
             timeoutMs,
@@ -2064,17 +2538,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           });
           ingestFinalText(result.stdout);
           if (!sawTerminal && !stopping) {
+            // A shell can fail before the wrapper emits any frames. Preserve
+            // that launch diagnostic instead of reporting only its exit code.
+            if (result.stderr) await onLog("stderr", result.stderr);
             deliverRemoteEvent({
               type: "exit",
               code: typeof result.exitCode === "number" ? result.exitCode : null,
-            });
+              signal: result.signal,
+            }, "output_stream");
           }
         } catch (error) {
           if (!stopping) {
             deliverRemoteEvent({
               type: "error",
               message: error instanceof Error ? error.message : String(error),
-            });
+            }, "output_stream");
           }
         }
       })();
@@ -2183,10 +2661,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       ]);
       stopReadingForShutdownAck = true;
       if (!acknowledgedInTime) {
-        await onLog(
-          "stderr",
+        logFailureWithoutWaiting(
           `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
-        ).catch(() => undefined);
+        );
       }
       // Unconditional: this removal runs whether or not the wrapper
       // acknowledged, and whether or not any event (real or forged) arrived
@@ -2209,7 +2686,18 @@ let buffer = "";
 let exiting = false;
 
 function send(message) {
+  if (exiting) return;
   socket.write(JSON.stringify({ token, ...message }) + "\\n");
+}
+
+function finish(code) {
+  if (exiting) return;
+  exiting = true;
+  process.exitCode = code;
+  // ACP keeps stdin open while waiting for a reply. Release that handle when
+  // the remote process stops, but let pending stdout/stderr writes drain.
+  process.stdin.destroy();
+  socket.end();
 }
 
 socket.on("connect", () => send({ type: "hello" }));
@@ -2230,13 +2718,9 @@ socket.on("data", (chunk) => {
       (message.stream === "stderr" ? process.stderr : process.stdout).write(out);
     } else if (message.type === "error") {
       process.stderr.write(String(message.message || "Process session bridge failed.") + "\\n");
-      exiting = true;
-      process.exitCode = 1;
-      socket.end();
+      finish(1);
     } else if (message.type === "exit") {
-      exiting = true;
-      process.exitCode = typeof message.code === "number" ? message.code : 1;
-      socket.end();
+      finish(typeof message.code === "number" ? message.code : 1);
     }
   }
 });
@@ -2412,33 +2896,6 @@ function nextProbeFileName() {
 // have this call follow it, because "wx" fails closed on an existing path
 // instead of following a link to it.
 //
-// Cleanup checks identity, not only ownership of the initial create. This
-// wrapper reads the probe file's identity, (dev, ino, ctimeMs), off the open
-// file descriptor itself (fstat), not off the path, so a peer that swaps the
-// path in the short gap after create cannot poison the identity this
-// wrapper trusts as its own. Right before removal, this wrapper reads the
-// path's identity again and removes it only when that identity still
-// matches. A same-sandbox peer that deletes the probe file and creates its
-// own entry at the same path in between leaves a different identity behind,
-// so this wrapper leaves that entry untouched instead of removing it. This
-// covers a peer's replacement file, a peer's replacement directory, and a
-// peer's replacement symbolic link alike, because all three change the
-// identity this wrapper reads back. The identity check includes ctimeMs,
-// not only (dev, ino): a filesystem can hand this call's freed inode number
-// straight back out to a peer's very next create at the same path, so
-// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
-// on every create, so a peer's replacement carries a different one even when
-// the inode number repeats. Node's filesystem API has no call that removes a
-// path only when its identity still matches an earlier read as one atomic
-// step, so a gap remains between this wrapper's final identity read and the
-// removal call itself. A peer that wins this gap can put any entry at the
-// probe path before the removal call runs. This can include a pre-existing
-// file the peer renames into place, not only a file the peer creates fresh.
-// The removal call then removes whatever entry sits at the probe path at
-// that moment. Two bounds still hold on that removal. The path always
-// stays under dirPath. If the entry is a symbolic link, the removal call
-// removes the link itself instead of following it to a different target.
-// A non-recursive removal call also fails if the entry is a directory.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
@@ -2461,12 +2918,9 @@ async function birthtimeSurvivesProbe(dirPath) {
   let ownedIdentity = null;
   try {
     const createdStats = await handle.stat();
-    // ctimeMs guards against inode reuse; see the function comment above.
     ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
   } catch {
     ownedIdentity = null;
-  } finally {
-    await handle.close().catch(() => undefined);
   }
   if (!ownedIdentity) {
     // fstat on this call's own just-opened descriptor failed. This call then
@@ -2476,6 +2930,7 @@ async function birthtimeSurvivesProbe(dirPath) {
     // entry instead of this call's own file. Fail closed right here instead
     // of falling through to the birthtime comparison below, so a failed
     // identity read can never let this probe report success.
+    await handle.close().catch(() => undefined);
     return "its own probe file's identity could not be read from the open file descriptor";
   }
   // The one gap the fs API cannot close: this lstat and the removal below
@@ -2484,14 +2939,18 @@ async function birthtimeSurvivesProbe(dirPath) {
   // the probe path, including a pre-existing file it renames into place,
   // and the removal call below removes whatever entry is there when it
   // runs.
-  const currentStats = await fs.lstat(probePath).catch(() => null);
-  const stillOwned =
-    currentStats !== null &&
-    currentStats.dev === ownedIdentity.dev &&
-    currentStats.ino === ownedIdentity.ino &&
-    currentStats.ctimeMs === ownedIdentity.ctimeMs;
-  if (stillOwned) {
-    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  try {
+    const currentStats = await fs.lstat(probePath).catch(() => null);
+    const stillOwned =
+      currentStats !== null &&
+      currentStats.dev === ownedIdentity.dev &&
+      currentStats.ino === ownedIdentity.ino &&
+      currentStats.ctimeMs === ownedIdentity.ctimeMs;
+    if (stillOwned) {
+      await fs.rm(probePath, { force: true }).catch(() => undefined);
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
   }
   let after;
   try {
@@ -2610,6 +3069,14 @@ async function pollStdin() {
     for (const name of entries) {
       if (shuttingDown) break;
       const entrySeq = Number.parseInt(name, 10);
+      const file = path.posix.join(stdinDir, name);
+      // A successful publication can be retried after its provider response
+      // was lost, even after we consumed it. Never send those bytes twice or
+      // move the expected sequence backwards. This also handles late uploads.
+      if (Number.isFinite(entrySeq) && entrySeq < stdinExpectedSeq) {
+        await fs.rm(file, { force: true }).catch(() => undefined);
+        continue;
+      }
       // Hold the send order when an earlier file has not appeared. Do not consume
       // this later file: wait for the missing file on a later cycle, bounded by
       // the retry budget. After the budget, fail loud and advance past the gap,
@@ -2628,7 +3095,6 @@ async function pollStdin() {
         stdinGapRetries = 0;
         stdinExpectedSeq = entrySeq;
       }
-      const file = path.posix.join(stdinDir, name);
       let message;
       try {
         // Hardening (I3): open with O_NOFOLLOW where the platform defines it,
@@ -2696,6 +3162,34 @@ await captureSessionIdentity();
 void pollStdin().catch((error) => void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) }));
 `;
 
+// Shared by both wrappers. Refuse a symlink and remove the private envelope
+// before creating the child; no launch payload file belongs to the agent.
+const PROCESS_SESSION_READ_COMMAND = `
+let config;
+try {
+  let commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+  if (!commandPayload) {
+    const payloadPath = path.posix.join(sessionDir, "command.b64");
+    const handle = await fs.open(payloadPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      commandPayload = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+      await fs.rm(payloadPath, { force: true });
+    }
+  }
+  config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
+} catch {
+  // No child exists yet. Emit a terminal event on both transports and attest
+  // shutdown, instead of letting a detached polled wrapper fail silently.
+  // Parse errors can quote credential bytes, so use a fixed diagnostic.
+  await writeEvent({ type: "error", message: "Failed to read sandbox process session command payload." });
+  await writeEvent({ type: "shutdownAck" });
+  await new Promise((resolve) => process.stdout.write("", resolve));
+  process.exit(1);
+}
+`;
+
 // Streamed variant: the wrapper writes each output frame as one newline-
 // delimited JSON line to its stdout. The host runs this wrapper as one
 // long-lived session command and reads the frames from the session log stream,
@@ -2709,8 +3203,7 @@ import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
 const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
-const commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
-if (!sessionDir || !commandPayload) throw new Error("Missing process session bridge env.");
+if (!sessionDir) throw new Error("Missing process session bridge env.");
 
 const stdinDir = path.posix.join(sessionDir, "stdin");
 let seq = 0;
@@ -2719,7 +3212,6 @@ let shuttingDown = false;
 let terminated = false;
 let killTimer = null;
 
-const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 await fs.mkdir(stdinDir, { recursive: true });
 
 // One newline-delimited JSON frame per event. Node keeps process.stdout writes
@@ -2746,6 +3238,8 @@ if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
   process.exitCode = 1;
   process.exit(1);
 }
+
+${PROCESS_SESSION_READ_COMMAND}
 
 // Hardening (I3, not containment): the wrapper's own launch env carries the
 // session dir and the command payload. Scrub both keys before they reach the
@@ -2792,8 +3286,7 @@ import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
 const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
-const commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
-if (!sessionDir || !commandPayload) throw new Error("Missing process session bridge env.");
+if (!sessionDir) throw new Error("Missing process session bridge env.");
 
 const stdinDir = path.posix.join(sessionDir, "stdin");
 const eventsDir = path.posix.join(sessionDir, "events");
@@ -2803,7 +3296,6 @@ let shuttingDown = false;
 let terminated = false;
 let killTimer = null;
 
-const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 await fs.mkdir(stdinDir, { recursive: true });
 await fs.mkdir(eventsDir, { recursive: true });
 
@@ -2837,6 +3329,8 @@ if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
   process.exitCode = 1;
   process.exit(1);
 }
+
+${PROCESS_SESSION_READ_COMMAND}
 
 // Hardening (I3, not containment): the wrapper's own launch env carries the
 // session dir and the command payload. Scrub both keys before they reach the
@@ -3360,12 +3854,19 @@ interface Http2RunDispositionLatch {
   markOrderlyCompletion(): void;
   /** Atomically mark the orderly completion and read the disposition. */
   settleRunDisposition(): DuplexBrokerRunDisposition;
+  /**
+   * Register a listener that fires once, only on the call to `recordLoss`
+   * that actually latches a new terminal loss. Returns a function that
+   * unregisters the listener.
+   */
+  onLoss(listener: (reason: DuplexLossReason) => void): () => void;
 }
 
 function createHttp2RunDispositionLatch(): Http2RunDispositionLatch {
   let lossOrdered = false;
   let lossReason: DuplexLossReason | null = null;
   let completionOrdered = false;
+  let lossListener: ((reason: DuplexLossReason) => void) | null = null;
   const markOrderlyCompletion = (): void => {
     if (completionOrdered || lossOrdered) return;
     completionOrdered = true;
@@ -3378,12 +3879,19 @@ function createHttp2RunDispositionLatch(): Http2RunDispositionLatch {
       if (lossOrdered || completionOrdered) return false;
       lossOrdered = true;
       lossReason = reason;
+      lossListener?.(reason);
       return true;
     },
     markOrderlyCompletion,
     settleRunDisposition(): DuplexBrokerRunDisposition {
       markOrderlyCompletion();
       return { failed: lossOrdered, lossReason };
+    },
+    onLoss(listener: (reason: DuplexLossReason) => void): () => void {
+      lossListener = listener;
+      return () => {
+        if (lossListener === listener) lossListener = null;
+      };
     },
   };
 }
@@ -3890,10 +4398,16 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
   const bridgeToken = createSandboxCallbackBridgeToken();
+  const configuredAttachmentBytes = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES);
+  // A larger upload limit needs multipart headroom. A smaller attachment limit
+  // remains enforced by the API and must not shrink unrelated JSON responses.
+  const defaultBodyBytes = Number.isSafeInteger(configuredAttachmentBytes) && configuredAttachmentBytes > 0
+    ? Math.max(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES, configuredAttachmentBytes + 64 * 1024)
+    : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
   const maxBodyBytes =
     typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
       ? Math.trunc(input.maxBodyBytes)
-      : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+      : defaultBodyBytes;
   // The bridge worker runs inside the same process that serves the Paperclip
   // API, so forwarded sandbox calls must target the LOCAL listen origin. The
   // PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL exports now prefer a
@@ -3953,14 +4467,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       path: string;
       query: string;
       headers: Record<string, string>;
-      /** The file bridge passes the whole request body here as one string. */
-      body?: string;
+      /** Legacy text envelopes remain strings; binary uploads are raw bytes. */
+      body?: string | Buffer;
     },
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
+      /**
+       * Both transports pass the request's reservation owner, so response
+       * buffers count toward the same host process ceiling as request buffers.
+       */
+      reservation?: BridgeBodyReservation;
     },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+  ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
     // The per-request debug log prints the method, the path, and the query. The
     // duplex path suppresses it, so no route or query rides a log line there. The
@@ -3985,14 +4504,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
-    // bridge passes the whole body as one string.
+    // bridge passes legacy JSON as a string and binary data as a `Buffer`;
+    // HTTP/2 passes raw `Buffer` bodies. Undici accepts a `Buffer` request body directly (a
+    // `Buffer` is an `ArrayBufferView`), so neither shape needs a conversion.
+    // The cast below only bridges a `BodyInit` typing gap: the DOM library
+    // type this project's ambient `RequestInit` resolves to excludes a
+    // `Buffer`, though Undici accepts one at runtime.
     const forwardInit: RequestInit = {
       method,
       headers,
       signal: forwardSignal,
     };
-    if (method !== "GET" && method !== "HEAD" && typeof request.body === "string") {
-      forwardInit.body = request.body;
+    if (method !== "GET" && method !== "HEAD" && request.body !== undefined) {
+      forwardInit.body = request.body as BodyInit;
     }
     const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
@@ -4013,10 +4537,23 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // non-retryable 504 and marks the outcome indeterminate, exactly like an
     // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
     // to a non-retryable 409 for both the file bridge and the duplex broker.
-    let responseBody: string;
+    let responseBody: Buffer;
     try {
-      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
+      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes, options?.reservation);
     } catch (error) {
+      // A denied reservation is retryable capacity pressure for a safe
+      // method, not a body-read fault: rethrow it before the method-safety
+      // classification below runs, so it reaches the HTTP/2 bridge's own
+      // capacity-denial catch (which answers the retryable 503 and settles
+      // the stream) instead of this function turning it into a 502. For an
+      // unsafe (mutating) method, the host has already delivered response
+      // headers by this point, so it may already have committed the
+      // mutation. Rethrowing there too would let the retryable 503 reach a
+      // caller that repeats the request, applying the mutation twice. An
+      // unsafe method's capacity denial falls through to the same
+      // non-retryable indeterminate 504 any other response-body read fault
+      // gets below.
+      if (error instanceof BridgeProcessCapacityError && isSafeBridgeMethod(method)) throw error;
       if (isSafeBridgeMethod(method)) {
         // The method is safe, so a retry cannot double-apply a mutation. Return a
         // retryable 502 with no indeterminate marker, so the gateway passes it
@@ -4024,9 +4561,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         return {
           status: 502,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          }),
+          body: Buffer.from(
+            JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            }),
+            "utf8",
+          ),
         };
       }
       return {
@@ -4035,11 +4575,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           "content-type": "application/json",
           "x-paperclip-bridge-outcome": "indeterminate",
         },
-        body: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-          outcome: "indeterminate",
-          retryable: false,
-        }),
+        body: Buffer.from(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+            outcome: "indeterminate",
+            retryable: false,
+          }),
+          "utf8",
+        ),
       };
     }
     const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
@@ -4241,10 +4784,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   path: request.pathname,
                   query: request.query,
                   headers: request.headers,
-                  body: request.body.toString("utf8"),
+                  body: request.body,
                 },
                 request.signal,
-                { suppressDebugLog: true },
+                { suppressDebugLog: true, reservation: request.reservation },
               );
               duplexObservability.recordRequest({ latencyMs: Date.now() - dispatchStartMs, outcome: "ok" });
               return { status: result.status, headers: result.headers, body: result.body };
@@ -4257,6 +4800,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           const http2Server = createHttp2BridgeServer({
             bridgeToken,
             forwardRequest: http2ForwardRequest,
+            routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            // The same resolved limit the launch environment hands the
+            // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
+            // below), so the host check and the gateway check enforce one
+            // value instead of the host silently falling back to the
+            // package default.
+            maxBodyBytes,
             onGoaway: () => recordHttp2Loss("session_goaway"),
             onSessionError: () => recordHttp2Loss("session_error"),
           });
@@ -4330,6 +4880,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             // the mark and a teardown loss cannot slip in between.
             settleRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.settleRunDisposition(),
             markOrderlyCompletion: (): void => dispositionLatch.markOrderlyCompletion(),
+            onLoss: (listener: (reason: DuplexLossReason) => void): (() => void) =>
+              dispositionLatch.onLoss(listener),
             stop: async () => {
               // Close the HTTP/2 server's sessions, then the channel, before
               // lease release, so no live provider session remains when the
@@ -4364,7 +4916,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
+      // The worker encodes binary bodies only at the queue boundary.
+      handleRequest: (request, options) => forwardBridgeRequest(request, options?.signal, {
+        reservation: options?.reservation,
+      }),
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

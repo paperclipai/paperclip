@@ -42,10 +42,18 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockAccessService,
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -72,6 +80,12 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_standard_agent",
+      explanation: "Allowed by test policy",
+    });
   });
 
   it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
@@ -1077,6 +1091,32 @@ describe("secret routes", () => {
       expect(res.body).toHaveLength(2);
       expect(res.body[0]).toMatchObject({ id: expect.any(String), name: "MY_API_KEY", key: "my_api_key", status: "active" });
     });
+
+    it.each(["skill_test", "task_bridge"])(
+      "rejects %s keys from the company secret catalog",
+      async (kind) => {
+        mockAccessService.decide.mockResolvedValue({
+          allowed: false,
+          reason: "deny_key_scope",
+          explanation: "Restricted keys cannot read the company secret catalog.",
+        });
+
+        const res = await request(createApp({
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          source: "agent_key",
+          keyScope: { kind },
+        })).get("/api/companies/company-1/secrets/catalog");
+
+        expect(res.status).toBe(403);
+        expect(mockSecretService.list).not.toHaveBeenCalled();
+        expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+          action: "secrets:read",
+          resource: { type: "company", companyId: "company-1" },
+        }));
+      },
+    );
 
     it("rejects unauthenticated requests", async () => {
       const res = await request(createApp({ type: "none" }))

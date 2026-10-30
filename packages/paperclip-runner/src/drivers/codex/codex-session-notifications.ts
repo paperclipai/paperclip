@@ -1,13 +1,15 @@
+import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
+import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
-import { canonicalProviderEventsFromCodex } from "../../provider-events.js";
+import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
-import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
 import { boundedCodexPayload as boundedPayload, boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
-import { runtimeRequestResponse } from "./codex-question-adapter.js";
+import { runtimeRequestProtocolPayload, runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
-  isBoundCodexNotification,
   isSupportedCodexNotificationMethod,
   codexThreadLineage as lineageFromThread,
   codexThreadStatus as threadStatus,
@@ -26,6 +28,7 @@ import {
   recordWorkspaceChanges,
 } from "./codex-session-workspace.js";
 import {
+  RUNNERD_RUNTIME_ACTIVITY,
   boundedText,
   differingJsonPaths,
   itemFromParams,
@@ -37,9 +40,13 @@ import {
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
       for await (const notification of state.transport.notifications()) {
-        mapNotification(state, notification);
+        await mapNotification(state, notification);
       }
     } catch (error) {
+      if (error instanceof NativeSessionProtocolIntegrityError) {
+        state.failProtocolIntegrity(error);
+        return;
+      }
       state.emit("harness.diagnostic", {
         code: "notification_transport_failed",
         message: redactCodexDiagnostic(String(error)),
@@ -52,11 +59,11 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
     }
   }
 
-function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): void {
+async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     const sourceSequenceBefore = state.sourceSequence;
     let rejected = false;
     try {
-      mapNotificationBody(state, notification);
+      await mapNotificationBody(state, notification);
     } catch (error) {
       rejected = true;
       throw error;
@@ -98,25 +105,53 @@ function mapNotification(state: CodexSessionState, notification: CodexRpcNotific
     }
   }
 
-function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): void {
-    if (!isSupportedCodexNotificationMethod(notification.method)) return;
-    if (!isBoundCodexNotification(notification, {
-      runId: state.runId,
-      threadIds: [...state.lineageByThread.keys()],
-    })) {
+async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+    if (notification.method === "paperclip/runtimeActivityRecorded") {
       const params = notification.params;
-      const claimedThreadId = text(
-        params.threadId,
-        text(record(params.thread).id, text(record(params.turn).threadId)),
-      );
-      const claimedRunId = text(params.runId, text(params.paperclipRunId));
-      if (claimedThreadId.length > 0 || claimedRunId.length > 0) {
-        state.failProtocol(
-          "thread_binding_mismatch",
-          `Provider ${notification.method} message did not name the active run or a known thread.`,
-        );
-      }
+      if ((params as Record<PropertyKey, unknown>)[RUNNERD_RUNTIME_ACTIVITY] !== true) return;
+      const pending = state.pendingRunAttachment;
+      if (pending && params.runId === pending.runId && params.runId !== state.runId) await pending.settled;
+      if (params.runId === state.runId) state.emit("runtime.activity.recorded", record(params.payload));
       return;
+    }
+    if (!isSupportedCodexNotificationMethod(notification.method)) return;
+    if (notification.method === "item/completed" && notification.params.kind === "steering_acknowledgement"
+      && !notification.params.threadId && !notification.params.turnId && !notification.params.thread && !notification.params.turn) return;
+    const identity = classifyCodexNotification({
+      method: notification.method, params: notification.params, runId: state.runId,
+      rootThreadId: state.opened.threadId, activeTurnId: state.activeTurnId,
+      knownThreads: new Set(state.lineageByThread.keys()), settledTurns: new Set(state.terminalTurns.keys()),
+    });
+    if ((identity.classification === "root" || identity.classification === "stale_turn")
+      && identity.threadId === state.opened.threadId
+      && notification.method === "thread/tokenUsage/updated"
+      && identity.turnId !== null
+      && identity.turnId !== state.activeTurnId
+      && (state.activeTurnId === null || (identity.turnId !== null && state.terminalTurns.has(identity.turnId)))) {
+      state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(notification.params.tokenUsage).total, true);
+      state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
+      if (state.notificationIdentityDiagnostics++ < 32) state.emit("harness.diagnostic", {
+        code: "codex_resume_usage_snapshot", classification: "resume_usage_snapshot",
+        receivedThreadId: identity.threadId, receivedTurnId: identity.turnId,
+      });
+      return;
+    }
+    if (identity.classification !== "root") {
+      if (state.notificationIdentityDiagnostics < 32) {
+        state.notificationIdentityDiagnostics += 1;
+        state.emit("harness.diagnostic", {
+          code: "provider_notification_identity", method: notification.method.slice(0, 128),
+          classification: identity.classification,
+          expectedThreadId: state.opened.threadId, receivedThreadId: identity.threadId?.slice(0, 256) ?? null,
+          expectedTurnId: state.activeTurnId, receivedTurnId: identity.turnId?.slice(0, 256) ?? null,
+        });
+      }
+      if (identity.classification === "invalid_authority") {
+        state.failProtocol("thread_binding_mismatch", `Provider authoritative notification ${notification.method.slice(0, 128)} did not name its execution owner.`);
+        return;
+      }
+      if (identity.classification !== "descendant") return;
+      if (!["thread/started", "thread/status/changed", "thread/closed"].includes(notification.method)) return;
     }
     const params = notification.params;
     const turn = record(params.turn);
@@ -124,6 +159,48 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    if (notification.method === "paperclip/runtimeRequestExpired") {
+      const payload = record(params.payload);
+      const requestId = text(payload.requestId);
+      const pending = state.pendingRuntimeRequestMap.get(requestId);
+      if (pending === undefined) return;
+      const expected = runtimeRequestProtocolPayload(pending.request);
+      if (pending.request.turnId !== turnId || payload.requestKind !== expected.requestKind
+        || payload.requestType !== (pending.request.input === undefined ? "permission" : "input")
+        || payload.replayAllowed !== false || typeof payload.reason !== "string" || !payload.reason) {
+        state.failProtocol("turn_binding_mismatch", "Canonical request expiry changed its callback binding.");
+        return;
+      }
+      state.pendingRuntimeRequestMap.delete(requestId);
+      // Preserve durable expiry evidence with the same facade identity used
+      // when creating this callback. Terminal handling must not cancel it again.
+      state.emit("runtime_request.expired", { ...payload,
+        turnId: pending.request.turnId, itemId: pending.request.itemId,
+      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
+      return;
+    }
+    if (notification.method === "paperclip/canonicalProviderEvent") {
+      if (!isCanonicalProviderEventType(params.eventType)) {
+        state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");
+        return;
+      }
+      const canonicalPayload = record(params.payload);
+      if (params.eventType === "auth.credentials.updated") {
+        if (!isPrpAuthCredentialsUpdated(canonicalPayload)) {
+          state.failProtocol("credential_update_invalid", "Invalid credential update notification.");
+          return;
+        }
+        state.emit(params.eventType, canonicalPayload, { turnId: turnId || undefined, itemId: itemId || undefined });
+        return;
+      }
+      if (params.eventType === "harness.diagnostic" && canonicalPayload.code === "codex_resume_usage_snapshot") {
+        state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, canonicalPayload.cumulative, true);
+        state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
+      }
+      state.emit(params.eventType, canonicalPayload, { turnId: turnId || undefined, itemId: itemId || undefined });
+      return;
+    }
     if (notification.method === "paperclip/workspaceChange/updated") {
       if (!state.notificationNamesActiveTurn(turnId, "workspace change")) return;
       if (threadId.length > 0 && threadId !== state.opened.threadId) return;
@@ -234,6 +311,9 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
           itemId: `${threadId}:goal:update:${state.sourceSequence + 1}`,
         },
       );
+      state.emitGoalEvent("session.goal.updated", goal, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "thread/goal/cleared") {
@@ -249,6 +329,9 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
         },
         { itemId: `${threadId}:goal:clear:${state.sourceSequence + 1}` },
       );
+      state.emitGoalEvent("session.goal.cleared", null, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "serverRequest/resolved") {
@@ -286,12 +369,12 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
     if (
       notification.method === "item/completed"
       && text(params.kind) === "steering_acknowledgement"
-      && Object.keys(item).length === 0
     ) {
       // runnerd persists its own command acknowledgement as a canonical PRP
       // item. The request() call is already the authoritative acknowledgement
       // and steer() emits the user-visible item with the active turn binding.
-      // Do not reinterpret this transport-level echo as an unbound Codex item.
+      // Rehydration adds an item object to this transport echo; it still must
+      // not become a second acknowledgement beside the correlation-bound item.
       return;
     }
     if (notification.method === "paperclip/runResult") {
@@ -341,6 +424,20 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
       return;
     }
     if (notification.method === "turn/started") {
+      const autonomousGoalTurn = state.currentGoal?.status === "active"
+        && state.activeTurnId === null
+        && !state.turnStartPending
+        && !state.protocolFailed
+        && !state.terminalTurns.has(turnId);
+      if (autonomousGoalTurn) {
+        state.terminal = false;
+        state.turnStarted = false;
+        state.turnStartPending = true;
+        state.result = null;
+        state.resultFingerprint = null;
+        state.resultCallId = null;
+        state.resultTurnId = null;
+      }
       if (
         turnId.length === 0 ||
         state.terminal ||
@@ -356,6 +453,7 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
         return;
       }
       state.activeTurnId = turnId;
+      state.turnStartPending = false;
       state.turnStarted = true;
       state.emit(
         "turn.started",
@@ -365,6 +463,11 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
       return;
     }
     if (notification.method === "turn/completed") {
+      // A terminal notification can arrive on the provider's notification
+      // channel before turn/start's own response settles on the request
+      // channel. Wait for the pending turn/start to settle first, so
+      // turn.accepted always precedes the terminal event for the same turn.
+      await state.turnStartSettled;
       if (state.terminalTurns.has(turnId)) {
         mapTerminalTurn(state, turn, turnId);
         return;
@@ -468,6 +571,20 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
+      if (state.driverKind === "codex_app_server") {
+        const reported = record(record(params.tokenUsage).total);
+        const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+        // The monotonic snapshot retains absent counters from older reports.
+        // Preserve whether this provider report can actually close accounting.
+        const runDeltaComplete = validCount(reported.inputTokens) && validCount(reported.outputTokens)
+          && Object.entries(reported).every(([key, value]) => !key.endsWith("Tokens") || validCount(value))
+          && Object.keys(state.codexUsageBaseline?.latest ?? {}).every(key => !key.endsWith("Tokens") || validCount(reported[key]));
+        if (Object.keys(reported).length > 0) {
+          state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, reported, false);
+          state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+        }
+        state.usageSnapshot = { ...state.usageSnapshot, runDeltaComplete };
+      }
       // Codex can replay a thread-scoped usage snapshot while a resumed thread
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.

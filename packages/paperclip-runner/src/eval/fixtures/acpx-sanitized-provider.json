@@ -1,0 +1,17 @@
+{
+  "schema": "paperclip.runner.sanitized-provider-fixture.v1",
+  "provider": "acpx",
+  "events": [
+    {
+      "type": "tool_call",
+      "tag": "tool_call",
+      "toolCallId": "fixture-tool",
+      "title": "node --test",
+      "kind": "execute",
+      "status": "completed",
+      "text": "Test completed",
+      "rawOutput": "1 test passed",
+      "locations": []
+    }
+  ]
+}

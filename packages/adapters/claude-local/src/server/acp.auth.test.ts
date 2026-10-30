@@ -197,7 +197,7 @@ describe("probeClaudeAcpSandboxLogin", () => {
 
     // The parsed result is a success, so no login gate and no probe-unavailable
     // check appears.
-    expect(checks).toEqual([]);
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
   });
 
   it("keeps a non-auth failed probe with a token phrase on the probe-unavailable path", async () => {
@@ -256,7 +256,7 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(authRequired?.hint).toBe("Run `claude login` in this environment, then retry the probe.");
   });
 
-  it("emits no checks when the sandbox probe reports a healthy login", async () => {
+  it("records a successful probe when the sandbox reports a healthy login", async () => {
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
     const checks = await probeClaudeAcpSandboxLogin({
@@ -264,7 +264,13 @@ describe("probeClaudeAcpSandboxLogin", () => {
       target: sandboxTarget,
     });
 
-    expect(checks).toEqual([]);
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
+  });
+
+  it("does not record success for an empty probe result", async () => {
+    probeResult.value = { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    const checks = await probeClaudeAcpSandboxLogin({ config: { engine: "acp" }, target: sandboxTarget });
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", level: "warn" })]);
   });
 
   it("emits a distinct warn check, not a silent pass, when the probe cannot run", async () => {
@@ -505,6 +511,25 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
 
+  it("reports an explicitly selected API key as normal authentication on the ACP lane", async () => {
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp", agentCommand: process.execPath, env: { ANTHROPIC_API_KEY: "selected-test-key" } },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "claude_acp_anthropic_api_key_detected",
+      level: "info",
+      message: "Using the selected Claude API connection.",
+      hint: undefined,
+    }));
+    expect(JSON.stringify(result.checks)).not.toContain("selected-test-key");
+  });
+
   it("runs the host login probe with the host ANTHROPIC_API_KEY on a local target", async () => {
     // A local ACP run inherits the host environment, so a host ANTHROPIC_API_KEY
     // authenticates the real run. The Test lane runs the login probe with the
@@ -530,7 +555,11 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
     expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
     // The lane still reports that API-key auth is in use.
-    expect(result.checks.some((check) => check.code === "claude_acp_anthropic_api_key_detected")).toBe(true);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "claude_acp_anthropic_api_key_detected", level: "warn",
+    }));
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" }));
     // The host key value never enters a check.
     expect(JSON.stringify(result.checks)).not.toContain("sk-ant-host-key");
   });

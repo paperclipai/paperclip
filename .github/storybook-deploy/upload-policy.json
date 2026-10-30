@@ -1,0 +1,8 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject", "s3:GetObject", "s3:AbortMultipartUpload"],
+    "Resource": "arn:aws:s3:::paperclipai-runner-e2e-history-078455283791-us-east-1/storybook/branches/*"
+  }]
+}

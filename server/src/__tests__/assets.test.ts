@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
+import { Readable } from "node:stream";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import type { StorageService } from "../storage/types.js";
@@ -102,7 +103,7 @@ async function createApp(storage: ReturnType<typeof createStorageService>) {
     };
     next();
   });
-  app.use("/api", assetRoutes({} as any, storage));
+  app.use("/api", assetRoutes({ select: () => ({ from: () => ({ leftJoin: () => ({ where: async () => [] }), where: async () => [] }) }) } as any, storage));
   return app;
 }
 
@@ -405,5 +406,114 @@ describe("POST /api/companies/:companyId/logo", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("SVG could not be sanitized");
     expect(createAssetMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/assets/:assetId/content", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/assets.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    getAssetByIdMock.mockReset();
+  });
+
+  it("reads only the requested storage range for a large asset", async () => {
+    const storage = createStorageService("text/plain");
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain", byteSize: 10 * 1024 * 1024 });
+    vi.mocked(storage.getObject).mockImplementation(async (_company, _key, options) => {
+      expect(options).toEqual({ range: { start: 8192, end: 12288 } });
+      return { stream: Readable.from(Buffer.alloc(4097, 65)), contentLength: 4097 };
+    });
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", "bytes=8192-12288"));
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe("bytes 8192-12288/10485760");
+    expect(res.headers["content-length"]).toBe("4097");
+    expect(res.text).toBe("A".repeat(4097));
+  });
+
+  it.each(["bytes=999-1000", "bytes=0-1,3-4", "bytes=1x-3", "bytes=-", "items=0-3"])("rejects invalid asset ranges before storage reads: %s", async range => {
+    const storage = createStorageService();
+    getAssetByIdMock.mockResolvedValue(createAsset());
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/asset-1/content").set("Range", range));
+    expect(res.status).toBe(416);
+    expect(res.headers["content-range"]).toBe("bytes */40");
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it("downloads script-capable HTML with nosniff and a sandbox CSP", async () => {
+    const html = Buffer.from("<script>globalThis.__assetXss = true</script>");
+    const storage = createStorageService("text/html");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "text/html",
+      byteSize: html.byteLength,
+      originalFilename: "proof.html",
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(html),
+      contentType: "text/html",
+      contentLength: html.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="proof.html"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  });
+
+  it("downloads SVG instead of rendering it on the application origin", async () => {
+    const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>");
+    const storage = createStorageService("image/svg+xml; charset=utf-8");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "image/svg+xml; charset=utf-8",
+      byteSize: svg.byteLength,
+      originalFilename: "logo.svg",
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(svg),
+      contentType: "image/svg+xml; charset=utf-8",
+      contentLength: svg.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="logo.svg"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  });
+
+  it("keeps curated image types inline", async () => {
+    const image = Buffer.from("png-bytes");
+    const storage = createStorageService("image/png");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      byteSize: image.byteLength,
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(image),
+      contentType: "image/png",
+      contentLength: image.byteLength,
+    });
+
+    const res = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('inline; filename="logo.png"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers).not.toHaveProperty("content-security-policy");
   });
 });

@@ -34,6 +34,42 @@ Current limitations to keep in mind:
 
 In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
 
+### Managed image packages
+
+Managed Cloud provisions only plugins selected from the current release image
+catalog. A Cloud tenant token or managed configuration keeps this image-only
+policy active. Without an explicit selected package list, Cloud selects no
+packages and cannot fall back to local installs. An explicit operator-managed
+list also keeps this policy active outside Cloud. The database registration's
+plugin key, package name, version and
+approved manifest identify that package. Its legacy `packagePath` remains for
+local/self-hosted compatibility; Cloud never uses that path to locate code.
+Workers, plugin migrations and UI files resolve through the same current-image
+package resolver. Cloud does not install npm dependencies, build packages, use
+the development UI proxy, or fall back to a server home directory.
+
+Prebuilt workers use the current release's baked CLI `tsx` loader for the SDK's
+workspace TypeScript dependencies. The loader is located from the owning server
+package in both regular and bundled server layouts. Missing loaders and loader
+links outside the release's CLI or root `node_modules` fail activation. This
+loads image-supplied code without installing dependencies or building packages.
+
+Equivalent packages at different image roots reuse the existing registration,
+configuration, approval status and company scopes without rewriting its stored
+path. Concurrent first registration of the same package retains one plugin ID.
+Conflicting package identities fail explicitly. Normal maintenance boot retains
+the existing bundled manifest/version reconciliation and approval gates.
+
+`createBundledPluginPackageResolver(...).inspect(registration, verifiedManifest)`
+is a read-only qualification hook. Resolve the current image path, load its
+manifest with the validated plugin loader, and inspect the registration before
+normal boot reconciliation. Missing manifest evidence and incompatible packages
+produce explicit blockers. Distribution packages retain their catalog digest
+verification; built-in packages trust the immutable release image and must bump
+their version when their code changes. Qualification supports identical package
+sets only. This package-resolution boundary does not coordinate workers,
+background jobs, or deployment overlap between servers.
+
 ## 1. Scope
 
 This spec covers:
@@ -360,6 +396,7 @@ export interface PaperclipPluginManifestV1 {
         | "sidebarPanel"
         | "projectSidebarItem"
         | "globalToolbarButton"
+        | "appShellOverlay"
         | "toolbarButton"
         | "contextMenuItem"
         | "commentAnnotation"
@@ -372,6 +409,14 @@ export interface PaperclipPluginManifestV1 {
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** Optional agent detail tab mirrored beside a running task.
+       * Declared board GET route scoped to agent :entityId returns { available: boolean }.
+       */
+      taskSidePanel?: {
+        availabilityPath: string;
+        /** Match runtime.activity.recorded; absent mappings add no task panel. */
+        activation?: { namespace: string; activityKey: string };
+      };
       /** For page and companySettingsPage: single route segment */
       routePath?: string;
     }>;
@@ -495,6 +540,7 @@ If a worker fails:
 - keep the rest of the instance running
 - retry start with bounded backoff
 - do not drop other plugins or core services
+- a bundled plugin (shipped with the release image) that is still `error` at the next server boot is moved back to `ready` once per boot, so the startup loader gets a fresh activation attempt; an operator-`disabled` plugin is never touched
 
 ## 12.5 Graceful Shutdown Policy
 
@@ -1842,3 +1888,37 @@ Paperclip should implement:
 - strict preservation of core governance and audit rules
 
 That is the complete target design for the Paperclip plugin system.
+
+### Browser WebSocket API routes
+
+A scoped API route may declare `transport: "websocket"` with `method: "GET"`
+and `auth: "board"`. Its upgrade runs through the ordinary HTTP authentication
+and company checks and requires a trusted browser Origin. Use
+`companyResolution: { from: "agent", param: "agentId" }` to apply the existing
+`agent:read` decision to the agent selected by the path.
+
+The worker's `onApiRequest` returns `{ websocket: { url, headers } }` for an
+available upstream. The URL must use WSS. These connection details remain in
+trusted server memory and are never returned to the browser as JSON. Browser
+cookies and Origin are not forwarded. Worker response headers cannot override
+WebSocket negotiation or forwarding headers. A failure can return an HTTP error
+status without an upstream. Ordinary HTTP requests cannot open this transport.
+
+The host pipes binary frames with socket backpressure, closes both ends on
+disconnect or worker shutdown, and limits each connection to five minutes.
+Clients may reconnect; every reconnect repeats authorization and worker
+resolution. The route's worker must resolve targets from its trusted resource
+bindings rather than accepting upstream addresses from browser parameters.
+
+The transport carries opaque text and binary WebSocket frames. For example,
+a plugin can declare `/channels/:channelId` for build output, metrics, or a
+remote tool protocol. The worker receives the route key and parameters and
+selects the upstream; Core does not interpret channel contents or require an
+agent resource. WebSocket routes support query or entity-based company
+resolution; body-based resolution is rejected because browser upgrade requests
+cannot send a request body. Ordinary HTTP routes retain body-based resolution.
+
+Agent detail-tab contributions are also independent of WebSockets. Any plugin
+can mount a detail component, including a report or notes view backed by its
+normal JSON API or UI bridge. The sidebar and detail page select declared slots
+by plugin key and slot ID, with no knowledge of the component's subject.

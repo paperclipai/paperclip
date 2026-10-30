@@ -1,3 +1,5 @@
+import { connectionAgentInstructionsSchema } from "../connection-instructions.js";
+import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
 import { z } from "zod";
 import {
   CONNECTION_TOKEN_ISSUANCE_PATHS,
@@ -41,7 +43,8 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk", "voice"]);
+export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
 export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
@@ -65,13 +68,13 @@ export const vercelConnectGrantSummarySchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).optional(),
   lastVerifiedAt: z.string().datetime({ offset: true }).optional(),
 }).strict();
-export const connectionGrantKindSchema = z.enum(["organization", "user"]);
+export const connectionGrantKindSchema = z.enum(["organization", "user", "agent"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
 export const createConnectionGrantDelegationSchema = z.object({
   agentId: z.string().guid(),
 });
 export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
-export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback", "per_agent"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env", "url"]);
@@ -176,9 +179,11 @@ export const updateToolApplicationSchema = createToolApplicationSchema.partial()
 export type UpdateToolApplication = z.infer<typeof updateToolApplicationSchema>;
 
 export const createToolConnectionSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
+  connectionPurpose: toolConnectionPurposeSchema.default("tool"),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
   credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
@@ -207,14 +212,36 @@ export const connectionGrantSchema = z.object({
   connectionId: z.string().guid(),
   kind: connectionGrantKindSchema,
   subjectUserId: z.string().nullable(),
+  subjectAgentId: z.string().guid().nullable().optional(),
   providerTenant: z.object({
     name: z.string().trim().min(1).max(200).optional(),
     externalId: z.string().trim().min(1).max(400).optional(),
     oauth: z.object({
       strategy: z.string().trim().min(1).max(100).optional(),
-      accessTokenExpiresAt: z.string().datetime().optional(),
+      accessTokenExpiresAt: z.string().datetime().nullable().optional(),
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      scopeSource: z.enum(["provider", "requested_fallback"]).optional(),
+      unrequestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      requestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
+      refreshTokenExpiresAt: z.string().datetime().optional(),
+      refreshedAt: z.string().datetime().optional(),
+    }).optional(),
+    github: z.object({
+      userId: z.string().regex(/^[1-9][0-9]{0,30}$/),
+      login: z.string().trim().min(1).max(100),
+      avatarUrl: z.string().url().max(2000).optional(),
+      installationCount: z.number().int().nonnegative(),
+      repositoryCount: z.number().int().nonnegative(),
+      repositorySelection: z.enum(["all", "selected", "mixed", "none"]),
+      installationIds: z.array(z.string().regex(/^[1-9][0-9]{0,30}$/)).max(100),
+      installationOwnerLogins: z.array(z.string().trim().min(1).max(100)).max(100),
+      installationUrl: z.string().url().max(2000).optional(),
+      managementUrl: z.string().url().max(2000).optional(),
+      appSlug: z.string().regex(/^[a-z0-9-]{1,100}$/).optional(),
+      lastAccessRefreshAt: z.string().datetime().optional(),
+      lastWebhookAt: z.string().datetime().optional(),
+      webhookHealth: z.enum(["pending", "healthy", "unhealthy"]).optional(),
     }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
@@ -230,8 +257,11 @@ export const connectionGrantSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
-  if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
+  const validSubject = (grant.kind === "user" && Boolean(grant.subjectUserId) && !grant.subjectAgentId)
+    || (grant.kind === "agent" && Boolean(grant.subjectAgentId) && !grant.subjectUserId)
+    || (grant.kind === "organization" && !grant.subjectUserId && !grant.subjectAgentId);
+  if (!validSubject) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["kind"], message: "User and agent grants require exactly their matching subject; organization grants cannot have a subject" });
   }
   if (grant.externalCredential && grant.credentialSecretRefs.length > 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialSecretRefs"], message: "External grants cannot also contain Paperclip secret references" });
@@ -381,7 +411,15 @@ function rejectUnsafeHeaderCredentials(
   }
 }
 
+export const googleWorkspaceServiceSelectionSchema = z.object({
+  gmail: z.enum(["read", "write"]).optional(),
+  drive: z.enum(["read", "write"]).optional(),
+  calendar: z.enum(["read", "write"]).optional(),
+}).strict().refine(value => Object.keys(value).length > 0, "Select at least one Google service");
+
 export const connectToolAppSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(120).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
@@ -393,6 +431,9 @@ export const connectToolAppSchema = z.object({
   interactionId: z.string().uuid().optional(),
   /** Exact draft to continue after an interrupted setup. */
   resumeConnectionId: z.string().guid().optional(),
+  /** Exact configured connection to reauthorize without replacing its identity. */
+  reconnectConnectionId: z.string().guid().optional(),
+  saveDraft: z.boolean().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
   credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
@@ -404,15 +445,29 @@ export const connectToolAppSchema = z.object({
    * Omitted keeps the historical shared-credential behaviour.
    */
   grantKind: connectionGrantKindSchema.optional(),
+  /** Same-company agent that owns a dedicated provider identity. */
+  subjectAgentId: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
+  if (value.workspaceServices && value.galleryKey !== "google-workspace") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceServices"], message: "Service selection requires Google Workspace" });
+  }
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
-  if (value.authMode && value.galleryKey) {
+  if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
+  }
+  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector" });
+  }
+  if (value.authMode && value.galleryKey && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["authMode"],
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
     });
+  }
+  if (value.resumeConnectionId && value.reconnectConnectionId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reconnectConnectionId"], message: "Choose resume or reconnect, not both" });
   }
   if (value.resumeConnectionId && !value.galleryKey) {
     ctx.addIssue({
@@ -449,12 +504,16 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
+  /** Task setup adds access while preserving existing assignments and action policies. */
+  preserveExistingAccess: z.boolean().optional(),
   enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   askFirstCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   reviewedCatalogEntryIds: z.array(z.string().guid()).max(500).optional(),
   access: z.union([
     z.literal("all_agents"),
-    z.object({ agentIds: z.array(z.string().guid()).min(1).max(250) }),
+    // Choosing specific agents may intentionally leave the connection unassigned.
+    z.object({ agentIds: z.array(z.string().guid()).max(250) }),
   ]),
 });
 
@@ -472,9 +531,15 @@ export const finalizeOAuthAccessSchema = z.object({
 export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
 
 export const startToolOAuthSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   asCurrentUser: z.boolean().optional(),
+  asAgentId: z.string().uuid().optional(),
   interactionId: z.string().uuid().optional(),
-}).strict().default({});
+}).strict().superRefine((value, ctx) => {
+  if (value.asCurrentUser && value.asAgentId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["asAgentId"], message: "Choose either the current user or one dedicated agent" });
+  }
+}).default({});
 
 export type StartToolOAuth = z.infer<typeof startToolOAuthSchema>;
 
@@ -948,6 +1013,7 @@ export const toolTrustRuleBatchApprovalSchema = z.object({
 });
 
 export const createToolTrustRuleFromActionRequestSchema = z.object({
+  argumentMode: z.enum(["exact", "action"]).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().max(4000).optional().nullable(),
   priority: z.number().int().min(0).max(10000).default(40),

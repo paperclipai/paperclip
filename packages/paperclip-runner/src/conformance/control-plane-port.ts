@@ -26,13 +26,13 @@ export interface ControlPlanePortConformanceHarness {
 export const CONTROL_PLANE_CONFORMANCE_OPEN: OpenControlPlaneRunInput = {
   identity: {
     runId: "00000000-0000-4000-8000-000000000006",
-    sessionId: "session-standalone-conformance",
+    sessionId: "00000000-0000-4000-8000-000000000007",
     companyId: "00000000-0000-4000-8000-000000000001",
     issueId: "00000000-0000-4000-8000-000000000003",
     agentId: "00000000-0000-4000-8000-000000000002",
   },
   backendKind: "mock",
-  sourceInstanceId: "runner-standalone-conformance",
+  sourceInstanceId: "00000000-0000-4000-8000-000000000005",
 };
 
 export const CONTROL_PLANE_CONFORMANCE_RESULT: PrpStructuredRunResult = {
@@ -61,9 +61,9 @@ export const CONTROL_PLANE_CONFORMANCE_TERMINAL: PrpTerminalState = {
 function event(sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent {
   return {
     schema: "paperclip.prp.event.v1",
-    sourceEventId: `runner-standalone-conformance:event:${sourceSeq}`,
+    sourceEventId: `00000000-0000-4000-8000-000000000005:event:${sourceSeq}`,
     sourceSeq,
-    sourceInstanceId: "runner-standalone-conformance",
+    sourceInstanceId: "00000000-0000-4000-8000-000000000005",
     sourceKind: "runner",
     runId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId,
     normalizedSessionId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.sessionId,
@@ -122,7 +122,7 @@ export async function runControlPlanePortConformance(
     try {
       await harness.port.appendEvent({
         ...CONTROL_PLANE_CONFORMANCE_EVENTS[1],
-        sourceEventId: "runner-standalone-conformance:mutated-sequence-two",
+        sourceEventId: "00000000-0000-4000-8000-000000000005:mutated-sequence-two",
         payload: { mutated: true },
       });
     } catch {
@@ -132,7 +132,7 @@ export async function runControlPlanePortConformance(
 
     const replay = await harness.port.replayEvents({
       runId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId,
-      sourceInstanceId: "runner-standalone-conformance",
+      sourceInstanceId: "00000000-0000-4000-8000-000000000005",
       afterSourceSeq: 1,
       limit: 10,
     });
@@ -143,7 +143,7 @@ export async function runControlPlanePortConformance(
     try {
       await harness.port.replayEvents({
         runId: "forged-run",
-        sourceInstanceId: "runner-standalone-conformance",
+        sourceInstanceId: "00000000-0000-4000-8000-000000000005",
         afterSourceSeq: 0,
         limit: 10,
       });

@@ -5,7 +5,8 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
-import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -30,6 +31,10 @@ export const issueComments = pgTable(
     derivedAuthorAgentId: uuid("derived_author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     derivedCreatedByRunId: uuid("derived_created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     derivedAuthorSource: text("derived_author_source").$type<IssueCommentDerivedAuthorSource>(),
+    clientRequestId: text("client_request_id"),
+    conversationSessionGeneration: integer("conversation_session_generation"),
+    origin: text("origin").$type<"comment" | "fast_response">().notNull().default("comment"),
+    fastResponseRequestId: uuid("fast_response_request_id"),
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
@@ -43,7 +48,12 @@ export const issueComments = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    clientRequestUq: unique("issue_comments_client_request_uq").on(table.issueId, table.authorUserId, table.clientRequestId),
+    companyIdUq: unique("issue_comments_company_id_uq").on(table.companyId, table.id),
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
+    reviewResponseReceiptIdx: index("issue_comments_review_response_receipt_idx").on(
+      table.createdByRunId, table.companyId, table.issueId, table.authorAgentId,
+    ).where(sql`${table.authorType} = 'agent' AND ${table.metadata}->>'authorizationReason' = 'allow_chat_run_presentation'`),
     companyIdx: index("issue_comments_company_idx").on(table.companyId),
     companyIssueCreatedAtIdx: index("issue_comments_company_issue_created_at_idx").on(
       table.companyId,

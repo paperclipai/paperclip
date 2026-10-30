@@ -1,8 +1,13 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { cloudRoutes } from "../routes/cloud.js";
+import { CloudPortfolioError } from "../services/cloud-portfolio-error.js";
+import * as sentry from "../sentry.js";
+import { logger } from "../middleware/logger.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const cloudEnv = {
   PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-secret",
@@ -51,6 +56,98 @@ function jsonResponse(payload: unknown, status = 200) {
 }
 
 describe("GET /api/cloud/stacks", () => {
+  it.each([401, 403, 429, 503])("preserves the response contract for upstream HTTP %s without reading the body", async (status) => {
+    const upstream = jsonResponse({ secret: "private upstream payload" }, status);
+    const json = vi.spyOn(upstream, "json");
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks").set("Cookie", "client-session=private-cookie");
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: "Paperclip Cloud portfolio request failed", code: "cloud_portfolio_upstream_error", details: { code: "cloud_portfolio_upstream_error" } });
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchImpl.mock.calls[0]![1]!.headers).has("cookie")).toBe(false);
+    expect(json).not.toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledWith(expect.any(CloudPortfolioError));
+    const error = capture.mock.calls[0]![0] as CloudPortfolioError;
+    expect(error.diagnostics).toMatchObject({ phase: "http_response", upstreamStatus: status, networkCode: "unknown", elapsedMs: expect.any(Number) });
+    expect(error.stack).toContain("routes/cloud.ts:");
+    expect(error.stack).not.toContain("at portfolioError");
+    expect(warn).toHaveBeenCalledWith({ cloudPortfolio: error.diagnostics }, "Paperclip Cloud portfolio request failed");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+  });
+
+  it("classifies a fetch reset without retrying or caching the failure", async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("private fetch message", { cause: Object.assign(new Error("private cause"), { code: "ECONNRESET" }) }))
+      .mockResolvedValueOnce(jsonResponse({ stacks: [] }));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const app = createApp({ fetchImpl });
+    const failure = await request(app).get("/api/cloud/stacks");
+    expect(failure.status).toBe(502);
+    expect(failure.body).toEqual({ error: "Paperclip Cloud portfolio request failed", code: "cloud_portfolio_upstream_error", details: { code: "cloud_portfolio_upstream_error" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const error = capture.mock.calls[0]![0] as CloudPortfolioError;
+    expect(error.diagnostics).toMatchObject({ phase: "fetch", upstreamStatus: null, networkCode: "ECONNRESET" });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+    expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
+    expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["invalid_json", "body_reset", "deadline"] as const)("keeps body-phase %s failures separate from fetch failures", async (kind) => {
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const upstream = jsonResponse({});
+    vi.spyOn(upstream, "json").mockImplementation(async () => {
+      if (kind === "deadline") controller.abort(new DOMException("private timeout", "TimeoutError"));
+      throw kind === "body_reset" ? Object.assign(new Error("private body"), { code: "ECONNRESET" }) : new SyntaxError("private body");
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    const app = createApp({ fetchImpl });
+    for (let count = 1; count <= 2; count++) {
+      const response = await request(app).get("/api/cloud/stacks");
+      expect(response.status).toBe(502);
+      expect(response.body).toEqual({ error: "Paperclip Cloud portfolio returned invalid JSON", code: "cloud_portfolio_invalid_response", details: { code: "cloud_portfolio_invalid_response" } });
+      expect(fetchImpl).toHaveBeenCalledTimes(count);
+    }
+    expect(timeout).toHaveBeenCalledWith(10_000);
+    expect((capture.mock.calls[0]![0] as CloudPortfolioError).diagnostics).toMatchObject({
+      phase: "response_body", upstreamStatus: 200,
+      networkCode: kind === "deadline" ? "DEADLINE_EXCEEDED" : kind === "body_reset" ? "ECONNRESET" : "unknown",
+    });
+  });
+
+  it("records the owned fetch deadline without changing the ten-second signal", async () => {
+    const signal = AbortSignal.abort(new DOMException("private timeout", "TimeoutError"));
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(signal.reason);
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks");
+    expect(response.body).toEqual({ error: "Paperclip Cloud portfolio request failed", code: "cloud_portfolio_upstream_error", details: { code: "cloud_portfolio_upstream_error" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![1]?.signal).toBe(signal);
+    expect(timeout).toHaveBeenCalledWith(10_000);
+    expect((capture.mock.calls[0]![0] as CloudPortfolioError).diagnostics).toMatchObject({ phase: "fetch", networkCode: "DEADLINE_EXCEEDED" });
+  });
+
+  it("does not mislabel a response serialization failure as an upstream fetch error", async () => {
+    const payload: { cycle?: unknown } = {};
+    payload.cycle = payload;
+    const upstream = jsonResponse({});
+    vi.spyOn(upstream, "json").mockResolvedValue(payload);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const response = await request(createApp({ fetchImpl })).get("/api/cloud/stacks");
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: "Paperclip Cloud portfolio request failed", code: "cloud_portfolio_upstream_error", details: { code: "cloud_portfolio_upstream_error" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((capture.mock.calls[0]![0] as CloudPortfolioError).diagnostics).toMatchObject({ phase: "response_write", upstreamStatus: 200, networkCode: "unknown" });
+  });
+
   it("returns the actor's portfolio without forwarding client-supplied identity", async () => {
     const portfolio = { stacks: [{ slug: "current", displayName: "Current" }] };
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(portfolio));

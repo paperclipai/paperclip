@@ -1,3 +1,4 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -12,11 +13,15 @@ import {
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
   type SandboxSyncResult,
+  type WorkspaceDurableSeedPaths,
+  type WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 
 /**
  * Input for a duplex channel open. The caller supplies only the command argument
@@ -77,6 +82,9 @@ export interface CommandManagedRuntimeRunner {
     env?: Record<string, string>;
     stdin?: string;
     timeoutMs?: number;
+    /** Optional execution deadline for a session command, separate from an
+     * individual provider observation timeout. Zero means no command deadline. */
+    commandTimeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     /**
@@ -181,7 +189,9 @@ function formatFailedCommandOutput(result: RunProcessResult): string {
 function requireSuccessfulResult(result: RunProcessResult, action: string): void {
   if (result.exitCode === 0 && !result.timedOut) return;
   const detail = formatFailedCommandOutput(result);
-  throw new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`);
+  throw Object.assign(new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`), {
+    exitCode: result.exitCode, timedOut: result.timedOut,
+  });
 }
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
@@ -334,7 +344,26 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      let sizeResult;
+      try {
+        sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      } catch (error) {
+        // Shell-backed sandbox reads need the same absent-file contract as fs.
+        // Confirm the parent is searchable so permission/transport failures are
+        // never silently converted into a missing optional credential file.
+        const parent = shellQuote(path.posix.dirname(remotePath));
+        const missing = await runShell(
+          `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${shellQuote(remotePath)} ]; ` +
+            `then printf 'missing'; fi`,
+        ).catch(() => null);
+        if (missing?.stdout === "missing") {
+          throw Object.assign(new Error(`No such file: ${remotePath}`), {
+            code: "ENOENT",
+            path: remotePath,
+          });
+        }
+        throw error;
+      }
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
@@ -388,6 +417,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
+        bypassSession: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -397,6 +427,9 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        // These helpers consume only exit status. They need neither a
+        // persistent shell nor its separate, streamed output observations.
+        bypassSession: true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -515,8 +548,22 @@ export async function prepareCommandManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
@@ -532,6 +579,8 @@ export async function prepareCommandManagedRuntime(input: {
   // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
   // under the `stage.sync` step. The default is a no-op.
   runtimeSpan?: RuntimeSpanRunner;
+  /** Copy-back retry delays; pass `[]` for throwaway workspaces that must not wait on retries. */
+  workspaceRestoreRetryDelaysMs?: readonly number[];
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -543,7 +592,7 @@ export async function prepareCommandManagedRuntime(input: {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
     sandboxId: input.spec.leaseId ?? "managed",
-    remoteCwd: workspaceRemoteDir,
+    remoteCwd: input.spec.remoteCwd,
     timeoutMs,
     apiKey: null,
   };
@@ -576,14 +625,29 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
+          runtimeRootDir: input.runtimeRootDir,
           syncWorkspace: input.syncWorkspace,
+          workspaceInboundMode: input.workspaceInboundMode,
+          workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+          workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
+          workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceCheckpoint: input.workspaceCheckpoint,
+          onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+          workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+          workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+          workspaceSeedCacheScope: input.workspaceSeedCacheScope,
+          workspaceBaseline: input.workspaceBaseline,
+          workspaceGitSnapshot: input.workspaceGitSnapshot,
+          workspaceRepositories: input.workspaceRepositories,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+          workspaceFileMode: input.workspaceFileMode,
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
           additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
           runtimeSpan: input.runtimeSpan,
+          workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
         });
       }
     }
@@ -615,13 +679,28 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
+    runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
+    workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
     runtimeSpan: input.runtimeSpan,
+    workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
   });
 }

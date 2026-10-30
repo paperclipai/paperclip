@@ -1,13 +1,9 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "pi_local";
 export const label = "Pi";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding-agent@0.74.0";
 
 export const models: Array<{ id: string; label: string }> = [];
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [];
 
 export const agentConfigurationDoc = `# pi_local agent configuration
 
@@ -36,6 +32,20 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- stdoutLogMode (string, optional, default "compact"): controls how Pi --mode json stdout is
+  compacted before entering the Paperclip run log. Pi emits cumulative state
+  in every message_update event, which makes run logs grow ~quadratically.
+  Modes:
+  - "raw": legacy passthrough, no filtering (full transcript; large logs).
+  - "compact" (default): strips cumulative copies (message_update.message,
+    assistantMessageEvent.partial), converts tool_execution_update to a
+    throttled content-free Paperclip progress event. Streaming deltas are
+    preserved — parsePiJsonl output and live UI typing are unchanged.
+  In compact mode, if a run is terminated before tool_execution_end, its
+  partial tool output is not retained; use "raw" when full forensic output is required.
+  Oversized individual lines are handled by the server's run-log pipeline
+  (redaction + head/tail cap) regardless of mode. Invalid explicit mode values
+  fail safe to "raw" rather than enabling a lossy transformation.
 
 Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.

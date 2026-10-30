@@ -1,3 +1,5 @@
+import { CsvPreview } from "./CsvPreview";
+import { isCsvFile } from "@/lib/csv-preview";
 import {
   useCallback,
   useEffect,
@@ -39,6 +41,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { ApiError } from "@/api/client";
+import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
@@ -47,6 +50,9 @@ import {
 } from "@/context/FileViewerContext";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { WorkspaceFileMarkdownBody } from "@/components/WorkspaceFileMarkdownBody";
+import { HtmlArtifactPreview } from "@/components/HtmlArtifactPreview";
+import { FilePreviewModeToggle, type FilePreviewMode } from "@/components/FilePreviewModeToggle";
+import { isHtmlPreview } from "@/lib/html-preview";
 import type {
   ResolvedWorkspaceResource,
   WorkspaceFileContent,
@@ -234,14 +240,20 @@ interface FileContentViewerProps {
   content: WorkspaceFileContent;
   highlightedLine: number | null;
   onLoaded?: (summary: string) => void;
+  previewMode?: "raw" | "rendered";
+  htmlMode?: FilePreviewMode;
 }
 
 type MarkdownPreviewMode = "raw" | "rendered";
 
-export function FileContentViewer({ content, highlightedLine, onLoaded }: FileContentViewerProps) {
+export function FileContentViewer({ content, highlightedLine, onLoaded, previewMode, htmlMode = "rendered" }: FileContentViewerProps) {
   const { resource } = content;
   const isMarkdown = resource.previewKind === "text" && content.content.encoding === "utf8" && isMarkdownResource(resource);
-  const [markdownMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
+  const isCsv = resource.previewKind === "text" && content.content.encoding === "utf8" && isCsvFile(resource.displayPath || resource.title, resource.contentType ?? "");
+  const [localMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
+  const markdownMode = isMarkdown || isCsv ? (previewMode ?? localMode) : "raw";
+  const isHtml = resource.previewKind === "text" && content.content.encoding === "utf8" && isHtmlPreview(resource.contentType, resource.displayPath || resource.title);
+  const previewLabel = isCsv ? "CSV" : "Markdown";
   const lines = useMemo(() => {
     if (resource.previewKind === "text") {
       return splitContentIntoLines(content.content.data);
@@ -253,8 +265,8 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
   const highlightedLineRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMarkdownMode(isMarkdown ? "rendered" : "raw");
-  }, [isMarkdown, resource.displayPath, resource.title, resource.contentType]);
+    setMarkdownMode(isMarkdown || isCsv ? "rendered" : "raw");
+  }, [isMarkdown, isCsv, resource.displayPath, resource.title, resource.contentType]);
 
   useEffect(() => {
     if (!lines) return;
@@ -265,7 +277,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
     if (markdownMode !== "raw") return;
     if (!highlightedLine || !highlightedLineRef.current) return;
     highlightedLineRef.current.scrollIntoView({ block: "center", behavior: "auto" });
-  }, [highlightedLine, markdownMode]);
+  }, [highlightedLine, markdownMode, htmlMode, previewMode]);
 
   if (resource.previewKind === "image") {
     const dataUrl = content.content.encoding === "base64"
@@ -373,24 +385,28 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
     </div>
   );
 
-  if (!isMarkdown) {
+  if (isHtml) {
+    return (previewMode ?? htmlMode) === "raw" ? rawSourceView : <HtmlArtifactPreview html={content.content.data} title={resource.title} />;
+  }
+
+  if (!isMarkdown && !isCsv) {
     return rawSourceView;
   }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="absolute right-3 top-3 z-20">
+      {previewMode === undefined && <div className="absolute right-3 top-3 z-20">
         <div
           role="group"
-          aria-label="Markdown preview mode"
+          aria-label={`${previewLabel} preview mode`}
           className="inline-flex rounded-md border border-border bg-background/95 p-0.5 shadow-sm backdrop-blur"
         >
           <Button
             type="button"
             variant={markdownMode === "rendered" ? "secondary" : "ghost"}
             size="icon-sm"
-            aria-label="Show rendered Markdown"
-            title="Rendered Markdown"
+            aria-label={`Show rendered ${previewLabel}`}
+            title={`Rendered ${previewLabel}`}
             aria-pressed={markdownMode === "rendered"}
             onClick={() => setMarkdownMode("rendered")}
             className={cn(
@@ -404,8 +420,8 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
             type="button"
             variant={markdownMode === "raw" ? "secondary" : "ghost"}
             size="icon-sm"
-            aria-label="Show raw Markdown"
-            title="Raw Markdown"
+            aria-label={`Show raw ${previewLabel}`}
+            title={`Raw ${previewLabel}`}
             aria-pressed={markdownMode === "raw"}
             onClick={() => setMarkdownMode("raw")}
             className={cn(
@@ -417,9 +433,10 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
           </Button>
         </div>
       </div>
+      }
       {markdownMode === "raw" ? (
         rawSourceView
-      ) : (
+      ) : isCsv ? <CsvPreview text={content.content.data} title={resource.title} /> : (
         <div
           role="region"
           aria-label={`${resource.title} rendered Markdown`}
@@ -493,6 +510,8 @@ export function FileViewerSheet({
     typeof openProp === "boolean" ? openProp : state !== null || showPromptWhenEmpty || viewer.browse;
 
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [htmlMode, setHtmlMode] = useState<FilePreviewMode>("rendered");
+  useEffect(() => setHtmlMode("rendered"), [state?.path, state?.workspace, state?.workspaceId, state?.projectId]);
   const [copiedField, setCopiedField] = useState<"content" | "link" | null>(null);
   const [copyingField, setCopyingField] = useState<"content" | "link" | null>(null);
   const [copyFeedback, setCopyFeedback] = useState("");
@@ -507,7 +526,6 @@ export function FileViewerSheet({
       : ["issues", "file-resources", issueId, "resolve", "__closed__"],
     queryFn: () => fileResourcesApi.resolve(issueId, state!),
     enabled: !!state && computedOpen,
-    retry: false,
     staleTime: 30_000,
   });
 
@@ -523,7 +541,6 @@ export function FileViewerSheet({
       : ["issues", "file-resources", issueId, "content", "__closed__"],
     queryFn: () => fileResourcesApi.content(issueId, state!),
     enabled: !!state && computedOpen && canPreview,
-    retry: false,
     staleTime: 30_000,
   });
 
@@ -767,6 +784,10 @@ export function FileViewerSheet({
                   Back to files
                 </Button>
               ) : null}
+              {contentQuery.data?.resource.previewKind === "text" && contentQuery.data.content.encoding === "utf8"
+                && isHtmlPreview(contentQuery.data.resource.contentType, contentQuery.data.resource.displayPath || contentQuery.data.resource.title) ? (
+                  <FilePreviewModeToggle mode={htmlMode} onChange={setHtmlMode} label="HTML view" />
+                ) : null}
               {state ? (
                 downloadUrl ? (
                   <Button
@@ -887,6 +908,7 @@ export function FileViewerSheet({
                   elapsedMs={elapsedMs}
                   canPreview={canPreview}
                   highlightedLine={state.line ?? null}
+                  htmlMode={htmlMode}
                   onRetry={handleRetry}
                   onSetAnnouncement={setAnnouncement}
                   onFallbackToProject={
@@ -934,9 +956,11 @@ interface FileViewerBodyProps {
   onRetry: () => void;
   onSetAnnouncement: (message: string) => void;
   onFallbackToProject: null | (() => void);
+  previewMode?: "raw" | "rendered";
+  htmlMode?: FilePreviewMode;
 }
 
-function FileViewerBody({
+export function FileViewerBody({
   resolveQuery,
   contentQuery,
   elapsedMs,
@@ -945,12 +969,17 @@ function FileViewerBody({
   onRetry,
   onSetAnnouncement,
   onFallbackToProject,
+  previewMode,
+  htmlMode,
 }: FileViewerBodyProps) {
-  if (resolveQuery.isFetching && !resolveQuery.data) {
+  // Loaded content stays on screen while a refetch fails; a quiet loading
+  // view covers an outage before anything has loaded.
+  const resolveKind = queryViewKind(resolveQuery);
+  if (!resolveQuery.data && (resolveQuery.isFetching || resolveKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (resolveQuery.isError) {
+  if (resolveKind === "error") {
     const normalized = normalizeError(resolveQuery.error);
     if (normalized.status === 404) {
       return (
@@ -1015,11 +1044,12 @@ function FileViewerBody({
     return <FileViewerStateView icon={denial.icon} title={denial.title} body={denial.body} />;
   }
 
-  if (contentQuery.isFetching && !contentQuery.data) {
+  const contentKind = queryViewKind(contentQuery);
+  if (!contentQuery.data && (contentQuery.isFetching || contentKind === "reconnecting")) {
     return <LoadingView elapsedMs={elapsedMs} />;
   }
 
-  if (contentQuery.isError) {
+  if (contentKind === "error") {
     const normalized = normalizeError(contentQuery.error);
     const denial = describeDenial(normalized.code, normalized.message);
     return (
@@ -1042,7 +1072,9 @@ function FileViewerBody({
     <FileContentViewer
       content={contentQuery.data}
       highlightedLine={highlightedLine}
+      previewMode={previewMode}
       onLoaded={onSetAnnouncement}
+      htmlMode={htmlMode}
     />
   );
 }

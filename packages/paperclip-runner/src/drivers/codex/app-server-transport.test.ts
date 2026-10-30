@@ -1,7 +1,7 @@
 import { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 
-import { ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
+import { createSanitizedCodexEnvironment, ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
 
 function nodeTransport(
   source: string,
@@ -16,12 +16,105 @@ function nodeTransport(
 }
 
 describe("Codex app-server transport limits", () => {
+  it("passes the selected managed provider key without admitting arbitrary host secrets", () => {
+    expect(createSanitizedCodexEnvironment({
+      PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key",
+      CODEX_HOME: "/isolated/connection",
+      OPENROUTER_API_KEY: "ambient-other-key",
+      DATABASE_URL: "private-database",
+    })).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key", CODEX_HOME: "/isolated/connection" });
+  });
+
+  it.each([true, false])("passes configured OTLP authentication to the child only when present (%s)", async (enabled) => {
+    const headers = enabled ? {
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20fixture-logs",
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: "authorization=Bearer%20fixture-traces",
+    } : {};
+    const transport = new ProcessCodexAppServerTransport({
+      command: process.execPath,
+      args: ["-e", `
+        process.stdin.resume();
+        process.stdout.write(JSON.stringify({ method: "environment", params: {
+          OTEL_EXPORTER_OTLP_LOGS_HEADERS: process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS,
+          DATABASE_URL: process.env.DATABASE_URL,
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        } }) + "\\n");
+      `],
+      environment: createSanitizedCodexEnvironment({
+        ...headers, DATABASE_URL: "excluded-database", OPENAI_API_KEY: "excluded-provider-key",
+      }),
+    });
+    try {
+      const notification = await transport.notifications()[Symbol.asyncIterator]().next();
+      expect(notification.value).toEqual({ method: "environment", params: headers });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("does not inherit ambient OTLP credentials without an explicit launch environment", () => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_LOGS_HEADERS", "ambient-log-secret");
+    vi.stubEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "ambient-trace-secret");
+    try {
+      const environment = createSanitizedCodexEnvironment();
+      expect(environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS).toBeUndefined();
+      expect(environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("passes only bounded controller-projected GitHub credentials", () => {
+    expect(
+      createSanitizedCodexEnvironment({
+        PATH: "/safe/bin",
+        GH_TOKEN: "github-token",
+        PAPERCLIP_GIT_TOKEN: "github-token",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+        GIT_CONFIG_VALUE_0: "!trusted-helper",
+        GIT_CONFIG_KEY_1: "must.not.cross",
+        GIT_CONFIG_VALUE_1: "must-not-cross",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+        DATABASE_URL: "must-not-cross",
+      }),
+    ).toEqual({
+      PATH: "/safe/bin",
+      GH_TOKEN: "github-token",
+      PAPERCLIP_GIT_TOKEN: "github-token",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+      GIT_CONFIG_VALUE_0: "!trusted-helper",
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+    });
+
+    const invalid = createSanitizedCodexEnvironment({
+      GH_TOKEN: "github-token",
+      GIT_CONFIG_COUNT: "33",
+      GIT_CONFIG_KEY_0: "must.not.cross",
+    });
+    expect(invalid.GH_TOKEN).toBe("github-token");
+    expect(invalid.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(invalid.GIT_CONFIG_KEY_0).toBeUndefined();
+  });
+
   it("redacts real Basic credentials without corrupting ordinary question copy", () => {
     expect(redactCodexDiagnostic("Authorization: Basic dXNlcjpwYXNz"))
       .toBe("Authorization: Basic [REDACTED]");
     expect(redactCodexDiagnostic("Basic API foundation"))
       .toBe("Basic API foundation");
   });
+
+  it.each(["PAPERCLIP_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "CUSTOM_API_KEY"])(
+    "redacts the complete %s environment value through the shared text helper",
+    (key) => {
+      expect(redactCodexDiagnostic(`${key}=private;still-private`))
+        .toBe(`${key}=[REDACTED]`);
+    },
+  );
 
   it("reports restart-safe process-group ownership", async () => {
     const transport = nodeTransport("process.stdin.resume()", { processGroup: true });

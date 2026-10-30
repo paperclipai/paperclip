@@ -42,6 +42,7 @@ const mockCompanySkillsApi = vi.hoisted(() => ({
   cancelTestRun: vi.fn(),
   deleteTestRun: vi.fn(),
   versions: vi.fn(),
+  version: vi.fn(),
   createVersion: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({
@@ -650,7 +651,7 @@ describe("SkillStudio editor frontmatter", () => {
     );
   });
 
-  it("offers an 'Edit a copy' CTA on the read-only banner (PAP-13112)", async () => {
+  it("offers a 'Make a copy' CTA on the read-only banner (PAP-13112)", async () => {
     mockCompanySkillsApi.detail.mockResolvedValueOnce(makeSkill({
       editable: false,
       editableReason: "Bundled skill.",
@@ -660,10 +661,10 @@ describe("SkillStudio editor frontmatter", () => {
 
     await waitFor(() => expect(node.textContent).toContain("Bundled skill."));
 
-    // The dead-end "Fork" text link is replaced by a primary "Edit a copy"
+    // The dead-end "Fork" text link is replaced by a primary "Make a copy"
     // button that opens the fork-confirm dialog (agent-switch flow).
     const editCopy = Array.from(node.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Edit a copy",
+      (button) => button.textContent?.trim() === "Make a copy",
     );
     expect(editCopy).toBeTruthy();
     const staleForkLink = Array.from(node.querySelectorAll("a")).find((link) =>

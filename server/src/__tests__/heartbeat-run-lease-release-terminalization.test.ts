@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   companies,
   createDb,
@@ -42,6 +43,7 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(issues);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -149,6 +151,20 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       .then((rows) => rows[0]);
     expect(row?.status).toBe("interrupted");
     expect(row?.errorCode).toBe("lease_released_before_terminal");
+  });
+
+  it.each(["in_progress", "done"])("preserves acknowledged Stop when teardown wins the finalizer race (%s)", async (issueStatus) => {
+    const { companyId, issueId, runId } = await seed({ issueStatus, runStatus: "running" });
+    const [run] = await db.update(heartbeatRuns).set({
+      nativeIssueId: issueId,
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId, companyId, issueId, scope: "run",
+        reasonCode: "cancellation_run_only", dispatched: true, dispatchState: "acknowledged",
+        intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID(),
+      } },
+    }).where(eq(heartbeatRuns.id, runId)).returning();
+    const terminal = await heartbeatService(db).terminalizeRunOnLeaseRelease(run!);
+    expect(terminal).toMatchObject({ status: "cancelled", error: null, errorCode: null });
   });
 
   it("forces a still-queued run to interrupted when the lease releases before it starts", async () => {

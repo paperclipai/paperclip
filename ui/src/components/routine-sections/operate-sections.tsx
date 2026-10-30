@@ -1,203 +1,56 @@
-import { useMemo, useState } from "react";
-import { Activity as ActivityIcon, Play, SlidersHorizontal } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { timeAgo } from "../../lib/timeAgo";
-import { runRowSubtitle, dedupedTriggerLabel } from "../../lib/routine-run-display";
+import { useMemo } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity as ActivityIcon } from "lucide-react";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { routineDetailHref } from "../RoutineContextualSidebar";
+import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
+import { useToastActions } from "@/context/ToastContext";
+import { IssuesList } from "../IssuesList";
 import { EmptyState } from "../EmptyState";
-import { EntityRow } from "../EntityRow";
-import { FilterBar, type FilterValue } from "../FilterBar";
-import { LiveRunWidget } from "../LiveRunWidget";
 import { RoutineHistoryTab } from "../RoutineHistoryTab";
 import { RoutineActivityRow } from "../RoutineActivityRow";
 import { useRoutineDetail } from "./context";
 
-const DATE_WINDOW_OPTIONS: { value: string; label: string; ms: number | null }[] = [
-  { value: "any", label: "Any time", ms: null },
-  { value: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
-  { value: "7d", label: "Last 7d", ms: 7 * 24 * 60 * 60 * 1000 },
-  { value: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
-];
-
 export function RunsSection() {
-  const ctx = useRoutineDetail();
-  const { routine, routineRuns, hasLiveRun, activeIssueId, onOpenRunDialog } = ctx;
-  const runs = useMemo(() => routineRuns ?? [], [routineRuns]);
-
-  const [sourceFilter, setSourceFilter] = useState("any");
-  const [statusFilter, setStatusFilter] = useState("any");
-  const [dateFilter, setDateFilter] = useState("any");
-
-  const sourceOptions = useMemo(
-    () => [...new Set(runs.map((run) => run.source))].sort(),
-    [runs],
-  );
-  const statusOptions = useMemo(
-    () => [...new Set(runs.map((run) => run.status))].sort(),
-    [runs],
-  );
-
-  const filtered = useMemo(() => {
-    const windowMs = DATE_WINDOW_OPTIONS.find((option) => option.value === dateFilter)?.ms ?? null;
-    const cutoff = windowMs == null ? null : Date.now() - windowMs;
-    return runs.filter((run) => {
-      if (sourceFilter !== "any" && run.source !== sourceFilter) return false;
-      if (statusFilter !== "any" && run.status !== statusFilter) return false;
-      if (cutoff != null && new Date(run.triggeredAt).getTime() < cutoff) return false;
-      return true;
-    });
-  }, [runs, sourceFilter, statusFilter, dateFilter]);
-
-  const activeFilters = useMemo<FilterValue[]>(() => {
-    const list: FilterValue[] = [];
-    if (sourceFilter !== "any") list.push({ key: "source", label: "Source", value: sourceFilter });
-    if (statusFilter !== "any") {
-      list.push({ key: "status", label: "Status", value: statusFilter.replaceAll("_", " ") });
-    }
-    if (dateFilter !== "any") {
-      const label = DATE_WINDOW_OPTIONS.find((option) => option.value === dateFilter)?.label ?? dateFilter;
-      list.push({ key: "date", label: "Date", value: label });
-    }
-    return list;
-  }, [sourceFilter, statusFilter, dateFilter]);
-
-  function clearFilters() {
-    setSourceFilter("any");
-    setStatusFilter("any");
-    setDateFilter("any");
-  }
-
-  function removeFilter(key: string) {
-    if (key === "source") setSourceFilter("any");
-    if (key === "status") setStatusFilter("any");
-    if (key === "date") setDateFilter("any");
-  }
+  const { routine, companyId, agents, projects, hasLiveRun, activeIssueId } = useRoutineDetail();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const filters = { originKind: "routine_execution", originId: routine.id };
+  const issueQueryKey = [...queryKeys.issues.list(companyId), "routine", routine.id];
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: issueQueryKey,
+    queryFn: () => issuesApi.list(companyId, filters),
+  });
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routine.id) });
+    },
+    onError: (updateError) => pushToast({ title: "Failed to update task", body: updateError.message, tone: "error" }),
+  });
 
   return (
-    <div className="space-y-4">
-      {hasLiveRun && activeIssueId ? (
-        <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
-      ) : null}
-
-      {runs.length === 0 ? (
-        <EmptyState
-          icon={Play}
-          message="No runs yet. Trigger a run from the header or wait for the schedule."
-          action="Run now"
-          onAction={onOpenRunDialog}
-        />
-      ) : (
-        <>
-          {/* Filter chips row (§3.6) */}
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by source">
-                  <span className="text-muted-foreground">Source:</span>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">any</SelectItem>
-                  {sourceOptions.map((source) => (
-                    <SelectItem key={source} value={source}>
-                      {source}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by status">
-                  <span className="text-muted-foreground">Status:</span>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">any</SelectItem>
-                  {statusOptions.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {status.replaceAll("_", " ")}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={dateFilter} onValueChange={setDateFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by date">
-                  <span className="text-muted-foreground">Date:</span>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DATE_WINDOW_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <FilterBar filters={activeFilters} onRemove={removeFilter} onClear={clearFilters} />
-          </div>
-
-          {filtered.length === 0 ? (
-            <EmptyState
-              icon={SlidersHorizontal}
-              message="No runs match these filters."
-              action="Clear filters"
-              onAction={clearFilters}
-            />
-          ) : (
-            <div className="rounded-lg border border-border">
-              {filtered.map((run) => {
-                const label = dedupedTriggerLabel(run.trigger);
-                const title = run.linkedIssue?.title ?? label ?? "Run";
-                return (
-                  <EntityRow
-                    key={run.id}
-                    leading={
-                      <>
-                        <Badge variant="outline" className="shrink-0">
-                          {run.source}
-                        </Badge>
-                        <Badge
-                          variant={run.status === "failed" ? "destructive" : "secondary"}
-                          className="shrink-0"
-                        >
-                          {run.status.replaceAll("_", " ")}
-                        </Badge>
-                      </>
-                    }
-                    identifier={
-                      run.linkedIssue
-                        ? run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)
-                        : undefined
-                    }
-                    title={title}
-                    subtitle={runRowSubtitle(run, routine.variables)}
-                    reserveSubtitleSpace
-                    trailing={
-                      <span className="text-xs text-muted-foreground">{timeAgo(run.triggeredAt)}</span>
-                    }
-                    to={
-                      run.linkedIssue
-                        ? `/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`
-                        : undefined
-                    }
-                  />
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-    </div>
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={new Set(hasLiveRun && activeIssueId ? [activeIssueId] : [])}
+      viewStateKey={`paperclip:routine-runs:${companyId}:${routine.id}`}
+      searchFilters={filters}
+      issueLinkState={createIssueDetailLocationState("Runs", routineDetailHref(routine.id, "runs"))}
+      rowPresentation="task"
+      toolbarPresentation="collection"
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
   );
 }
 
-export function ActivitySection() {
+export function ActivitySection({ isLoading = false, error }: { isLoading?: boolean; error?: Error | null } = {}) {
   const ctx = useRoutineDetail();
   const { activity } = ctx;
   const events = activity ?? [];
@@ -221,6 +74,9 @@ export function ActivitySection() {
     }
     return Array.from(byDay.entries());
   }, [events]);
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading activity…</p>;
+  if (error) return <p role="alert" className="text-sm text-destructive">{error.message}</p>;
 
   if (events.length === 0) {
     return <EmptyState icon={ActivityIcon} message="No activity yet." />;

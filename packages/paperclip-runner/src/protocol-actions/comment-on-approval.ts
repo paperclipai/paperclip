@@ -29,7 +29,7 @@ export const commentOnApprovalAction = {
   },
   "documentation": {
     "title": "Comment on approval",
-    "description": "Add a durable comment to a mock approval.",
+    "description": "Add a durable comment to an approval.",
     "note": null
   },
   "examples": {
@@ -72,7 +72,7 @@ export const commentOnApprovalAction = {
       "operationId": "comment_on_approval",
       "version": 1,
       "title": "Comment on approval",
-      "description": "Add a durable comment to a mock approval.",
+      "description": "Add a durable comment to an approval.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:comment"
@@ -94,7 +94,7 @@ export const commentOnApprovalAction = {
           },
           "approvalId": {
             "type": "string",
-            "description": "Mock approval id.",
+            "description": "Approval id.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -117,7 +117,7 @@ export const commentOnApprovalAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -133,7 +133,7 @@ export const commentOnApprovalAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

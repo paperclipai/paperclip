@@ -13,6 +13,8 @@ const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
+const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 
@@ -23,8 +25,10 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
-    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
-      archiveConnectionMock(connectionId, options),
+    archiveConnection: (connectionId: string) =>
+      archiveConnectionMock(connectionId),
+    getCloudConnectorEnrollment: () => getCloudConnectorEnrollmentMock(),
+    startCloudConnectorEnrollment: (companyId: string, label?: string) => startCloudConnectorEnrollmentMock(companyId, label),
   },
 }));
 
@@ -165,6 +169,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     listProfilesMock.mockResolvedValue({ profiles: [] });
     listUserDirectoryMock.mockResolvedValue({ users: [] });
     archiveConnectionMock.mockResolvedValue(connection({ id: "c-deleted", status: "archived" }));
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: true,
+      status: "active",
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: "instance-test",
+      environment: "development",
+      origins: ["http://localhost:3100"],
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -206,14 +218,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("GitHub"),
     );
     row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/permissions");
 
     mockNavigate.mockClear();
     const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Connect") && !button.textContent.includes("Connect an app"),
     );
     connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/permissions");
   });
 
   it("renders every account with its owner, status, actions, and direct edit navigation", async () => {
@@ -299,7 +311,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     const headers = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
     expect(headers).toEqual(["Connection", "Type", "Connected by", "Status", "Actions", "Last used", ""]);
     expect(text).toContain("Personal");
-    expect(text).toContain("Company");
+    expect(text).toContain("Organization");
     // 4. Actions column reflects enabled catalog entries per account; missing profile => 0 on.
     expect(text).toContain("3 on");
     expect(text).toContain("0 on");
@@ -311,19 +323,19 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("Slack"),
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention/permissions");
     // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Edit.
     const rowButtonLabel = (name: string, exact = false) =>
       Array.from(container.querySelectorAll("tbody tr"))
         .find((tr) => exact ? tr.textContent?.includes(name) && !tr.textContent?.includes("Slack Team") : tr.textContent?.includes(name))
         ?.querySelector("td:last-child button")?.textContent;
-    expect(rowButtonLabel("GitHub")).toBe("Edit");
+    expect(rowButtonLabel("GitHub")).toBe("Permissions");
     expect(rowButtonLabel("Slack", true)).toBe("Reconnect");
-    expect(rowButtonLabel("Notion")).toBe("Edit");
+    expect(rowButtonLabel("Notion")).toBe("Permissions");
     // 8. Generic connection names inherit the originating user's first name.
     expect(text).toContain("Dotta’s GitHub");
-    expect(text).toContain("Slack for the company");
-    expect(text).toContain("Slack Team for the company");
+    expect(text).toContain("Slack for the organization");
+    expect(text).toContain("Slack Team for the organization");
     expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
     // Custom account labels remain untouched.
     expect(text).toContain("Slack Team");
@@ -364,9 +376,9 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
     expect(row?.className).not.toContain("amber");
     const button = row?.querySelector("td:last-child button");
-    expect(button?.textContent).toBe("Edit");
+    expect(button?.textContent).toBe("Permissions");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy/permissions");
   });
 
   it("deletes a connection only after trash-can confirmation", async () => {
@@ -380,7 +392,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     expect(deleteButton).toBeTruthy();
 
@@ -402,9 +414,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
@@ -414,48 +424,6 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
   });
 
-  it("confirms that deleting a Composio parent removes its child services", async () => {
-    listApplicationsMock.mockResolvedValue({
-      applications: [application({ id: "app-composio", name: "Composio" })],
-    });
-    listConnectionsMock.mockResolvedValue({
-      connections: [
-        connection({
-          id: "composio-parent",
-          applicationId: "app-composio",
-          name: "Composio",
-          config: { sourceTemplateKey: "composio" },
-        }),
-        connection({
-          id: "composio-github",
-          applicationId: "app-composio",
-          name: "GitHub (via Composio)",
-          config: { provider: "composio", parentConnectionId: "composio-parent", toolkitSlug: "github" },
-        }),
-      ],
-    });
-
-    await renderApps();
-    const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete Composio for the company connection"]',
-    );
-    await act(async () => {
-      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(document.body.textContent).toContain("This also removes 1 connected service");
-    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Delete connection",
-    );
-    await act(async () => {
-      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(archiveConnectionMock).toHaveBeenCalledWith("composio-parent", {
-      confirmComposioChildren: true,
-    });
-  });
 
   it("reports the remaining active connections after deleting one", async () => {
     listApplicationsMock.mockResolvedValue({
@@ -471,7 +439,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -489,9 +457,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
 
-    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary", {
-      confirmComposioChildren: false,
-    });
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary");
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
@@ -521,7 +487,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

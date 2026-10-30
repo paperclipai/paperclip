@@ -34,7 +34,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "docs.read",
       "capabilityProfile": {
         "key": "read",
@@ -42,7 +42,8 @@
         "description": "Read document text and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -51,7 +52,6 @@
       "defaults": {
         "serverUrl": "https://docsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/documents.readonly"
         ]
       },
@@ -72,7 +72,8 @@
         "description": "Read document text and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -84,7 +85,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/documents.readonly"
         ],
         "oauthAuthorizationParams": {
@@ -107,7 +107,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "docs.write",
       "capabilityProfile": {
         "key": "write",
@@ -115,7 +115,8 @@
         "description": "Read and update documents."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -124,8 +125,6 @@
       "defaults": {
         "serverUrl": "https://docsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/documents"
         ]
       },
@@ -147,7 +146,8 @@
         "description": "Read and update documents."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -159,8 +159,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/documents"
         ],
         "oauthAuthorizationParams": {

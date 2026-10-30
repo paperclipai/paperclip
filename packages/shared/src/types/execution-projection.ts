@@ -1,0 +1,112 @@
+export interface ExecutionBlocker {
+  /** Null when live execution authority itself blocks continuation. */
+  recoveryActionId: string | null;
+  runId: string | null;
+  agentId: string | null;
+  cause: string;
+  nextAction: string;
+  runStatus?: string | null;
+  runError?: string | null;
+  /** Candidate only: admission must still verify termination and all gates. */
+  canContinue?: boolean;
+  /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
+  canRetry?: boolean;
+  /** Required workspace files must be recovered before another provider turn. */
+  workspaceRepairRequired?: boolean;
+  canRecordWorkspaceRepair?: boolean;
+  canReconstructWorkspace?: boolean;
+  workspaceReconstructionPending?: boolean;
+  workspaceRecoveryStatusVersion?: number;
+  savedMessageCount?: number;
+  workspaceRecovery?: {
+    status: "queued" | "recovering" | "blocked" | "recovered";
+    stage: "verifying_stop" | "restoring_files" | "saving_receipts";
+    canRetry: boolean;
+    message: string;
+  };
+}
+
+/** Presentation of existing execution records, not a second task status machine. */
+export interface ExecutionProjection {
+  phase:
+    | "working"
+    | "waiting_for_provider"
+    | "reconnecting"
+    | "retry_scheduled"
+    | "finishing"
+    | "recovery_needed"
+    | "waiting_for_access"
+    | "waiting_for_answer"
+    | "queued"
+    | "completed"
+    | "failed";
+  label: string;
+  cause: string | null;
+  lastConfirmedActivityAt: string | null;
+  retryAt: string | null;
+  attempt: number;
+  maxAttempts: number;
+  recoveryOwner: "agent" | "board" | null;
+  nextAction: string | null;
+  permittedActions: Array<"inspect_run" | "inspect_recovery">;
+  predecessorRunId: string | null;
+  successorRunId: string | null;
+}
+
+/** These incidents require an explicit reconciliation, never a generic Retry. */
+export const EXECUTION_RECONCILIATION_CAUSES = [
+  "uncertain_provider_action",
+  "uncertain_external_action",
+  "uncertain_control_plane_action",
+  "completed_action_context_missing",
+  "continuation_evidence_incomplete",
+  "execution_finalization_deadline_exceeded",
+  "execution_recovery_budget_exhausted",
+  "provider_effect_inventory_unavailable",
+  "provider_failure_meaning_unverified",
+  "provider_ownership_unverified",
+  "native_provider_terminal_failed",
+  "native_event_replay_conflict",
+  "native_session_cleanup_quarantined",
+  "native_session_retry_exhausted",
+  "native_restart_recovery_blocked",
+  "native_continuation_requires_reconciliation",
+  "legacy_execution_requires_reconciliation",
+] as const;
+export function requiresExecutionReconciliation(
+  cause: string | null | undefined,
+): boolean {
+  return EXECUTION_RECONCILIATION_CAUSES.some((value) => value === cause);
+}
+
+export interface ExecutionReconciliation {
+  runId: string;
+  providerStopped: true;
+  actionOutcome: "completed" | "not_performed" | "mixed";
+  outcomeEvidence: string;
+  /** Operator evidence bound to this failed run; required after workspace restore failure. */
+  workspaceRepairEvidence?: string;
+  workspaceReconstruction?: {
+    schema: "paperclip.workspace-reconstruction.v1";
+    leaseId: string;
+    resultId: string;
+    descriptorSha256: string;
+    missingWork: string;
+    sources: Array<{ attachmentId: string; sha256: string; byteSize: number; filename: string | null }>;
+    interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
+  };
+}
+/** A task-level view of one interruption. Diagnostics keep the underlying runs
+ * and recovery records; ordinary product surfaces render this projection. */
+export interface TaskInterruptionPresentation {
+  intentId: string | null;
+  responsibility: "system" | "user";
+  state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
+  nextRetryAt: string | null;
+  canRetry: boolean;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access" | null;
+  /** Only the task's own project id is exposed. Other source projects stay unnamed. */
+  projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
+  sourceRunIds: string[];
+  observedRunId: string | null;
+}
