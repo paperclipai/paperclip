@@ -591,6 +591,26 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Agent detail page (Refine-v2). Surfaces mix the theme's own foreground
+     into its background, so the same tokens read in light and dark. */
+  --agent-detail-module-gap: 12px;
+  --agent-detail-band-gap: 48px;
+  --agent-detail-module-inset: 20px;
+  --agent-detail-portrait-zoom: 1.21875;
+  --agent-detail-tile-min-h: 122px;
+  --agent-detail-control-h: 40px;
+  --agent-detail-logo-rows-h: 60px;
+  --agent-detail-dialog-max-h: 85vh;
+  --agent-detail-history-cols: minmax(0, 1.5fr) minmax(0, 1fr) 140px 104px;
+  --agent-detail-tile: color-mix(in oklab, var(--foreground) 4%, var(--background));
+  --agent-detail-tile-hover: color-mix(in oklab, var(--foreground) 7%, var(--background));
+  --agent-detail-tile-chip: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-detail-tile-input: color-mix(in oklab, var(--foreground) 5%, var(--agent-detail-tile));
+  --agent-detail-table-head: color-mix(in oklab, var(--foreground) 3%, transparent);
+  --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
+  --agent-detail-control-bg: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
 }
 
 .dark {
@@ -5088,4 +5108,13 @@ html:not(.dark) .coordinator-sidebar {
   .coordinator-task-commitment[data-motion] { animation: none; }
   .coordinator-task-commitment > .coordinator-task-light { display: none; }
   .coordinator-created-task, .coordinator-decision-receipt { transition: none; }
+}
+
+/* Agent detail page (Refine-v2): inside a filled panel, controls step up from
+   the panel fill and an off switch keeps a visible track. */
+[data-agent-tile] {
+  --agent-detail-control-bg: var(--agent-detail-tile-input);
+}
+[data-agent-tile] [data-slot="toggle"][aria-checked="false"] {
+  background: var(--agent-detail-switch-off);
 }

@@ -102,6 +102,7 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  History as HistoryIcon,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -138,6 +139,10 @@ import {
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
+import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
+import { InlineEditor } from "../components/InlineEditor";
+export { syncAgentRouteAfterRename };
 import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
   isStarred,
@@ -149,8 +154,11 @@ import { Badge } from "@/components/ui/badge";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
+  agentDetailSegment,
+  agentDetailViewLabel,
   agentLegacyAuditSection,
   agentScopedAuditHref,
+  isAgentAuditView,
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
@@ -773,6 +781,27 @@ function WorkspaceOperationsSection({
   );
 }
 
+const UNTITLED_AGENT_VIEWS: ReadonlySet<AgentDetailView> = new Set(["overview", "instructions", "budgets"]);
+
+function agentViewDescription(view: AgentDetailView, name: string): string | null {
+  switch (view) {
+    case "runtime":
+      return `How ${name} runs: harness, model and environment.`;
+    case "secrets":
+      return "Secrets this agent can reach. Values are never shown here.";
+    case "permissions":
+      return `What ${name} may do without asking, and where.`;
+    case "activity":
+      return `Everything ${name} did and everything done to ${name}.`;
+    case "runs":
+      return `Every execution of ${name}, newest first.`;
+    case "costs":
+      return `What ${name} spent, by model.`;
+    default:
+      return null;
+  }
+}
+
 export function AgentDetail() {
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
@@ -950,7 +979,7 @@ export function AgentDetail() {
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsOverviewData,
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: skillSnapshot } = useQuery({
@@ -970,6 +999,28 @@ export function AgentDetail() {
     [allIssues],
   );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const headerUpdate = useMutation({
+    mutationFn: ({ target, patch }: { target: AgentDetailRecord; patch: Record<string, unknown> }) =>
+      agentsApi.update(target.id, patch, resolvedCompanyId ?? undefined),
+    onSuccess: (updated, { target }) => {
+      if (resolvedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? "overview")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(target)) });
+      }
+    },
+  });
+  const saveHeaderField = async (patch: { name?: string; title?: string | null }) => {
+    if (!agent) return;
+    setActionError(null);
+    try {
+      await headerUpdate.mutateAsync({ target: agent, patch });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not save that change");
+    }
+  };
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
   const overviewSkillNames = useMemo(() => {
     const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
@@ -989,13 +1040,12 @@ export function AgentDetail() {
       }
       return;
     }
-    if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== agentDetailSegment(canonicalTab)) {
       navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, legacyAuditSection, navigate, location.search]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1071,13 +1121,10 @@ export function AgentDetail() {
     } else {
       crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
+        crumbs.push({ label: "Runs", href: agentDetailHref(canonicalAgentRef, "runs") });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else {
-        const item = AGENT_DETAIL_NAVIGATION
-          .flatMap((section) => section.items)
-          .find((candidate) => candidate.value === activeView);
-        crumbs.push({ label: item?.label ?? "Overview" });
+        crumbs.push({ label: agentDetailViewLabel(activeView === "run-detail" ? "overview" : activeView) });
       }
     }
     setBreadcrumbs(crumbs);
@@ -1179,9 +1226,6 @@ export function AgentDetail() {
     return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
   if (!agent) return null;
-  if (!urlRunId && legacyAuditSection) {
-    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
-  }
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
@@ -1269,80 +1313,95 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
-            <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
-                : null}
-              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span><span>·</span>
-              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
-            </div>
-            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
-            <SetPrimaryAgentButton agent={agent} />
-          </div>
+      <header className="flex items-center gap-4">
+        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0" style={{ zoom: "var(--agent-detail-portrait-zoom)" }}>
+          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={agentStarred}
-            pending={agentStarPending}
-            resourceName={agent.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              starred: next,
-            })}
-          />
-          <AgentActionButtons
-            agent={currentAgent}
-            companyId={resolvedCompanyId}
-            assignLabel="Assign Task"
-            showStatus={false}
-            actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
-            workActionsDisabled={hasInvalidOrgChain}
-            workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
-            hasPendingNavigationChanges={configDirty}
-            onBeforeNavigate={prepareAgentNavigation}
-            onActionError={setActionError}
-            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
-            hideTerminate={Boolean(builtInState)}
-            pauseConfirm={
-              builtInState
-                ? {
-                    title: `Pause the ${builtInState.definition.displayName}?`,
-                    description: (
-                      <>
-                        {builtInFeatureLabel} depends on this agent. While paused,{" "}
-                        {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
-                        {builtInFeatureLabel} page shows a warning.
-                      </>
-                    ),
-                  }
-                : undefined
-            }
-          >
-            {mobileLiveRun && (
-              <Link
-                to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-              >
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                </span>
-                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
-              </Link>
-            )}
-          </AgentActionButtons>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <InlineEditor
+              as="h1"
+              value={agent.name}
+              placeholder="Agent name"
+              className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
+              onSave={(name) => saveHeaderField({ name })}
+            />
+            <PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
+            {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+              ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-3.5" alt="" />
+              : null}
+            <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
+            <InlineEditor
+              value={agent.title ?? ""}
+              nullable
+              placeholder={roleLabels[agent.role] ?? agent.role}
+              className="text-xs leading-4 text-muted-foreground"
+              onSave={(title) => saveHeaderField({ title: title || null })}
+            />
+            <span aria-hidden>·</span>
+            <span>
+              Reports to{" "}
+              {reportsToAgent ? (
+                <Link className="text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
+                  {reportsToAgent.name}
+                </Link>
+              ) : (
+                "Board"
+              )}
+            </span>
+          </div>
+          <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
+          <SetPrimaryAgentButton agent={agent} />
         </div>
+        <AgentActionButtons
+          agent={currentAgent}
+          companyId={resolvedCompanyId}
+          assignLabel="Assign task"
+          showStatus={false}
+          workActionsInMenu
+          menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+          actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
+          workActionsDisabled={hasInvalidOrgChain}
+          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+          hasPendingNavigationChanges={configDirty}
+          onBeforeNavigate={prepareAgentNavigation}
+          onActionError={setActionError}
+          onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
+          hideTerminate={Boolean(builtInState)}
+          pauseConfirm={
+            builtInState
+              ? {
+                  title: `Pause the ${builtInState.definition.displayName}?`,
+                  description: (
+                    <>
+                      {builtInFeatureLabel} depends on this agent. While paused,{" "}
+                      {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
+                      {builtInFeatureLabel} page shows a warning.
+                    </>
+                  ),
+                }
+              : undefined
+          }
+        >
+          {mobileLiveRun && (
+            <Link
+              to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
+              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
+            </Link>
+          )}
+        </AgentActionButtons>
       </header>
+      <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
 
       {builtInState && (
         <InlineBanner
@@ -1409,7 +1468,14 @@ export function AgentDetail() {
         </div>
       )}
 
-      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
+      {activeView !== "run-detail" && activeView !== "channels" && !UNTITLED_AGENT_VIEWS.has(activeView) ? (
+        <div className="-mb-4 space-y-1">
+          <h2 className="text-lg font-semibold text-foreground">{agentDetailViewLabel(activeView)}</h2>
+          {agentViewDescription(activeView, agent.name) ? (
+            <p className="text-sm text-muted-foreground">{agentViewDescription(activeView, agent.name)}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* View content */}
       {activeView === "overview" && (
@@ -1914,20 +1980,6 @@ export function AgentOverview({
  * replace the URL with the new canonical reference. Returns true when a
  * redirect happened.
  */
-export function syncAgentRouteAfterRename(
-  queryClient: QueryClient,
-  navigate: NavigateFunction,
-  previous: { id: string; urlKey?: string | null; name?: string | null },
-  updated: { id: string; urlKey?: string | null; name?: string | null },
-  tab: string,
-): boolean {
-  const previousRef = agentRouteRef(previous);
-  const nextRef = agentRouteRef(updated);
-  if (nextRef === previousRef) return false;
-  queryClient.removeQueries({ queryKey: queryKeys.agents.detail(previousRef) });
-  navigate(`/agents/${nextRef}/${tab}`, { replace: true });
-  return true;
-}
 
 export function AgentRevisionsTab({
   agent,
