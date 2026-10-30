@@ -107,7 +107,7 @@ export function registerProjectCommands(program: Command): void {
     project
       .command("create")
       .description("Create a project")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--name <name>", "Project name")
       .option("--description <text>", "Project description")
       .option("--status <status>", "Project status")

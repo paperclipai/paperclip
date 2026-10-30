@@ -25,7 +25,7 @@ export function registerActivityCommands(program: Command): void {
     activity
       .command("list")
       .description("List company activity log entries")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--agent-id <id>", "Filter by agent ID")
       .option("--entity-type <type>", "Filter by entity type")
       .option("--entity-id <id>", "Filter by entity ID")
@@ -75,7 +75,7 @@ export function registerActivityCommands(program: Command): void {
     activity
       .command("create")
       .description("Create a company activity log entry")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--payload-json <json>", "CreateActivity JSON payload")
       .action(async (opts: ActivityListOptions) => {
         try {

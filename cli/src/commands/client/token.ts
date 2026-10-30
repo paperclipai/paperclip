@@ -66,7 +66,7 @@ export function registerTokenCommands(program: Command): void {
     agent
       .command("create")
       .description("Create an agent API key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--agent <agent>", "Agent ID, shortname, or unambiguous name")
       .option("--name <name>", "API key label", "cli-agent")
       .action(async (opts: AgentTokenOptions) => {
@@ -96,7 +96,7 @@ export function registerTokenCommands(program: Command): void {
     agent
       .command("list")
       .description("List agent API keys")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--agent <agent>", "Agent ID, shortname, or unambiguous name")
       .action(async (opts: AgentTokenOptions) => {
         try {
@@ -123,7 +123,7 @@ export function registerTokenCommands(program: Command): void {
       .command("revoke")
       .description("Revoke an agent API key")
       .argument("<keyId>", "Agent API key ID")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--agent <agent>", "Agent ID, shortname, or unambiguous name")
       .action(async (keyId: string, opts: AgentTokenOptions) => {
         try {
