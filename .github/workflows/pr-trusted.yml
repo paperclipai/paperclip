@@ -972,14 +972,54 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # The production image starts the server from this bundle with plain
-      # node (Dockerfile CMD), so prove it boots before the image is built:
-      # bundle the `pnpm build` output, start it against a throwaway embedded
-      # instance, and wait for /api/health to report ok.
-      - name: Boot the production runtime bundle
+      # Reusable workflows on master also run against pre-bundle PR sources.
+      # Keep the health/readiness probe even when that source has no harness.
+      - name: Checkout the trusted boot smoke harness
+        if: ${{ hashFiles('scripts/server-boot-smoke.sh') == '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paperclipai/paperclip
+          ref: d20cb69ce5b1cdde08eea36c5a4badc72e3d7326
+          path: .ci-boot-smoke
+          sparse-checkout: scripts/server-boot-smoke.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Boot the production runtime
         run: |
-          pnpm --filter @paperclipai/server build:runtime
-          scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          runtime="$(node -e '
+            const fs = require("node:fs");
+            const manifest = JSON.parse(fs.readFileSync("server/package.json", "utf8"));
+            console.log(Object.hasOwn(manifest.scripts ?? {}, "build:runtime") ? "bundle" : "tsx");
+          ')"
+          if [ "$runtime" = bundle ]; then
+            # A declared bundle must build and boot; never fall back on failure.
+            pnpm --filter @paperclipai/server build:runtime
+            scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
+          else
+            # Recognize the source-era production command, never guess a new one.
+            node -e '
+              const fs = require("node:fs");
+              const commands = [...fs.readFileSync("Dockerfile", "utf8").matchAll(/^CMD (.+)$/gm)];
+              const expected = ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"];
+              if (commands.length !== 1 || JSON.stringify(JSON.parse(commands[0][1])) !== JSON.stringify(expected)) {
+                throw new Error("Unsupported pre-bundle production runtime");
+              }
+            '
+            test -f server/node_modules/tsx/dist/loader.mjs
+            test -f server/dist/index.js
+            harness="$GITHUB_WORKSPACE/scripts/server-boot-smoke.sh"
+            if [ ! -f "$harness" ]; then
+              harness="$GITHUB_WORKSPACE/.ci-boot-smoke/scripts/server-boot-smoke.sh"
+            fi
+            # Absolute source paths keep the separate harness checkout from
+            # becoming the code under test. It still waits for /api/health=ok.
+            bash "$harness" node --import \
+              "$GITHUB_WORKSPACE/server/node_modules/tsx/dist/loader.mjs" \
+              "$GITHUB_WORKSPACE/server/dist/index.js"
+          fi
 
       # This verification only needs `pnpm build` output (the verifier stages
       # the public packages' dist and reuses ui/dist itself), yet it ran at the

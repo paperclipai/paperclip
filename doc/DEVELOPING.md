@@ -146,6 +146,18 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
+The Build lane also supports PR sources from before the runtime bundle existed.
+A declared `build:runtime` must build and pass the bundle boot smoke; a failure
+never selects the older entrypoint. Sources without that declaration must have
+the recognized TSX production command in `Dockerfile` and built server output.
+They run that command through the same `/api/health` readiness smoke. If the
+source has no smoke harness, the workflow checks out only the harness from an
+immutable canonical commit without persisted credentials. Absolute entrypoint
+and loader paths keep the PR source, not the harness checkout, under test.
+Unknown runtime layouts fail. This does not replace any test or required check.
+Run `node --test .github/scripts/tests/pr-runtime-compatibility.test.mjs` to test
+the command selection and failure paths without starting a database.
+
 Runner selection calls `ci-routing.yml@master` on the dedicated
 `paperclip-ci-routing-x64` AWS Fleet. The `paperclip-ci-routing` runner group
 admits only `paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`
