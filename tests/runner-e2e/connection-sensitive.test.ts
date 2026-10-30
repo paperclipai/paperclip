@@ -52,11 +52,14 @@ it.each(["cancel", "deadline"])("retires the actual sensitive HTTP request on %s
     const request = { storageState: async () => ({ cookies: [] }) } as unknown as APIRequestContext;
     const controller = new AbortController();
     const send = new ConnectionApi(request, `http://127.0.0.1:${address.port}`).postSensitive("/api/owned", { fixture: true },
-      { signal: controller.signal, timeoutMs: mode === "deadline" ? 150 : 3000 });
+      { signal: controller.signal, timeoutMs: mode === "deadline" ? 1000 : 3000 });
     const rejected = expect(send).rejects.toThrow("sensitive_api_request_failed");
-    await received;
+    // A heavily delayed dispatch can time out before reaching the listener.
+    // Report that failure and still clean up, rather than hanging on `received`.
+    const first = await Promise.race([received.then(() => "received"), send.then(() => "settled", () => "settled")]);
     if (mode === "cancel") controller.abort();
     await rejected;
+    expect(first).toBe("received");
     await closed;
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
