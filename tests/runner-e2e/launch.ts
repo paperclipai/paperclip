@@ -512,6 +512,7 @@ async function runAttempt(input: {
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
   const temporaryParent = await realpath(os.tmpdir());
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
+  let evidenceStage = "execution";
   const selectedPrivateInputsDirectory = path.join(temporaryRoot, "selected-private-inputs");
   const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
@@ -890,6 +891,7 @@ async function runAttempt(input: {
         `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
         "utf8",
       );
+      evidenceStage = "package-original";
       let evidence = await packageEvidence({
         privateDir: casePrivateDir,
         uploadDir,
@@ -926,6 +928,7 @@ async function runAttempt(input: {
       }
       await copyHealthHelloDetail(temporaryRoot, candidate.id, uploadDir, credentials);
       await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, credentials);
+      evidenceStage = "seal-original";
       if (manualPrivateHandoff) await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
         executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       console.log(
@@ -945,10 +948,11 @@ async function runAttempt(input: {
     // raw reports stay private when their normal packaging path failed.
     for (const candidate of executions) {
       if (publishedResultPaths.has(candidate.id)) continue;
-      const casePrivateDir = path.join(temporaryRoot, "artifacts-private", "cases", candidate.task.id);
+      const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
       const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
       const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
       const result = abnormalFinalizationResult(original, error);
+      console.error(`Attempt finalization stopped at ${evidenceStage}; original status=${original.status}; failureClass=${original.failureClass ?? "none"}`);
       if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
       const uploadDir = path.join(resultsRoot, campaignId, candidate.suite.id, candidate.profile.id, candidate.environment.id, candidate.task.id, `attempt-${attempt}`);
       await mkdir(uploadDir, { recursive: true });
@@ -961,6 +965,15 @@ async function runAttempt(input: {
         packaging: "failed; raw diagnostics retained privately", error: error instanceof Error ? error.message : String(error),
       }, attemptSecrets), null, 2)}\n`, { mode: 0o600 });
       await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, attemptSecrets).catch(() => {});
+      if (manualPrivateHandoff) {
+        // Apply the unchanged scanner and original-evidence seal even on an
+        // abnormal finalization. Contamination still fails closed.
+        const scanned = await packageEvidence({ privateDir: casePrivateDir, uploadDir,
+          secrets: attemptSecrets, expectPassScreenshot: false,
+          privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } });
+        await sealStandardOriginalEvidence({ context: manualPrivateHandoff, executionId: candidate.id,
+          source: casePrivateDir, evidence: scanned, secrets: attemptSecrets, expectPassScreenshot: false });
+      }
       if (rawCleanupResults.length < executions.length) rawCleanupResults.push({ cleanup: original.cleanup, synthetic: original === fallback, status: original.status });
       publishedResults.push(result); publishedResultPaths.set(candidate.id, resultPath);
     }

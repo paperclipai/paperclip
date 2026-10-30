@@ -174,20 +174,23 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     expect(persisted.grade.passed, "Independent oracle survives browser reload").toBe(true);
     await implementation.verifyResult(context, state, observation);
     for (const check of persisted.grade.checks) input.check?.(check.id, check.passed, check.detail);
-    await input.capture("chat-catalog-result", scenario.id, "chat-catalog-result.png");
+    await input.capture("final-state", scenario.id, "final-state.png");
     expect(chatCatalogNativePhaseIsTimely(context), "Original selected native observation budget includes complete final proof").toBe(true);
   } catch (error) {
     failed = true;
     throw error;
   } finally {
     try {
-      await conversation();
+      const finalConversation = await conversation();
       if (state) await refresh();
       const runs = await context.allRuns();
-      await input.evidence("chat-catalog-runs.json", await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run))));
+      const runEvidence = await Promise.all(runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+      await input.evidence("chat-catalog-runs.json", runEvidence);
+      await input.evidence("api-state.json", { capturePhase: failed ? "failure" : "final",
+        ...finalConversation, runs, runEvidence });
       if (["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"].includes(scenario.id)) {
         for (const [runIndex, run] of runs.entries()) {
-          const inspected = await input.api.get<{ trace: {status: string} | null; entries: Array<{kind?: string; frameId?: number; timestamp?: string; parsed?: unknown}> }>(`/api/heartbeat-runs/${run.id}/provider-trace`);
+          const inspected = await input.api.getProviderTraceInspection<{ trace: {status: string} | null; entries: Array<{kind?: string; frameId?: number; timestamp?: string; parsed?: unknown}> }>(run.id).catch(() => ({ trace: null, entries: [] }));
           const timings: Array<Record<string, unknown>> = [];
           const visit = (value: unknown, frame: {frameId?: number; timestamp?: string}) => {
             if (!value || typeof value !== "object" || timings.length >= 1000) return;

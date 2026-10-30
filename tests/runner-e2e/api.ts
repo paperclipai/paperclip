@@ -54,6 +54,12 @@ export class RunnerApi {
   }
 
 
+  /** Restricted trace inspection bypasses browser trace capture; callers retain only bounded timing fields. */
+  async getProviderTraceInspection<T>(runId: string): Promise<T> {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(runId)) throw new Error("Invalid diagnostic run identity");
+    return this.authenticatedJson<T>("GET", `/api/heartbeat-runs/${runId}/provider-trace`);
+  }
+
   /** Repeated native observation reads retain explicit snapshots, without duplicating full DTO bodies in the browser trace. */
   async getRunObservation<T>(path: string, options?: { timeout: number }): Promise<T> {
     const url = new URL(path, this.baseURL);
