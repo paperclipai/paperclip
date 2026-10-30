@@ -161,6 +161,11 @@ indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
 
+Releasing a run's execution lock finds, locks, and clears the issues that the
+run holds through `issues.execution_run_id` and `issues.checkout_run_id`. The
+partial indexes `issues_execution_run_idx` and `issues_checkout_run_idx` hold
+only issues with a held run, so a release no longer scans every company issue.
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
