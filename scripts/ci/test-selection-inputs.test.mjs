@@ -95,6 +95,7 @@ test("unchanged consumer workspaces follow cross-package imports and file inputs
   write("consumer/read.test.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("../producer/leaf.ts",import.meta.url));');
   write("consumer/directory.test.ts", 'import {readdirSync} from "node:fs"; readdirSync(new URL("../producer/",import.meta.url));');
   write("consumer/dynamic.test.ts", 'import {readFileSync} from "node:fs"; readFileSync(process.env.INPUT);');
+  write("consumer/mixed.test.ts", 'import {readFileSync as known} from "node:fs"; import {readFileSync as unknown} from "fs"; known(new URL("../producer/leaf.ts",import.meta.url)); unknown(process.env.INPUT);');
   write("consumer/helper.ts", 'import {readFileSync} from "node:fs"; export const source = readFileSync(new URL("../producer/leaf.ts",import.meta.url));');
   write("consumer/helper.test.ts", 'import {source} from "./helper"; console.log(source);');
   write("consumer/outside.test.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("/etc/hosts",import.meta.url));');
@@ -103,11 +104,11 @@ test("unchanged consumer workspaces follow cross-package imports and file inputs
   const select = changed => selectProjectTests({ root, project: "consumer", changed });
   const affected = await select(["producer/leaf.ts"]);
   assert.deepEqual(affected.related, ["consumer/import.test.ts"]);
-  assert.deepEqual(affected.inputRelated, ["consumer/directory.test.ts", "consumer/helper.test.ts", "consumer/read.test.ts"]);
-  assert.deepEqual(affected.alwaysRun, ["consumer/dynamic.test.ts", "consumer/outside.test.ts"]);
+  assert.deepEqual(affected.inputRelated, ["consumer/directory.test.ts", "consumer/helper.test.ts", "consumer/mixed.test.ts", "consumer/read.test.ts"]);
+  assert.deepEqual(affected.alwaysRun, ["consumer/dynamic.test.ts", "consumer/mixed.test.ts", "consumer/outside.test.ts"]);
   assert.ok(!affected.selected.includes("consumer/unrelated.test.ts"));
   const other = await select(["producer/other.ts"]);
-  assert.deepEqual(other.selected, ["consumer/directory.test.ts", "consumer/dynamic.test.ts", "consumer/outside.test.ts"]);
+  assert.deepEqual(other.selected, ["consumer/directory.test.ts", "consumer/dynamic.test.ts", "consumer/mixed.test.ts", "consumer/outside.test.ts"]);
   const independent = await selectProjectTests({ root, project: "independent", changed: ["producer/leaf.ts"] });
   assert.deepEqual(independent.selected, [], "a project without imports or opaque inputs can drop out entirely");
   write("producer/new.ts", "export const added = true;"); git("add", ".");
