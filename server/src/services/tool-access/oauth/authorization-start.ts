@@ -1,7 +1,7 @@
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { credentialScope, managedConnectorProfile } from "./client-settings.js";
-import { createOAuthClientRegistration } from "./client-registration.js";
+import { assertOAuthClientBindingUnchanged, createOAuthClientRegistration } from "./client-registration.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthEndpointPolicy } from "./endpoint-policy.js";
 import { createOAuthDiscovery } from "./discovery.js";
@@ -672,10 +672,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       });
     }
 
-    const nextConfig = {
-      ...connection.config,
-      oauth: {
-        ...oauthConfig(connection),
+    await db.transaction(async tx => {
+      const [saved] = await tx.select().from(toolConnections).where(and(
+        eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId),
+      )).for("no key update");
+      if (!saved) throw notFound("Tool connection not found");
+      assertOAuthClientBindingUnchanged(connection, saved, endpoints, input.redirectUri);
+      const oauth = {
         provider: endpoints.provider,
         authorizationUrl: endpoints.authorizationUrl,
         tokenUrl: endpoints.tokenUrl,
@@ -698,27 +701,29 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         // Persist the issuer and resource this authorization run is bound to.
         // `iss` on the callback is validated against `expectedIssuer`, and
         // refresh/reconnect/revoke reuse the same pair rather than re-deriving it.
-        issuer: endpoints.issuer ?? oauthConfig(connection).issuer ?? null,
+        issuer: endpoints.issuer ?? oauthConfig(saved).issuer ?? null,
         expectedIssuer: endpoints.issuer ?? null,
         resource:
-          endpoints.resource ?? oauthConfig(connection).resource ?? null,
+          endpoints.resource ?? oauthConfig(saved).resource ?? null,
         clientIdMetadataDocumentSupported:
           endpoints.clientIdMetadataDocumentSupported === true,
-      },
-    };
-    await db
-      .update(toolConnections)
-      .set({
+      };
+      const nextConfig = { ...saved.config, oauth: { ...oauthConfig(saved), ...oauth } };
+      const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...oauth } };
+      await tx
+        .update(toolConnections)
+        .set({
         // A generic URL connection starts life as `authKind: none`. Once it has
         // completed OAuth discovery and client resolution it is an OAuth
         // connection, and refresh, reconnect, revoke and diagnostics must all
         // treat it as one.
-        authKind: "oauth",
-        config: nextConfig,
-        transportConfig: nextConfig,
-        updatedAt: new Date(),
-      })
-      .where(eq(toolConnections.id, connection.id));
+          authKind: "oauth",
+          config: nextConfig,
+          transportConfig: nextTransportConfig,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)));
+    });
 
     return {
       connectionId: connection.id,

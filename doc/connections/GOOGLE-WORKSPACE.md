@@ -22,6 +22,11 @@ that choice, not the new-account write defaults. Historical drafts without a
 matching saved intent require an explicit choice. Reconnecting an established
 account without a new choice keeps its exact grant request.
 
+Overlapping customer-owned starts preserve the latest saved draft choice through
+client binding and authorization metadata updates. Each OAuth state and consent
+URL keeps that attempt's own requested scopes. These updates preserve unrelated
+current settings and other users' pending proposals in both configuration records.
+
 An agent can hand setup to its responsible human without choosing services or
 creating provider OAuth state. If the agent proposes services, the human can
 review and change them in the picker. Saving the human's choice consumes only

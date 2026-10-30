@@ -84,6 +84,7 @@ import {
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createOAuthAuthorizationStart } from "../services/tool-access/oauth/authorization-start.js";
+import { createOAuthClientRegistration } from "../services/tool-access/oauth/client-registration.js";
 import { createPersonalConnectionIdentity } from "../services/tool-access/connections/personal-identity.js";
 import { createConnectionSetupPolicy } from "../services/tool-access/connections/setup-policy.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
@@ -2679,6 +2680,167 @@ describeEmbeddedPostgres("tool access service", () => {
     const [coldState] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.state, new URL(coldResume.authorizationUrl).searchParams.get("state")!));
     expect(coldState.requestedScopes).toEqual(["https://www.googleapis.com/auth/gmail.readonly"]);
   });
+
+  it.each(["bound", "first-use"] as const)("preserves the latest Workspace draft choice across overlapping %s customer starts", async (bindingMode) => {
+    const company = await createCompany(db);
+    const userId = `workspace-overlap-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-workspace", connectionMethodKey: "customer-workspace-oauth", grantKind: "user",
+      oauthClient: { clientId: "fixture-client", clientSecret: "fixture-secret" },
+    }, actor);
+    const redirectUri = "https://paperclip.example.test/api/tools/oauth/callback";
+    const endpoints = {
+      provider: "google", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token", registrationUrl: null,
+      scopes: googleWorkspaceSelectedScopes(GOOGLE_WORKSPACE_DEFAULT_SELECTION),
+      offlineAccessSupported: true, issuer: "https://accounts.google.com", resource: null,
+    };
+    const getConnectionRow = async () => {
+      const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      return row;
+    };
+    const initial = await getConnectionRow();
+    if (bindingMode === "bound") {
+      const config = { ...initial.config, oauth: { ...(initial.config.oauth as Record<string, unknown>),
+        clientRedirectUri: redirectUri, clientIssuer: endpoints.issuer, clientResource: null, clientCompanyId: company.id,
+      } };
+      await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, initial.id));
+    } else {
+      expect((initial.config.oauth as Record<string, unknown>).clientRedirectUri).toBeUndefined();
+    }
+    const observedClientRows: typeof initial[] = [];
+    const ensureOAuthClient = createOAuthClientRegistration(db, {
+      now: () => new Date(), options: {}, getConnectionRow,
+      requestOAuthClientRegistration: vi.fn(),
+      store: {
+        createOrRotateOAuthSecret: vi.fn(), syncCredentialBindings: vi.fn(),
+        oauthClientForConnection: async (row) => {
+          observedClientRows.push(row);
+          return { clientId: "fixture-client", clientSecret: "fixture-secret", clientIdEnv: null, clientSecretEnv: null };
+        },
+      },
+    });
+    let releaseA!: () => void;
+    let reachedA!: () => void;
+    const pausedA = new Promise<void>(resolve => { reachedA = resolve; });
+    const resumeA = new Promise<void>(resolve => { releaseA = resolve; });
+    let discoveries = 0;
+    const makeStart = () => createOAuthAuthorizationStart(db, {
+      now: () => new Date(), getConnectionRow, ensureOAuthClient,
+      setupPolicy: createConnectionSetupPolicy(db), fixedPersonalIdentityForReconnect: createPersonalConnectionIdentity(db),
+      currentCloudConnector: () => null, vercelConnect: null,
+      oauthEndpointsForConnection: async () => {
+        if (++discoveries === 1) { reachedA(); await resumeA; }
+        return endpoints;
+      },
+      assertOAuthEndpointUrl: (_kind, url) => String(url),
+    });
+    const start = makeStart();
+    const first = start(company.id, initial.id, { redirectUri, actor, subjectUserId: userId, workspaceServices: { gmail: "write" } });
+    let startedA;
+    let startedB;
+    let afterB;
+    try {
+      await pausedA;
+      startedB = await start(company.id, initial.id, { redirectUri, actor, subjectUserId: userId, workspaceServices: { gmail: "read" } });
+      afterB = await getConnectionRow();
+      expect((afterB.config.oauth as Record<string, unknown>).clientRedirectUri).toBe(redirectUri);
+      const pending = { anotherUser: { requestedScopes: googleWorkspaceSelectedScopes({ calendar: "read" }), requestedAt: "2026-10-30T16:00:00Z" } };
+      await db.update(toolConnections).set({
+        config: { ...afterB.config, concurrentSetting: "config-b", oauth: { ...(afterB.config.oauth as Record<string, unknown>), pendingWorkspaceServiceRequests: pending } },
+        transportConfig: { ...afterB.transportConfig, transportOnlySetting: "transport-b", oauth: { ...(afterB.transportConfig.oauth as Record<string, unknown>), pendingWorkspaceServiceRequests: pending } },
+      }).where(eq(toolConnections.id, initial.id));
+    } finally {
+      releaseA();
+      startedA = await first;
+    }
+    const writeScopes = googleWorkspaceSelectedScopes({ gmail: "write" });
+    const readScopes = googleWorkspaceSelectedScopes({ gmail: "read" });
+    const expectedBinding = { version: 1, companyId: company.id, connectionId: initial.id, actorType: "user", actorId: userId,
+      grantKind: "user", subjectId: userId, requestedScopes: readScopes };
+    if (bindingMode === "first-use") {
+      expect(observedClientRows).toHaveLength(2);
+      expect((observedClientRows[1].config.oauth as Record<string, unknown>).clientRedirectUri).toBe(redirectUri);
+      expect(observedClientRows[1].config.workspaceSetup).toEqual(expectedBinding);
+    }
+    const latest = await getConnectionRow();
+    expect(afterB!.config.workspaceSetup).toEqual(expectedBinding);
+    expect(latest.config.workspaceSetup).toEqual(expectedBinding);
+    expect(latest.transportConfig.workspaceSetup).toEqual(expectedBinding);
+    expect(latest.config.concurrentSetting).toBe("config-b");
+    expect(latest.transportConfig.transportOnlySetting).toBe("transport-b");
+    for (const config of [latest.config, latest.transportConfig]) {
+      expect((config.oauth as Record<string, unknown>).pendingWorkspaceServiceRequests).toEqual({ anotherUser: {
+        requestedScopes: googleWorkspaceSelectedScopes({ calendar: "read" }), requestedAt: "2026-10-30T16:00:00Z",
+      } });
+    }
+    for (const [started, expected] of [[startedA!, writeScopes], [startedB!, readScopes]] as const) {
+      const url = new URL(started.authorizationUrl);
+      expect(url.searchParams.get("scope")?.split(" ")).toEqual(expected);
+      const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.state, url.searchParams.get("state")!));
+      expect(state.requestedScopes).toEqual(expected);
+    }
+    const cold = await makeStart()(company.id, initial.id, { redirectUri, actor, subjectUserId: userId });
+    const coldUrl = new URL(cold.authorizationUrl);
+    expect(coldUrl.searchParams.get("scope")?.split(" ")).toEqual(readScopes);
+    const [coldState] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.state, coldUrl.searchParams.get("state")!));
+    expect(coldState.requestedScopes).toEqual(readScopes);
+  });
+
+  it.each((["clientId", "clientSecretRef", "clientIssuer", "clientResource", "clientRedirectUri", "issuer", "resource"] as const)
+    .flatMap(field => (["discovery", "client-resolution"] as const).map(stage => [field, stage] as const)))(
+    "rejects a concurrent %s change during Workspace %s", async (field, stage) => {
+      const company = await createCompany(db);
+      const actor = { actorType: "user" as const, actorId: "board" };
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-workspace", connectionMethodKey: "customer-workspace-oauth", grantKind: "organization",
+        oauthClient: { clientId: "fixture-client", clientSecret: "fixture-secret" },
+      }, actor);
+      const getConnectionRow = async () => {
+        const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+        return row;
+      };
+      const endpoints = { provider: "google", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenUrl: "https://oauth2.googleapis.com/token", scopes: googleWorkspaceSelectedScopes({ gmail: "read" }),
+        issuer: "https://accounts.google.com", resource: null };
+      const ensureClient = createOAuthClientRegistration(db, {
+        now: () => new Date(), options: {}, getConnectionRow, requestOAuthClientRegistration: vi.fn(),
+        store: { createOrRotateOAuthSecret: vi.fn(), syncCredentialBindings: vi.fn(),
+          oauthClientForConnection: async () => ({ clientId: "fixture-client", clientSecret: "fixture-secret", clientIdEnv: null, clientSecretEnv: null }) },
+      });
+      let changed: Awaited<ReturnType<typeof getConnectionRow>>;
+      const mutateClient = async () => {
+        const row = await getConnectionRow();
+        const updates = field === "clientSecretRef"
+          ? { credentialSecretRefs: row.credentialSecretRefs.map(ref => ref.configPath === "oauth.client_secret" ? { ...ref, versionSelector: 1 } : ref) }
+          : {
+            config: { ...row.config, oauth: { ...(row.config.oauth as Record<string, unknown>), [field]: `changed-${field}` } },
+            transportConfig: { ...row.transportConfig, oauth: { ...(row.transportConfig.oauth as Record<string, unknown>), [field]: `changed-${field}` } },
+          };
+        if (field === "clientSecretRef") expect(updates.credentialSecretRefs).not.toEqual(row.credentialSecretRefs);
+        [changed] = await db.update(toolConnections).set(updates).where(eq(toolConnections.id, row.id)).returning();
+      };
+      const start = createOAuthAuthorizationStart(db, {
+        now: () => new Date(), getConnectionRow,
+        setupPolicy: createConnectionSetupPolicy(db), fixedPersonalIdentityForReconnect: createPersonalConnectionIdentity(db),
+        currentCloudConnector: () => null, vercelConnect: null,
+        oauthEndpointsForConnection: async () => { if (stage === "discovery") await mutateClient(); return endpoints; },
+        ensureOAuthClient: async input => { const resolved = await ensureClient(input); if (stage === "client-resolution") await mutateClient(); return resolved; },
+        assertOAuthEndpointUrl: (_kind, url) => String(url),
+      });
+      await expect(start(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, workspaceServices: { gmail: "read" },
+      })).rejects.toMatchObject({ status: 409 });
+      const retained = await getConnectionRow();
+      expect(retained.config).toEqual(changed!.config);
+      expect(retained.transportConfig).toEqual(changed!.transportConfig);
+      expect(retained.credentialSecretRefs).toEqual(changed!.credentialSecretRefs);
+    },
+  );
 
   it.each(["user", "organization"] as const)("preserves the %s Workspace request when account-page reconnect omits a selection", async (kind) => {
     const company = await createCompany(db);
