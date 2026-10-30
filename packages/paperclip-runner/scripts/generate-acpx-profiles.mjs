@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { acpxReleaseAttestation, ATTESTED_ACPX_AGENTS } from "./acpx-release-attestations.mjs";
+import { acpxReleaseAttestation } from "./acpx-release-attestations.mjs";
 
 const root = new URL("../", import.meta.url);
 const readJson = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -13,15 +12,16 @@ const contract = await readJson("cursor-contract.json");
 const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
-// Copilot, Grok and Pi digests attest upstream releases; they change only when
-// an upstream version, a platform closure or the Grok launcher changes.
+// Every profile's commandDigest attests its upstream release, so it changes only
+// when that release changes. Installation verifies installed-command digests.
 const check = process.argv.includes("--check");
 let attestationsChanged = false;
-for (const agent of ATTESTED_ACPX_AGENTS) {
-  const { commandDigest } = await acpxReleaseAttestation(agent, fileURLToPath(root));
-  if (manifest.profiles[agent].commandDigest === commandDigest) continue;
-  assert.ok(!check, `${agent} release attestation is stale in acpx-profiles.json; run generate:acpx-profiles`);
-  manifest.profiles[agent].commandDigest = commandDigest;
+for (const agent of Object.keys(manifest.profiles)) {
+  const attestation = await acpxReleaseAttestation(agent, fileURLToPath(root));
+  if (!attestation || manifest.profiles[agent].commandDigest === attestation.commandDigest) continue;
+  assert.ok(!check, `${agent} commandDigest no longer matches its upstream release attestation. `
+    + "Run `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`; an upstream change keeps the profile version.");
+  manifest.profiles[agent].commandDigest = attestation.commandDigest;
   attestationsChanged = true;
 }
 if (attestationsChanged) await writeFile(new URL("acpx-profiles.json", root), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -38,21 +38,13 @@ for (const [agent, profile] of entries) {
     if (name && Object.hasOwn(pkg.dependencies, name)) assert.equal(version, pkg.dependencies[name], `${agent}: installed dependency drift`);
   }
 }
-// The Cursor contract is an immutable release attestation, not another runtime
-// lookup table. Refuse generation if a release declaration disagrees with it.
+// Release declarations must agree with the profiles they attest.
 assert.equal(manifest.profiles.cursor.agentServerVersion, distributions.version);
 assert.equal(manifest.profiles.cursor.agentServerVersion, contract.vendor);
 assert.equal(manifest.profiles.cursor.agentProfileVersion, contract.profileVersion);
-assert.equal(manifest.profiles.cursor.commandDigest, contract.commandDigest);
+assert.equal(contract.commandDigest, manifest.profiles.cursor.commandDigest, "cursor-contract.json carries a stale commandDigest");
 assert.equal(distributions.patchVersion, contract.nativePatch);
-const canonicalJson = value => value && typeof value === "object"
-  ? Array.isArray(value) ? `[${value.map(canonicalJson).join(",")}]`
-    : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`
-  : JSON.stringify(value);
 assert.equal(manifest.profiles.antigravity.agentServerVersion, antigravityDistributions.version);
-assert.equal(manifest.profiles.antigravity.commandDigest, `sha256:${createHash("sha256").update(canonicalJson(antigravityDistributions)).digest("hex")}`, "Antigravity distribution identity is stale");
-const { commandDigest, ...attestation } = contract;
-assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
 for (const distribution of Object.values(distributions.platforms)) assert.match(distribution.closureSha256, /^[a-f0-9]{64}$/);
 
 const quote = JSON.stringify;
