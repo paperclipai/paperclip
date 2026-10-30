@@ -611,6 +611,16 @@ They are children of the existing pack selection/upload path and also appear in
 the local run timing log. Their fixed names add no paths, credentials, or content
 attributes. The operator endpoint gate remains unchanged. Source installs without
 prebuilt archives retain the existing directory upload span.
+`provider_pack.directory.verify` measures expanded source verification when
+directory staging is required.
+
+Archive installation verifies the archive bytes and then the installed pack
+against the selected manifest. It does not hash the unused expanded controller
+tree. Directory installation still verifies that tree before upload, including
+when the remote cannot extract an available archive. The final installed-pack
+verification applies to both paths. A slow controller tree scan can block the
+server event loop and inflate overlapping asynchronous span durations; a copy
+span alone does not establish that the disk spent all that time copying.
 
 The native provider lifecycle emits one foldable OpenTelemetry trace, linked to
 the server attempt described above. This is
@@ -2109,9 +2119,6 @@ rank optimizations, deploy a compatible source set and inspect actual collector
 exports for parentage, concurrent ownership, widths and closed failure spans.
 Unit tests do not establish ingestion or a latency improvement.
 
-The shared ACPX instrumentation advances Grok source profile 13 to 14 and
-Copilot 84 to 85. Historical identities remain unchanged and decodable. Provider
-packages, models and permission defaults are unchanged; Pi's bound declaration
-is unchanged. These are source attestations, not evidence of fresh live provider
-qualification. Re-run compatibility qualification for the new identities before
-rollout.
+The shared ACPX instrumentation does not change any provider profile identity:
+Copilot, Grok and Pi digests attest their upstream releases, not Runner source.
+Provider packages, models and permission defaults are unchanged.

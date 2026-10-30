@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { loadStorageConfig } from "../storage/config.js";
+import { loadStorageConfig, type StorageConfig } from "../storage/config.js";
 import { logger } from "../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -11,8 +11,9 @@ export function registerRunEvidenceMigrationWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   canRun: () => boolean,
+  storage: Pick<StorageConfig, "storageProvider"> = loadStorageConfig(),
 ) {
-  if (loadStorageConfig().storageProvider !== "s3") return null;
+  if (storage.storageProvider !== "s3") return null;
   let runCursor: string | undefined, traceCursor: string | undefined;
   let logsDone = false,
     tracesDone = false,

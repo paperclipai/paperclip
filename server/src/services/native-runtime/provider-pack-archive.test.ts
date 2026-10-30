@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
+import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -209,6 +210,54 @@ it("keeps the directory fallback when the remote has no zstd", async () => {
   const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 127, timedOut: false }) };
   expect(await stageProviderPackArchive({ archive, runner: remote, targetPath: "/unused" })).toBe(false);
   expect(remote.syncIn).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("installs verified %s archive bytes without reading the unused expanded pack", async version => {
+  const { root, pack } = version === "v1" ? await fixture() : await layeredFixture();
+  const remote = await runner(root);
+  const targetPath = path.join(root, "uploaded");
+  const expected = await fs.readFile(path.join(pack, "bin/tool"));
+  // Only the archive is uploaded. The expanded tree is a different source,
+  // and deliberately no longer matches the bytes sealed in that archive.
+  await fs.writeFile(path.join(pack, "bin/tool"), "unused expanded bytes");
+  const verifyDirectory = vi.fn(() => { throw Error("expanded_directory_was_read"); });
+  const stageDirectory = vi.fn(async () => { throw Error("directory_was_uploaded"); });
+  const verifyUploaded = vi.fn(async () => {
+    expect(await fs.readFile(path.join(targetPath, "bin/tool"))).toEqual(expected);
+    expect(JSON.parse(await fs.readFile(path.join(targetPath, "provider-pack.json"), "utf8")).digest).toBe(digest);
+  });
+  await uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath, reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
+  expect(verifyDirectory).not.toHaveBeenCalled();
+  expect(stageDirectory).not.toHaveBeenCalled();
+  expect(verifyUploaded).toHaveBeenCalledOnce();
+});
+
+it.each(["absent", "unsupported"])("verifies directory bytes before fallback when the archive is %s", async mode => {
+  const { root, pack } = await fixture();
+  if (mode === "absent") await fs.unlink(`${pack}.archive.json`);
+  const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }) };
+  // The capability probe fails; clearing the old pack succeeds.
+  remote.execute.mockResolvedValueOnce({ exitCode: 0, timedOut: false });
+  remote.execute.mockResolvedValue({ exitCode: 127, timedOut: false });
+  const stageDirectory = vi.fn(), verifyUploaded = vi.fn();
+  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory: () => { throw Error("directory_digest_mismatch"); },
+    stageDirectory, verifyUploaded })).rejects.toThrow("directory_digest_mismatch");
+  expect(remote.syncIn).not.toHaveBeenCalled();
+  expect(stageDirectory).not.toHaveBeenCalled();
+  expect(verifyUploaded).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd)("rejects an installed pack that fails final verification", async () => {
+  const { root, pack } = await fixture();
+  const remote = await runner(root), targetPath = path.join(root, "uploaded");
+  const verifyUploaded = vi.fn(async () => { throw Error("installed_digest_mismatch"); });
+  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath, reuseRoots: [], verifyDirectory: () => {}, stageDirectory: async () => {}, verifyUploaded }))
+    .rejects.toThrow("installed_digest_mismatch");
+  expect(remote.syncIn).toHaveBeenCalledOnce();
+  expect(verifyUploaded).toHaveBeenCalledOnce();
 });
 
 it.skipIf(!tar || !hasZstd).each([

@@ -470,6 +470,15 @@ claim live-provider or fleet evidence from deterministic fixtures.
   A multi-chunk native sidecar without a final newline retains exact download
   ordering and digest. Existing file-key and empty-web-home app checks passed at
   a142424fc9; subsequent changes affect copy cancellation and verification only.
+- Base integration: 879ba0d1fd reached Greptile 5/5 and all CI checks passed,
+  then master advanced and produced two append-only documentation conflicts.
+  Preserve both documentation sections and integrate the new Cloud snapshot
+  startup contract. The startup regression reproduced a redundant config read;
+  worker registration now accepts only the already-loaded storage-provider value.
+  All 103 startup controls plus storage/lifecycle controls passed (112 tests),
+  including saved Cloud profile reuse after the legacy config file is absent.
+  A further combined run passed all 124 storage and real-Postgres Cloud runtime
+  configuration controls on the merged source.
 - Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
 - S3 holds payloads from the first committed batch. Conditional object heads
   hold cursors and writer generations. Existing Postgres rows hold lifecycle and

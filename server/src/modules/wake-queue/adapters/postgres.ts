@@ -1001,6 +1001,40 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async mergeIntoExistingDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+      const [prior] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.existingDeferredWakeId),
+        eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+      )).for("update");
+      if (!prior) throw new Error("wake-queue: the deferred wake to merge into was not found for this company");
+      const priorPayload = parseObject(prior.payload), issueId = readNonEmptyString(priorPayload.issueId);
+      const priorCommentId = readNonEmptyString(priorPayload.commentId), priorActor = readNonEmptyString(prior.requestedByActorId);
+      const [priorComment] = prior.requestedByActorType === "user" && priorActor && issueId && isUuidLike(issueId) &&
+        priorCommentId && isUuidLike(priorCommentId) ? await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
+          eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, issueId), eq(issueComments.id, priorCommentId),
+          eq(issueComments.authorType, "user"), eq(issueComments.authorUserId, priorActor),
+          isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+        )) : [];
+      if ((input.coalescedReceipt || priorComment?.body.trim()) &&
+          (readNonEmptyString(input.mergedPayload.issueId) !== issueId || (input.coalescedReceipt &&
+            (input.coalescedReceipt.agentId !== prior.agentId || readNonEmptyString(input.coalescedReceipt.payload.issueId) !== issueId))))
+        throw new Error("wake-queue: merged receipt does not match the saved queue scope");
+      if (priorComment?.body.trim()) {
+        const [recorded] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, prior.agentId),
+          eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.requestedByActorType, "user"),
+          eq(agentWakeupRequests.requestedByActorId, priorActor!),
+          prior.runId ? eq(agentWakeupRequests.runId, prior.runId) : isNull(agentWakeupRequests.runId),
+          sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.payload}->>'commentId' = ${priorComment.id}`,
+          sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${prior.id}`,
+        )).limit(1);
+        if (!recorded) await tx.insert(agentWakeupRequests).values({
+          companyId: input.companyId, agentId: prior.agentId, source: prior.source, triggerDetail: prior.triggerDetail,
+          reason: prior.reason, payload: { issueId, commentId: priorComment.id, coalescedIntoWakeupRequestId: prior.id },
+          status: "coalesced", coalescedCount: 1, requestedByActorType: "user", requestedByActorId: priorActor,
+          requestedAt: prior.requestedAt, finishedAt: new Date(), runId: prior.runId,
+        });
+      }
       const rows = await tx
         .update(agentWakeupRequests)
         .set({
@@ -1032,6 +1066,9 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         await tx.insert(agentWakeupRequests).values({
           ...input.coalescedReceipt,
           companyId: input.companyId,
+          agentId: prior.agentId,
+          runId: prior.runId,
+          payload: { ...input.coalescedReceipt.payload, coalescedIntoWakeupRequestId: prior.id },
           status: "coalesced",
           coalescedCount: 1,
           finishedAt: new Date(),

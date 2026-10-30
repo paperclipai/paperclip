@@ -106,7 +106,8 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
+import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { createIncompleteTaskWatchdogScanReporter } from "./services/task-watchdog-diagnostics.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
@@ -188,6 +189,9 @@ import {
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
+import { initializeAdapterSettings } from "./services/adapter-settings.js";
+import { migrateCloudConfiguration } from "./services/cloud-configuration-migration.js";
+import { qualifyCloudConfigurationForCurrentImage } from "./services/cloud-configuration-qualification.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -253,6 +257,19 @@ async function endDatabaseClient(client: unknown, timeoutSeconds: number): Promi
   await sql.end({ timeout: timeoutSeconds });
 }
 
+function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>): void {
+  initTelemetry({ enabled: config.telemetryEnabled });
+  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+  }
+  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+  }
+  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
+}
+
 export async function startServer(): Promise<StartedServer> {
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
@@ -280,17 +297,8 @@ async function startServerWithDatabaseTeardown(
   // sentry.ts.
   await sentryReady;
   ensureDecisionSigningSecret();
-  let config = loadConfig();
-  initTelemetry({ enabled: config.telemetryEnabled });
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
-  }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
-  }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
-  }
+  const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
+  if ("deploymentMode" in startupConfig) initializeRuntimeConfigConsumers(startupConfig);
   
   type MigrationSummary =
     | "skipped"
@@ -392,7 +400,7 @@ async function startServerWithDatabaseTeardown(
     }
   }
 
-  function assertCloudDatabaseContract(): void {
+  function assertCloudDatabaseContract(config: Config): void {
     if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
       return;
     }
@@ -485,17 +493,19 @@ async function startServerWithDatabaseTeardown(
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
-  assertCloudDatabaseContract();
-  if (config.databaseUrl) {
-    const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
+  if ("deploymentMode" in startupConfig) assertCloudDatabaseContract(startupConfig);
+  if (startupConfig.databaseUrl) {
+    const migrationUrl = startupConfig.databaseMigrationUrl ?? startupConfig.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
-  
-    db = createDb(config.databaseUrl);
-    pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
+
+    db = createDb(startupConfig.databaseUrl);
+    pluginMigrationDb = startupConfig.databaseMigrationUrl ? createDb(startupConfig.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
-    activeDatabaseConnectionString = config.databaseUrl;
-    startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
+    activeDatabaseConnectionString = startupConfig.databaseUrl;
+    startupDbInfo = { mode: "external-postgres", connectionString: startupConfig.databaseUrl };
   } else {
+    if (!("deploymentMode" in startupConfig)) throw new Error("Cloud bootstrap requires an external PostgreSQL connection");
+    const config = startupConfig;
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -713,12 +723,19 @@ async function startServerWithDatabaseTeardown(
   };
   startupDatabase.close = closeDatabaseClients;
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
+  await migrateCloudConfiguration(db as any);
+  await initializeAdapterSettings(db as any);
   
+  await initializeCloudRuntimeConfig(db as any);
+  let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
+
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
   // Auth, routes, or child-runtime configuration capture any public URL.
   const restoredCloudRuntimeIdentity = await initializeCloudRuntimeIdentity(db as any);
   if (restoredCloudRuntimeIdentity) config = loadConfig();
+  if (isCloudManagedInstance()) initializeRuntimeConfigConsumers(config);
+
   const isWarmStandby = await createCloudWarmStandby(db as any);
 
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
@@ -965,6 +982,10 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  const cloudQualification = await qualifyCloudConfigurationForCurrentImage(db as any);
+  if (cloudQualification && !cloudQualification.configurationPackagesEligible) {
+    logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
+  }
   const app = await createApp(db as any, {
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null
@@ -1347,7 +1368,7 @@ async function startServerWithDatabaseTeardown(
   });
   server.on("close", () => { void taskDrainExpiryWork.stop(); });
   const runEvidenceMigrationWork = registerRunEvidenceMigrationWork(db, deliveryWork,
-    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(), { storageProvider: config.storageProvider });
   if (runEvidenceMigrationWork) trackHeartbeatSchedulerWork(runEvidenceMigrationWork.ready);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });

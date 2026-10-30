@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { paperclipConfigSchema } from "@paperclipai/shared";
 import { loadStorageConfig } from "./config.js";
 import { resolveRunEvidenceStorage } from "../services/run-evidence-storage.js";
+import {
+  projectCloudRuntimeConfig,
+  setCloudRuntimeConfigSnapshot,
+} from "../services/cloud-runtime-config-snapshot.js";
+
+afterEach(() => {
+  setCloudRuntimeConfigSnapshot(null);
+  vi.unstubAllEnvs();
+});
 
 const file = paperclipConfigSchema.parse({
   $meta: { version: 1, updatedAt: "2026-10-30T00:00:00Z", source: "configure" },
@@ -20,6 +29,33 @@ const file = paperclipConfigSchema.parse({
   },
 });
 describe("shared instance storage configuration", () => {
+  it("reuses the saved Cloud storage profile after its legacy config file is gone", () => {
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "");
+    vi.stubEnv("PAPERCLIP_CONFIG", "/nonexistent/legacy-config.json");
+    for (const name of [
+      "PROVIDER",
+      "S3_BUCKET",
+      "S3_REGION",
+      "S3_ENDPOINT",
+      "S3_PREFIX",
+      "S3_FORCE_PATH_STYLE",
+    ])
+      vi.stubEnv(`PAPERCLIP_STORAGE_${name}`, undefined);
+    setCloudRuntimeConfigSnapshot({
+      version: 1,
+      revision: 4,
+      config: projectCloudRuntimeConfig(file),
+    });
+    expect(loadStorageConfig()).toMatchObject({
+      storageProvider: "s3",
+      storageS3Bucket: "stack-file",
+      storageS3Prefix: "existing-stack-root",
+    });
+    expect(resolveRunEvidenceStorage()).toMatchObject({
+      keyPrefix: "run-logs",
+      tracePrefix: "provider-traces",
+    });
+  });
   it("keeps the existing config-file defaults and S3 connection fields", () => {
     expect(loadStorageConfig(file, {})).toMatchObject({
       storageProvider: "s3",

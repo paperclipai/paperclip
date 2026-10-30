@@ -70,15 +70,33 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
-## Source-bound profile history
+## Profile identity
 
-Copilot profile v68 binds the merged hot-upgrade and current master transport.
-Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
-historical records. The distinct development v66 identity is retained under
-`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
-replace the published v66 fixture. Decoding historical versions does not grant
-fresh-launch permission. Installation still requires the exact current profile,
-package and digest. These records do not establish hosted harness qualification.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
+(`scripts/acpx-release-attestations.mjs`):
+
+| Kind | Providers | The digest is |
+| --- | --- | --- |
+| `installed-command` | Claude, Codex | the upstream package's launch command, hashed at installation |
+| `launcher` | Grok | the SHA-256 of the launcher shipped verbatim |
+| `closure` | Copilot, Pi | upstream versions and the complete platform closure pins |
+| `declaration` | Cursor, Antigravity | a checked-in release declaration, as canonical JSON |
+
+`generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
+refuses a stale one, so a digest changes only with its upstream release. Every
+ACPX harness binds the shared ACPX layer the same way: saved inputs must match
+the current ACPX version, and the provider pack's `contractDigest` binds the
+Runner's ACPX patch with the other Runner contracts. Runner source changes
+change no provider digest.
+
+A profile version changes only to reset every saved session for that provider
+on purpose; an upstream release keeps it, and a new provider starts at 1. Saved
+inputs with any version from 1 through the current one decode, so they reach
+recovery. Launch and recovery admission require the exact current profile and
+digest, and refuse the rest. A profile identity does not establish hosted
+harness qualification. [`rules/acpx-profile-identity.mdc`](../../../rules/acpx-profile-identity.mdc)
+summarizes these practices for contributors.
 
 ## External controller checkpoints
 

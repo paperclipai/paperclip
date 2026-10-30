@@ -66,7 +66,7 @@ import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
-import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
+import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
@@ -12741,46 +12741,24 @@ async function createRunnerdBackendWithinSessionClaim(
               "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
             );
           }
-          const archive = await measureNativeRunnerSpan(input.trace, "provider_pack.archive.verify", () => {
-            readRemoteProviderPackManifest(configuredProviderPackRoot);
-            return readProviderPackArchive(configuredProviderPackRoot, expectedProviderPackManifest!.digest);
-          },
-          );
-          const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
-            "'",
-            "'\\''",
-          );
-          const cleared = await measureNativeRunnerSpan(input.trace, "provider_pack.clear_stale", () => remoteCommandRunner.execute({
-            command: "sh",
-            args: ["-c", `rm -rf '${escapedPackRoot}'`],
+          await uploadVerifiedProviderPack({
+            root: configuredProviderPackRoot,
+            expectedDigest: expectedProviderPackManifest!.digest,
+            runner: remoteCommandRunner,
             cwd: remoteTarget.remoteCwd,
-            bypassSession: true,
-            timeoutMs: 10_000,
-          }));
-          if (cleared.exitCode !== 0 || cleared.timedOut) {
-            throw new Error(
-              "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
-            );
-          }
-          await measureNativeRunnerSpan(input.trace, "provider_pack.upload", async () => {
-            if (archive && await stageProviderPackArchive({
-              archive,
-              runner: remoteCommandRunner,
-              targetPath: stagedRemoteProviderPackRoot,
-              reuseRoots: preinstalledProviderPackRoots,
-              trace: input.trace,
-            })) return;
-            await stageRemoteRunnerDirectory({
+            targetPath: stagedRemoteProviderPackRoot,
+            reuseRoots: preinstalledProviderPackRoots,
+            trace: input.trace,
+            verifyDirectory: () => { readRemoteProviderPackManifest(configuredProviderPackRoot); },
+            stageDirectory: () => stageRemoteRunnerDirectory({
               target: remoteTarget,
               runner: remoteCommandRunner,
               sourcePath: configuredProviderPackRoot,
               targetPath: stagedRemoteProviderPackRoot,
               mode: 0o700,
-            });
+            }),
+            verifyUploaded: () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
           });
-          await measureNativeRunnerSpan(input.trace, "provider_pack.verify_uploaded", () =>
-            verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
-          );
           activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
         },
       });
