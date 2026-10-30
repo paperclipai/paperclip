@@ -4753,6 +4753,7 @@ export async function runChildProcess(
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
     }
+    if (opts.env?.CLAUDE_CODE_ENTRYPOINT) rawMerged.CLAUDE_CODE_ENTRYPOINT = opts.env.CLAUDE_CODE_ENTRYPOINT;
 
     const mergedEnv = ensurePathInEnv(rawMerged);
     if (opts.localProcessSandbox?.homeDir) {
